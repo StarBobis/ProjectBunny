@@ -5,6 +5,13 @@
 # 运行时库 — 对应 /MT (Release) 和 /MTd (Debug)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Some Chinese-only MSVC installations emit UTF-8 /showIncludes diagnostics
+# which CMake's compiler probe decodes as GBK. Ninja then misses every header
+# dependency because the recorded prefix does not match compiler output.
+if(MSVC AND CMAKE_CL_SHOWINCLUDES_PREFIX MATCHES "^娉ㄦ剰:")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件:  ")
+endif()
+
 # 全局 MSVC 编译选项
 function(set_target_msvc_options TARGET)
     if(MSVC)

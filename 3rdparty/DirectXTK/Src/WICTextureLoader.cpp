@@ -144,7 +144,7 @@ namespace
         // We don't support n-channel formats
     };
 
-    bool g_WIC2 = false;
+    thread_local bool g_WIC2 = false;
 }
 
 //--------------------------------------------------------------------------------------
@@ -156,50 +156,22 @@ namespace DirectX
         return g_WIC2;
     }
 
-    IWICImagingFactory* _GetWIC()
+    Microsoft::WRL::ComPtr<IWICImagingFactory> _GetWIC()
     {
-        static INIT_ONCE s_initOnce = INIT_ONCE_STATIC_INIT;
-
-        IWICImagingFactory* factory = nullptr;
-        InitOnceExecuteOnce(&s_initOnce,
-            [](PINIT_ONCE, PVOID, PVOID *factory) -> BOOL
-            {
-            #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
-                HRESULT hr = CoCreateInstance(
-                    CLSID_WICImagingFactory2,
-                    nullptr,
-                    CLSCTX_INPROC_SERVER,
-                    __uuidof(IWICImagingFactory2),
-                    factory
-                    );
-
-                if ( SUCCEEDED(hr) )
-                {
-                    // WIC2 is available on Windows 10, Windows 8.x, and Windows 7 SP1 with KB 2670838 installed
-                    g_WIC2 = true;
-                    return TRUE;
-                }
-                else
-                {
-                    hr = CoCreateInstance(
-                        CLSID_WICImagingFactory1,
-                        nullptr,
-                        CLSCTX_INPROC_SERVER,
-                        __uuidof(IWICImagingFactory),
-                        factory
-                        );
-                    return SUCCEEDED(hr) ? TRUE : FALSE;
-                }
-            #else
-                return SUCCEEDED( CoCreateInstance(
-                    CLSID_WICImagingFactory,
-                    nullptr,
-                    CLSCTX_INPROC_SERVER,
-                    __uuidof(IWICImagingFactory),
-                    factory) ) ? TRUE : FALSE;
-            #endif
-            }, nullptr, reinterpret_cast<LPVOID*>(&factory));
-
+        // Factories cannot outlive the COM apartment that created them. Return
+        // an owning operation-local reference rather than a process-wide raw
+        // pointer cached by InitOnce on an arbitrary game thread.
+        Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+        g_WIC2 = false;
+#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
+        if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory2, nullptr,
+            CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.GetAddressOf())))) {
+            g_WIC2 = true;
+            return factory;
+        }
+#endif
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(factory.ReleaseAndGetAddressOf()));
         return factory;
     }
 

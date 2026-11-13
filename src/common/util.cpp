@@ -70,28 +70,36 @@ BOOL CreateDirectoryEnsuringAccess(LPCWSTR path)
 	return ret;
 }
 
-// Replacement for _wfopen_s that ensures the permissions will be set so we can
-// read it back later.
-errno_t wfopen_ensuring_access(FILE** pFile, const wchar_t *filename, const wchar_t *mode)
+// Replacement for _wfopen_s with our security attributes and exclusive write
+// or append access. Append is deliberately non-concurrent.
+static errno_t wfopen_ensuring_access_impl(FILE** pFile, const wchar_t *filename, const wchar_t *mode, bool exclusive)
 {
 	SECURITY_ATTRIBUTES sa, *psa = NULL;
 	HANDLE fh = NULL;
 	int fd = -1;
 	FILE *fp = NULL;
 	int osf_flags = 0;
+	DWORD creation_disposition = CREATE_ALWAYS;
 
 	*pFile = NULL;
 
-	if (wcsstr(mode, L"w") == NULL) {
-		// This function is for creating new files for now. We could
-		// make it do some heroics on read/append as well, but I don't
-		// want to push this further than we need to.
-		LogInfo("FIXME: wfopen_ensuring_access only supports opening for write\n");
+	if (exclusive && wcscmp(mode, L"w") && wcscmp(mode, L"wb") && wcscmp(mode, L"wt"))
+		return EINVAL;
+	if (wcsstr(mode, L"w") != NULL) {
+		creation_disposition = exclusive ? CREATE_NEW : CREATE_ALWAYS;
+	} else if (wcsstr(mode, L"a") != NULL) {
+		creation_disposition = OPEN_ALWAYS;
+		osf_flags |= _O_APPEND;
+	} else {
+#if MIGOTO_DX == 11
+		LogWarning("FIXME: wfopen_ensuring_access only supports opening for write/append\n");
+#else
+        LogInfo("FIXME: wfopen_ensuring_access only supports opening for write/append\n");
+#endif
 		DoubleBeepExit();
+		return EINVAL;
 	}
-
-	if (wcsstr(mode, L"b") == NULL)
-		osf_flags |= _O_TEXT;
+	osf_flags |= wcsstr(mode, L"b") ? _O_BINARY : _O_TEXT;
 
 	// We use _wfopen_s so that we can use formatted print routines, but to
 	// set security attributes at creation time to make sure the
@@ -99,17 +107,23 @@ errno_t wfopen_ensuring_access(FILE** pFile, const wchar_t *filename, const wcha
 	// convert the resulting handle into a C file descriptor, then a FILE*
 	// that can be used as per usual.
 	psa = init_security_attributes(&sa);
-	fh = CreateFile(filename, GENERIC_WRITE, 0, psa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	fh = CreateFile(filename, GENERIC_WRITE, 0, psa, creation_disposition, FILE_ATTRIBUTE_NORMAL, NULL);
+	const DWORD creation_error = fh == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
 	LocalFree(sa.lpSecurityDescriptor);
 	if (fh == INVALID_HANDLE_VALUE) {
-		// FIXME: Map GetLastError() to appropriate errno
-		return EIO;
+		const DWORD error = creation_error;
+		return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS ? EEXIST : EIO;
 	}
 
 	// Convert the HANDLE into a file descriptor.
 	fd = _open_osfhandle((intptr_t)fh, osf_flags);
 	if (fd == -1) {
 		CloseHandle(fh);
+		return EIO;
+	}
+
+	if (wcsstr(mode, L"a") && _lseeki64(fd, 0, SEEK_END) == -1) {
+		_close(fd);
 		return EIO;
 	}
 
@@ -129,6 +143,16 @@ errno_t wfopen_ensuring_access(FILE** pFile, const wchar_t *filename, const wcha
 
 	*pFile = fp;
 	return 0;
+}
+
+errno_t wfopen_ensuring_access(FILE** pFile, const wchar_t* filename, const wchar_t* mode)
+{
+	return wfopen_ensuring_access_impl(pFile, filename, mode, false);
+}
+
+errno_t wfopen_exclusive_ensuring_access(FILE** pFile, const wchar_t* filename, const wchar_t* mode)
+{
+	return wfopen_ensuring_access_impl(pFile, filename, mode, true);
 }
 
 void set_file_last_write_time(wchar_t *path, FILETIME *ftWrite, DWORD flags)

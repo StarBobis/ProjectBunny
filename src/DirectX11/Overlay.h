@@ -118,5 +118,7 @@ public:
 };
 
 void ClearNotices();
+// Read-only snapshot under the same lock used by warning producers.
+std::vector<std::wstring> GetOverlayNoticeMessages(LogLevel level);
 void LogOverlayW(LogLevel level, wchar_t *fmt, ...);
 void LogOverlay(LogLevel level, char *fmt, ...);

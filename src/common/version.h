@@ -1,3 +1,6 @@
+#if defined(MIGOTO_DX) && MIGOTO_DX == 11
+#include "DX11Version.h"
+#else
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
 // Used by DirectX9.rc
@@ -54,3 +57,5 @@
 #define VER_FILEFLAGS               VER_VER_DEBUG
 #define VER_FILETYPE                VFT_APP
 
+
+#endif // MIGOTO_DX == 11

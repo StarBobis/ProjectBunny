@@ -1,4 +1,6 @@
 #include "D3D11Wrapper.h"
+#include "InitializationGate.h"
+#include "D3D11Initialization.h"
 
 #include "log.h"
 #include "Globals.h"
@@ -36,6 +38,7 @@ Globals *G = &StaticG;
 
 FILE *LogFile = 0;		// off by default.
 bool gLogDebug = false;
+LogVerbosity gLogVerbosity = LogVerbosity::DISABLED;
 
 
 // This critical section must be held to avoid race conditions when creating
@@ -96,9 +99,6 @@ static bool InitializeDLL()
 	const char* default_locale = setlocale(LC_CTYPE, nullptr);
 	G->gDefaultLocale = default_locale ? default_locale : "";
 
-	if (G->gInitialized)
-		return true;
-
 	LoadConfigFile();
 
 	G->bIntendedTargetExe = verify_intended_target_late();
@@ -118,12 +118,8 @@ static bool InitializeDLL()
 
 void DestroyDLL()
 {
-	if (LogFile)
-	{
-		LogInfo("Destroying DLL...\n");
-		SavePersistentSettings();
-		fclose(LogFile);
-	}
+    // DLL_PROCESS_DETACH holds the loader lock. Persistence is saved at the
+    // existing explicit, reload and frame safe points, never from this hook.
 }
 
 int WINAPI D3DKMTCloseAdapter()
@@ -325,7 +321,6 @@ typedef struct D3D10DDIARG_OPENADAPTER
 	};
 } D3D10DDIARG_OPENADAPTER;
 
-static HMODULE hD3D11 = 0;
 
 typedef int (WINAPI *tD3DKMTQueryAdapterInfo)(_D3DKMT_QUERYADAPTERINFO *);
 static tD3DKMTQueryAdapterInfo _D3DKMTQueryAdapterInfo;
@@ -369,17 +364,41 @@ PFN_D3D11ON12_CREATE_DEVICE _D3D11On12CreateDevice;
 
 
 
-void InitD311()
+static INIT_ONCE proxy_locks_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK InitializeProxyLocks(PINIT_ONCE, PVOID, PVOID*)
 {
-	UINT ret;
+    InitializeCriticalSectionPretty(&G->mCriticalSection);
+    InitializeCriticalSectionPretty(&G->mResourcesLock);
+    InitializeCriticalSectionPretty(&resource_creation_mode_lock);
+    return TRUE;
+}
 
-	if (hD3D11) return;
+enum class ProxyConfigurationState { UNINITIALIZED, READY, FAILED };
+static ProxyConfigurationState proxy_configuration_state = ProxyConfigurationState::UNINITIALIZED;
 
-	InitializeCriticalSectionPretty(&G->mCriticalSection);
-	InitializeCriticalSectionPretty(&G->mResourcesLock);
-	InitializeCriticalSectionPretty(&resource_creation_mode_lock);
+static bool InitializeD3D11Proxy()
+{
+    UINT ret;
+    HMODULE candidate = nullptr;
+    if (!InitOnceExecuteOnce(&proxy_locks_once, InitializeProxyLocks, nullptr, nullptr))
+        return false;
 
-	InitializeDLL();
+    // This state is accessed only by the outer initialization gate's owner.
+    // Retrying a missing export must not register bindings or parse globals
+    // twice. A partially throwing config load cannot safely be replayed.
+    if (proxy_configuration_state == ProxyConfigurationState::FAILED)
+        return false;
+    if (proxy_configuration_state == ProxyConfigurationState::UNINITIALIZED) {
+        try {
+            // A target mismatch still needs native forwarding, as before.
+            InitializeDLL();
+            proxy_configuration_state = ProxyConfigurationState::READY;
+        } catch (...) {
+            proxy_configuration_state = ProxyConfigurationState::FAILED;
+            throw;
+        }
+    }
 	
 
 	// Chain through to the either the original DLL in the system, or to a proxy
@@ -406,8 +425,8 @@ void InitD311()
 			wcstombs(path, sysDir, MAX_PATH);
 			LogInfo("trying to chain load %s\n", path);
 		}
-		hD3D11 = LoadLibrary(sysDir);
-		if (!hD3D11)
+		candidate = LoadLibrary(sysDir);
+		if (!candidate)
 		{
 			if (LogFile)
 			{
@@ -415,9 +434,9 @@ void InitD311()
 				wcstombs(path, G->CHAIN_DLL_PATH, MAX_PATH);
 				LogInfo("load failed. Trying to chain load %s\n", path);
 			}
-			hD3D11 = LoadLibrary(G->CHAIN_DLL_PATH);
+			candidate = LoadLibrary(G->CHAIN_DLL_PATH);
 		}
-		LogInfo("Proxy loading result: %p\n", hD3D11);
+		LogInfo("Proxy loading result: %p\n", candidate);
 	}
 	else
 	{
@@ -426,8 +445,8 @@ void InitD311()
 		// We need the system d3d11 in order to find the original proc addresses.
 		// We hook LoadLibraryExW, so we need to use that here.
 		LogInfo("Trying to load original_d3d11.dll\n");
-		hD3D11 = LoadLibraryEx(L"original_d3d11.dll", NULL, 0);
-		if (hD3D11 == NULL)
+		candidate = LoadLibraryEx(L"original_d3d11.dll", NULL, 0);
+		if (candidate == NULL)
 		{
 			wchar_t libPath[MAX_PATH];
 			LogInfo("*** LoadLibrary on original_d3d11.dll failed.\n");
@@ -443,35 +462,56 @@ void InitD311()
 			if (ret != 0 && ret < ARRAYSIZE(libPath)) {
 				wcscat_s(libPath, MAX_PATH, L"\\d3d11.dll");
 				LogInfoW(L"Trying to load %ls\n", libPath);
-				hD3D11 = LoadLibraryEx(libPath, NULL, 0);
+				candidate = LoadLibraryEx(libPath, NULL, 0);
 			}
 		}
 	}
-	if (hD3D11 == NULL)
+	if (candidate == NULL)
 	{
 		LogInfo("*** LoadLibrary on original or chained d3d11.dll failed.\n");
 		DoubleBeepExit();
 	}
 
-	_D3DKMTQueryAdapterInfo = (tD3DKMTQueryAdapterInfo)GetProcAddress(hD3D11, "D3DKMTQueryAdapterInfo");
-	_OpenAdapter10 = (tOpenAdapter10)GetProcAddress(hD3D11, "OpenAdapter10");
-	_OpenAdapter10_2 = (tOpenAdapter10_2)GetProcAddress(hD3D11, "OpenAdapter10_2");
-	_D3D11CoreCreateDevice = (tD3D11CoreCreateDevice)GetProcAddress(hD3D11, "D3D11CoreCreateDevice");
-	_D3D11CoreCreateLayeredDevice = (tD3D11CoreCreateLayeredDevice)GetProcAddress(hD3D11, "D3D11CoreCreateLayeredDevice");
-	_D3D11CoreGetLayeredDeviceSize = (tD3D11CoreGetLayeredDeviceSize)GetProcAddress(hD3D11, "D3D11CoreGetLayeredDeviceSize");
-	_D3D11CoreRegisterLayers = (tD3D11CoreRegisterLayers)GetProcAddress(hD3D11, "D3D11CoreRegisterLayers");
-	if (!_D3D11CreateDevice)
-		_D3D11CreateDevice = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
-	if (!_D3D11CreateDeviceAndSwapChain)
-		_D3D11CreateDeviceAndSwapChain = (PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
-	_D3DKMTGetDeviceState = (tD3DKMTGetDeviceState)GetProcAddress(hD3D11, "D3DKMTGetDeviceState");
-	_D3DKMTOpenAdapterFromHdc = (tD3DKMTOpenAdapterFromHdc)GetProcAddress(hD3D11, "D3DKMTOpenAdapterFromHdc");
-	_D3DKMTOpenResource = (tD3DKMTOpenResource)GetProcAddress(hD3D11, "D3DKMTOpenResource");
-	_D3DKMTQueryResourceInfo = (tD3DKMTQueryResourceInfo)GetProcAddress(hD3D11, "D3DKMTQueryResourceInfo");
+    const auto creation_exports = ResolveD3D11CreationExports(candidate,
+        _D3D11CreateDevice, _D3D11CreateDeviceAndSwapChain);
+    if (!creation_exports.valid()) {
+        LogWarning("D3D11 initialization failed: native or chained DLL lacks required creation exports.\n");
+        FreeLibrary(candidate);
+        return false;
+    }
+
+	_D3DKMTQueryAdapterInfo = (tD3DKMTQueryAdapterInfo)GetProcAddress(candidate, "D3DKMTQueryAdapterInfo");
+	_OpenAdapter10 = (tOpenAdapter10)GetProcAddress(candidate, "OpenAdapter10");
+	_OpenAdapter10_2 = (tOpenAdapter10_2)GetProcAddress(candidate, "OpenAdapter10_2");
+	_D3D11CoreCreateDevice = (tD3D11CoreCreateDevice)GetProcAddress(candidate, "D3D11CoreCreateDevice");
+	_D3D11CoreCreateLayeredDevice = (tD3D11CoreCreateLayeredDevice)GetProcAddress(candidate, "D3D11CoreCreateLayeredDevice");
+	_D3D11CoreGetLayeredDeviceSize = (tD3D11CoreGetLayeredDeviceSize)GetProcAddress(candidate, "D3D11CoreGetLayeredDeviceSize");
+	_D3D11CoreRegisterLayers = (tD3D11CoreRegisterLayers)GetProcAddress(candidate, "D3D11CoreRegisterLayers");
+    _D3D11CreateDevice = creation_exports.create_device;
+    _D3D11CreateDeviceAndSwapChain = creation_exports.create_swap_chain;
+	_D3DKMTGetDeviceState = (tD3DKMTGetDeviceState)GetProcAddress(candidate, "D3DKMTGetDeviceState");
+	_D3DKMTOpenAdapterFromHdc = (tD3DKMTOpenAdapterFromHdc)GetProcAddress(candidate, "D3DKMTOpenAdapterFromHdc");
+	_D3DKMTOpenResource = (tD3DKMTOpenResource)GetProcAddress(candidate, "D3DKMTOpenResource");
+	_D3DKMTQueryResourceInfo = (tD3DKMTQueryResourceInfo)GetProcAddress(candidate, "D3DKMTQueryResourceInfo");
 
 #ifdef NTDDI_WIN10
-	_D3D11On12CreateDevice = (PFN_D3D11ON12_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11On12CreateDevice");
+	_D3D11On12CreateDevice = (PFN_D3D11ON12_CREATE_DEVICE)GetProcAddress(candidate, "D3D11On12CreateDevice");
 #endif
+    G->gInitialized = true;
+    return true;
+}
+
+bool InitD311()
+{
+    static InitializationGate gate;
+    try {
+        return gate.Run(InitializeD3D11Proxy);
+    } catch (...) {
+        // Never propagate C++ exceptions through a DirectX entry point or
+        // publish partial state. A failed config load stays failed; completed
+        // configuration is retained across native export resolution retries.
+        return false;
+    }
 }
 
 HRESULT WINAPI D3D11On12CreateDevice(
@@ -486,7 +526,7 @@ HRESULT WINAPI D3D11On12CreateDevice(
 	_COM_Outptr_opt_ ID3D11DeviceContext** ppImmediateContext,
 	_Out_opt_ D3D_FEATURE_LEVEL* pChosenFeatureLevel)
 {
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
 	LogInfo("D3D11On12CreateDevice called.\n");
 
 	return (*_D3D11On12CreateDevice)(pDevice, Flags, pFeatureLevels, FeatureLevels, ppCommandQueues, NumQueues, NodeMask, ppDevice, ppImmediateContext, pChosenFeatureLevel);
@@ -494,7 +534,7 @@ HRESULT WINAPI D3D11On12CreateDevice(
 
 int WINAPI D3DKMTQueryAdapterInfo(_D3DKMT_QUERYADAPTERINFO *info)
 {
-	InitD311();
+	if (!InitD311()) return static_cast<int>(0xc0000001u);
 	LogInfo("D3DKMTQueryAdapterInfo called.\n");
 
 	return (*_D3DKMTQueryAdapterInfo)(info);
@@ -502,7 +542,7 @@ int WINAPI D3DKMTQueryAdapterInfo(_D3DKMT_QUERYADAPTERINFO *info)
 
 int WINAPI OpenAdapter10(struct D3D10DDIARG_OPENADAPTER *adapter)
 {
-	InitD311();
+	if (!InitD311()) return static_cast<int>(0xc0000001u);
 	LogInfo("OpenAdapter10 called.\n");
 
 	return (*_OpenAdapter10)(adapter);
@@ -510,7 +550,7 @@ int WINAPI OpenAdapter10(struct D3D10DDIARG_OPENADAPTER *adapter)
 
 int WINAPI OpenAdapter10_2(struct D3D10DDIARG_OPENADAPTER *adapter)
 {
-	InitD311();
+	if (!InitD311()) return static_cast<int>(0xc0000001u);
 	LogInfo("OpenAdapter10_2 called.\n");
 
 	return (*_OpenAdapter10_2)(adapter);
@@ -518,7 +558,7 @@ int WINAPI OpenAdapter10_2(struct D3D10DDIARG_OPENADAPTER *adapter)
 
 int WINAPI D3D11CoreCreateDevice(__int32 a, int b, int c, LPCSTR lpModuleName, int e, int f, int g, int h, int i, int j)
 {
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
 	LogInfo("D3D11CoreCreateDevice called.\n");
 
 	return (*_D3D11CoreCreateDevice)(a, b, c, lpModuleName, e, f, g, h, i, j);
@@ -527,7 +567,7 @@ int WINAPI D3D11CoreCreateDevice(__int32 a, int b, int c, LPCSTR lpModuleName, i
 
 HRESULT WINAPI D3D11CoreCreateLayeredDevice(const void *unknown0, DWORD unknown1, const void *unknown2, REFIID riid, void **ppvObj)
 {
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
 	LogInfo("D3D11CoreCreateLayeredDevice called.\n");
 
 	return (*_D3D11CoreCreateLayeredDevice)(unknown0, unknown1, unknown2, riid, ppvObj);
@@ -535,7 +575,7 @@ HRESULT WINAPI D3D11CoreCreateLayeredDevice(const void *unknown0, DWORD unknown1
 
 SIZE_T WINAPI D3D11CoreGetLayeredDeviceSize(const void *unknown0, DWORD unknown1)
 {
-	InitD311();
+	if (!InitD311()) return 0;
 	LogInfo("D3D11CoreGetLayeredDeviceSize called.\n");
 
 	return (*_D3D11CoreGetLayeredDeviceSize)(unknown0, unknown1);
@@ -543,7 +583,7 @@ SIZE_T WINAPI D3D11CoreGetLayeredDeviceSize(const void *unknown0, DWORD unknown1
 
 HRESULT WINAPI D3D11CoreRegisterLayers(const void *unknown0, DWORD unknown1)
 {
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
 	LogInfo("D3D11CoreRegisterLayers called.\n");
 
 	return (*_D3D11CoreRegisterLayers)(unknown0, unknown1);
@@ -551,7 +591,7 @@ HRESULT WINAPI D3D11CoreRegisterLayers(const void *unknown0, DWORD unknown1)
 
 int WINAPI D3DKMTGetDeviceState(int a)
 {
-	InitD311();
+	if (!InitD311()) return static_cast<int>(0xc0000001u);
 	LogInfo("D3DKMTGetDeviceState called.\n");
 
 	return (*_D3DKMTGetDeviceState)(a);
@@ -559,7 +599,7 @@ int WINAPI D3DKMTGetDeviceState(int a)
 
 int WINAPI D3DKMTOpenAdapterFromHdc(int a)
 {
-	InitD311();
+	if (!InitD311()) return static_cast<int>(0xc0000001u);
 	LogInfo("D3DKMTOpenAdapterFromHdc called.\n");
 
 	return (*_D3DKMTOpenAdapterFromHdc)(a);
@@ -567,7 +607,7 @@ int WINAPI D3DKMTOpenAdapterFromHdc(int a)
 
 int WINAPI D3DKMTOpenResource(int a)
 {
-	InitD311();
+	if (!InitD311()) return static_cast<int>(0xc0000001u);
 	LogInfo("D3DKMTOpenResource called.\n");
 
 	return (*_D3DKMTOpenResource)(a);
@@ -575,7 +615,7 @@ int WINAPI D3DKMTOpenResource(int a)
 
 int WINAPI D3DKMTQueryResourceInfo(int a)
 {
-	InitD311();
+	if (!InitD311()) return static_cast<int>(0xc0000001u);
 	LogInfo("D3DKMTQueryResourceInfo called.\n");
 
 	return (*_D3DKMTQueryResourceInfo)(a);
@@ -842,7 +882,7 @@ HRESULT WINAPI D3D11CreateDevice(
 				ppImmediateContext);
 	}
 
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
 
 	LogInfo("\n\n *** D3D11CreateDevice called with\n");
 	LogInfo("    pAdapter = %p\n", pAdapter);
@@ -964,7 +1004,7 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
 
 	DXGI_SWAP_CHAIN_DESC origSwapChainDesc;
 
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
 
 	LogInfo("\n\n *** D3D11CreateDeviceAndSwapChain called with\n");
 	LogInfo("    pAdapter = %p\n", pAdapter);

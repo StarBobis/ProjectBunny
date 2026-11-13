@@ -4,6 +4,7 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <climits>
 
 #include "log.h"
 #include "util.h"
@@ -430,47 +431,58 @@ bool InputButtonList::CheckState()
 
 static std::vector<class InputAction *> actions;
 
-void RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
-		shared_ptr<InputListener> listener, int auto_repeat, int down_delay,
-		int up_delay)
+void RegisterInputAction(std::unique_ptr<InputAction> action, InputDisableScope disable_scope)
 {
-	class InputAction *action;
-	class InputButton *button;
+	if (!action)
+		return;
+	action->disable_scope = disable_scope == InputDisableScope::INVALID ? InputDisableScope::ALL : disable_scope;
+	actions.push_back(action.get());
+	action.release();
+}
+
+bool RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
+		shared_ptr<InputListener> listener, int auto_repeat, int down_delay,
+		int up_delay, InputDisableScope disable_scope)
+{
+	std::unique_ptr<InputAction> action;
+	std::unique_ptr<InputButton> button;
 
 	// We could potentially only use the InputButtonList here, but that
 	// does not work with some of our backwards compatibility key names
 	// that contain spaces ("Num blah", "Prnt Scrn"), so we still try to
 	// parse the keyName as a single key first.
 	try {
-		button = new VKInputButton(keyName);
+		button = std::make_unique<VKInputButton>(keyName);
 	} catch (KeyParseError) {
 		try {
-			button = new XInputButton(keyName);
+			button = std::make_unique<XInputButton>(keyName);
 		} catch (KeyParseError) {
 			try {
-				button = new InputButtonList(keyName);
+				button = std::make_unique<InputButtonList>(keyName);
 			} catch (KeyParseError) {
 				LogOverlayW(LOG_WARNING, L"WARNING: UNABLE TO PARSE KEY BINDING %ls=%ls\n",
 						iniKey, keyName);
-				return;
+				return false;
 			}
 		}
 	}
 
 	if (auto_repeat)
-		action = new RepeatingInputAction(button, listener, auto_repeat);
+		action = std::make_unique<RepeatingInputAction>(button.get(), listener, auto_repeat);
 	else if (down_delay || up_delay)
-		action = new DelayedInputAction(button, listener, down_delay, up_delay);
+		action = std::make_unique<DelayedInputAction>(button.get(), listener, down_delay, up_delay);
 	else
-		action = new InputAction(button, listener);
+		action = std::make_unique<InputAction>(button.get(), listener);
+	button.release();
 
 	LogInfoW(L"  %s=%s\n", iniKey, keyName);
-	actions.push_back(action);
+	RegisterInputAction(std::move(action), disable_scope);
+	return true;
 }
 
 bool RegisterIniKeyBinding(LPCWSTR app, LPCWSTR iniKey,
 		InputCallback down_cb, InputCallback up_cb, int auto_repeat,
-		void *private_data)
+		void *private_data, InputDisableScope disable_scope)
 {
 	shared_ptr<InputCallbacks> callbacks = make_shared<InputCallbacks>(down_cb, up_cb, private_data);
 	wchar_t keyName[MAX_PATH];
@@ -478,8 +490,7 @@ bool RegisterIniKeyBinding(LPCWSTR app, LPCWSTR iniKey,
 	if (!GetIniString(app, iniKey, 0, keyName, MAX_PATH))
 		return false;
 
-	RegisterKeyBinding(iniKey, keyName, callbacks, auto_repeat, 0, 0);
-	return true;
+	return RegisterKeyBinding(iniKey, keyName, callbacks, auto_repeat, 0, 0, disable_scope);
 }
 
 // Format a key binding from the ini file into a user friendly manner, intended
@@ -561,9 +572,6 @@ static bool CheckForegroundWindow()
 
 bool DispatchInputEvents(HackerDevice *device)
 {
-	std::vector<class InputAction *>::iterator i;
-	class InputAction *action;
-	bool input_processed = false;
 	static time_t last_time = 0;
 	time_t now = time(NULL);
 	int j;
@@ -584,11 +592,51 @@ bool DispatchInputEvents(HackerDevice *device)
 
 	last_time = now;
 
-	for (i = actions.begin(); i != actions.end(); i++) {
-		action = *i;
+	return DispatchRegisteredInputActions(device);
+}
 
+bool DispatchRegisteredInputActions(HackerDevice *device)
+{
+	bool input_processed = false;
+	for (InputAction* action : actions) {
+		if (G->disable_input && action->disable_scope >= InputDisableScope::MODS &&
+			G->input_disable_scope >= action->disable_scope)
+			continue;
 		input_processed |= action->Dispatch(device);
 	}
-
 	return input_processed;
+}
+
+size_t CountRegisteredInputActions(InputDisableScope disable_scope)
+{
+	return static_cast<size_t>(std::count_if(actions.begin(), actions.end(),
+		[disable_scope](const InputAction* action) { return action->disable_scope == disable_scope; }));
+}
+
+static std::wstring NormalizeInputSourcePath(std::wstring path)
+{
+	if (path.empty())
+		return {};
+	std::replace(path.begin(), path.end(), L'/', L'\\');
+	const DWORD required = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+	if (!required)
+		return {};
+	std::wstring absolute(required, L'\0');
+	const DWORD written = GetFullPathNameW(path.c_str(), required, absolute.data(), nullptr);
+	if (!written || written >= required)
+		return {};
+	absolute.resize(written);
+	while (!absolute.empty() && absolute.back() == L'\\')
+		absolute.pop_back();
+	return absolute;
+}
+
+bool IsInputPathWithinDirectory(const std::wstring& filename, const std::wstring& directory)
+{
+	const std::wstring source = NormalizeInputSourcePath(filename);
+	const std::wstring root = NormalizeInputSourcePath(directory);
+	if (root.empty() || root.size() > INT_MAX || source.size() <= root.size() || source[root.size()] != L'\\')
+		return false;
+	return CompareStringOrdinal(source.data(), static_cast<int>(root.size()), root.data(),
+		static_cast<int>(root.size()), TRUE) == CSTR_EQUAL;
 }

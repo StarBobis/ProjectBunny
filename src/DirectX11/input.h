@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "HackerDevice.h"
 
 // The "input" files are a set of objects to handle user input for both gaming 
@@ -59,6 +61,7 @@ public:
 // Abstract base class of all input backend button classes
 class InputButton {
 public:
+	virtual ~InputButton() = default;
 	virtual bool CheckState() = 0;
 };
 
@@ -117,6 +120,7 @@ public:
 	bool last_state;
 	InputButton *button;
 	shared_ptr<InputListener> listener;
+	InputDisableScope disable_scope = InputDisableScope::ALL;
 
 	InputAction(InputButton *button, shared_ptr<InputListener> listener);
 	virtual ~InputAction();
@@ -158,12 +162,26 @@ public:
 // Right now these are the only two combinations we need, but feel free to add 
 // more variants as needed.
 
-void RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
+bool RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
 		shared_ptr<InputListener> listener, int auto_repeat, int down_delay,
-		int up_delay);
+		int up_delay, InputDisableScope disable_scope = InputDisableScope::ALL);
 bool RegisterIniKeyBinding(LPCWSTR app, LPCWSTR key,
 		InputCallback down_cb, InputCallback up_cb, int auto_repeat,
-		void *private_data);
+		void *private_data, InputDisableScope disable_scope = InputDisableScope::ALL);
+
+// Takes ownership of an action, including its input backend. The input toggle
+// explicitly opts in to running while ordinary XXMI bindings are disabled.
+void RegisterInputAction(std::unique_ptr<InputAction> action, InputDisableScope disable_scope = InputDisableScope::ALL);
+
+// Compare actual source filenames against recursive include roots. Namespace
+// aliases do not participate; paths are made absolute with Windows semantics.
+bool IsInputPathWithinDirectory(const std::wstring& filename, const std::wstring& directory);
+InputDisableScope GetIniKeyBindingScope(const wchar_t* section);
+
+// Dispatches registered actions after backend polling/foreground checks. Kept
+// separate so backends that supply their own button state use the same gate.
+bool DispatchRegisteredInputActions(HackerDevice *device);
+size_t CountRegisteredInputActions(InputDisableScope disable_scope);
 wstring user_friendly_ini_key_binding(LPCWSTR app, LPCWSTR iniKey);
 
 // Clears all current key bindings in preparation for reloading the config.

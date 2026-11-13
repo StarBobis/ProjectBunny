@@ -869,17 +869,33 @@ void ClearNotices()
 	LeaveCriticalSection(&notices.lock);
 }
 
+std::vector<std::wstring> GetOverlayNoticeMessages(LogLevel level)
+{
+    std::vector<std::wstring> messages;
+    if (level < 0 || level >= NUM_LOG_LEVELS)
+        return messages;
+    CriticalSectionLockGuard lock(&notices.lock, __FUNCTION__, __LINE__);
+    messages.reserve(notices.notices[level].size());
+    for (const auto& notice : notices.notices[level])
+        messages.push_back(notice.message);
+    return messages;
+}
+
 void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 {
-	if (!G->gShowWarnings && level != LOG_INFO) {
-		return;
-	}
+    const bool show_overlay_message = level == LOG_INFO || G->gShowWarnings;
+    if (!show_overlay_message && (!LogFile || gLogVerbosity < LogVerbosity::WARNING))
+        return;
 
 	wchar_t msg[maxstring];
 	va_list ap;
 
 	va_start(ap, fmt);
-	vLogInfoW(fmt, ap);
+    va_list file_args;
+    va_copy(file_args, ap);
+    vLogWarningW(fmt, file_args);
+    va_end(file_args);
+    if (!show_overlay_message) { va_end(ap); return; }
 
 	// Using _vsnwprintf_s so we don't crash if the message is too long for
 	// the buffer, and truncate it instead - unless we can automatically
@@ -904,16 +920,20 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 // format string correctly and convert the result to a wide string.
 void LogOverlay(LogLevel level, char *fmt, ...)
 {
-	if (!G->gShowWarnings && level != LOG_INFO) {
-		return;
-	}
+    const bool show_overlay_message = level == LOG_INFO || G->gShowWarnings;
+    if (!show_overlay_message && (!LogFile || gLogVerbosity < LogVerbosity::WARNING))
+        return;
 
 	char amsg[maxstring];
 	wchar_t wmsg[maxstring];
 	va_list ap;
 
 	va_start(ap, fmt);
-	vLogInfo(fmt, ap);
+    va_list file_args;
+    va_copy(file_args, ap);
+    vLogWarning(fmt, file_args);
+    va_end(file_args);
+    if (!show_overlay_message) { va_end(ap); return; }
 
 	if (!log_levels[level].hide_in_release || G->hunting) {
 		// Using _vsnprintf_s so we don't crash if the message is too long for

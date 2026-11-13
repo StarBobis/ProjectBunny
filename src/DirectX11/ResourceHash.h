@@ -27,7 +27,7 @@
 // - Average O(1) lookup and insert
 // - High performance at moderate load factors(<= ~0.5 recommended)
 // - Rehashing is O(n) but infrequent if capacity is preallocated
-// - No support for deletion(can be extended with tombstones if needed)
+// - Supports backward-shift deletion
 //
 // Thread safety :
 // - Not thread-safe.
@@ -46,7 +46,8 @@ public:
 
 	static size_t NextPow2(size_t v)
 	{
-		if (v <= 1) return 1;
+		// Probing needs at least one empty bucket even after the first insert.
+		if (v <= 2) return 2;
 		v--;
 		v |= v >> 1;
 		v |= v >> 2;
@@ -181,6 +182,72 @@ public:
 		}
 	}
 
+	inline bool erase(const K& key)
+	{
+		size_t idx = hasher(key) & mask;
+
+		// Find the entry
+		while (true)
+		{
+			Entry& e = table[idx];
+
+			if (e.generation != current_generation)
+				return false;
+
+			if (e.key == key)
+				break;
+
+			idx = (idx + 1) & mask;
+		}
+
+		// Remove and compact the cluster
+		size_t hole = idx;
+		size_t next = (hole + 1) & mask;
+
+		while (true)
+		{
+			Entry& e = table[next];
+
+			// End of cluster
+			if (e.generation != current_generation)
+			{
+				table[hole].generation = 0;
+				break;
+			}
+
+			// Determine the natural bucket of this entry
+			size_t ideal = hasher(e.key) & mask;
+
+			// Check if this entry can be moved into the hole.
+			//
+			// If its probe sequence crosses the hole, moving it back
+			// keeps lookup correctness.
+			bool should_move;
+
+			if (hole <= next)
+			{
+				// Normal non-wrapping case
+				should_move = (ideal <= hole) || (ideal > next);
+			}
+			else
+			{
+				// Wrapped cluster
+				should_move = (ideal <= hole) && (ideal > next);
+			}
+
+			if (should_move)
+			{
+				table[hole] = std::move(e);
+				hole = next;
+			}
+
+			next = (next + 1) & mask;
+		}
+
+		--count;
+		return true;
+	}
+
 	// Clears the hash map.
 	// Behavior:
 	// - Instead of touching memory, we just bump generation
@@ -214,6 +281,16 @@ public:
 	size_t capacity() const
 	{
 		return table.size();
+	}
+
+	// Visits current-generation entries. The callback must not insert, erase,
+	// or clear this map while traversal is in progress.
+	template<typename F>
+	void for_each(F&& fn)
+	{
+		for (auto& entry : table)
+			if (entry.generation == current_generation)
+				fn(entry.key, entry.value);
 	}
 
 private:
@@ -328,20 +405,51 @@ private:
 	// Avoids recomputing hashes for the same draw-call regions.
 	std::unique_ptr <FlatHashMap<RegionHashKeyL2, RegionCacheEntry, RegionHashKeyHasherL2>> cache;
 	std::vector<UINT> page_versions;
+	size_t data_size = 0;
+};
+
+struct TextureOverride;
+class FuzzyMatchResourceDesc;
+
+struct ResourceDescriptorSnapshot {
+    D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    D3D11_BUFFER_DESC buffer{};
+    D3D11_TEXTURE1D_DESC texture1d{};
+    D3D11_TEXTURE2D_DESC texture2d{};
+    D3D11_TEXTURE3D_DESC texture3d{};
+};
+
+struct TextureOverrideCandidate {
+    TextureOverride* texture_override = nullptr;
+    // Resolution-dependent matchers are re-evaluated for every lookup.
+    const FuzzyMatchResourceDesc* dynamic_matcher = nullptr;
+};
+
+struct TextureOverrideCandidates {
+    std::vector<TextureOverride>* hash_matches = nullptr;
+    std::vector<TextureOverrideCandidate> fuzzy_matches;
+    ResourceDescriptorSnapshot descriptor;
 };
 
 // Tracks info about specific resource instances:
 struct ResourceHandleInfo
 {
-	D3D11_RESOURCE_DIMENSION type;
-	uint32_t hash;
-	uint32_t orig_hash;	// Original hash at the time of creation
-	uint32_t data_hash;	// Just the data hash for track_texture_updates
+	D3D11_RESOURCE_DIMENSION type = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+	uint32_t hash = 0;
+	uint32_t orig_hash = 0;	// Original hash at the time of creation
+	uint32_t data_hash = 0;	// Just the data hash for track_texture_updates
+
+    bool texture_override_candidates_valid = false;
+    bool texture_override_hash_valid = false;
+    uint32_t texture_override_hash = 0;
+    UINT texture_override_resolution_width = 0, texture_override_resolution_height = 0;
+    TextureOverrideCandidates texture_override_candidates;
 
 	// CPU-side copy of the resource data captured via hooks or staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
 	// the GPU resource multiple times.
-	uint8_t* cached_data;
+	std::shared_ptr<uint8_t[]> cached_data;
+	size_t cached_data_offset = 0;
 	size_t cached_data_size = 0;
 	//uint32_t cached_data_hash = 0;
 
@@ -360,28 +468,13 @@ struct ResourceHandleInfo
 		D3D11_TEXTURE3D_DESC desc3D;
 	};
 
-	ResourceHandleInfo() :
-		type(D3D11_RESOURCE_DIMENSION_UNKNOWN),
-		hash(0),
-		orig_hash(0),
-		data_hash(0),
-		cached_data(nullptr)
-	{}
-
-	~ResourceHandleInfo()
-	{
-		if (cached_data) {
-			free(cached_data);
-			cached_data = nullptr;
-		}
-	}
-
-	void InitializeDataCache(size_t size);
-	void WriteDataCache(const void* src, size_t size);
-	void WriteDataCacheRegion(const void* src, size_t size, UINT offset);
+	void InitializeDataCache(size_t size, size_t offset = 0);
+	void SetDataCache(void* src, size_t size);
+	void SetDataCacheRegion(const void* src, size_t size, UINT offset);
 	// Clears cached region hashes and invalidates cached buffer data.
 	// Should be called when the underlying resource contents change.
 	void ClearDataCache();
+	uint8_t* GetCachedData();
 
 	void CacheRegionHash(const RegionHashKeyL2& key, uint32_t hash);
 	uint32_t GetCachedRegionHash(const RegionHashKeyL2& key);
@@ -496,6 +589,8 @@ struct ResourceHashInfo
 
 typedef std::unordered_map<uint32_t, struct ResourceHashInfo> ResourceInfoMap;
 
+class CustomResource;
+
 // This is a COM object that can be attached to a resource via
 // ID3D11DeviceChild::SetPrivateDataInterface(), so that when the resource is
 // released this class will be as well, giving us a way to reliably know when a
@@ -538,13 +633,32 @@ uint32_t CalcTexture3DDataHash(const D3D11_TEXTURE3D_DESC *pDesc, const D3D11_SU
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource);
 uint32_t GetOrigResourceHash(ID3D11Resource *resource);
 uint32_t GetResourceHash(ID3D11Resource *resource);
-static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
 void ClearResourceRegionHashCache(ID3D11Resource* resource);
 UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte_offset);
 UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset);
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size);
+
+float BitCastToFloat(uint32_t bits);
+uint32_t BitCastToUint(float bits);
+uint64_t HashPointer(const void* p);
+uint32_t HashUnsigned32(uint32_t u);
+float EncodeFloat30(const uint32_t hash);
+
+struct GridPos
+{
+	uint32_t x;
+	uint32_t y;
+	uint32_t z;
+};
+GridPos UnpackCellCoords(uint32_t packed);
+uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b);
+
+uint32_t GetRegionHash(class HackerContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
+uint32_t GetSpatialHash(class HackerContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size = 0.125f, CustomResource* custom_resource = nullptr);
+bool TryGetSpatialHash(class HackerContext* context, ID3D11Buffer* buffer,
+	UINT offset_x, UINT offset_y, UINT offset_z, float cell_size, uint32_t& hash,
+	CustomResource* custom_resource = nullptr);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,
@@ -758,6 +872,7 @@ public:
 	bool matches(const D3D11_TEXTURE2D_DESC *desc) const;
 	bool matches(const D3D11_TEXTURE3D_DESC *desc) const;
 
+    bool UsesDynamicResolution() const noexcept;
 	void set_resource_type(D3D11_RESOURCE_DIMENSION type);
 	bool update_types_matched();
 };
@@ -791,3 +906,10 @@ void find_texture_overrides_by_hash_from_fuzzy_matches(uint32_t hash, TextureOve
 void find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(ID3D11Resource* resource, TextureOverrideFuzzyMatches* fuzzy_matches, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 
 void ClearRegionHashesGlobalCache();
+
+// Caller must hold G->mCriticalSection and a live resource reference; consume
+// returned pointers before unlocking. Untracked resources return nullptr.
+TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resource);
+void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
+// Takes G->mCriticalSection before mResourcesLock; call before old maps die.
+void InvalidateTextureOverrideCandidates();

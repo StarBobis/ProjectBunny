@@ -1,0 +1,60 @@
+# Callback 与 Store 接口审查
+
+本次只读核对 `be77b27e`、`246bd0a4` 完整diff及本地Run/优化/加载/GetResource路径，不修改实现代理正在编辑的生产代码、测试或账本；没有构建。实现期间工作树存在临时中间态，本文件描述验收语义，不把中间态当最终缺陷结论。
+
+## Callback 的解析、运行与优化链
+
+`ParseCommandListGeneralCommands` 对commandlist前缀交给ParseCopyCommandListCommand；目标和源都必须通过FindExplicitCommandListSection查到已枚举section，并遵守namespace优先、全局后备。裸源或ref源允许，copy/deep等无效选项不能只警告后继续；null必须完整token匹配，不能接受nulljunk。src/dst指针须默认nullptr，未知源失败不能排入携带未初始化指针的命令。key前缀本身不是查找成功的证据。
+
+CopyCommandListCommand运行同时修改section的pre和post链；应先验证两边可设置，再提交，避免pre已改而post因cycle拒绝。上游failed是永久禁用，解除cycle后再次运行也不重试；如果本地为了支持动态callback恢复而不保留sticky failed，须把选择写账本并测试，不将差异隐去。
+
+Source flatten 的准确上游规范：`SetSourceCommandList(src)`先`root=src->ResolveCommandList()`，再保存root。例：A→B已存在时，C=ref A得到C→B；之后A=null，C仍指向B。以后B=ref D，C会经B解析到D。不能实现“始终保持C→A”后宣称完全复制上游；也不能把“保存root”误解为永远不会再跟随保存节点的后续变化。
+
+`_RunCommandList`在检查commands.empty之前Resolve到运行目标；一次运行使用已经解析的target，其内的callback赋值不会替换当前commands迭代器，下一次运行才选新target。保留原state与post，不能为source另造独立状态，否则资源、abort和布局override的上下文会断裂。
+
+RunExplicitCommandList已有两种模式：explicit caller指定单一command_list时，保存state.post、依次跑目标pre和post、恢复原post；普通pre/post caller则只运行匹配的一半。RunCustomShader会跑自有pre/post；RunLinkedCommandList保留现有recursive=false语义。新增proxy不应把这些模式合并。
+
+必须一起核对的noop链：
+
+- optimise_command_lists里两个TextureOverride集合的ignore_cto_pre/post聚合；
+- RunCustomShaderCommand、RunExplicitCommandList两种模式、RunLinkedCommandList；
+- IfCommand::noop的最终分支空检查；
+- ShaderRegexGroup::link_command_lists_and_filter_index的入口短路及两个LinkCommandLists条件。
+
+这些地方要调用新的CommandList::noop，避免runtime可填充的callback被删掉。If的静态不可达分支仍可清除，不能因引入callback保留不执行分支；动态if的两分支则不能仅凭当前空链优化掉。
+
+CommandList::noop若只查看resolved->runtime_populated，忽略自身runtime_populated，public函数在“当前source为空，但自身未来会被重新赋source”的状态会误判。常规配置optimise发生在runtime赋值前，通常由目标自身flag防止，但动态链接或以后重复优化时仍应检查自身潜在变化，至少增加明确回归而不假设调用阶段永远不变。
+
+## 清理、重载与递归
+
+CommandList::clear不仅清commands/static_vars，也必须重置source_command_list和runtime_populated；重置raw source时不能Resolve或访问它。ReloadConfig已在G->mCriticalSection下调用LoadConfigFile与optimise。LoadConfigFile先EnumerateExplicitCommandListSections销毁旧显式section，之后才clear长期存活的G constants/present/clear-* lists，因此其旧source在中间可能已悬空。只赋nullptr安全；此时对旧proxy调用noop/Resolve会use-after-free。所有旧长期list在恢复执行前都应clear并重建，不能保留旧section地址。
+
+直接再次LoadConfigFile在现有测试中是单线程fixture；不要因ReloadConfig有锁，就声称任意直接LoadConfigFile并发安全。reload回归需使用真实ReloadConfig或其受控初始化路径，且证明删除旧callback目标后旧运行引用不再被使用。
+
+上游MAX_COMMAND_LIST_RECURSION从64改256，但guard是`state->recursion > limit`且进入body才++：以0起始的普通递归允许执行至depth256这一层，再拒绝depth257。若改为>=则改变边界，需明确预期。必须在退出后恢复recursion并让后续普通命令继续可运行，不能只测试不crash。
+
+proxy链Resolve在递归执行限制之前调用，其自身不能靠MAX_RECURSION救场；setter必须拒绝所有source循环，长链宜迭代Resolve。RunLinkedCommandList走recursive=false，不增加state.recursion；对任意手工构造linked执行图，单纯显式run的256限制不能证明全部图有界。当前生产LinkCommandLists主要用于ShaderRegex单向链接，需区分这条实际调用约定与公共API任意图测试。
+
+最低回归组合：原内容→ref替代→null恢复、pre/post分别可见且state.post恢复、flatten例、2/3节点cycle保持旧状态、pre成功/post失败无半更新、未知源和nulljunk失败、空callback在optimise后仍可赋值、动态if、Regex链接、真实reload删除旧target、普通explicit run循环到边界后recursion归零。计数型测试应运行真实命令，不以source字符串断言替代。
+
+## Store 的单位与视图边界
+
+此处有明确的历史证据，必须先固定再写实现：旧Store虽然GetResource取得offset与buf_size，但读值时直接`((float*)map.pData)[loc]`，完全不使用两者；上游246在GetResource时直接对offset/size传nullptr，随后`box.left = index * sizeof(float)`。因此Store第三参数仍是**底层buffer的绝对float元素索引**。
+
+不能静默把CB firstConstant、VB绑定offset或SRV FirstElement加到index。也不能把第三参数改成字节偏移。举例底层CB字节256为float index64，当前绑定view从byte256开始：`store ..., 64`读底层byte256；`store ..., 0`按旧/上游语义读底层byte0。把后者拒绝为“超出view可见范围”也是新增限制，不是单纯防止物理越界。是否接受这种收紧由主代理决定并记适配依据；功能一致优先时只守实际ByteWidth。
+
+GetResource的CB分支仅当offset指针非空时把FirstConstant乘16，size指针非空把NumConstants乘16；SRV分支返回底层resource与AddRef后的resource_view，并不自动套view FirstElement；VB/IB返回底层buffer和可选绑定offset。这些optional metadata不改变resource内存基址。后来的ResourceCopyOperation->Region仅在copy/ref路径覆盖offset/size，并不会自动让Store解释Region成员。因此不能因为ParseStoreCommand支持GetTarget就声称它已支持所有member的数值读取含义。
+
+Store新增动态offset expression及4字节copy，必须保持：GetType为BUFFER后才按buffer取desc；计算先finite/非负/数值范围检查，再明确截断到元素索引；以`index <= (ByteWidth-sizeof(float))/sizeof(float)`或等价减法边界验证，避免乘4/加4溢出；物理buffer不足4字节拒绝。texture、null资源、Map失败及非法offset都不得覆盖变量。valid float位模式用memcpy读取，保留NaN payload，不做数值校正。
+
+source GetResource返回的resource与view各有独立引用，两者均要RAII释放；池返回的staging是borrowed不可Release；成功Map后恰好Unmap一次，失败不Unmap。保留LOCKED解析拒绝和runtime防御，PERSIST变量值变化时置dirty，无变化时不凭此新增dirty。不要把Store的新小回读路径写成对staging调用自身hook Map以触发哈希跟踪副作用。
+
+建议真实WARP用例：非2次幂buffer、最后一个完整float、动态索引改变、连续不同源复用同4字节bucket；CB绑定非零view但读底层index0/index64；VB/SRV非零绑定offset也证明绝对索引；NaN payload读回；负/NaN/inf/超大/最后不足4字节拒绝；texture与null安全失败；PERSIST dirty及LOCKED不变。若采用view范围收紧，则上述CB/VB/SRV例需明确记录兼容差异，不能仅测一个view-relative例子。
+
+## Reader LOCKED 后续组的兼容要求
+
+49596946新增GetVariable(var,is_source)却未使用参数，直接拒绝所有LOCKED变量；本地应仅`!is_source && LOCKED`拒绝目标，表达式读取和显式源仍允许。ce1ceea4的nullptr scope路径需要保留global查找；本地find_local_variable本就对null scope返回false，不能引入因nullptr而构造假的local scope。
+
+37a4bb26重构赋值时，完整token应为local而非localfoo；先判空再访问line[0]/name.back；读取目标后Finished，拒绝尾随垃圾；local无initializer的早返回也需检查尾部；pool目标`$Pool[id]`应返回给pool parser，不错误抢占并发出variable警告。声明失败不能留下后续可引用的半注册local。
+
+71c46f54与84a7d071把Key cycle/Preset改用reader，会与本地提前补的LOCKED guard重叠：保留保护，不重复发错；namespace大小写与原parse_command_list_var_name兼容；GetVariable成功后Finished，不能`$locked junk`只消费首词。两项对reader调用使用false，诊断command分别key/preset；源码中cycle初期误用store已由84改正。未锁定Key/Preset即时与渐变恢复逻辑必须保留，不因锁定检查禁掉整个section。

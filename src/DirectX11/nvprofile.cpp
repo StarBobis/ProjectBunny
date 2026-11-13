@@ -1653,81 +1653,8 @@ static int update_profile(NvDRSSessionHandle session, NvDRSProfileHandle profile
 	return 0;
 }
 
-// rundll entry point - when we come here we should be running in a new process
-// with admin privileges, so that we can write any changes we need to the
-// driver profile. This follows a subset of the flows that InitializeDLL,
-// LoadConfigFile and log_check_and_update_nv_profiles normally do.
-void CALLBACK Install3DMigotoDriverProfileW(HWND hwnd, HINSTANCE hinst, LPWSTR lpszCmdLine, int nCmdShow)
-{
-	NvDRSSessionHandle session = 0;
-	NvDRSProfileHandle profile = 0;
-	NvAPI_Status status = NVAPI_OK;
-	static wchar_t *migoto_dir;
-
-	migoto_dir = wcschr(lpszCmdLine, L'|');
-	*(migoto_dir++) = '\0';
-	exe_path = lpszCmdLine;
-
-	LoadProfileManagerConfig(migoto_dir);
-
-	// Preload OUR nvapi before we call init because we need some of our calls.
-#if(_WIN64)
-#define NVAPI_DLL L"nvapi64.dll"
-#else
-#define NVAPI_DLL L"nvapi.dll"
-#endif
-
-	LoadLibrary(NVAPI_DLL);
-
-	// Tell our nvapi.dll that it's us calling, and it's OK.
-	NvAPIOverride();
-	status = NvAPI_Initialize();
-	if (status != NVAPI_OK) {
-		LogInfoNoNL("  NvAPI_Initialize failed: ");
-		log_nv_error(status);
-		return;
-	}
-
-	log_nv_driver_version();
-
-	status = NvAPI_DRS_CreateSession(&session);
-	if (status != NVAPI_OK)
-		goto err_no_session;
-
-	status = NvAPI_DRS_LoadSettings(session);
-	if (status != NVAPI_OK)
-		goto bail;
-
-	if (create_internal_setting_map(session))
-		goto bail;
-
-	profile = get_cur_nv_profile(session);
-
-	log_relevant_nv_profiles(session, profile);
-
-	// Don't bother checking if we need to update - if we have been called,
-	// that has already been decided.
-
-	if (profile == 0)
-		profile = create_profile(session);
-
-	if (profile == 0)
-		goto bail;
-
-	if (update_profile(session, profile))
-		goto bail;
-
-	LogInfo("Profile update successful\n");
-
-bail:
-	destroy_internal_setting_map();
-	NvAPI_DRS_DestroySession(session);
-err_no_session:
-	if (status != NVAPI_OK) {
-		LogInfoNoNL("Profile manager error: ");
-		log_nv_error(status);
-	}
-}
+// The obsolete rundll profile installer entry point was removed with its
+// LoadProfileManagerConfig dependency. This legacy source is not in DX11 CMake.
 
 void log_check_and_update_nv_profiles()
 {

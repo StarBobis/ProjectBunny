@@ -45,8 +45,13 @@ void Override::ParseIniSection(LPCWSTR section)
 				mOverrideParams[OverrideParam(param_idx, param_component)] = val;
 			}
 		} else if (entry->first.c_str()[0] == L'$') {
-			if (!parse_command_list_var_name(entry->first.c_str(), &entry->ini_namespace, &var)) {
-				LogOverlayW(LOG_WARNING, L"Undeclared variable %ls\n - [%ls] @ [%ls]\n", entry->first.c_str(), section, entry->ini_namespace.c_str());
+			CommandArgumentReader args(L"preset", entry->first, section, &entry->ini_namespace, nullptr);
+			if (!args.GetVariable(var, false) || !args.Finished()) {
+				args.Fail();
+				continue;
+			}
+			if (var->flags & VariableFlags::LOCKED) {
+				LogOverlayW(LOG_WARNING, L"Cannot override locked variable %ls\n", var->name.c_str());
 				continue;
 			}
 
@@ -261,11 +266,16 @@ void KeyOverrideCycle::ParseIniSection(LPCWSTR section)
 
 			GetIniString(section, entry->first.c_str(), 0, &param_bufs[OverrideParam(param_idx, param_component)].buf);
 		} else if (entry->first.c_str()[0] == L'$') {
-			if (!parse_command_list_var_name(entry->first.c_str(), &entry->ini_namespace, &var)) {
-				LogOverlayW(LOG_WARNING, L"Undeclared variable %ls\n - [%ls] @ [%ls]\n", entry->first.c_str(), section, entry->ini_namespace.c_str());
+			CommandArgumentReader args(L"key", entry->first, section, &entry->ini_namespace, nullptr);
+			if (!args.GetVariable(var, false) || !args.Finished()) {
+				args.Fail();
 				continue;
 			}
 
+			if (var->flags & VariableFlags::LOCKED) {
+				LogOverlayW(LOG_WARNING, L"Cannot cycle locked variable %ls\n", var->name.c_str());
+				continue;
+			}
 			GetIniString(section, entry->first.c_str(), 0, &var_bufs[var].buf);
 		}
 	}
@@ -515,7 +525,7 @@ void KeyOverride::DownEvent(HackerDevice *device)
 	if (type == KeyOverrideType::TOGGLE)
 		return Toggle(device);
 
-	if (type == KeyOverrideType::HOLD)
+	if (type == KeyOverrideType::HOLD && !active)
 		return Activate(device, true);
 
 	return Activate(device, false);
@@ -606,6 +616,8 @@ void OverrideTransition::ScheduleTransition(HackerDevice *wrapper,
 				i->second, now, time, transition_type);
 	}
 	for (j = var_targets->begin(); j != var_targets->end(); j++) {
+		if (j->first->flags & VariableFlags::LOCKED)
+			continue;
 		_ScheduleTransition(&vars[j->first], j->first->name.c_str(), j->first->fval,
 				j->second, now, time, transition_type);
 	}
@@ -676,6 +688,10 @@ void OverrideTransition::UpdateTransitions(HackerDevice *wrapper)
 	if (!vars.empty()) {
 		LogDebugNoNL(" Variables remapped to ");
 		for (j = vars.begin(); j != vars.end();) {
+			if (j->first->flags & VariableFlags::LOCKED) {
+				j = vars.erase(j);
+				continue;
+			}
 			float val = _UpdateTransition(&j->second, now);
 			if (j->first->fval != val) {
 				j->first->fval = val;

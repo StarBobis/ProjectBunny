@@ -2,6 +2,8 @@
 
 #include <wrl.h>
 #include <string>
+#include <atomic>
+#include <memory>
 
 namespace Profiling {
 	enum class Mode {
@@ -16,52 +18,66 @@ namespace Profiling {
 
 	class Overhead {
 	public:
-		LARGE_INTEGER cpu;
-		unsigned count, hits;
+		LARGE_INTEGER cpu = {};
+		unsigned count = 0, hits = 0;
 
 		void clear();
 	};
 
 	struct State {
-		LARGE_INTEGER start_time;
+		LARGE_INTEGER start_time = {};
+        bool started = false;
 	};
 
 	static inline void start(State *state)
 	{
 		QueryPerformanceCounter(&state->start_time);
+        state->started = true;
 	}
 
 	static inline void end(State *state, Profiling::Overhead *overhead)
 	{
 		LARGE_INTEGER end_time;
+        if (!state->started) return;
+        state->started = false;
 
 		QueryPerformanceCounter(&end_time);
 		overhead->cpu.QuadPart += end_time.QuadPart - state->start_time.QuadPart;
 	}
 
-	template<class T>
-	static inline typename T::iterator lookup_map(T &map, typename T::key_type key, Profiling::Overhead *overhead)
-	{
-		Profiling::State state;
+    using CollectionToken = std::shared_ptr<const void>;
+    CollectionToken GetCollectionToken();
+    bool IsCurrentCollection(const CollectionToken& token);
 
-		if (Profiling::mode == Profiling::Mode::SUMMARY) {
-			overhead->count++;
-			Profiling::start(&state);
-		}
-		auto ret = map.find(key);
-		if (Profiling::mode == Profiling::Mode::SUMMARY) {
-			Profiling::end(&state, overhead);
-			if (ret != end(map))
-				overhead->hits++;
-		}
-		return ret;
-	}
+    // Completed samples belong to the window and mode observed at entry.
+    class Sample {
+        Overhead* overhead_;
+        State state_{};
+        CollectionToken token_;
+        bool active_ = false;
+        bool count_;
+    public:
+        explicit Sample(Overhead& overhead, bool count = true);
+        ~Sample() noexcept;
+        void Finish(bool hit) noexcept;
+        Sample(const Sample&) = delete;
+        Sample& operator=(const Sample&) = delete;
+    };
+
+    template<class T>
+    static inline typename T::iterator lookup_map(T &map, typename T::key_type key, Profiling::Overhead *overhead)
+    {
+        Sample sample(*overhead);
+        auto ret = map.find(key);
+        sample.Finish(ret != map.end());
+        return ret;
+    }
 
 	void update_txt();
 	void update_cto_warning(bool warn);
 	void clear();
 
-	extern Mode mode;
+	extern std::atomic<Mode> mode;
 	extern Overhead present_overhead;
 	extern Overhead overlay_overhead;
 	extern Overhead draw_overhead;
@@ -83,6 +99,8 @@ namespace Profiling {
 	extern Overhead texture_handle_info_lookup_overhead;
 	extern Overhead textureoverride_lookup_overhead;
 	extern Overhead resource_pool_lookup_overhead;
+    extern Overhead texture_override_fuzzy_match_overhead;
+    extern Overhead texture_override_candidates_lookup_overhead;
 
 	extern unsigned resource_full_copies;
 	extern unsigned resource_reference_copies;
@@ -99,3 +117,6 @@ namespace Profiling {
 	extern unsigned iniparams_updates;
 
 }
+
+// Also used before a config reload destroys the registered command objects.
+void clear_command_list_profiling();

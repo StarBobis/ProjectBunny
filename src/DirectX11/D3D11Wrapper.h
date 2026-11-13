@@ -5,7 +5,7 @@
 #include <dxgi1_2.h>
 
 
-void InitD311();
+bool InitD311();
 void DestroyDLL();
 
 extern "C" HMODULE (__stdcall *fnOrigLoadLibraryExW)(

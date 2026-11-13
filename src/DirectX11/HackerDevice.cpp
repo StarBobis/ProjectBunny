@@ -1505,7 +1505,7 @@ HRESULT STDMETHODCALLTYPE HackerDevice::QueryInterface(
 	HRESULT hr = mOrigDevice1->QueryInterface(riid, ppvObject);
 	if (FAILED(hr))
 	{
-		LogInfo("  failed result = %x for %p\n", hr, ppvObject);
+		LogDebug("  failed result = %x for %p\n", hr, ppvObject);
 		return hr;
 	}
 
@@ -1573,29 +1573,21 @@ STDMETHODIMP HackerDevice::CreateUnorderedAccessView(THIS_
 	__out_opt  ID3D11UnorderedAccessView **ppUAView)
 {
 	if (pDesc) {
-		TextureOverrideMatches matches;
-		
-		find_texture_overrides_for_resource(pResource, &matches, NULL);
-
-		if (!matches.empty()) {
-			TextureOverride* textureOverride = NULL;
-			int override_num_elements = -1;
-
-			for (unsigned i = 0; i < matches.size(); i++) {
-				textureOverride = matches[i];
-				if (textureOverride->override_num_elements > override_num_elements) {
-					override_num_elements = textureOverride->override_num_elements - pDesc->Buffer.FirstElement;
-				}
-			}
-
-			if (override_num_elements != -1 && pDesc->Buffer.NumElements < override_num_elements) {
-				D3D11_UNORDERED_ACCESS_VIEW_DESC pNewDesc = *pDesc;
-				pNewDesc.Buffer.NumElements = override_num_elements;
-				//LogOverlayW(LOG_INFO, L"UAV resized: %d->%d\n", pDesc->Buffer.NumElements, override_num_elements);
-				return mOrigDevice1->CreateUnorderedAccessView(pResource, &pNewDesc, ppUAView);
-			}
-		}
-	}
+        int override_num_elements = -1;
+        {
+            CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+            TextureOverrideMatches matches;
+            find_texture_overrides_for_resource(pResource, &matches, NULL);
+            for (auto* texture_override : matches)
+                if (texture_override->override_num_elements > override_num_elements)
+                    override_num_elements = texture_override->override_num_elements - pDesc->Buffer.FirstElement;
+        }
+        if (override_num_elements != -1 && pDesc->Buffer.NumElements < override_num_elements) {
+            D3D11_UNORDERED_ACCESS_VIEW_DESC adjusted = *pDesc;
+            adjusted.Buffer.NumElements = override_num_elements;
+            return mOrigDevice1->CreateUnorderedAccessView(pResource, &adjusted, ppUAView);
+        }
+    }
 
 	return mOrigDevice1->CreateUnorderedAccessView(pResource, pDesc, ppUAView);
 }
@@ -1636,31 +1628,26 @@ STDMETHODIMP HackerDevice::CreateInputLayout(THIS_
 	/* [annotation] */
 	__out_opt  ID3D11InputLayout **ppInputLayout)
 {
-	HRESULT ret;
-	ID3DBlob *blob;
+	return mInputLayoutCache->Create(mOrigDevice1, pInputElementDescs, NumElements,
+		pShaderBytecodeWithInputSignature, BytecodeLength, ppInputLayout, false);
+}
 
-	ret = mOrigDevice1->CreateInputLayout(pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature,
-		BytecodeLength, ppInputLayout);
-
-	if (G->hunting && SUCCEEDED(ret) && ppInputLayout && *ppInputLayout) {
-		// When dumping vertex buffers to text file in frame analysis
-		// we want to use the input layout to decode the buffer, but
-		// DirectX provides no API to query this. So, we store a copy
-		// of the input layout in a blob inside the private data of the
-		// input layout object. The private data is slow to access, so
-		// we should not use this in a hot path, but for frame analysis
-		// it doesn't matter. We use a blob to manage releasing the
-		// backing memory, since the anonymous void* version of this
-		// API does not appear to free the private data on release.
-
-		if (SUCCEEDED(D3DCreateBlob(sizeof(D3D11_INPUT_ELEMENT_DESC) * NumElements, &blob))) {
-			memcpy(blob->GetBufferPointer(), pInputElementDescs, blob->GetBufferSize());
-			(*ppInputLayout)->SetPrivateDataInterface(InputLayoutDescGuid, blob);
-			blob->Release();
-		}
-	}
-
-	return ret;
+STDMETHODIMP HackerDevice::CreateCustomInputLayout(THIS_
+	/* [annotation] */
+	__in_ecount(NumElements)  const D3D11_INPUT_ELEMENT_DESC *pInputElementDescs,
+	/* [annotation] */
+	__in_range(0, D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT)  UINT NumElements,
+	/* [annotation] */
+	__in  const void *pShaderBytecodeWithInputSignature,
+	/* [annotation] */
+	__in  SIZE_T BytecodeLength,
+	/* [annotation] */
+	__out_opt  ID3D11InputLayout **ppInputLayout)
+{
+	if (!ppInputLayout)
+		return E_INVALIDARG;
+	return mInputLayoutCache->Create(mOrigDevice1, pInputElementDescs, NumElements,
+		pShaderBytecodeWithInputSignature, BytecodeLength, ppInputLayout);
 }
 
 STDMETHODIMP HackerDevice::CreateClassLinkage(THIS_
@@ -2024,7 +2011,6 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppBuffer];
-			new ResourceReleaseTracker(*ppBuffer);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_BUFFER;
 			handle_info->hash = hash;
 			handle_info->orig_hash = hash;
@@ -2036,6 +2022,8 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 			//	memcpy(&handle_info->descBuf, pDesc, sizeof(D3D11_BUFFER_DESC));
 
 		LeaveCriticalSection(&G->mResourcesLock);
+		// Tracker installation calls COM; never hold the resource-map lock here.
+		new ResourceReleaseTracker(*ppBuffer);
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 			// For stat collection and hash contamination tracking:
 			if (G->hunting && pDesc) {
@@ -2079,7 +2067,6 @@ STDMETHODIMP HackerDevice::CreateTexture1D(THIS_
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppTexture1D];
-			new ResourceReleaseTracker(*ppTexture1D);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_TEXTURE1D;
 			handle_info->hash = hash;
 			handle_info->orig_hash = hash;
@@ -2089,6 +2076,8 @@ STDMETHODIMP HackerDevice::CreateTexture1D(THIS_
 			// if (pDesc)
 			// 	memcpy(&handle_info->desc1D, pDesc, sizeof(D3D11_TEXTURE1D_DESC));
 		LeaveCriticalSection(&G->mResourcesLock);
+		// Tracker installation calls COM; never hold the resource-map lock here.
+		new ResourceReleaseTracker(*ppTexture1D);
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 
 			// For stat collection and hash contamination tracking:
@@ -2195,7 +2184,6 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppTexture2D];
-			new ResourceReleaseTracker(*ppTexture2D);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
 			handle_info->hash = hash;
 			handle_info->orig_hash = hash;
@@ -2203,6 +2191,8 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 			if (pDesc)
 				memcpy(&handle_info->desc2D, pDesc, sizeof(D3D11_TEXTURE2D_DESC));
 		LeaveCriticalSection(&G->mResourcesLock);
+		// Tracker installation calls COM; never hold the resource-map lock here.
+		new ResourceReleaseTracker(*ppTexture2D);
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 			if (G->hunting && pDesc) {
 				G->mResourceInfo[hash] = *pDesc;
@@ -2264,7 +2254,6 @@ STDMETHODIMP HackerDevice::CreateTexture3D(THIS_
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppTexture3D];
-			new ResourceReleaseTracker(*ppTexture3D);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_TEXTURE3D;
 			handle_info->hash = hash;
 			handle_info->orig_hash = hash;
@@ -2272,6 +2261,8 @@ STDMETHODIMP HackerDevice::CreateTexture3D(THIS_
 			if (pDesc)
 				memcpy(&handle_info->desc3D, pDesc, sizeof(D3D11_TEXTURE3D_DESC));
 		LeaveCriticalSection(&G->mResourcesLock);
+		// Tracker installation calls COM; never hold the resource-map lock here.
+		new ResourceReleaseTracker(*ppTexture3D);
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 			if (G->hunting && pDesc) {
 				G->mResourceInfo[hash] = *pDesc;
@@ -2408,6 +2399,44 @@ fnv:
 }
 
 
+// Cache declarations from the original shader before any replacement. Parsing
+// happens outside the lock; both readers and publication use the same mutex.
+static void CacheShaderBindings(UINT64 hash, const void* bytecode, SIZE_T size)
+{
+    try {
+        {
+            std::lock_guard<std::mutex> guard(G->mShaderBindingsMutex);
+            if (G->mShaderBindingsCache.find(hash) != G->mShaderBindingsCache.end())
+                return;
+        }
+        ShaderBindings bindings{};
+        const bool parsed = get_shader_bindings_from_bytecode(bytecode, size, &bindings);
+        bool inserted;
+        {
+            std::lock_guard<std::mutex> guard(G->mShaderBindingsMutex);
+            inserted = G->mShaderBindingsCache.emplace(hash, bindings).second;
+        }
+        if (inserted && !parsed)
+            LogInfo("  Failed to parse %016I64x shader bindings from bytecode.\n", hash);
+    } catch (const std::bad_alloc&) {
+        // Declaration metadata is optional; preserve the original CreateShader call.
+        LogInfo("  Unable to cache %016I64x shader bindings: out of memory.\n", hash);
+    }
+}
+
+bool HackerDevice::GetShaderBindings(UINT64 hash, ShaderBindings* out) const
+{
+    if (!out)
+        return false;
+    *out = {};
+    std::lock_guard<std::mutex> guard(G->mShaderBindingsMutex);
+    const auto found = G->mShaderBindingsCache.find(hash);
+    if (found == G->mShaderBindingsCache.end())
+        return false;
+    *out = found->second;
+    return true;
+}
+
 // C++ function template of common code shared by all CreateXXXShader functions:
 template <class ID3D11Shader,
 	 HRESULT (__stdcall ID3D11Device::*OrigCreateShader)(THIS_
@@ -2437,6 +2466,8 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 
 	// Calculate hash
 	hash = hash_shader(pShaderBytecode, BytecodeLength);
+
+	CacheShaderBindings(hash, pShaderBytecode, BytecodeLength);
 
 	hr = ReplaceShaderFromShaderFixes<ID3D11Shader, OrigCreateShader>
 		(hash, pShaderBytecode, BytecodeLength, pClassLinkage,

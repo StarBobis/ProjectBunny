@@ -328,7 +328,7 @@ HRESULT DirectX::SaveDDSTextureToFile( ID3D11DeviceContext* pContext,
 namespace DirectX
 {
 extern bool _IsWIC2();
-extern IWICImagingFactory* _GetWIC();
+extern Microsoft::WRL::ComPtr<IWICImagingFactory> _GetWIC();
 }
 
 _Use_decl_annotations_

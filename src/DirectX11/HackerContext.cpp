@@ -89,6 +89,66 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	mCurrentDepthTarget = NULL;
 	mCurrentPSUAVStartSlot = 0;
 	mCurrentPSNumUAVs = 0;
+	mCurrentInputLayout = nullptr;
+}
+
+
+HackerContext::~HackerContext()
+{
+	ResetTrackedInputLayout();
+	mReadbackBuffers.for_each([](UINT, ID3D11Buffer* buffer) {
+		if (buffer)
+			buffer->Release();
+	});
+}
+
+ID3D11Buffer* HackerContext::GetReadbackBuffer(UINT size)
+{
+	// A larger input cannot be rounded up to a representable UINT bucket.
+	// Leave resource-size/feature-level limits to CreateBuffer without caching
+	// its failures, so a later allocation can retry.
+	if (!size || size > (UINT{1} << 31) || !mOrigDevice1)
+		return nullptr;
+
+	UINT bucket = size - 1;
+	bucket |= bucket >> 1;
+	bucket |= bucket >> 2;
+	bucket |= bucket >> 4;
+	bucket |= bucket >> 8;
+	bucket |= bucket >> 16;
+	++bucket;
+	if (auto* existing = mReadbackBuffers.find_ptr(bucket))
+		return *existing;
+
+	D3D11_BUFFER_DESC desc = {};
+	desc.ByteWidth = bucket;
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	ID3D11Buffer* buffer = nullptr;
+	LockResourceCreationMode();
+	const HRESULT result = mOrigDevice1->CreateBuffer(&desc, nullptr, &buffer);
+	UnlockResourceCreationMode();
+	if (FAILED(result)) {
+		LogInfo("GetReadbackBuffer: CreateBuffer(size=%u bucket=%u) failed hr=0x%08X\n",
+			size, bucket, static_cast<unsigned>(result));
+		return nullptr;
+	}
+	mReadbackBuffers.insert(bucket, buffer);
+	return buffer;
+}
+
+void HackerContext::ResetTrackedInputLayout()
+{
+	if (mOriginalInputLayout)
+		mOriginalInputLayout->Release();
+	mOriginalInputLayout = nullptr;
+	if (mOverrideInputLayout)
+		mOverrideInputLayout->Release();
+	mOverrideInputLayout = nullptr;
+	mInputLayoutOverrideActive = false;
+    if (mCurrentInputLayout)
+        mCurrentInputLayout->Release();
+	mCurrentInputLayout = nullptr;
 }
 
 
@@ -754,8 +814,44 @@ void HackerContext::DeferredShaderReplacementBeforeDispatch()
 }
 
 
+void HackerContext::DeferInputLayoutOverride(HackerInputLayout* pInputLayout)
+{
+	// Ownership is transferred, matching the command-list CreateInputLayout call.
+	HackerInputLayout* previous = mOverrideInputLayout;
+	mOverrideInputLayout = pInputLayout;
+	if (previous)
+		previous->Release();
+}
+
+void HackerContext::OverrideInputLayout()
+{
+	if (!mOverrideInputLayout)
+		return;
+	if (!mInputLayoutOverrideActive) {
+		// Query actual IA state: it may be native, null, or changed by a command list.
+		IAGetInputLayout(&mOriginalInputLayout);
+		mInputLayoutOverrideActive = true;
+	}
+	IASetInputLayout(mOverrideInputLayout);
+}
+
+void HackerContext::RestoreInputLayout()
+{
+	if (mInputLayoutOverrideActive)
+		IASetInputLayout(mOriginalInputLayout);
+	if (mOriginalInputLayout)
+		mOriginalInputLayout->Release();
+	mOriginalInputLayout = nullptr;
+	mInputLayoutOverrideActive = false;
+	if (mOverrideInputLayout)
+		mOverrideInputLayout->Release();
+	mOverrideInputLayout = nullptr;
+}
+
 void HackerContext::BeforeDraw(DrawContext &data)
 {
+	draw_number++;
+
 	Profiling::State profiling_state;
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
@@ -784,7 +880,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				if (b.buffer && b.offset) {
 					UINT region_offset = GetIndexBufferRegionOffset(b.format, &data.call_info, b.offset);
 					UINT region_size = GetIndexBufferRegionSize(b.format, &data.call_info);
-					mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+					mCurrentIndexBuffer = GetRegionHash(this, b.buffer, region_offset, region_size);
 					RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
 				}
 			}
@@ -800,7 +896,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 					if (b.buffer && b.stride) {
 						UINT region_offset = GetVertexBufferRegionOffset(b.stride, &data.call_info, b.offset);
 						UINT region_size = GetVertexBufferRegionSize(b.stride, &data.call_info);
-						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+						mCurrentVertexBuffers[i] = GetRegionHash(this, b.buffer, region_offset, region_size);
 					}
 				}
 				// Register Vertex Buffers hashes under the same lock.
@@ -963,6 +1059,8 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		}
 	}
 
+	OverrideInputLayout();
+
 out_profile:
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::draw_overhead);
@@ -999,6 +1097,8 @@ void HackerContext::AfterDraw(DrawContext &data)
 		if (ret)
 			ret->Release();
 	}
+
+	RestoreInputLayout();
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::draw_overhead);
@@ -1227,7 +1327,7 @@ bool HackerContext::MapTrackRegionHashes(ID3D11Resource* pResource, D3D11_MAP Ma
 	ID3D11Buffer* buf = (ID3D11Buffer*)pResource;
 	D3D11_BUFFER_DESC buf_desc;
 	buf->GetDesc(&buf_desc);
-	if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) {
+	if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER)) {
 		return true;
 	}
 	return false;
@@ -1354,7 +1454,7 @@ out_profile:
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
 }
 
-void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, const void* data, size_t size, bool* deallocate_diverted_memory)
+void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_t size, bool* deallocate_diverted_memory)
 {
 	if (!data || !size)
 		return;
@@ -1368,7 +1468,8 @@ void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, const void* data,
 		return;
 	}
 
-	info->WriteDataCache(data, size);
+	//LogInfo("UpdateResourceDataCacheFromMap size=%d, pResource=%p\n", size, pResource);
+	info->SetDataCache(data, size);
 
 	if (deallocate_diverted_memory)
 		*deallocate_diverted_memory = false;
@@ -1397,7 +1498,7 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 
 	bool deallocate_diverted_memory = true;
 
-	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))
+	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER))
 		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
@@ -1466,7 +1567,15 @@ STDMETHODIMP_(void) HackerContext::IASetInputLayout(THIS_
 	/* [annotation] */
 	__in_opt ID3D11InputLayout *pInputLayout)
 {
-	 mOrigContext1->IASetInputLayout(pInputLayout);
+    HackerInputLayout* wrapped = nullptr;
+    if (pInputLayout)
+        pInputLayout->QueryInterface(__uuidof(HackerInputLayout), reinterpret_cast<void**>(&wrapped));
+    // QueryInterface acquired the new reference before releasing the previous
+    // one, so rebinding the same layout cannot delete it prematurely.
+    if (mCurrentInputLayout)
+        mCurrentInputLayout->Release();
+    mCurrentInputLayout = wrapped;
+    mOrigContext1->IASetInputLayout(wrapped ? wrapped->GetOrigInputLayout() : pInputLayout);
 }
 
 STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
@@ -1659,6 +1768,8 @@ STDMETHODIMP_(void) HackerContext::SOSetTargets(THIS_
 
 bool HackerContext::BeforeDispatch(DispatchContext *context)
 {
+	dispatch_number++;
+
 	if (G->hunting == HUNTING_MODE_ENABLED) {
 		if (G->DumpUsage)
 			RecordComputeShaderStats();
@@ -1855,7 +1966,7 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 		dst_info->InitializeDataCache(dst_desc.ByteWidth);
 	}
 
-	dst_info->WriteDataCacheRegion(src_info->cached_data + src_offset, region_size, DstX);
+	dst_info->SetDataCacheRegion(src_info->GetCachedData() + src_offset, region_size, DstX);
 
 	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
 
@@ -1923,41 +2034,32 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
 		ClearResourceRegionHashCache(pDstResource);
 	}
 
-	TextureOverrideMatches matches;
-	find_texture_overrides_for_resource(pDstResource, &matches, NULL);
+    int override_byte_width = -1;
+    {
+        CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        TextureOverrideMatches matches;
+        find_texture_overrides_for_resource(pDstResource, &matches, NULL);
+        for (auto* texture_override : matches)
+            if (texture_override->override_byte_width > override_byte_width)
+                override_byte_width = texture_override->override_byte_width;
+    }
+    if (override_byte_width != -1) {
+        mOrigContext1->CopySubresourceRegion(
+            pDstResource,           // pDstResource
+            0,                      // DstSubresource (0 for buffers)
+            0,                      // DstX (byte offset into destination buffer)
+            0, 0,                   // DstY, DstZ (must be 0 for buffer)
+            pSrcResource,           // pSrcResource
+            0,                      // SrcSubresource (0 for buffers)
+            NULL                    // pSrcBox (can be NULL to copy whole buffer)
+        );
 
-	if (!matches.empty()) {
-		// Use CopySubresourceRegion when copying to resized buffer
-		// Otherwise CopyResource fails on buffers size mismatch
+        if (G->track_texture_updates == 1)
+            PropagateResourceHash(pDstResource, pSrcResource);
 
-		TextureOverride* textureOverride = NULL;
-		int override_byte_width = -1;
+        return;
+    }
 
-		for (unsigned i = 0; i < matches.size(); i++) {
-			textureOverride = matches[i];
-			if (textureOverride->override_byte_width > override_byte_width) {
-				override_byte_width = textureOverride->override_byte_width;
-			}
-		}
-
-		if (override_byte_width != -1) {
-			mOrigContext1->CopySubresourceRegion(
-				pDstResource,           // pDstResource
-				0,                      // DstSubresource (0 for buffers)
-				0,                      // DstX (byte offset into destination buffer)
-				0, 0,                   // DstY, DstZ (must be 0 for buffer)
-				pSrcResource,           // pSrcResource
-				0,                      // SrcSubresource (0 for buffers)
-				NULL                    // pSrcBox (can be NULL to copy whole buffer)
-			);
-
-			if (G->track_texture_updates == 1)
-				PropagateResourceHash(pDstResource, pSrcResource);
-
-			return;
-		}
-	}
-	
 	mOrigContext1->CopyResource(pDstResource, pSrcResource);
 
 	if (G->track_texture_updates == 1)
@@ -2096,6 +2198,7 @@ STDMETHODIMP_(void) HackerContext::ExecuteCommandList(THIS_
 		mOrigContext1->ExecuteCommandList(pCommandList, RestoreContextState);
 
 	if (!RestoreContextState) {
+		ResetTrackedInputLayout();
 		// This is equivalent to calling ClearState() afterwards, so we
 		// need to rebind the 3DMigoto resources now. See also
 		// FinishCommandList's RestoreDeferredContextState:
@@ -2432,7 +2535,22 @@ STDMETHODIMP_(void) HackerContext::IAGetInputLayout(THIS_
 	/* [annotation] */
 	__out  ID3D11InputLayout **ppInputLayout)
 {
-	 mOrigContext1->IAGetInputLayout(ppInputLayout);
+    if (!ppInputLayout)
+        return;
+    ID3D11InputLayout* original = nullptr;
+    mOrigContext1->IAGetInputLayout(&original);
+    if (mCurrentInputLayout && mCurrentInputLayout->GetOrigInputLayout() == original) {
+        if (original)
+            original->Release();
+        mCurrentInputLayout->AddRef();
+        *ppInputLayout = mCurrentInputLayout;
+        return;
+    }
+    if (mCurrentInputLayout) {
+        mCurrentInputLayout->Release();
+        mCurrentInputLayout = nullptr;
+    }
+    *ppInputLayout = original;
 }
 
 STDMETHODIMP_(void) HackerContext::IAGetVertexBuffers(THIS_
@@ -2771,6 +2889,7 @@ STDMETHODIMP_(void) HackerContext::CSGetConstantBuffers(THIS_
 
 STDMETHODIMP_(void) HackerContext::ClearState(THIS)
 {
+	ResetTrackedInputLayout();
 	 mOrigContext1->ClearState();
 
 	 // ClearState() will unbind StereoParams and IniParams, so we need to
@@ -2798,9 +2917,10 @@ STDMETHODIMP HackerContext::FinishCommandList(THIS_
 	/* [annotation] */
 	__out_opt  ID3D11CommandList **ppCommandList)
 {
-	BOOL ret = mOrigContext1->FinishCommandList(RestoreDeferredContextState, ppCommandList);
+	HRESULT ret = mOrigContext1->FinishCommandList(RestoreDeferredContextState, ppCommandList);
 
-	if (!RestoreDeferredContextState) {
+	if (SUCCEEDED(ret) && !RestoreDeferredContextState) {
+		ResetTrackedInputLayout();
 		// This is equivalent to calling ClearState() afterwards, so we
 		// need to rebind the 3DMigoto resources now. See also
 		// ExecuteCommandList's RestoreContextState:

@@ -7,8 +7,8 @@
 
 #include "CommandList.h"
 
+#include "HackerInputLayout.h"
 #include "HackerDevice.h"
-//#include "ResourceHash.h"
 #include "Globals.h"
 
 // {A3046B1E-336B-4D90-9FD6-234BC09B8687}
@@ -134,10 +134,18 @@ private:
 	ID3D11Resource *mCurrentDepthTarget;
 	UINT mCurrentPSUAVStartSlot;
 	UINT mCurrentPSNumUAVs;
+	HackerInputLayout* mCurrentInputLayout;
+	ID3D11InputLayout* mOriginalInputLayout = nullptr;
+	HackerInputLayout* mOverrideInputLayout = nullptr;
+	bool mInputLayoutOverrideActive = false;
+	void ResetTrackedInputLayout();
 
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
 	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
 	MappedResources mMappedResources;
+	unsigned draw_number = 0;
+	unsigned dispatch_number = 0;
+	FlatHashMap<UINT, ID3D11Buffer*> mReadbackBuffers{64};
 
 	// These private methods are utility routines for HackerContext.
 	void BeforeDraw(DrawContext &data);
@@ -222,6 +230,7 @@ protected:
 
 public:
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);
+	virtual ~HackerContext();
 
 	void SetHackerDevice(HackerDevice *pDevice);
 	HackerDevice* GetHackerDevice();
@@ -236,6 +245,19 @@ public:
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};
 	virtual void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
 		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) {};
+
+	// Borrowed until this context is destroyed. Copy/Map/Unmap and pool access
+	// follow the original context's single-threaded access requirements.
+	unsigned GetDrawNumber() const { return draw_number; }
+	unsigned GetDispatchNumber() const { return dispatch_number; }
+	void ResetCallCounters() { draw_number = 0; dispatch_number = 0; }
+
+	ID3D11Buffer* GetReadbackBuffer(UINT size);
+
+	// Takes ownership of the caller's layout reference (also when replacing a pending override).
+	void DeferInputLayoutOverride(HackerInputLayout* pInputLayout);
+	void OverrideInputLayout();
+	void RestoreInputLayout();
 
 	// These are the shaders the game has set, which may be different from
 	// the ones we have bound to the pipeline:

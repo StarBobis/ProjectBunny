@@ -15,6 +15,7 @@ DEFINE_GUID(IID_HackerDevice,
 // Forward declaration to allow circular reference between HackerContext and HackerDevice. 
 // We need this to allow each to reference the other as needed.
 
+struct ShaderBindings;
 class HackerContext;
 class HackerSwapChain;
 
@@ -52,6 +53,7 @@ private:
 
 	HackerContext *mHackerContext;
 	HackerSwapChain *mHackerSwapChain;
+	std::shared_ptr<HackerInputLayoutCache> mInputLayoutCache = std::make_shared<HackerInputLayoutCache>();
 
 	// Utility routines
 	char *_ReplaceShaderFromShaderFixes(UINT64 hash, const wchar_t *shaderType, const void *pShaderBytecode,
@@ -112,6 +114,8 @@ private:
 		wchar_t *shaderType);
 
 public:
+	bool GetShaderBindings(UINT64 hash, ShaderBindings* out) const;
+
 	ID3D11ShaderResourceView *mZBufferResourceView;
 	ID3D11Texture1D *mIniTexture;
 	ID3D11ShaderResourceView *mIniResourceView;
@@ -211,6 +215,18 @@ public:
 		_Out_opt_  ID3D11DepthStencilView **ppDepthStencilView);
 
 	HRESULT STDMETHODCALLTYPE CreateInputLayout(
+		/* [annotation] */
+		_In_reads_(NumElements)  const D3D11_INPUT_ELEMENT_DESC *pInputElementDescs,
+		/* [annotation] */
+		_In_range_(0, D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT)  UINT NumElements,
+		/* [annotation] */
+		_In_  const void *pShaderBytecodeWithInputSignature,
+		/* [annotation] */
+		_In_  SIZE_T BytecodeLength,
+		/* [annotation] */
+		_Out_opt_  ID3D11InputLayout **ppInputLayout);
+
+	HRESULT STDMETHODCALLTYPE CreateCustomInputLayout(
 		/* [annotation] */
 		_In_reads_(NumElements)  const D3D11_INPUT_ELEMENT_DESC *pInputElementDescs,
 		/* [annotation] */

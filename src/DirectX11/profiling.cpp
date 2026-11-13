@@ -2,6 +2,8 @@
 #include "globals.h"
 
 #include <algorithm>
+#include <mutex>
+#include "lock.h"
 
 void Profiling::Overhead::clear()
 {
@@ -11,7 +13,7 @@ void Profiling::Overhead::clear()
 }
 
 namespace Profiling {
-	Mode mode;
+	std::atomic<Mode> mode{Mode::NONE};
 	Overhead present_overhead;
 	Overhead overlay_overhead;
 	Overhead draw_overhead;
@@ -33,6 +35,8 @@ namespace Profiling {
 	Overhead texture_handle_info_lookup_overhead;
 	Overhead textureoverride_lookup_overhead;
 	Overhead resource_pool_lookup_overhead;
+    Overhead texture_override_fuzzy_match_overhead;
+    Overhead texture_override_candidates_lookup_overhead;
 	
 	unsigned resource_full_copies;
 	unsigned resource_reference_copies;
@@ -47,6 +51,61 @@ namespace Profiling {
 	unsigned skipped_draw_calls;
 	unsigned max_executions_per_frame_exceeded;
 	unsigned iniparams_updates;
+}
+
+namespace {
+std::mutex profiling_samples_mutex;
+Profiling::CollectionToken collection_token = std::make_shared<unsigned char>(0);
+}
+
+Profiling::CollectionToken Profiling::GetCollectionToken()
+{
+    std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+    return collection_token;
+}
+
+bool Profiling::IsCurrentCollection(const CollectionToken& token)
+{
+    std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+    return token == collection_token;
+}
+
+Profiling::Sample::Sample(Overhead& overhead, bool count) : overhead_(&overhead), count_(count)
+{
+    if (mode.load(std::memory_order_relaxed) == Mode::SUMMARY) {
+        token_ = GetCollectionToken();
+        active_ = true;
+        start(&state_);
+    }
+}
+
+Profiling::Sample::~Sample() noexcept { Finish(false); }
+
+void Profiling::Sample::Finish(bool hit) noexcept
+{
+    if (!active_) return;
+    active_ = false;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+    if (token_ != collection_token) return;
+    overhead_->cpu.QuadPart += now.QuadPart - state_.start_time.QuadPart;
+    if (count_) {
+        ++overhead_->count;
+        if (hit) ++overhead_->hits;
+    }
+}
+
+void clear_command_list_profiling()
+{
+    // An ownership identity has no finite generation counter to wrap into an
+    // old object's stamp. Weak stamps do not retain retired collections.
+    auto next = std::make_shared<unsigned char>(0);
+    CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    std::lock_guard<std::mutex> sample_lock(profiling_samples_mutex);
+    command_lists_profiling.clear();
+    command_lists_cmd_profiling.clear();
+    collection_token = std::move(next);
 }
 
 static LARGE_INTEGER profiling_start_time;
@@ -299,6 +358,20 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 
 	if (G->implicit_post_checktextureoverride_used && !Profiling::cto_warning.empty())
 		Profiling::text += L"\nImplicit post checktextureoverrides were not optimised out\n";
+    const auto append_lookup = [&](const wchar_t* label, const Profiling::Overhead& overhead) {
+        _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
+            L"%21ls: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n", label,
+            static_cast<double>(overhead.cpu.QuadPart) * 1000000.0 / freq.QuadPart / frames,
+            60.0 * overhead.cpu.QuadPart / freq.QuadPart * 1000000.0 / collection_duration.QuadPart,
+            overhead.hits / frames, overhead.count / frames);
+        Profiling::text += buf;
+    };
+    append_lookup(L"TO candidates rebuild", Profiling::texture_override_fuzzy_match_overhead);
+    append_lookup(L"TO candidates lookup", Profiling::texture_override_candidates_lookup_overhead);
+    _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"Texture update hits: %u/%u hits/frame\n",
+        Profiling::hash_tracking_overhead.hits / frames, Profiling::hash_tracking_overhead.count / frames);
+    Profiling::text += buf;
+
 }
 
 static void update_txt_command_lists(LARGE_INTEGER collection_duration, LARGE_INTEGER freq, unsigned frames)
@@ -392,6 +465,7 @@ static void update_txt_commands(LARGE_INTEGER collection_duration, LARGE_INTEGER
 
 void Profiling::update_txt()
 {
+    CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	static LARGE_INTEGER freq = {0};
 	LARGE_INTEGER end_time, collection_duration;
 	unsigned frames = G->frame_no - start_frame_no;
@@ -419,7 +493,9 @@ void Profiling::update_txt()
 
 		switch (Profiling::mode) {
 			case Profiling::Mode::SUMMARY:
+				{ std::lock_guard<std::mutex> sample_lock(profiling_samples_mutex);
 				update_txt_summary(collection_duration, freq, frames);
+                }
 				break;
 			case Profiling::Mode::TOP_COMMAND_LISTS:
 				update_txt_command_lists(collection_duration, freq, frames);
@@ -439,8 +515,9 @@ void Profiling::update_txt()
 
 void Profiling::clear()
 {
-	command_lists_profiling.clear();
-	command_lists_cmd_profiling.clear();
+    CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    clear_command_list_profiling();
+    std::lock_guard<std::mutex> sample_lock(profiling_samples_mutex);
 	present_overhead.clear();
 	overlay_overhead.clear();
 	draw_overhead.clear();
@@ -459,6 +536,8 @@ void Profiling::clear()
 	texture_handle_info_lookup_overhead.clear();
 	textureoverride_lookup_overhead.clear();
 	resource_pool_lookup_overhead.clear();
+    texture_override_fuzzy_match_overhead.clear();
+    texture_override_candidates_lookup_overhead.clear();
 
 	resource_full_copies = 0;
 	resource_reference_copies = 0;

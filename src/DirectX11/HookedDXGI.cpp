@@ -911,11 +911,11 @@ HRESULT(__stdcall *fnOrigCreateDXGIFactory)(
 
 HRESULT __stdcall Hooked_CreateDXGIFactory(REFIID riid, void **ppFactory)
 {
-	LogInfo("*** Hooked_CreateDXGIFactory called with riid: %s\n", NameFromIID(riid).c_str());
-
 	// If this happens to be first call from the game, let's make sure to load
 	// up our d3d11.dll and the .ini file.
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
+	LogInfo("*** Hooked_CreateDXGIFactory called with riid: %s\n", NameFromIID(riid).c_str());
+
 
 	if (!G->bIntendedTargetExe) {
 		LogInfo("   Not intended target exe, passing through to real DX\n");
@@ -981,11 +981,11 @@ HRESULT(__stdcall *fnOrigCreateDXGIFactory1)(
 
 HRESULT __stdcall Hooked_CreateDXGIFactory1(REFIID riid, void **ppFactory1)
 {
-	LogInfo("*** Hooked_CreateDXGIFactory1 called with riid: %s\n", NameFromIID(riid).c_str());
-
 	// If this happens to be first call from the game, let's make sure to load
 	// up our d3d11.dll and the .ini file.
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
+	LogInfo("*** Hooked_CreateDXGIFactory1 called with riid: %s\n", NameFromIID(riid).c_str());
+
 
 	if (!G->bIntendedTargetExe) {
 		LogInfo("   Not intended target exe, passing through to real DX\n");
@@ -1046,11 +1046,11 @@ HRESULT(__stdcall *fnOrigCreateDXGIFactory2)(
 
 HRESULT __stdcall Hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory2)
 {
-	LogInfo("*** Hooked_CreateDXGIFactory2 called with riid: %s\n", NameFromIID(riid).c_str());
-
 	// If this happens to be first call from the game, let's make sure to load
 	// up our d3d11.dll and the .ini file.
-	InitD311();
+	if (!InitD311()) return E_UNEXPECTED;
+	LogInfo("*** Hooked_CreateDXGIFactory2 called with riid: %s\n", NameFromIID(riid).c_str());
+
 
 	if (!G->bIntendedTargetExe) {
 		LogInfo("   Not intended target exe, passing through to real DX\n");

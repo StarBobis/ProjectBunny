@@ -59,6 +59,7 @@
 #include "lock.h"
 
 #include "HackerDXGI.h"
+#include "ExpressionFunctions.h"
 #include "HookedDevice.h"
 #include "HookedDXGI.h"
 
@@ -200,7 +201,8 @@ void HackerSwapChain::RunFrameActions()
 	// so that the most lost will be one frame worth.  Tradeoff of performance to accuracy
 	if (LogFile) fflush(LogFile);
 
-	G->gTime = (GetTickCount() - G->ticks_at_launch) / 1000.0f;
+	UpdateFrameTiming(GetSystemTicks());
+	SeedExpressionRandom(G->frame_no, static_cast<uint32_t>(G->gSystemTickCount));
 
 	// Run the command list here, before drawing the overlay so that a
 	// custom shader on the present call won't remove the overlay. Also,
@@ -276,6 +278,8 @@ void HackerSwapChain::RunFrameActions()
 	// moment, but let's do it last, because logically it makes sense to be
 	// incremented when we call the original present call:
 	G->frame_no++;
+	mHackerContext->ResetCallCounters();
+	SeedExpressionRandom(G->frame_no, static_cast<uint32_t>(G->gSystemTickCount));
 
 	// When not hunting most keybindings won't have been registered, but
 	// still skip the below logic that only applies while hunting.

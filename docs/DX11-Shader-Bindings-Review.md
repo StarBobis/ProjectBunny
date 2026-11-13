@@ -1,0 +1,29 @@
+# ShaderBindings 隔离实现独立复核
+
+范围为build/upstream/shader-binding-port/ShaderBindings.cpp/h，以及上游80481d19、fdc2539c、c530d130的完整生产diff；还核对token格式头的Resource/CB声明布局与本地Assembler编码顺序。没有修改被审查实现或全仓库构建。独立运行现有shader_binding_test.exe，exit0；所见exe修改时间晚于当前两个源文件。这个执行证据只支持现有standalone断言，不等于重新编译或生产接线/缓存/游戏验证。
+
+## 结论和支持范围
+
+未找到该隔离实现中确定的越界读取或不对齐uint32读取回退。read_u32使用memcpy；DxbcWords在index<count后才算指针；instruction length受remaining约束；extension循环也通过instruction边界读取；container/chunk/table的减法检查避免加法回绕。全部chunk区间在解析前检查并排除overlap，局部ShaderBindings parsed只在全流程成功时发布，失败先清out，优于上游部分写入out。
+
+当前明确支持SM4.0、4.1、5.0，SHDR/SHEX，CB immediate32的slot/size双索引，typed/raw/structured SRV immediate32 slot；拒绝SM5.1/其它版本、relative/ranged声明、API数组范围外slot。CB size单位是16-byte常量数；raw维度BUFFEREX是上游API约定，不直接照抄D3DReflect报告的BUFFER；structured维度BUFFER、stride是字节。typed顺序确为opcode→resource operand→slot→returntype，已与格式头和Assembler.cpp对照，没有误把returntype放在operand前。
+
+现有真实编译VS测试覆盖vs_5_0的Texture2D/raw/StructuredBuffer<float3>、CB静态和动态索引，D3DReflect对照CB allocation尺寸和资源类别/维度，直接检查stride12；vs_4_0/4_1是typed资源与CB。所有前缀truncation、unaligned输入、坏chunk offset、末尾零长instruction、复用out清空均有断言并在此次现有exe执行中通过。不能由此扩大为所有shader stage、所有SRV dimension、extension链或GS stream-output集成都已验证。
+
+## 明确需要收窄的说明
+
+COMPATIBILITY.txt称“full container/program consumed”过强：parse_program只要求word_count <= payload_size/4，不要求相等，允许program chunk尾部多出的word不消费；container_size也允许小于调用传入size，因此输入尾部可以被忽略。这与上游宽松读取并不冲突，但不能声称输入全部消费或完整DXBC有效性验证。建议说明为“所有chunk边界预检、声明的program token范围完整遍历后发布”。若决定严格要求相等，则需先核对合法DXBC padding，而非仅为加强文案修改兼容行为。
+
+这是声明提取器，不检查DXBC checksum，不全面验证opcode合法性/控制流、shader类型组合、typed return-type内容、结构stride或CB size的全部运行时合法约束。未知非声明opcode只按有界length跳过；重复同slot声明目前后者覆盖前者；structured stride0也可被提取。上述情形不能报告成“坏码全部拒绝”，也不必把整个D3D验证器纳入本次移植。无真实compiler fixture的extension traversal是已实现未实测路径，需保持该标签。
+
+## Cache 接线建议
+
+上游3b53481c修的是unordered_map并发rehash：锁内先查、锁外纯CPU解析、锁内emplace择一。所有getter也必须走同一同步方案，不能只锁CreateShader；iterator/引用不要穿出锁边界继续使用。取所需scalar或拷贝固定ShaderBindings snapshot后释放锁。root计划使用独立自动std::mutex/lock_guard可避免全局CRITICAL_SECTION遗漏初始化，这与另行移植067 utility不是同一依赖。
+
+缓存元数据不持COM shader/device/context引用，避免为全局cache引入对象生命周期环；hash相同条目可跨device复用。解析和发布不需要在持缓存锁时调用原生CreateShader、日志回调或shader替换，避免锁顺序扩大。可保留hash命中时不重复解析；多线程同时miss允许重复纯解析后择一发布，不需要复杂in-flight状态。可选元数据的bad_alloc（包括unordered_map emplace，解析器自己的catch不能覆盖它）不能无意异常穿过COM入口并破坏原生CreateShader调用；失败策略应明确并测试。
+
+缓存key是原始shader hash，CreateShader在replacement之前解析。查询反映原始程序声明，不自动代表替换后程序绑定需求。CreateGeometryShaderWithStreamOutput不走通用CreateShader，因此getter必须安全处理缺cache，不能assert“bound shader一定有cache”；能否补该入口另按授权范围决定。
+
+代码声明本身按bytecode/hash不可变，配置reload不天然要求清cache。若选择清理/限容，必须与所有reader和creator同锁，不留悬挂引用；游戏退出/模块卸载也需保证工作线程不再进入cache。当前审查没有生产缓存代码，以上是明确接线要求，不是假称已发现最终实现缺陷。
+
+后续验证应包括：生产HackerDevice各shader创建与getter，正/负cache、GS无cache、同hash及多hash多线程创建并发读，所有getterslot边界，原始/替换声明差异，reload/clear生命周期。纯CPU解析器还可增加实际PS/CS和texture array/MSAA/cube维度对照reflection；不要用mock parser替代生产或把未验证extension算通过。
