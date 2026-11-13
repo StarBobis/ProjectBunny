@@ -466,6 +466,10 @@ PS dump 使用 original shader hash 的声明快照；缓存命中但无声明�
 
 累计258项 implemented-awaiting-validation、78项 skipped、0项 pending，336项均已审查处置。实现同步至所观察tip不等于目标游戏已验证；目标环境及上述驱动差异仍保待验证，goal保持active。未部署或启动游戏。
 
+## 实现同步收尾
+
+用户于2026-11-13明确表示“暂时不测试”，目标游戏/设备验证按该决定暂缓，不部署DLL或启动游戏。基线至观察tip的336项已全部审查处置，258项已实现、78项有依据跳过；适用构建、完整生产回归、隔离回归、DX12兼容与文档检查均通过。代码同步和AGENTS持续检查流程完成。账本保留 implemented-awaiting-validation，表示目标环境尚未实测，不将用户暂缓测试改写为已验证；WARP非零数组起始层的原生mip行为差异同样保留后续验证记录。
+
 ## 当前复现命令
 
 1. `python scripts/check-dx11-upstream.py`：拉取远端，报告新提交，不改生产代码或同步状态。
