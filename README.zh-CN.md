@@ -15,7 +15,9 @@ Project Bunny 基于 3Dmigoto 进行重构与扩展，支持 DirectX 11 和 Dire
 
 ## 下载与文档
 
-从 [GitHub Releases](https://github.com/StarBobis/ProjectBunny/releases/latest) 下载最新版本。`ProjectBunny-PACKAGE-vX.Y.Z.zip` 包含 `d3d11.dll`、`d3d12.dll`、`d3dcompiler_47.dll`、`Run.exe`、DXC 运行库、示例 `d3dx.ini` 和许可证。`Manifest.json` 提供版本、源提交及 SHA256 校验和。
+从 [GitHub Releases](https://github.com/StarBobis/ProjectBunny/releases/latest) 下载最新版本。`ProjectBunny-PACKAGE-vX.Y.Z.zip` 包含 `d3d11.dll`、`d3d12.dll`、`d3dcompiler_47.dll`、DXC 运行库、示例 `d3dx.ini` 和许可证。`Manifest.json` 提供版本、源提交及 SHA256 校验和。
+
+加载器（`Run.exe`）由 [SSMT5](https://github.com/StarBobis/SSMT5) 维护和提供，本仓库不再构建或分发。
 
 详细说明见[用户手册源码](usage/)与[发布流程](docs/Release-Package.md)。
 

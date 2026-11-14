@@ -15,7 +15,9 @@ Project Bunny refactors and extends 3Dmigoto for DirectX 11 and DirectX 12, with
 
 ## Downloads and documentation
 
-Download the latest package from [GitHub Releases](https://github.com/StarBobis/ProjectBunny/releases/latest). `ProjectBunny-PACKAGE-vX.Y.Z.zip` contains `d3d11.dll`, `d3d12.dll`, `d3dcompiler_47.dll`, `Run.exe`, the DXC runtime, a sample `d3dx.ini`, and license notices. `Manifest.json` lists the version, source commit, and SHA256 checksums.
+Download the latest package from [GitHub Releases](https://github.com/StarBobis/ProjectBunny/releases/latest). `ProjectBunny-PACKAGE-vX.Y.Z.zip` contains `d3d11.dll`, `d3d12.dll`, `d3dcompiler_47.dll`, the DXC runtime, a sample `d3dx.ini`, and license notices. `Manifest.json` lists the version, source commit, and SHA256 checksums.
+
+The loader (`Run.exe`) is maintained and supplied by [SSMT5](https://github.com/StarBobis/SSMT5). This repository does not build or distribute it.
 
 See the [user manual source](usage/) and [release workflow](docs/Release-Package.md) for details.
 

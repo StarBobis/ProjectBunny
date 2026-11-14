@@ -206,7 +206,6 @@ $shipFiles = @(
     @{ Src = "$outDir\d3d11.dll"; Dst = 'd3d11.dll' },
     @{ Src = "$outDir\d3dcompiler_47.dll"; Dst = 'd3dcompiler_47.dll' },
     @{ Src = "$outDir\d3d12.dll"; Dst = 'd3d12.dll' },
-    @{ Src = "$outDir\Run.exe"; Dst = 'Run.exe' },
     @{ Src = "$dxcDir\dxcompiler.dll"; Dst = 'dxcompiler.dll';
        Hint = "Runtime HLSL compiler for [CustomShaderX] elements. Restore the official drop: third_party\dxc\dxcompiler.dll + dxil.dll." },
     @{ Src = "$dxcDir\dxil.dll"; Dst = 'dxil.dll';
@@ -306,5 +305,5 @@ foreach ($assetPath in @($zipPath, $manifestPath)) {
     Invoke-GitHubApi -Method Post -Uri $uploadUri -Body ([IO.File]::ReadAllBytes($assetPath)) -ContentType 'application/octet-stream' | Out-Null
 }
 
-Invoke-GitHubApi -Method Patch -Uri "https://api.github.com/repos/$releaseRepo/releases/$($release.id)" -Body @{ draft = $false; make_latest = 'true' } | Out-Null
-Write-Host "Release published: $($release.html_url)" -ForegroundColor Green
+$published = Invoke-GitHubApi -Method Patch -Uri "https://api.github.com/repos/$releaseRepo/releases/$($release.id)" -Body @{ draft = $false; make_latest = 'true' }
+Write-Host "Release published: $($published.html_url)" -ForegroundColor Green
