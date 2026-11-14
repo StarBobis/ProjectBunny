@@ -88,7 +88,7 @@ IA negative cache：62816 hits、907 verdict runs，即约98.6%命中。旧的�
 
 ## 最终构建、专项验证与实机边界
 
-`build_release_timing_x64.ps1` 完整构建 **38/38，退出码0**，已部署至游戏测试目录。脚本配置中的另一个目标 `D:\Dev\ssmt4\src-tauri\resources\DX12\` 不存在，脚本按设计跳过；不影响 ZZMIDX12 部署。
+`scripts/build_release_timing_x64.ps1` 完整构建 **38/38，退出码0**，已部署至游戏测试目录。脚本配置中的另一个目标 `D:\Dev\ssmt4\src-tauri\resources\DX12\` 不存在，脚本按设计跳过；不影响 ZZMIDX12 部署。
 
 ```text
 输出：D:\Dev\ProjectBunny\x64\Release\d3d12.dll

@@ -53,7 +53,7 @@ Crash!!!
 ### TIMING 构建与部署
 
 ```powershell
-.\build_release_timing_x64.ps1
+.\scripts\build_release_timing_x64.ps1
 ```
 
 成功完成，退出码 0。构建脚本已部署到：

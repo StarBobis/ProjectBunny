@@ -114,10 +114,13 @@
 - 优秀的程序员不写屎山
 - 禁止在函数内写struct或class，要保证写出来的代码人类可以轻易阅读并且优雅
 
+# 文档维护部分
+
+- usage下面是一个VitePress2的文档，面向dll使用者，需要频繁维护。
 
 # 构建验证TIMING版
 
-- 正常情况下使用build_release_timing_x64.ps1构建即可
+- 正常情况下使用scripts/build_release_timing_x64.ps1构建即可
 - 不要把临时的构建结果输出直接放在根目录，应该放在build目录下边
 - 等待构建的时间不要超过60秒，一轮不行就多等几轮，因为构建是很快的
 

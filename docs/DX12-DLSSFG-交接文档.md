@@ -30,7 +30,7 @@
 
 ```powershell
 cd D:\Dev\ProjectBunny
-.\build_release_timing_x64.ps1
+.\scripts\build_release_timing_x64.ps1
 ```
 
 构建脚本会：
@@ -326,7 +326,7 @@ cd D:\Dev\ProjectBunny\dev_tests
 用 **RELEASE 版**（非 TIMING）构建再试一次开帧生成：
 
 ```powershell
-.\build_release_x64.ps1
+.\scripts\build_release_x64.ps1
 ```
 
 TIMING 版在热路径上有大量插入（QPC、每帧计数、看门狗、`DX12MarkStage`、**wait 钩子**）。
@@ -401,7 +401,7 @@ TIMING 版在热路径上有大量插入（QPC、每帧计数、看门狗、`DX1
 ## 5. 项目约定（务必遵守）
 
 - C++20；代码要优雅且高性能；**禁止在函数内写 struct/class**
-- 构建验证用 `build_release_timing_x64.ps1`；构建很快，等构建不要超过 60 秒，多轮等
+- 构建验证用 `scripts/build_release_timing_x64.ps1`；构建很快，等构建不要超过 60 秒，多轮等
 - 不要把临时构建产物放在仓库根目录，放 `build/` 下
 - 日志排查：**不要整文件读**，用采样或只读尾部
 - 内核钩子相关：`DX12HookRegistry::HookFunction` 会挂起所有线程再打补丁，**不要在持有

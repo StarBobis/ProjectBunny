@@ -77,7 +77,7 @@ HUD新测试直接包含生产格式化头，检查新counter接线、dictionary
 
 ## 构建、部署与最终验证
 
-- `build_release_timing_x64.ps1` 全量38/38构建成功，exit 0；已部署至既有ZZMIDX12目录，没有启动游戏（LaunchGame=false）。备用ssmt4目录不存在，脚本按既有规则跳过。
+- `scripts/build_release_timing_x64.ps1` 全量38/38构建成功，exit 0；已部署至既有ZZMIDX12目录，没有启动游戏（LaunchGame=false）。备用ssmt4目录不存在，脚本按既有规则跳过。
 - 最终串行回归全部exit 0：`ia_match_perf_test.ps1`、`ia_dictionary_hud_test.ps1`、`executor_prepare_test.ps1`、`descriptor_copy_perf_test.ps1`、`noncopy_hotpath_test.ps1`、`preskin_dispatch_test.ps1`、`wrapper_hotpath_test.ps1 -AddressSanitizer`，以及 `git diff --check`。
 - 汇总原始输出：`build/remaining_validation.txt`。末次IA完整轮转路径244.8→166.7ns，再次确认方向；相同snapshot 41.6→9.8ns，有hash候选时新增fallback检查约4.8ns。报告上文保留此前完整三轮结果，不只挑最快一轮。
 - 本地产物 `x64/Release/d3d12.dll` 与部署 `D:\MMTCacheFolder\3Dmigoto\ZZMIDX12\d3d12.dll` 均4657152 bytes，时间2026-09-18 10:16:10，SHA256一致：`116E7A6C8C20A20A18C06DA87872B821ADFE14713766F33BAFF1C1B2620D02BF`。

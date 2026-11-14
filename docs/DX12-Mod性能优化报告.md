@@ -121,7 +121,7 @@
 
 ### 构建与部署
 
-`build_release_timing_x64.ps1` 在补齐发布链后完整 clean build 成功（38/38，退出码 0）。已部署：
+`scripts/build_release_timing_x64.ps1` 在补齐发布链后完整 clean build 成功（38/38，退出码 0）。已部署：
 
 ```text
 D:\MMTCacheFolder\3Dmigoto\ZZMIDX12\d3d12.dll

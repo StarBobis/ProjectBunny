@@ -480,7 +480,7 @@ PS dump 使用 original shader hash 的声明快照；缓存命中但无声明�
 4. 同一环境：`python scripts/test-dx11-resource-properties.py`。
 5. `ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30`。构建失败时不得继续运行旧测试可执行文件。
 
-现有 build_release_timing_x64.ps1 调用的脚本只构建 DirectX12 与注入器，不能替代 DX11 构建验证。此次隔离构建未执行部署或启动游戏。
+现有 scripts/build_release_timing_x64.ps1 调用的脚本只构建 DirectX12 与注入器，不能替代 DX11 构建验证。此次隔离构建未执行部署或启动游戏。
 
 AGENTS.md 已要求代理在 DX11 工作开始时检查更新并按账本继续；它不提供无人运行时的后台调度器。
 
