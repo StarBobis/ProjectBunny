@@ -3,7 +3,7 @@
   "branch": "master",
   "baseline": "44378b1b3694bc28c0488f78f2d346f38a4f50d0",
   "baselineEvidence": "43/45 DX11 C/C++ files byte-identical at 7ee05173 and 44378b1b; ResourceHash.h adds const find_ptr; ResourceHash.cpp fixes two log formats. 44378b1b only changes upstream release workflow.",
-  "observedTip": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
+  "observedTip": "946f047def4e915b3790b9b3bc1686a64cf1e8bb",
   "commits": [
     {
       "sha": "4269c75ba3ac9d5775771a190121daa5a292d664",
@@ -5238,6 +5238,28 @@
         "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
         "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
       }
+    },
+    {
+      "sha": "946f047def4e915b3790b9b3bc1686a64cf1e8bb",
+      "subject": "Fixed dds textures mips not being dumped",
+      "status": "implemented-awaiting-validation",
+      "adaptation": "Ported exact upstream DDS mip-writing feature into existing CMake/C++17 targets. Preserved local WIC ComPtr interface and shared default argument false; only DX11 frame analysis explicitly passes Hunting dump_mips (default true). Retained upstream first-array-image and hunting=0 early-return behavior.",
+      "validation": {
+        "releaseBuild": "PASS: cmd /c build\\upstream\\build-dx11.cmd; build/upstream/dds-mips-sync/build.log and build-retry.log",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30, 4/4 (18.56s), ctest-final.log. Real WARP default/staging DDS legacy/DX10/BC1, single/multiple mips, default/false/true, exact header/size/bytes, first-array-image and invalid inputs; real LoadConfig defaults/disable/reload. Initial config fixture hunting=0 skipped parsing as upstream does; corrected fixture to soft-disabled hunting=2, retaining assertions.",
+        "compatibility": "PASS: isolated pool/property regressions; DirectX12 compatibility build; documentation links/anchors/fences. Logs build/upstream/dds-mips-sync/.",
+        "runtime": "Target game and upstream binary differential testing deferred; no deployment or game launch."
+      },
+      "files": [
+        "src/DirectX11/FrameAnalysis.cpp",
+        "src/DirectX11/Hunting.cpp",
+        "src/DirectX11/globals.h",
+        "3rdparty/DirectXTK/Inc/ScreenGrab.h",
+        "3rdparty/DirectXTK/Src/ScreenGrab.cpp",
+        "src/DirectX11/tests/dds_mips_regression.cpp",
+        "src/DirectX11/tests/round5_config_regression.cpp",
+        "src/DirectX11/CMakeLists.txt"
+      ]
     }
   ],
   "round2AdversarialReview": {

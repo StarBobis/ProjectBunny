@@ -2078,6 +2078,7 @@ void ParseHuntingSection()
 	}
 
 	G->verbose_overlay = GetIniBool(L"Hunting", L"verbose_overlay", false, NULL);
+	G->dump_mips = GetIniBool(L"Hunting", L"dump_mips", true, NULL);
 }
 
 void RegisterVisitedIndexBufferNoLock(uint32_t hash)

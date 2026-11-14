@@ -237,6 +237,7 @@ if(BUILD_TESTING)
         tests/round5_config_regression.cpp
         tests/round7_descriptor_regression.cpp
         tests/round8_pool_regression.cpp
+        tests/dds_mips_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
