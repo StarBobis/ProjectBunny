@@ -1,0 +1,51 @@
+name: Publish documentation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: usage/package.json
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Build documentation
+        shell: pwsh
+        run: ./scripts/build-docs.ps1 -BasePath '${{ steps.pages.outputs.base_path }}/'
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: usage/.vitepress/dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

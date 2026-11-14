@@ -1,0 +1,14 @@
+{
+  "name": "project-bunny-usage",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.3",
+  "scripts": {
+    "docs:dev": "vitepress dev .",
+    "docs:build": "vitepress build .",
+    "docs:preview": "vitepress preview ."
+  },
+  "devDependencies": {
+    "vitepress": "2.0.0-alpha.21"
+  }
+}
