@@ -3,6 +3,6 @@ param(
     [string]$GameId = ""
 )
 
-$root = Split-Path -Parent $PSCommandPath
-& "$root\build_release_x64.ps1" -GameId $GameId
+$root = Split-Path -Parent $PSScriptRoot
+& "$root\scripts\build_release_x64.ps1" -GameId $GameId
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

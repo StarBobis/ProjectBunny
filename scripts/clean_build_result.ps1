@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $PSScriptRoot
 $projectRootFull = [System.IO.Path]::GetFullPath($projectRoot)
 
 function Test-PathInsideProject {

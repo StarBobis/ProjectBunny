@@ -1,68 +1,41 @@
-# publish_release.ps1 - one-click closed-source release to GitHub.
-#
-# Builds the clean Release x64 d3d12.dll + Run.exe locally, packages the
-# shippable files into a zip, and publishes a GitHub Release tagged
-# v<version> on the dedicated public release repository:
-#
-#     https://github.com/StarBobis/PBRelease
-#
-# The zip ships d3d12.dll, Run.exe, d3dx.ini, LICENSE.txt and the runtime
-# HLSL compiler pair (dxcompiler.dll + dxil.dll from third_party\dxc). The
-# compiler pair is a runtime requirement, not a build-time extra:
-# [CustomShaderX] elements (the SSMT UI panel among them) are compiled to SM6
-# at load time by d3d12.dll, which probes its OWN directory for
-# dxcompiler.dll and needs the matching dxil.dll beside it. A release without
-# the pair silently skips every custom element (logged as
-# "pipeline_unavailable") instead of drawing it.
-#
-# Only the packaged zip ever leaves this machine - the source code stays
-# private. The old "push a tag and let GitHub Actions build from source"
-# flow is gone, because that required the source repo to be reachable by
-# the release audience.
-#
-# Version rule: when -Version is not given, only the last (patch) number is
-# bumped, e.g. 0.1.2 -> 0.1.3, based on the newest vX.Y.Z release tag on
-# the StarBobis/PBRelease repository.
-#
-# Authentication: a GitHub personal access token with the "repo" scope is
-# required. Provide it via -Token or the GITHUB_TOKEN / GH_TOKEN
-# environment variables. Create one at https://github.com/settings/tokens
-#
-# Usage:
-#   .\publish_release.ps1                    # build + auto-bump the patch version
-#   .\publish_release.ps1 -Version 0.2.0     # publish an explicit version
-#   .\publish_release.ps1 -SkipBuild         # reuse the existing x64\Release artifacts
-#   .\publish_release.ps1 -Token <pat>       # pass the token explicitly
+﻿# Build and publish DirectX 11 + DirectX 12 Release x64 to StarBobis/ProjectBunny.
+# Usage: ./scripts/publish_release.ps1 [-Version X.Y.Z] [-PackageOnly]
+# Without Version, increment the latest release patch. PackageOnly needs Version.
+# Auth: -Token, GITHUB_TOKEN, GH_TOKEN, then Windows Git Credential Manager.
+# Package layout: flat runtime files in ProjectBunny-PACKAGE-vX.Y.Z.zip,
+# plus Manifest.json containing version, source commit and SHA256 checksums.
+# Source remains in this repository; releases never change repository visibility.
 
 param(
     [string]$Version = "",
     [string]$Token = "",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$PackageOnly
 )
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$root = Split-Path -Parent $PSCommandPath
+$root = Split-Path -Parent $PSScriptRoot
 
 # The public repository that hosts the binary releases. Keep this in sync
 # with the URL at the top of this file.
-$releaseRepo = 'StarBobis/PBRelease'
+$releaseRepo = 'StarBobis/ProjectBunny'
 $releaseRepoUrl = "https://github.com/$releaseRepo"
-
-# Built-in fallback token so publishing works without any shell setup.
-# Priority: -Token parameter > GITHUB_TOKEN / GH_TOKEN env vars > this value.
-# NOTE: this file is tracked by git. The source repo is private; if it ever
-# goes public or gets shared, rotate this token first.
-$builtinToken = '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'
 
 # ----------------------------------------------------------------------------
 # Auth
 # ----------------------------------------------------------------------------
 if (-not $Token) { $Token = $env:GITHUB_TOKEN }
 if (-not $Token) { $Token = $env:GH_TOKEN }
-if (-not $Token) { $Token = $builtinToken }
-if (-not $Token) {
+if (-not $Token -and -not $PackageOnly) {
+    $credential = "protocol=https`nhost=github.com`n`n" | git credential fill
+    if ($LASTEXITCODE -eq 0) {
+        $password = $credential | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
+        if ($password) { $Token = $password.Substring(9) }
+    }
+}
+if (-not $Token -and -not $PackageOnly) {
     Write-Host "ERROR: no GitHub token found." -ForegroundColor Red
     Write-Host "       Create a PAT with the 'repo' scope at https://github.com/settings/tokens" -ForegroundColor Yellow
     Write-Host "       and set it via `$env:GITHUB_TOKEN (or pass -Token)." -ForegroundColor Yellow
@@ -151,6 +124,7 @@ function Get-LatestReleaseVersion {
     return ($versions | Sort-Object | Select-Object -Last 1)
 }
 
+if ($PackageOnly -and -not $Version) { throw "PackageOnly requires -Version." }
 if ($Version) {
     $newVersion = $Version.Trim().TrimStart('v')
 } else {
@@ -171,8 +145,10 @@ $tag = "v$newVersion"
 # Refuse to overwrite an existing tag on the release repo.
 $existingRef = $null
 try {
+    if (-not $PackageOnly) {
     $existingRef = Invoke-RestMethod -Method Get -Headers $apiHeaders `
         -Uri "https://api.github.com/repos/$releaseRepo/git/ref/tags/$tag"
+    }
 } catch {
     if ($_.Exception.Response.StatusCode.value__ -ne 404) {
         Write-Host "ERROR: could not check existing tags on $releaseRepo." -ForegroundColor Red
@@ -203,7 +179,7 @@ if ($cmakeLine) {
 # ----------------------------------------------------------------------------
 if (-not $SkipBuild) {
     Write-Host "===== Local Release x64 build =====" -ForegroundColor Cyan
-    & "$root\build_release_x64.ps1"
+    & "$root\scripts\build-cmake.ps1" -Configuration Release -Platform x64 -ReleasePackage
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAILED: local Release build, aborting release." -ForegroundColor Red
         exit $LASTEXITCODE
@@ -214,18 +190,21 @@ if (-not $SkipBuild) {
 
 $outDir = "$root\x64\Release"
 $stage = "$root\build\release-stage"
-$zipName = "ProjectBunny-$tag-d3d12-x64.zip"
+$zipName = "ProjectBunny-PACKAGE-$tag.zip"
 $zipPath = "$root\build\$zipName"
 $dxcDir = "$root\third_party\dxc"
 
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-Get-ChildItem $stage -File -ErrorAction SilentlyContinue | Remove-Item -Force
+$stage = Join-Path $root ("build/release-stage-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stage | Out-Null
 
 # dxcompiler.dll + dxil.dll are listed as shipped files on purpose: the
 # loader in DX12CustomShaderCompile.h probes the d3d12.dll directory first,
 # so the pair must sit beside it in the unpacked release exactly as the dev
 # build deploys it. Missing them is a hard error, not a degraded release.
 $shipFiles = @(
+    @{ Src = "$outDir\d3d11.dll"; Dst = 'd3d11.dll' },
+    @{ Src = "$outDir\d3dcompiler_47.dll"; Dst = 'd3dcompiler_47.dll' },
     @{ Src = "$outDir\d3d12.dll"; Dst = 'd3d12.dll' },
     @{ Src = "$outDir\Run.exe"; Dst = 'Run.exe' },
     @{ Src = "$dxcDir\dxcompiler.dll"; Dst = 'dxcompiler.dll';
@@ -260,6 +239,18 @@ if (Test-Path $dxcLicense) {
     Write-Host "         (NCSA/LLVM) license notice. Copy LICENSE.TXT from the official DXC release into that folder." -ForegroundColor Yellow
 }
 
+$hashes = [ordered]@{}
+foreach ($file in Get-ChildItem $stage -File | Sort-Object Name) {
+    if ($file.Extension -in '.dll', '.exe') {
+        $bytes = [IO.File]::ReadAllBytes($file.FullName)
+        if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5a4d) { throw "Invalid PE: $($file.Name)" }
+        $pe = [BitConverter]::ToInt32($bytes, 60)
+        if ($pe -lt 0 -or $pe + 6 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw "Not AMD64 PE: $($file.Name)" }
+    }
+    $hashes[$file.Name] = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+$manifestPath = Join-Path $root 'build/Manifest.json'
+@{ version = $newVersion; configuration = 'Release'; architecture = 'x64'; sha256 = $hashes; source_commit = (git -C $root rev-parse HEAD).Trim() } | ConvertTo-Json -Depth 5 | Set-Content $manifestPath -Encoding UTF8
 Compress-Archive -Path "$stage\*" -DestinationPath $zipPath -CompressionLevel Optimal -Force
 Write-Host "Packaged: $zipPath" -ForegroundColor Green
 
@@ -271,7 +262,7 @@ Write-Host "===== Publishing $tag to $releaseRepoUrl =====" -ForegroundColor Cya
 # Release notes for the versions whose user-visible content needs spelling
 # out. Tags not listed here fall back to the generic one-liner, so bumping
 # the version never requires touching this switch.
-$releaseBody = "ProjectBunny $tag - d3d12 x64 binary release."
+$releaseBody = "ProjectBunny $tag - DirectX 11 + DirectX 12, Release x64."
 switch ($tag) {
     'v0.1.13' {
         $releaseBody = @'
@@ -296,18 +287,24 @@ switch ($tag) {
     }
 }
 
+if ($PackageOnly) { return }
+
 $release = Invoke-GitHubApi -Method Post `
     -Uri "https://api.github.com/repos/$releaseRepo/releases" `
     -Body @{
+        target_commitish = (git -C $root rev-parse HEAD).Trim()
         tag_name   = $tag
         name       = "ProjectBunny $tag"
         body       = $releaseBody
-        draft      = $false
+        draft      = $true
         prerelease = $false
     }
 
-$uploadUri = ($release.upload_url -replace '\{\?name,label\}$', '') + "?name=$zipName"
-$zipBytes = [System.IO.File]::ReadAllBytes($zipPath)
-Invoke-GitHubApi -Method Post -Uri $uploadUri -Body $zipBytes -ContentType 'application/zip' | Out-Null
+foreach ($assetPath in @($zipPath, $manifestPath)) {
+    $assetName = Split-Path -Leaf $assetPath
+    $uploadUri = ($release.upload_url -replace '\{\?name,label\}$', '') + "?name=$assetName"
+    Invoke-GitHubApi -Method Post -Uri $uploadUri -Body ([IO.File]::ReadAllBytes($assetPath)) -ContentType 'application/octet-stream' | Out-Null
+}
 
+Invoke-GitHubApi -Method Patch -Uri "https://api.github.com/repos/$releaseRepo/releases/$($release.id)" -Body @{ draft = $false; make_latest = 'true' } | Out-Null
 Write-Host "Release published: $($release.html_url)" -ForegroundColor Green

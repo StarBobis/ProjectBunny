@@ -12,6 +12,6 @@ param(
 # build, and the timing instrumentation itself costs some performance -
 # do not benchmark fps with this build, only read the stage breakdown logs.
 
-$root = Split-Path -Parent $PSCommandPath
+$root = Split-Path -Parent $PSScriptRoot
 & "$root\scripts\build-cmake.ps1" -Configuration Release -Platform x64 -GameId $GameId -ReleaseTiming
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

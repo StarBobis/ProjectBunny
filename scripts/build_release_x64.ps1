@@ -3,7 +3,7 @@ param(
     [string]$GameId = ""
 )
 
-$root = Split-Path -Parent $PSCommandPath
+$root = Split-Path -Parent $PSScriptRoot
 # Keep the wrapper thin and let build-cmake resolve the selected post-build
 # target from build_config.json when -GameId is not supplied explicitly.
 & "$root\scripts\build-cmake.ps1" -Configuration Release -Platform x64 -GameId $GameId

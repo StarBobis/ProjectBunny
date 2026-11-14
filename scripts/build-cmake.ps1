@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet('Debug','Release')]
     [string]$Configuration = 'Debug',
 
@@ -6,6 +6,8 @@ param(
     [string]$Platform = 'x64',
 
     [string]$GameId = '',
+    # Build both APIs and skip all game deployment/launch actions.
+    [switch]$ReleasePackage,
 
     # Build the DX12 DLL with detailed hot-path timing instrumentation
     # compiled in (adds -DDX12_RELEASE_TIMING=ON and uses a separate
@@ -15,17 +17,20 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 
-$cleanScript = Join-Path $root "clean_build_result.ps1"
+$cleanScript = Join-Path $PSScriptRoot "clean_build_result.ps1"
 if (-not (Test-Path $cleanScript)) {
     Write-Host "ERROR: Clean script not found: $cleanScript" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "===== Cleaning previous build results =====" -ForegroundColor Cyan
+if (-not $ReleasePackage) {
+    Write-Host "===== Cleaning previous build results =====" -ForegroundColor Cyan
 & $cleanScript
 if (-not $?) {
     Write-Host "FAILED: clean_build_result.ps1" -ForegroundColor Red
     exit 1
+}
+
 }
 
 $localCmake = Join-Path $root ".tools\cmake\bin\cmake.exe"
@@ -164,7 +169,7 @@ $buildContent = @"
 @echo off
 call "$vcvars" > nul
 if errorlevel 1 exit /b 1
-"$cmake" --build "$buildDir" --target DirectX12 3Dmigoto-Injector-V2
+"$cmake" --build "$buildDir" --target $(if ($ReleasePackage) { "DirectX11 DirectX12 D3DCompiler_46 3Dmigoto-Injector-V2" } else { "DirectX12 3Dmigoto-Injector-V2" })
 if errorlevel 1 exit /b 1
 "@
 
@@ -217,6 +222,8 @@ foreach ($f in $files) {
         Write-Host "  Copied: $dst" -ForegroundColor Gray
     }
 }
+
+if ($ReleasePackage) { return }
 
 if ($Platform -eq 'x64') {
     $buildConfigPath = Join-Path $root "build_config.json"
