@@ -219,6 +219,167 @@ void require_dump(DumpFixture& fixture, const std::filesystem::path& folder, wch
     require_batch(found == (present ? 1u : 0u), "PS dump: actual DDS presence matches declared-stage/filter policy");
 }
 
+std::string read_dump_text(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    require_batch(file.good(), "dump text: actual output exists");
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+void exercise_dump_text(DumpFixture& fixture)
+{
+    auto& device = fixture.device;
+    const auto folder = fixture.output.select(L"\u4e2d\u6587_dump_text");
+    // Both entry points must encode Unicode independently of the ambient locale.
+    // Include a surrogate pair and a wide argument in the narrow printf format.
+    for (const char* locale : {"C", ".UTF8"}) {
+        require_batch(std::setlocale(LC_CTYPE, locale) != nullptr, "dump text: set test locale");
+        const std::string before = std::setlocale(LC_CTYPE, nullptr);
+        fixture.analysis->FrameAnalysisLog("narrow %S %s\n", L"\u4e2d\u6587\U0001f430", "ASCII");
+        fixture.analysis->FrameAnalysisLogW(L"wide %ls %hs\n", L"\u4e2d\u6587\U0001f430", "ASCII");
+        require_batch(before == std::setlocale(LC_CTYPE, nullptr), "dump text: writer preserves caller locale");
+    }
+    auto code = compile_dump("[numthreads(2,1,1)]void main(){}", "cs_5_0");
+    fixture.compute(code.Get());
+    auto source = buffer(device, 64, D3D11_BIND_SHADER_RESOURCE);
+    float values[16]; std::fill(std::begin(values), std::end(values), 1.0f);
+    device.context->UpdateSubresource(source.Get(), 0, nullptr, values, 0, 0);
+    D3D11_SHADER_RESOURCE_VIEW_DESC desc = {};
+    desc.Format = DXGI_FORMAT_R32_FLOAT; desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; desc.Buffer.NumElements = 16;
+    ComPtr<ID3D11ShaderResourceView> view;
+    require_batch(SUCCEEDED(device.native->CreateShaderResourceView(source.Get(), &desc, &view)), "dump text: real buffer SRV");
+    set_slot(device, L'c', 0, view.Get()); set_slot(device, L'c', 127, view.Get());
+    auto cb = buffer(device, 64, D3D11_BIND_CONSTANT_BUFFER);
+    device.context->UpdateSubresource(cb.Get(), 0, nullptr, values, 0, 0);
+    ID3D11Buffer* constant = cb.Get(); device.wrapper->CSSetConstantBuffers(0, 1, &constant);
+    for (unsigned repeat = 0; repeat < 2; ++repeat) {
+        fixture.analysis->FrameAnalysisTrigger(static_cast<FrameAnalysisOptions>(
+            static_cast<unsigned>(FrameAnalysisOptions::DUMP_SRV) | static_cast<unsigned>(FrameAnalysisOptions::DUMP_CB) |
+            static_cast<unsigned>(FrameAnalysisOptions::FMT_BUF_BIN) | static_cast<unsigned>(FrameAnalysisOptions::FMT_BUF_TXT) |
+            static_cast<unsigned>(FrameAnalysisOptions::MONO)));
+        fixture.analysis->Dispatch(1, 1, 1);
+    }
+    set_slot(device, L'c', 0, nullptr); set_slot(device, L'c', 127, nullptr);
+    constant = nullptr; device.wrapper->CSSetConstantBuffers(0, 1, &constant);
+    unsigned generic = 0, constants = 0;
+    for (const auto& item : std::filesystem::directory_iterator(folder / L"deduped")) {
+        if (item.path().extension() != L".txt") continue;
+        const auto name = item.path().filename().wstring();
+        const auto content = read_dump_text(item.path());
+        require_batch(name.find(L'?') == std::wstring::npos && content.find('?') == std::string::npos,
+            "dump text: filenames and payload labels contain no question marks");
+        if (name.find(L"-buf0.txt") != std::wstring::npos || name.find(L"-buf127.txt") != std::wstring::npos) {
+            const auto label = name.find(L"-buf127.txt") != std::wstring::npos ? "buf127[0].x: 1" : "buf0[0].x: 1";
+            require_batch(content.find(label) != std::string::npos, "dump text: generic filename and data label agree");
+            const std::string prefix = name.find(L"-buf127.txt") != std::wstring::npos ? "buf127" : "buf0";
+            std::string expected;
+            for (unsigned i = 0; i < 4; ++i)
+                for (const char component : std::string("xyzw"))
+                    expected += prefix + "[" + std::to_string(i) + "]." + component + ": 1\r\n";
+            require_batch(content == expected, "dump text: full generic payload is byte-for-byte unchanged");
+            ++generic;
+        }
+        if (name.find(L"-cb0.txt") != std::wstring::npos) {
+            require_batch(content.find("cb0[0].x: 1") != std::string::npos, "dump text: CB compatibility preserved");
+            ++constants;
+        }
+    }
+    require_batch(generic == 2 && constants == 1, "dump text: repeated dumps reuse correct slot-specific text payloads");
+    unsigned linked = 0;
+    for (const auto& item : std::filesystem::directory_iterator(folder)) {
+        if (item.path().extension() != L".txt" || (!slot_label(item.path().filename().wstring(), L'c', 0) &&
+            !slot_label(item.path().filename().wstring(), L'c', 127))) continue;
+        require_batch(read_dump_text(item.path()).find("].x: 1") != std::string::npos, "dump text: outer linked file resolves to actual payload");
+        ++linked;
+    }
+    require_batch(linked == 4, "dump text: both slots linked for both dispatches");
+    G->analyse_frame = false; fixture.analysis->FrameAnalysisLog("close\n");
+    const auto log = read_dump_text(folder / L"log.txt");
+    const std::string unicode = "\xe4\xb8\xad\xe6\x96\x87\xf0\x9f\x90\xb0";
+    for (const char* prefix : {"narrow ", "wide "}) {
+        const auto needle = std::string(prefix) + unicode + " ASCII\r\n";
+        const auto first = log.find(needle);
+        require_batch(first != std::string::npos && log.find(needle, first + needle.size()) != std::string::npos,
+            "dump text: exact UTF-8 bytes for both log APIs in both ambient locales");
+    }
+    require_batch(log.find("Unable to create") == std::string::npos, "dump text: no file creation failures");
+    for (const char* stage : {"capture-inclusive", "map-wait", "hash", "text-save", "link"})
+        require_batch(log.find(std::string("Dump timing ") + stage + ": calls=") != std::string::npos,
+            "dump timing: real capture reports stage counts and elapsed time on close");
+    // Reopen a new session after closing the previous log.
+    const auto next = fixture.output.select(L"utf8_reopen"); G->analyse_frame = true;
+    fixture.analysis->FrameAnalysisLogW(L"reopened %ls\n", L"\u4e2d\u6587");
+    G->analyse_frame = false; fixture.analysis->FrameAnalysisLog("close\n");
+    require_batch(read_dump_text(next / L"log.txt").find("reopened " + unicode.substr(0, 6)) != std::string::npos,
+        "dump text: reopened log retains UTF-8 encoding");
+    const auto blocker = next / L"log_barrier";
+    { std::ofstream file(blocker, std::ios::binary); file << "owned log barrier"; }
+    wcscpy_s(G->ANALYSIS_PATH, MAX_PATH, blocker.c_str()); G->analyse_frame = true;
+    fixture.analysis->FrameAnalysisLogW(L"cannot open %ls\n", L"\u4e2d\u6587");
+    require_batch(read_dump_text(blocker) == "owned log barrier", "dump text: log open failure preserves existing file");
+    wcscpy_s(G->ANALYSIS_PATH, MAX_PATH, next.c_str());
+}
+
+void exercise_dump_mesh_text(DumpFixture& fixture)
+{
+    auto& device = fixture.device;
+    auto code = compile_dump("struct I{float3 p:POSITION;float2 uv:TEXCOORD2;};"
+        "float4 main(I v):SV_Position{return float4(v.p+v.uv.x,1);}", "vs_5_0");
+    fixture.vertex(code.Get());
+    D3D11_INPUT_ELEMENT_DESC elements[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0}};
+    ComPtr<ID3D11InputLayout> layout;
+    require_batch(SUCCEEDED(device.device->CreateInputLayout(elements, 2, code->GetBufferPointer(), code->GetBufferSize(), &layout)),
+        "dump mesh text: create actual cached layout");
+    device.wrapper->IASetInputLayout(layout.Get());
+    auto vertices = buffer(device, 60, D3D11_BIND_VERTEX_BUFFER);
+    float values[15]; for (unsigned i = 0; i < 15; ++i) values[i] = static_cast<float>(i + 1);
+    device.context->UpdateSubresource(vertices.Get(), 0, nullptr, values, 0, 0);
+    ID3D11Buffer* vb = vertices.Get(); UINT stride = 20, offset = 0;
+    device.wrapper->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+    device.wrapper->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    for (const bool wide : {false, true}) {
+        G->analyse_frame = false; fixture.analysis->FrameAnalysisLog("close\n");
+        const auto folder = fixture.output.select(wide ? L"mesh32" : L"mesh16"); G->analyse_frame = true;
+        auto indices = buffer(device, wide ? 12 : 6, D3D11_BIND_INDEX_BUFFER);
+        const uint32_t i32[] = {2, 0, 1}; const uint16_t i16[] = {2, 0, 1};
+        device.context->UpdateSubresource(indices.Get(), 0, nullptr, wide ? static_cast<const void*>(i32) : i16, 0, 0);
+        device.wrapper->IASetIndexBuffer(indices.Get(), wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT, 0);
+        fixture.analysis->FrameAnalysisTrigger(static_cast<FrameAnalysisOptions>(
+            static_cast<unsigned>(FrameAnalysisOptions::DUMP_VB) | static_cast<unsigned>(FrameAnalysisOptions::DUMP_IB) |
+            static_cast<unsigned>(FrameAnalysisOptions::FMT_BUF_TXT) | static_cast<unsigned>(FrameAnalysisOptions::MONO)));
+        fixture.analysis->DrawIndexed(3, 0, 0);
+        unsigned vb_files = 0, ib_files = 0;
+        for (const auto& file : std::filesystem::directory_iterator(folder / L"deduped")) {
+            if (file.path().extension() != L".txt") continue;
+            const auto text = read_dump_text(file.path());
+            const auto name = file.path().filename().wstring();
+            if (name.find(L"-ib") != std::wstring::npos) {
+                const std::string expected = std::string("byte offset: 0\r\nfirst index: 0\r\nindex count: 3\r\ntopology: trianglelist\r\nformat: DXGI_FORMAT_") +
+                    (wide ? "R32_UINT" : "R16_UINT") + "\r\n\r\n2 0 1\r\n";
+                require_batch(text == expected, "dump mesh text: exact R16/R32 grouping, spacing and CRLF bytes"); ++ib_files;
+            } else if (name.find(L"-vb0") != std::wstring::npos) {
+                std::string expected = "vertex-data:\r\n";
+                for (unsigned vertex = 0; vertex < 3; ++vertex) {
+                    expected += "\r\nvb0[" + std::to_string(vertex) + "]+000 POSITION: ";
+                    for (unsigned c = 0; c < 3; ++c) expected += (c ? ", " : "") + std::to_string(vertex * 5 + c + 1);
+                    expected += "\r\nvb0[" + std::to_string(vertex) + "]+012 TEXCOORD2: " +
+                        std::to_string(vertex * 5 + 4) + ", " + std::to_string(vertex * 5 + 5) + "\r\n";
+                }
+                const auto data = text.find("vertex-data:");
+                require_batch(data != std::string::npos && text.substr(data) == expected,
+                    "dump mesh text: exact VB labels for zero/nonzero semantic indices and formatted data"); ++vb_files;
+            }
+        }
+        require_batch(vb_files == 1 && ib_files == 1, "dump mesh text: real indexed draw emits both payloads");
+    }
+    vb = nullptr; device.wrapper->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+    device.wrapper->IASetIndexBuffer(nullptr, DXGI_FORMAT_R16_UINT, 0);
+    device.wrapper->IASetInputLayout(nullptr);
+    G->analyse_frame = false; fixture.analysis->FrameAnalysisLog("close\n"); G->analyse_frame = true;
+}
+
 void exercise_dump_filter(DumpFixture& fixture)
 {
     auto& device = fixture.device;
@@ -361,6 +522,8 @@ void test_dx11_shader_dump_filter_regression()
     {
         DumpFixture fixture;
         owned = fixture.output.path;
+        exercise_dump_text(fixture);
+        exercise_dump_mesh_text(fixture);
         exercise_dump_filter(fixture);
     }
     require_batch(!std::filesystem::exists(owned), "PS dump: all actual output and log files are cleaned from the build subtree");

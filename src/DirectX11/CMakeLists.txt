@@ -27,6 +27,7 @@ add_library(DirectX11 SHARED
     DLLMainHook.cpp
     ExpressionFunctions.cpp
     FrameAnalysis.cpp
+    FrameAnalysisTiming.h
     FrameTiming.cpp
     FrameTiming.h
     PngColorSpace.cpp

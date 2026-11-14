@@ -26,6 +26,7 @@
 // For 2D array textures and cubemaps, it captures only the first image in the array
 
 #include "pch.h"
+#include "ScreenGrabRows.h"
 
 #include "ScreenGrab.h"
 #include "DirectXHelpers.h"
@@ -388,16 +389,21 @@ HRESULT DirectX::SaveDDSTextureToFile( ID3D11DeviceContext* pContext,
             return E_FAIL;
         }
 
-        // Remove GPU row-pitch padding.
         const auto* src = static_cast<const uint8_t*>( mapped.pData );
-
-        for ( size_t y = 0; y < mipRowCount; ++y )
-            memcpy( pixels.get() + y * mipRowPitch, src + y * mapped.RowPitch, mipRowPitch );
-
-        pContext->Unmap( pStaging.Get(), subresource );
-
-        // Write tightly packed mip data.
-        hr = writeFile( pixels.get(), mipSlicePitch );
+        const auto* output = Internal::PackDDSRows( src, mapped.RowPitch, pixels.get(), mipRowPitch, mipRowCount );
+        if ( output == src )
+        {
+            // Already tightly packed: retain the mapping until the synchronous
+            // write completes. Always unmap, including on write failure.
+            hr = writeFile( src, mipSlicePitch );
+            pContext->Unmap( pStaging.Get(), subresource );
+        }
+        else
+        {
+            // Padding was removed into the existing reusable buffer.
+            pContext->Unmap( pStaging.Get(), subresource );
+            hr = writeFile( pixels.get(), mipSlicePitch );
+        }
 
         if ( FAILED(hr) )
             return hr;

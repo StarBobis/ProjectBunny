@@ -3,6 +3,7 @@
 #include <d3d11_1.h>
 #include "HackerContext.h"
 #include "ShaderBindings.h"
+#include "FrameAnalysisTiming.h"
 
 // {2AEE5B3A-68ED-44E9-AA4D-9EAA6315D72B}
 DEFINE_GUID(IID_FrameAnalysisContext,
@@ -104,6 +105,7 @@ private:
 	void FrameAnalysisLogConstantBufferArray(UINT start, UINT len, ID3D11Resource* const* ppResources, const UINT* pFirstConstant, const UINT* pNumConstants);
 
 	FILE *frame_analysis_log;
+	FrameAnalysisTiming dump_timing;
 	unsigned draw_call;
 	unsigned non_draw_call_dump_counter;
 
@@ -127,7 +129,7 @@ private:
 		D3D11_TEXTURE2D_DESC desc, bool msaa, DXGI_FORMAT format);
 
 	void DumpBufferTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE *map,
-			UINT size, char type, int idx, UINT stride, UINT offset);
+			UINT size, const char *type, int idx, UINT stride, UINT offset);
 	void DumpVBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE *map,
 			UINT size, int idx, UINT stride, UINT offset,
 			UINT first, UINT count, HackerInputLayout *layout,
@@ -187,7 +189,7 @@ private:
 			D3D11_MAPPED_SUBRESOURCE *map,
 			wchar_t *dedupe_filename, size_t size);
 	void dedupe_buf_filename_txt(const wchar_t *bin_filename,
-			wchar_t *txt_filename, size_t size, char type, int idx,
+			wchar_t *txt_filename, size_t size, const char *type, int idx,
 			UINT stride, UINT offset);
 	void dedupe_buf_filename_vb_txt(const wchar_t *bin_filename,
 			wchar_t *txt_filename, size_t size, int idx,

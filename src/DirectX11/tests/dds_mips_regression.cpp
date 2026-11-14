@@ -1,6 +1,7 @@
 #include "slot_range_test_support.h"
 #include "../../../3rdparty/DirectXTK/Inc/ScreenGrab.h"
 #include "../../../3rdparty/DirectXTK/Src/dds.h"
+#include "../../../3rdparty/DirectXTK/Src/ScreenGrabRows.h"
 
 #include <filesystem>
 #include <fstream>
@@ -28,9 +29,9 @@ public:
 };
 
 void check_dds(BatchDevice& device, DXGI_FORMAT format, UINT bytes_per_unit,
-    bool compressed, UINT mip_count, bool dx10)
+    bool compressed, UINT mip_count, bool dx10, bool tight = false)
 {
-    const UINT width = compressed ? 8 : 7, height = compressed ? 8 : 5;
+    const UINT width = tight ? 64 : (compressed ? 8 : 7), height = compressed ? 8 : 5;
     // A distinct second array image detects accidental array/mip interleaving.
     std::vector<std::vector<uint8_t>> images(mip_count * 2);
     std::vector<D3D11_SUBRESOURCE_DATA> initial(images.size());
@@ -67,6 +68,11 @@ void check_dds(BatchDevice& device, DXGI_FORMAT format, UINT bytes_per_unit,
     require_batch(SUCCEEDED(device.native->CreateTexture2D(&desc, nullptr, &staging)),
         "dds mips: create readable staging texture");
     device.context->CopyResource(staging.Get(), texture.Get());
+    D3D11_MAPPED_SUBRESOURCE probe{};
+    require_batch(SUCCEEDED(device.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &probe)), "dds mips: inspect real row layout");
+    const bool tightly_packed = probe.RowPitch == initial[0].SysMemPitch;
+    device.context->Unmap(staging.Get(), 0);
+    require_batch(!tight || tightly_packed, "dds mips: native tight fixture exercises direct mapped write");
 
     for (UINT mode = 0; mode < 4; ++mode) {
         DdsTemporaryFile file;
@@ -116,11 +122,33 @@ void check_dds(BatchDevice& device, DXGI_FORMAT format, UINT bytes_per_unit,
 
 void test_dx11_dds_mips_regression()
 {
+    // WARP on this host exposes tight rows even for odd texture widths. Test
+    // the production packing helper with explicit padding, without mocking a
+    // D3D context or claiming that a padded GPU mapping was exercised.
+    for (size_t rows : {size_t(1), size_t(7)}) {
+        for (size_t padding : {size_t(0), size_t(1), size_t(64)}) {
+            const size_t pitch = 13, source_pitch = pitch + padding;
+            std::vector<uint8_t> source(source_pitch * rows, 0xcd), packed(pitch * rows + 2, 0xa5), expected;
+            for (size_t y = 0; y < rows; ++y) {
+                for (size_t x = 0; x < pitch; ++x) {
+                    const auto value = static_cast<uint8_t>(y * 19 + x);
+                    source[y * source_pitch + x] = value; expected.push_back(value);
+                }
+            }
+            const auto original = source;
+            const auto* output = DirectX::Internal::PackDDSRows(source.data(), source_pitch, packed.data() + 1, pitch, rows);
+            require_batch(memcmp(output, expected.data(), expected.size()) == 0 && source == original &&
+                packed.front() == 0xa5 && packed.back() == 0xa5, "dds rows: exact bytes, immutable source and guarded packing bounds");
+            require_batch(padding ? output == packed.data() + 1 : output == source.data(),
+                "dds rows: tight layout aliases source, padded layout uses owned buffer");
+        }
+    }
     BatchDevice device;
     check_dds(device, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, 3, false);
     check_dds(device, DXGI_FORMAT_R16G16B16A16_UINT, 8, false, 3, true);
     check_dds(device, DXGI_FORMAT_BC1_UNORM, 8, true, 3, false);
     check_dds(device, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, 1, false);
+    check_dds(device, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, 3, false, true);
     require_batch(DirectX::SaveDDSTextureToFile(device.context.Get(), nullptr, L"unused", true) == E_INVALIDARG &&
         DirectX::SaveDDSTextureToFile(device.context.Get(), nullptr, nullptr, false) == E_INVALIDARG,
         "dds mips: invalid source or filename rejected");

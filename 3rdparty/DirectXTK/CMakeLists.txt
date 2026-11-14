@@ -29,6 +29,7 @@ add_library(DirectXTK STATIC
     Src/NormalMapEffect.cpp
     Src/PBREffect.cpp
     Src/ScreenGrab.cpp
+    Src/ScreenGrabRows.h
     Src/SimpleMath.cpp
     Src/SkinnedEffect.cpp
     Src/SpriteBatch.cpp

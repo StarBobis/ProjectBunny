@@ -263,6 +263,18 @@ Write-Host "===== Publishing $tag to $releaseRepoUrl =====" -ForegroundColor Cya
 # the version never requires touching this switch.
 $releaseBody = "ProjectBunny $tag - DirectX 11 + DirectX 12, Release x64."
 switch ($tag) {
+    'v1.3.18' {
+        $releaseBody = @'
+DX11 F8 帧分析修复与优化：
+- 修复通用 Buffer 文本导出将问号写入文件名、导致部分 TXT 创建失败的问题；文件名与文本标签统一使用 bufN。
+- Frame Analysis 日志固定使用 UTF-8，支持中文路径、名称及 emoji。
+- 增大 TXT 写入缓冲，减少 VB/IB 格式化调用；DDS 紧密行布局直接同步写入，减少中间复制。
+- 新增 Dump timing 分阶段汇总，可检查 Map 等待、哈希、文本/二进制/纹理保存及链接耗时。包含嵌套阶段的项目不应重复相加。
+- 保留同步抓取、内容哈希、资源命名与链接流程。实际游戏中的提速幅度取决于抓取内容与环境。
+
+验证：DX11 Release 构建及全部 4 项 CTest 通过，涵盖原生 WARP 导出、文本字节、DDS 像素/mip、UTF-8 和链接回归。发布包另执行双 DX x64 Release 构建、AMD64 PE 与 SHA256 校验。
+'@
+    }
     'v0.1.13' {
         $releaseBody = @'
 修复：

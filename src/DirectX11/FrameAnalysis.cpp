@@ -30,6 +30,43 @@
 #define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
 #endif
 
+namespace {
+// Pin conversions (including narrow printf's %S) to UTF-8 without changing
+// the locale of other render threads or depending on a caller's setlocale.
+class FrameAnalysisLogLocale {
+public:
+    _locale_t value = _create_locale(LC_CTYPE, ".UTF8");
+    ~FrameAnalysisLogLocale() { if (value) _free_locale(value); }
+};
+
+_locale_t frame_analysis_log_locale()
+{
+    static const FrameAnalysisLogLocale locale;
+    return locale.value;
+}
+// Formatting to UTF-16 first avoids CRT wide stream output losing surrogate
+// pairs. Narrow printf's %S conversion supports them with the UTF-8 locale.
+bool write_frame_analysis_utf8(FILE *file, const wchar_t *format, va_list args)
+{
+    const auto locale = frame_analysis_log_locale();
+    if (!locale) return false;
+    va_list measure;
+    va_copy(measure, args);
+    const int length = _vscwprintf_l(format, locale, measure);
+    va_end(measure);
+    if (length < 0) return false;
+    std::vector<wchar_t> text(static_cast<size_t>(length) + 1);
+    if (_vsnwprintf_s_l(text.data(), text.size(), _TRUNCATE, format, locale, args) != length) return false;
+    if (!length) return true;
+    const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), length, nullptr, 0, nullptr, nullptr);
+    if (!bytes) return false;
+    std::string utf8(bytes, '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), length, &utf8[0], bytes, nullptr, nullptr) != bytes)
+        return false;
+    return fwrite(utf8.data(), 1, utf8.size(), file) == utf8.size();
+}
+} // namespace
+
 static unordered_map<ID3D11CommandList*, FrameAnalysisDeferredBuffersPtr> frame_analysis_deferred_buffer_lists;
 static unordered_map<ID3D11CommandList*, FrameAnalysisDeferredTex2DPtr> frame_analysis_deferred_tex2d_lists;
 
@@ -46,8 +83,10 @@ FrameAnalysisContext::FrameAnalysisContext(ID3D11Device1 *pDevice, ID3D11DeviceC
 
 FrameAnalysisContext::~FrameAnalysisContext()
 {
-	if (frame_analysis_log)
+	if (frame_analysis_log) {
+		dump_timing.write(frame_analysis_log, draw_call);
 		fclose(frame_analysis_log);
+	}
 }
 
 void FrameAnalysisContext::vFrameAnalysisLog(char *fmt, va_list ap)
@@ -58,8 +97,10 @@ void FrameAnalysisContext::vFrameAnalysisLog(char *fmt, va_list ap)
 	vLogDebug(fmt, ap);
 
 	if (!G->analyse_frame) {
-		if (frame_analysis_log)
+		if (frame_analysis_log) {
+			dump_timing.write(frame_analysis_log, draw_call);
 			fclose(frame_analysis_log);
+		}
 		frame_analysis_log = NULL;
 		return;
 	}
@@ -100,7 +141,9 @@ void FrameAnalysisContext::vFrameAnalysisLog(char *fmt, va_list ap)
 		fprintf(frame_analysis_log, "%u.", G->analyse_frame_no);
 	fprintf(frame_analysis_log, "%06u ", draw_call);
 
-	vfprintf(frame_analysis_log, fmt, ap);
+	const auto locale = frame_analysis_log_locale();
+	if (!locale || _vfprintf_l(frame_analysis_log, fmt, locale, ap) < 0)
+		LogWarning("Frame analysis UTF-8 log write failed\n");
 }
 
 void FrameAnalysisContext::vFrameAnalysisLogW(wchar_t* fmt, va_list ap)
@@ -111,8 +154,10 @@ void FrameAnalysisContext::vFrameAnalysisLogW(wchar_t* fmt, va_list ap)
 	vLogDebugW(fmt, ap);
 
 	if (!G->analyse_frame) {
-		if (frame_analysis_log)
+		if (frame_analysis_log) {
+			dump_timing.write(frame_analysis_log, draw_call);
 			fclose(frame_analysis_log);
+		}
 		frame_analysis_log = NULL;
 		return;
 	}
@@ -153,7 +198,8 @@ void FrameAnalysisContext::vFrameAnalysisLogW(wchar_t* fmt, va_list ap)
 		fprintf(frame_analysis_log, "%u.", G->analyse_frame_no);
 	fprintf(frame_analysis_log, "%06u ", draw_call);
 
-	vfwprintf(frame_analysis_log, fmt, ap);
+	if (!write_frame_analysis_utf8(frame_analysis_log, fmt, ap))
+		LogWarning("Frame analysis UTF-8 log write failed\n");
 }
 
 void FrameAnalysisContext::FrameAnalysisLog(char *fmt, ...)
@@ -546,8 +592,10 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 		FALogInfo(L"Dumping Texture2D %ls -> %ls\n", filename.c_str(), save_filename.c_str());
 
 		hr = S_OK;
-		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES)
+		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES) {
+			DumpTimer timer(dump_timing, DumpStage::TextureSave);
 			hr = DirectX::SaveWICTextureToFile(GetDumpingContext(), staging, GUID_ContainerFormatJpeg, save_filename.c_str());
+		}
 		link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
 
@@ -559,8 +607,10 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 		FALogInfo(L"Dumping Texture2D %ls -> %ls\n", filename.c_str(), save_filename.c_str());
 
 		hr = S_OK;
-		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES)
+		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES) {
+			DumpTimer timer(dump_timing, DumpStage::TextureSave);
 			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, save_filename.c_str(), G->dump_mips);
+		}
 		link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
 
@@ -750,7 +800,7 @@ static void copy_until_extension(wchar_t *txt_filename, const wchar_t *bin_filen
 }
 
 void FrameAnalysisContext::dedupe_buf_filename_txt(const wchar_t *bin_filename,
-		wchar_t *txt_filename, size_t size, char type, int idx,
+		wchar_t *txt_filename, size_t size, const char *type, int idx,
 		UINT stride, UINT offset)
 {
 	wchar_t *pos;
@@ -759,7 +809,7 @@ void FrameAnalysisContext::dedupe_buf_filename_txt(const wchar_t *bin_filename,
 	copy_until_extension(txt_filename, bin_filename, MAX_PATH, &pos, &rem);
 
 	if (idx != -1)
-		StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"-%cb%i", type, idx);
+		StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"-%hs%i", type, idx);
 
 	if (offset)
 		StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"-offset=%u", offset);
@@ -777,8 +827,9 @@ void FrameAnalysisContext::dedupe_buf_filename_txt(const wchar_t *bin_filename,
  * correct types.
  */
 void FrameAnalysisContext::DumpBufferTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE *map,
-		UINT size, char type, int idx, UINT stride, UINT offset)
+		UINT size, const char *type, int idx, UINT stride, UINT offset)
 {
+	DumpTimer timer(dump_timing, DumpStage::Text);
 	FILE *fd = NULL;
 	char *components = "xyzw";
 	float *buf = (float*)map->pData;
@@ -791,6 +842,8 @@ void FrameAnalysisContext::DumpBufferTxt(wchar_t *filename, D3D11_MAPPED_SUBRESO
 		return;
 	}
 
+	setvbuf(fd, nullptr, _IOFBF, 256 * 1024);
+
 	if (offset)
 		fprintf(fd, "offset: %u\n", offset);
 	if (stride)
@@ -801,7 +854,7 @@ void FrameAnalysisContext::DumpBufferTxt(wchar_t *filename, D3D11_MAPPED_SUBRESO
 			if (idx == -1)
 				fprintf(fd, "buf[%d].%c: %.9g\n", i, components[c], buf[i*4+c]);
 			else
-				fprintf(fd, "%cb%i[%d].%c: %.9g\n", type, idx, i, components[c], buf[i*4+c]);
+				fprintf(fd, "%s%i[%d].%c: %.9g\n", type, idx, i, components[c], buf[i*4+c]);
 		}
 	}
 
@@ -1282,10 +1335,11 @@ static void dump_vb_elem(FILE *fd, uint8_t *buf,
 		}
 	}
 
-	fprintf(fd, "vb%i[%u]+%03u %s", slot, vb_idx, offset, layout_desc[elem].SemanticName);
 	if (layout_desc[elem].SemanticIndex)
-		fprintf(fd, "%u", layout_desc[elem].SemanticIndex);
-	fprintf(fd, ": ");
+		fprintf(fd, "vb%i[%u]+%03u %s%u: ", slot, vb_idx, offset,
+			layout_desc[elem].SemanticName, layout_desc[elem].SemanticIndex);
+	else
+		fprintf(fd, "vb%i[%u]+%03u %s: ", slot, vb_idx, offset, layout_desc[elem].SemanticName);
 
 	fprint_dxgi_format(fd, layout_desc[elem].Format, buf + offset);
 	fprintf(fd, "\n");
@@ -1360,6 +1414,7 @@ void FrameAnalysisContext::DumpVBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 		UINT size, int slot, UINT stride, UINT offset, UINT first, UINT count, HackerInputLayout *layout,
 		D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info)
 {
+	DumpTimer timer(dump_timing, DumpStage::Text);
 	FILE *fd = NULL;
 	errno_t err;
 	const D3D11_INPUT_ELEMENT_DESC *layout_desc = NULL;
@@ -1371,6 +1426,8 @@ void FrameAnalysisContext::DumpVBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 		FALogErr(L"Unable to create %ls: %u\n", filename, err);
 		return;
 	}
+
+	setvbuf(fd, nullptr, _IOFBF, 256 * 1024);
 
 	if (offset)
 		fprintf(fd, "byte offset: %u\n", offset);
@@ -1451,6 +1508,7 @@ void FrameAnalysisContext::DumpIBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 		UINT size, DXGI_FORMAT format, UINT offset, UINT first, UINT count,
 		D3D11_PRIMITIVE_TOPOLOGY topology)
 {
+	DumpTimer timer(dump_timing, DumpStage::Text);
 	FILE *fd = NULL;
 	uint16_t *buf16 = (uint16_t*)map->pData;
 	uint32_t *buf32 = (uint32_t*)map->pData;
@@ -1463,6 +1521,8 @@ void FrameAnalysisContext::DumpIBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 		FALogErr(L"Unable to create %ls: %u\n", filename, err);
 		return;
 	}
+
+	setvbuf(fd, nullptr, _IOFBF, 256 * 1024);
 
 	fprintf(fd, "byte offset: %u\n", offset);
 	if (first || count) {
@@ -1492,11 +1552,7 @@ void FrameAnalysisContext::DumpIBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 			end = min(end, start + count);
 
 		for (i = start; i < end; i++) {
-			if ((i-start) % grouping == 0)
-				fprintf(fd, "\n");
-			else
-				fprintf(fd, " ");
-			fprintf(fd, "%u", buf16[i]);
+			fprintf(fd, "%c%u", (i-start) % grouping == 0 ? '\n' : ' ', buf16[i]);
 		}
 		fprintf(fd, "\n");
 		break;
@@ -1509,11 +1565,7 @@ void FrameAnalysisContext::DumpIBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 			end = min(end, start + count);
 
 		for (i = start; i < end; i++) {
-			if ((i-start) % grouping == 0)
-				fprintf(fd, "\n");
-			else
-				fprintf(fd, " ");
-			fprintf(fd, "%u", buf32[i]);
+			fprintf(fd, "%c%u", (i-start) % grouping == 0 ? '\n' : ' ', buf32[i]);
 		}
 		fprintf(fd, "\n");
 		break;
@@ -1686,7 +1738,10 @@ void FrameAnalysisContext::determine_vb_count(UINT *count, ID3D11Buffer *staged_
 	if (!staged_ib_for_vb || !call_info || call_info->IndexCount == 0)
 		return;
 
-	hr = GetDumpingContext()->Map(staged_ib_for_vb, 0, D3D11_MAP_READ, 0, &ib_map);
+	{
+		DumpTimer timer(dump_timing, DumpStage::Map);
+		hr = GetDumpingContext()->Map(staged_ib_for_vb, 0, D3D11_MAP_READ, 0, &ib_map);
+	}
 	if (FAILED(hr)) {
 		FALogErr(L"determine_vb_count failed to map index buffer staging resource: 0x%x\n", hr);
 		return;
@@ -1737,7 +1792,10 @@ void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_B
 	size_t ext;
 	errno_t err;
 
-	hr = GetDumpingContext()->Map(staging, 0, D3D11_MAP_READ, 0, &map);
+	{
+		DumpTimer timer(dump_timing, DumpStage::Map);
+		hr = GetDumpingContext()->Map(staging, 0, D3D11_MAP_READ, 0, &map);
+	}
 	if (FAILED(hr)) {
 		FALogErr(L"DumpBuffer failed to map staging resource: 0x%x\n", hr);
 		return;
@@ -1758,6 +1816,7 @@ void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_B
 		FALogInfo(L"Dumping Buffer %ls -> %ls\n", filename.c_str(), bin_filename);
 
 		if (GetFileAttributes(bin_filename) == INVALID_FILE_ATTRIBUTES) {
+			DumpTimer timer(dump_timing, DumpStage::Binary);
 			err = wfopen_ensuring_access(&fd, bin_filename, L"wb");
 			if (!fd) {
 				FALogErr(L"Unable to create %ls: %u\n", bin_filename, err);
@@ -1773,10 +1832,10 @@ void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_B
 		filename.replace(ext, wstring::npos, L".txt");
 
 		if (buf_type_mask & FrameAnalysisOptions::DUMP_CB) {
-			dedupe_buf_filename_txt(bin_filename, txt_filename, MAX_PATH, 'c', idx, stride, offset);
+			dedupe_buf_filename_txt(bin_filename, txt_filename, MAX_PATH, "cb", idx, stride, offset);
 			FALogInfo(L"Dumping Buffer %ls -> %ls\n", filename.c_str(), txt_filename);
 			if (GetFileAttributes(txt_filename) == INVALID_FILE_ATTRIBUTES) {
-				DumpBufferTxt(txt_filename, &map, orig_desc->ByteWidth, 'c', idx, stride, offset);
+				DumpBufferTxt(txt_filename, &map, orig_desc->ByteWidth, "cb", idx, stride, offset);
 			}
 		} else if (buf_type_mask & FrameAnalysisOptions::DUMP_VB) {
 			determine_vb_count(&count, staged_ib_for_vb, call_info, ib_off_for_vb, ib_fmt);
@@ -1795,10 +1854,10 @@ void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_B
 			// We don't know what kind of buffer this is, so just
 			// use the generic dump routine:
 
-			dedupe_buf_filename_txt(bin_filename, txt_filename, MAX_PATH, '?', idx, stride, offset);
+			dedupe_buf_filename_txt(bin_filename, txt_filename, MAX_PATH, "buf", idx, stride, offset);
 			FALogInfo(L"Dumping Buffer %ls -> %ls\n", filename.c_str(), txt_filename);
 			if (GetFileAttributes(txt_filename) == INVALID_FILE_ATTRIBUTES) {
-				DumpBufferTxt(txt_filename, &map, orig_desc->ByteWidth, '?', idx, stride, offset);
+				DumpBufferTxt(txt_filename, &map, orig_desc->ByteWidth, "buf", idx, stride, offset);
 			}
 		}
 		link_deduplicated_files(filename.c_str(), txt_filename);
@@ -1845,9 +1904,12 @@ void FrameAnalysisContext::DumpBuffer(ID3D11Buffer *buffer, wchar_t *filename,
 	desc.MiscFlags = 0;
 	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 
-	LockResourceCreationMode();
-	hr = GetHackerDevice()->GetPassThroughOrigDevice1()->CreateBuffer(&desc, NULL, &staging);
-	UnlockResourceCreationMode();
+	{
+		DumpTimer timer(dump_timing, DumpStage::Staging);
+		LockResourceCreationMode();
+		hr = GetHackerDevice()->GetPassThroughOrigDevice1()->CreateBuffer(&desc, NULL, &staging);
+		UnlockResourceCreationMode();
+	}
 	if (FAILED(hr)) {
 		FALogErr(L"DumpBuffer failed to create staging buffer: 0x%x\n", hr);
 		return;
@@ -2145,7 +2207,10 @@ const wchar_t* FrameAnalysisContext::dedupe_tex2d_filename(ID3D11Texture2D *reso
 	// doesn't match the description used to create it (e.g. mip-maps being
 	// generated after creation I guess).
 
-	hr = GetDumpingContext()->Map(resource, 0, D3D11_MAP_READ, 0, &map);
+	{
+		DumpTimer timer(dump_timing, DumpStage::Map);
+		hr = GetDumpingContext()->Map(resource, 0, D3D11_MAP_READ, 0, &map);
+	}
 	if (FAILED(hr)) {
 		FALogErr(L"Frame Analysis filename deduplication failed to map resource: 0x%x\n", hr);
 		goto err;
@@ -2160,8 +2225,11 @@ const wchar_t* FrameAnalysisContext::dedupe_tex2d_filename(ID3D11Texture2D *reso
 	// legacy texture hash is very broken (passable for texture filtering,
 	// but not for this) and doesn't hash anywhere near the full image, so
 	// changes in the mid to lower half of the image won't affect the hash.
-	hash = CalcTexture2DDataHashAccurate(orig_desc, (D3D11_SUBRESOURCE_DATA*)&map);
-	hash = CalcTexture2DDescHash(hash, orig_desc);
+	{
+		DumpTimer timer(dump_timing, DumpStage::Hash);
+		hash = CalcTexture2DDataHashAccurate(orig_desc, (D3D11_SUBRESOURCE_DATA*)&map);
+		hash = CalcTexture2DDescHash(hash, orig_desc);
+	}
 
 	GetDumpingContext()->Unmap(resource, 0);
 
@@ -2203,8 +2271,11 @@ void FrameAnalysisContext::dedupe_buf_filename(ID3D11Buffer *resource,
 	// doesn't match the description used to create it (e.g. unused fields
 	// for a given buffer type being zeroed out).
 
-	hash = crc32c_hw(0, map->pData, orig_desc->ByteWidth);
-	hash = crc32c_hw(hash, orig_desc, sizeof(D3D11_BUFFER_DESC));
+	{
+		DumpTimer timer(dump_timing, DumpStage::Hash);
+		hash = crc32c_hw(0, map->pData, orig_desc->ByteWidth);
+		hash = crc32c_hw(hash, orig_desc, sizeof(D3D11_BUFFER_DESC));
+	}
 
 	get_deduped_dir(dedupe_dir, MAX_PATH);
 	_snwprintf_s(dedupe_filename, size, size, L"%ls\\%08x.XXX", dedupe_dir, hash);
@@ -2304,6 +2375,7 @@ static bool create_shortcut(const wchar_t *filename, const wchar_t *dedupe_filen
 
 void FrameAnalysisContext::link_deduplicated_files(const wchar_t *filename, const wchar_t *dedupe_filename)
 {
+	DumpTimer timer(dump_timing, DumpStage::Link);
 	wchar_t relative_path[MAX_PATH] = {0};
 
 	// Bail if source didn't get created:
@@ -2840,6 +2912,7 @@ void FrameAnalysisContext::set_default_dump_formats(bool draw)
 
 void FrameAnalysisContext::FrameAnalysisAfterDraw(bool compute, DrawCallInfo *call_info)
 {
+	DumpTimer timer(dump_timing, DumpStage::Capture);
 	update_per_draw_analyse_options();
 
 	// Update: We now have an option to allow analysis on deferred
