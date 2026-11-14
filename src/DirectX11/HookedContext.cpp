@@ -2083,6 +2083,407 @@ static HRESULT STDMETHODCALLTYPE FinishCommandList(ID3D11DeviceContext1 *This,
 	return orig_vtable.FinishCommandList(This, RestoreDeferredContextState, ppCommandList);
 }
 
+// ID3D11DeviceContext1
+static void STDMETHODCALLTYPE CopySubresourceRegion1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11Resource *pDstResource,
+	/* [annotation] */
+	_In_  UINT DstSubresource,
+	/* [annotation] */
+	_In_  UINT DstX,
+	/* [annotation] */
+	_In_  UINT DstY,
+	/* [annotation] */
+	_In_  UINT DstZ,
+	/* [annotation] */
+	_In_  ID3D11Resource *pSrcResource,
+	/* [annotation] */
+	_In_  UINT SrcSubresource,
+	/* [annotation] */
+	_In_opt_  const D3D11_BOX *pSrcBox,
+	/* [annotation] */
+	_In_  UINT CopyFlags)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::CopySubresourceRegion1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_CopySubresourceRegion1(context, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
+
+	return orig_vtable.CopySubresourceRegion1(This, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
+}
+
+static void STDMETHODCALLTYPE UpdateSubresource1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11Resource *pDstResource,
+	/* [annotation] */
+	_In_  UINT DstSubresource,
+	/* [annotation] */
+	_In_opt_  const D3D11_BOX *pDstBox,
+	/* [annotation] */
+	_In_  const void *pSrcData,
+	/* [annotation] */
+	_In_  UINT SrcRowPitch,
+	/* [annotation] */
+	_In_  UINT SrcDepthPitch,
+	/* [annotation] */
+	_In_  UINT CopyFlags)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::UpdateSubresource1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_UpdateSubresource1(context, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
+
+	return orig_vtable.UpdateSubresource1(This, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
+}
+
+static void STDMETHODCALLTYPE DiscardResource(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11Resource *pResource)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::DiscardResource()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_DiscardResource(context, pResource);
+
+	return orig_vtable.DiscardResource(This, pResource);
+}
+
+static void STDMETHODCALLTYPE DiscardView(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11View *pResourceView)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::DiscardView()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_DiscardView(context, pResourceView);
+
+	return orig_vtable.DiscardView(This, pResourceView);
+}
+
+static void STDMETHODCALLTYPE VSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::VSSetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_VSSetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.VSSetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE HSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::HSSetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_HSSetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.HSSetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE DSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::DSSetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_DSSetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.DSSetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE GSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::GSSetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_GSSetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.GSSetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE PSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::PSSetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_PSSetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.PSSetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE CSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::CSSetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_CSSetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.CSSetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE VSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::VSGetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_VSGetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.VSGetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE HSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::HSGetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_HSGetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.HSGetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE DSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::DSGetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_DSGetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.DSGetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE GSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::GSGetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_GSGetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.GSGetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE PSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::PSGetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_PSGetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.PSGetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE CSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::CSGetConstantBuffers1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_CSGetConstantBuffers1(context, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+
+	return orig_vtable.CSGetConstantBuffers1(This, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE SwapDeviceContextState(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3DDeviceContextState *pState,
+	/* [annotation] */
+	_Out_opt_  ID3DDeviceContextState **ppPreviousState)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::SwapDeviceContextState()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_SwapDeviceContextState(context, pState, ppPreviousState);
+
+	return orig_vtable.SwapDeviceContextState(This, pState, ppPreviousState);
+}
+
+static void STDMETHODCALLTYPE ClearView(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11View *pView,
+	/* [annotation] */
+	_In_  const FLOAT Color[4],
+	/* [annotation] */
+	_In_reads_opt_(NumRects)  const D3D11_RECT *pRect,
+	UINT NumRects)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::ClearView()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_ClearView(context, pView, Color, pRect, NumRects);
+
+	return orig_vtable.ClearView(This, pView, Color, pRect, NumRects);
+}
+
+static void STDMETHODCALLTYPE DiscardView1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11View *pResourceView,
+	/* [annotation] */
+	_In_reads_opt_(NumRects)  const D3D11_RECT *pRects,
+	UINT NumRects)
+{
+	ID3D11DeviceContext1 *context = lookup_hooked_context(This);
+
+	HookDebug("HookedContext::DiscardView1()\n");
+
+	if (context)
+		return ID3D11DeviceContext1_DiscardView1(context, pResourceView, pRects, NumRects);
+
+	return orig_vtable.DiscardView1(This, pResourceView, pRects, NumRects);
+}
+
 static void install_hooks(ID3D11DeviceContext1 *context)
 {
 	SIZE_T hook_id;
@@ -2095,7 +2496,13 @@ static void install_hooks(ID3D11DeviceContext1 *context)
 
 	// Make sure that everything in the orig_vtable is filled in just in
 	// case we miss one of the hooks below:
-	memcpy(&orig_vtable, context->lpVtbl, sizeof(struct ID3D11DeviceContext1Vtbl));
+	ID3D11DeviceContext1 *context1 = nullptr;
+	const bool supports_context1 = SUCCEEDED(context->lpVtbl->QueryInterface(
+		context, IID_ID3D11DeviceContext1, reinterpret_cast<void **>(&context1)));
+	memcpy(&orig_vtable, context->lpVtbl, sizeof(struct ID3D11DeviceContextVtbl));
+	if (supports_context1) {
+		memcpy(&orig_vtable, context1->lpVtbl, sizeof(orig_vtable));
+	}
 
 	// At the moment we are just throwing away the hook IDs - we should
 	// probably hold on to them incase we need to remove the hooks later:
@@ -2214,6 +2621,29 @@ static void install_hooks(ID3D11DeviceContext1 *context)
 	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetType,                                   context->lpVtbl->GetType,                                   GetType);
 	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetContextFlags,                           context->lpVtbl->GetContextFlags,                           GetContextFlags);
 	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.FinishCommandList,                         context->lpVtbl->FinishCommandList,                         FinishCommandList);
+	if (supports_context1) {
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CopySubresourceRegion1, context1->lpVtbl->CopySubresourceRegion1, CopySubresourceRegion1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.UpdateSubresource1, context1->lpVtbl->UpdateSubresource1, UpdateSubresource1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DiscardResource, context1->lpVtbl->DiscardResource, DiscardResource);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DiscardView, context1->lpVtbl->DiscardView, DiscardView);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSSetConstantBuffers1, context1->lpVtbl->VSSetConstantBuffers1, VSSetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSSetConstantBuffers1, context1->lpVtbl->HSSetConstantBuffers1, HSSetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSSetConstantBuffers1, context1->lpVtbl->DSSetConstantBuffers1, DSSetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSSetConstantBuffers1, context1->lpVtbl->GSSetConstantBuffers1, GSSetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSSetConstantBuffers1, context1->lpVtbl->PSSetConstantBuffers1, PSSetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSSetConstantBuffers1, context1->lpVtbl->CSSetConstantBuffers1, CSSetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSGetConstantBuffers1, context1->lpVtbl->VSGetConstantBuffers1, VSGetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSGetConstantBuffers1, context1->lpVtbl->HSGetConstantBuffers1, HSGetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSGetConstantBuffers1, context1->lpVtbl->DSGetConstantBuffers1, DSGetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSGetConstantBuffers1, context1->lpVtbl->GSGetConstantBuffers1, GSGetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSGetConstantBuffers1, context1->lpVtbl->PSGetConstantBuffers1, PSGetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSGetConstantBuffers1, context1->lpVtbl->CSGetConstantBuffers1, CSGetConstantBuffers1);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SwapDeviceContextState, context1->lpVtbl->SwapDeviceContextState, SwapDeviceContextState);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ClearView, context1->lpVtbl->ClearView, ClearView);
+		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DiscardView1, context1->lpVtbl->DiscardView1, DiscardView1);
+		// Use the original entry point now that IUnknown has been hooked.
+		orig_vtable.Release(context1);
+	}
 }
 
 
@@ -3417,6 +3847,293 @@ static HRESULT STDMETHODCALLTYPE TrampolineFinishCommandList(ID3D11DeviceContext
 	return orig_vtable.FinishCommandList(((ID3D11DeviceContext1Trampoline*)This)->orig_this, RestoreDeferredContextState, ppCommandList);
 }
 
+// ID3D11DeviceContext1
+static void STDMETHODCALLTYPE TrampolineCopySubresourceRegion1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11Resource *pDstResource,
+	/* [annotation] */
+	_In_  UINT DstSubresource,
+	/* [annotation] */
+	_In_  UINT DstX,
+	/* [annotation] */
+	_In_  UINT DstY,
+	/* [annotation] */
+	_In_  UINT DstZ,
+	/* [annotation] */
+	_In_  ID3D11Resource *pSrcResource,
+	/* [annotation] */
+	_In_  UINT SrcSubresource,
+	/* [annotation] */
+	_In_opt_  const D3D11_BOX *pSrcBox,
+	/* [annotation] */
+	_In_  UINT CopyFlags)
+{
+	HookDebug("TrampolineContext::CopySubresourceRegion1()\n");
+	return orig_vtable.CopySubresourceRegion1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
+}
+
+static void STDMETHODCALLTYPE TrampolineUpdateSubresource1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11Resource *pDstResource,
+	/* [annotation] */
+	_In_  UINT DstSubresource,
+	/* [annotation] */
+	_In_opt_  const D3D11_BOX *pDstBox,
+	/* [annotation] */
+	_In_  const void *pSrcData,
+	/* [annotation] */
+	_In_  UINT SrcRowPitch,
+	/* [annotation] */
+	_In_  UINT SrcDepthPitch,
+	/* [annotation] */
+	_In_  UINT CopyFlags)
+{
+	HookDebug("TrampolineContext::UpdateSubresource1()\n");
+	return orig_vtable.UpdateSubresource1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
+}
+
+static void STDMETHODCALLTYPE TrampolineDiscardResource(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11Resource *pResource)
+{
+	HookDebug("TrampolineContext::DiscardResource()\n");
+	return orig_vtable.DiscardResource(((ID3D11DeviceContext1Trampoline*)This)->orig_this, pResource);
+}
+
+static void STDMETHODCALLTYPE TrampolineDiscardView(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11View *pResourceView)
+{
+	HookDebug("TrampolineContext::DiscardView()\n");
+	return orig_vtable.DiscardView(((ID3D11DeviceContext1Trampoline*)This)->orig_this, pResourceView);
+}
+
+static void STDMETHODCALLTYPE TrampolineVSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::VSSetConstantBuffers1()\n");
+	return orig_vtable.VSSetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineHSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::HSSetConstantBuffers1()\n");
+	return orig_vtable.HSSetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineDSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::DSSetConstantBuffers1()\n");
+	return orig_vtable.DSSetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineGSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::GSSetConstantBuffers1()\n");
+	return orig_vtable.GSSetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolinePSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::PSSetConstantBuffers1()\n");
+	return orig_vtable.PSSetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineCSSetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  ID3D11Buffer *const *ppConstantBuffers,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pFirstConstant,
+	/* [annotation] */
+	_In_reads_opt_(NumBuffers)  const UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::CSSetConstantBuffers1()\n");
+	return orig_vtable.CSSetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineVSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::VSGetConstantBuffers1()\n");
+	return orig_vtable.VSGetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineHSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::HSGetConstantBuffers1()\n");
+	return orig_vtable.HSGetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineDSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::DSGetConstantBuffers1()\n");
+	return orig_vtable.DSGetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineGSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::GSGetConstantBuffers1()\n");
+	return orig_vtable.GSGetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolinePSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::PSGetConstantBuffers1()\n");
+	return orig_vtable.PSGetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineCSGetConstantBuffers1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - 1)  UINT StartSlot,
+	/* [annotation] */
+	_In_range_(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT - StartSlot)  UINT NumBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  ID3D11Buffer **ppConstantBuffers,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pFirstConstant,
+	/* [annotation] */
+	_Out_writes_opt_(NumBuffers)  UINT *pNumConstants)
+{
+	HookDebug("TrampolineContext::CSGetConstantBuffers1()\n");
+	return orig_vtable.CSGetConstantBuffers1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
+}
+
+static void STDMETHODCALLTYPE TrampolineSwapDeviceContextState(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3DDeviceContextState *pState,
+	/* [annotation] */
+	_Out_opt_  ID3DDeviceContextState **ppPreviousState)
+{
+	HookDebug("TrampolineContext::SwapDeviceContextState()\n");
+	return orig_vtable.SwapDeviceContextState(((ID3D11DeviceContext1Trampoline*)This)->orig_this, pState, ppPreviousState);
+}
+
+static void STDMETHODCALLTYPE TrampolineClearView(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11View *pView,
+	/* [annotation] */
+	_In_  const FLOAT Color[4],
+	/* [annotation] */
+	_In_reads_opt_(NumRects)  const D3D11_RECT *pRect,
+	UINT NumRects)
+{
+	HookDebug("TrampolineContext::ClearView()\n");
+	return orig_vtable.ClearView(((ID3D11DeviceContext1Trampoline*)This)->orig_this, pView, Color, pRect, NumRects);
+}
+
+static void STDMETHODCALLTYPE TrampolineDiscardView1(ID3D11DeviceContext1 *This,
+	/* [annotation] */
+	_In_  ID3D11View *pResourceView,
+	/* [annotation] */
+	_In_reads_opt_(NumRects)  const D3D11_RECT *pRects,
+	UINT NumRects)
+{
+	HookDebug("TrampolineContext::DiscardView1()\n");
+	return orig_vtable.DiscardView1(((ID3D11DeviceContext1Trampoline*)This)->orig_this, pResourceView, pRects, NumRects);
+}
+
 static CONST_VTBL struct ID3D11DeviceContext1Vtbl trampoline_vtable = {
 	TrampolineQueryInterface,
 	TrampolineAddRef,
@@ -3533,6 +4250,25 @@ static CONST_VTBL struct ID3D11DeviceContext1Vtbl trampoline_vtable = {
 	TrampolineGetType,
 	TrampolineGetContextFlags,
 	TrampolineFinishCommandList,
+	TrampolineCopySubresourceRegion1,
+	TrampolineUpdateSubresource1,
+	TrampolineDiscardResource,
+	TrampolineDiscardView,
+	TrampolineVSSetConstantBuffers1,
+	TrampolineHSSetConstantBuffers1,
+	TrampolineDSSetConstantBuffers1,
+	TrampolineGSSetConstantBuffers1,
+	TrampolinePSSetConstantBuffers1,
+	TrampolineCSSetConstantBuffers1,
+	TrampolineVSGetConstantBuffers1,
+	TrampolineHSGetConstantBuffers1,
+	TrampolineDSGetConstantBuffers1,
+	TrampolineGSGetConstantBuffers1,
+	TrampolinePSGetConstantBuffers1,
+	TrampolineCSGetConstantBuffers1,
+	TrampolineSwapDeviceContextState,
+	TrampolineClearView,
+	TrampolineDiscardView1,
 };
 
 ID3D11DeviceContext1* hook_context(ID3D11DeviceContext1 *orig_context, ID3D11DeviceContext1 *hacker_context)

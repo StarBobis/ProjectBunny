@@ -32,7 +32,75 @@ ULONG references(IUnknown* object)
     return count;
 }
 
-int run_child(const wchar_t* library, bool native_control, bool denied_interfaces)
+void exercise_context1(ID3D11Device1* device, ID3D11DeviceContext1* context)
+{
+    UINT values[64];
+    for (UINT index = 0; index < 64; ++index) values[index] = index * 7 + 13;
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = sizeof(values); desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    ComPtr<ID3D11Buffer> buffer, staging;
+    check(SUCCEEDED(device->CreateBuffer(&desc,nullptr,&buffer)),"Context1 test buffer");
+    ID3D11Buffer* bound = buffer.Get();
+    const UINT first = 0, count = 16;
+    decltype(&ID3D11DeviceContext1::VSSetConstantBuffers1) setters[] = {
+        &ID3D11DeviceContext1::VSSetConstantBuffers1, &ID3D11DeviceContext1::HSSetConstantBuffers1,
+        &ID3D11DeviceContext1::DSSetConstantBuffers1, &ID3D11DeviceContext1::GSSetConstantBuffers1,
+        &ID3D11DeviceContext1::PSSetConstantBuffers1, &ID3D11DeviceContext1::CSSetConstantBuffers1};
+    decltype(&ID3D11DeviceContext1::VSGetConstantBuffers1) getters[] = {
+        &ID3D11DeviceContext1::VSGetConstantBuffers1, &ID3D11DeviceContext1::HSGetConstantBuffers1,
+        &ID3D11DeviceContext1::DSGetConstantBuffers1, &ID3D11DeviceContext1::GSGetConstantBuffers1,
+        &ID3D11DeviceContext1::PSGetConstantBuffers1, &ID3D11DeviceContext1::CSGetConstantBuffers1};
+    for (unsigned stage = 0; stage < 6; ++stage) {
+        (context->*setters[stage])(0,1,&bound,&first,&count);
+        ComPtr<ID3D11Buffer> actual;
+        UINT actual_first = 0, actual_count = 0;
+        (context->*getters[stage])(0,1,&actual,&actual_first,&actual_count);
+        check(actual.Get() == buffer.Get() && actual_first == first && actual_count == count,
+            "Context1 constant-buffer windows round-trip on all six stages");
+    }
+    context->UpdateSubresource1(buffer.Get(),0,nullptr,values,0,0,0);
+    desc.BindFlags = 0; desc.Usage = D3D11_USAGE_STAGING; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    check(SUCCEEDED(device->CreateBuffer(&desc,nullptr,&staging)),"Context1 readback allocation");
+    context->CopySubresourceRegion1(staging.Get(),0,0,0,0,buffer.Get(),0,nullptr,0);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    check(SUCCEEDED(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped)),"Context1 readback Map");
+    const bool correct = std::memcmp(mapped.pData,values,sizeof(values)) == 0;
+    context->Unmap(staging.Get(),0);
+    check(correct,"Context1 update and copy preserve actual GPU bytes");
+    D3D11_BLEND_DESC1 blend{};
+    ComPtr<ID3D11BlendState1> blend_state;
+    check(SUCCEEDED(device->CreateBlendState1(&blend,&blend_state)),"Device1 blend-state forwarding");
+    D3D11_RASTERIZER_DESC1 raster{};
+    raster.FillMode = D3D11_FILL_SOLID; raster.CullMode = D3D11_CULL_NONE; raster.DepthClipEnable = TRUE;
+    ComPtr<ID3D11RasterizerState1> raster_state;
+    check(SUCCEEDED(device->CreateRasterizerState1(&raster,&raster_state)),"Device1 rasterizer forwarding");
+    const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+    ComPtr<ID3DDeviceContextState> state, previous;
+    check(SUCCEEDED(device->CreateDeviceContextState(0,&level,1,D3D11_SDK_VERSION,
+        __uuidof(ID3D11Device),nullptr,&state)),"Device1 context-state creation");
+    context->SwapDeviceContextState(state.Get(),&previous);
+    context->SwapDeviceContextState(previous.Get(),nullptr);
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture_desc.Width = texture_desc.Height = texture_desc.MipLevels = texture_desc.ArraySize = 1;
+    texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; texture_desc.SampleDesc.Count = 1;
+    texture_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11RenderTargetView> view;
+    check(SUCCEEDED(device->CreateTexture2D(&texture_desc,nullptr,&texture)) &&
+        SUCCEEDED(device->CreateRenderTargetView(texture.Get(),nullptr,&view)),"Context1 clear/discard fixture");
+    const float color[] = {0,0.5f,1,1};
+    context->ClearView(view.Get(),color,nullptr,0);
+    context->DiscardView(view.Get());
+    context->DiscardView1(view.Get(),nullptr,0);
+    context->DiscardResource(texture.Get());
+    void* unavailable = nullptr;
+    check(FAILED(device->OpenSharedResource1(nullptr,__uuidof(ID3D11Texture2D),&unavailable)) &&
+        unavailable == nullptr,"Device1 invalid shared-handle failure forwarding");
+    check(FAILED(device->OpenSharedResourceByName(L"",GENERIC_READ,__uuidof(ID3D11Texture2D),&unavailable)) &&
+        unavailable == nullptr,"Device1 invalid shared-name failure forwarding");
+}
+
+int run_child(const wchar_t* library, bool native_control, bool denied_interfaces, bool native_routing)
 {
     if (native_control) {
         wchar_t system_dir[MAX_PATH]{};
@@ -85,8 +153,9 @@ int run_child(const wchar_t* library, bool native_control, bool denied_interface
     check(device && context, "proxy returns actual device and immediate context");
     auto** device_table = *reinterpret_cast<void***>(device.Get());
     auto** context_table = *reinterpret_cast<void***>(context.Get());
-    check(belongs_to_proxy(device_table[3], proxy) && belongs_to_proxy(context_table[14], proxy),
-        "returned CreateBuffer and Map methods execute loaded proxy code");
+    check(belongs_to_proxy(device_table[3], proxy) != native_routing &&
+        belongs_to_proxy(context_table[14], proxy) != native_routing,
+        "creation uses the configured wrapper or native method-routing mode");
     if (denied_interfaces) {
         void* output = nullptr;
         const auto device_before = references(device.Get());
@@ -168,6 +237,11 @@ int run_child(const wchar_t* library, bool native_control, bool denied_interface
     ComPtr<ID3D11Device> context_device;
     context_only->GetDevice(&context_device);
     check(context_device != nullptr, "context-only creation still returns its owning device");
+    ComPtr<ID3D11Device1> full_device;
+    ComPtr<ID3D11DeviceContext1> full_context;
+    check(SUCCEEDED(device.As(&full_device)) && SUCCEEDED(context.As(&full_context)),
+        "query extended interfaces for configured Context1 operations");
+    exercise_context1(full_device.Get(),full_context.Get());
     check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
         D3D11_SDK_VERSION, nullptr, nullptr, nullptr)),
         "proxy preserves native validation-only creation without outputs");
@@ -183,7 +257,8 @@ int run_parent(const wchar_t* library, const wchar_t* root)
     bool in_build = false;
     for (const auto& part : base) in_build |= _wcsicmp(part.c_str(), L"build") == 0;
     check(in_build, "proxy fixture remains under build directory");
-    const auto fixture = base / (L"proxy-smoke-" + std::to_wstring(GetCurrentProcessId()));
+    const auto fixture = base / (L"proxy-smoke-" + std::to_wstring(GetCurrentProcessId()) +
+        L"-" + std::to_wstring(GetTickCount64()));
     check(std::filesystem::create_directory(fixture), "create exclusive proxy fixture without overwriting files");
     const auto copied = fixture / L"d3d11.dll";
     std::filesystem::copy_file(library, copied);
@@ -195,7 +270,13 @@ int run_parent(const wchar_t* library, const wchar_t* root)
     wchar_t executable[MAX_PATH]{};
     check(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "locate proxy smoke executable");
     const ULONGLONG deadline = GetTickCount64() + 20000;
-    for (const auto* mode : {L"--child", L"--child-native-control", L"--child-denied-qi"}) {
+    for (const auto* mode : {L"--child", L"--child-native-control", L"--child-hook-all", L"--child-denied-qi"}) {
+        if (std::wstring(mode) == L"--child-hook-all") {
+            std::ofstream ini(fixture / L"d3dx.ini",std::ios::binary | std::ios::trunc);
+            ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=1\nhook=all\n[Hunting]\nhunting=0\n[Constants]\nx=1\n";
+            ini.close();
+            check(!ini.fail(),"write owned native-routing configuration");
+        }
         if (std::wstring(mode) == L"--child-denied-qi") {
             std::ofstream ini(fixture / L"d3dx.ini",std::ios::binary | std::ios::trunc);
             ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=0\n[Hunting]\nhunting=0\n[Constants]\nx=1\n";
@@ -238,8 +319,8 @@ int wmain(int argc, wchar_t** argv)
     try {
         check(argc == 3, "expected proxy DLL path and fixture parent, or --child and DLL path");
         const std::wstring mode(argv[1]);
-        if (mode == L"--child" || mode == L"--child-native-control" || mode == L"--child-denied-qi")
-            return run_child(argv[2], mode == L"--child-native-control", mode == L"--child-denied-qi");
+        if (mode == L"--child" || mode == L"--child-native-control" || mode == L"--child-hook-all" || mode == L"--child-denied-qi")
+            return run_child(argv[2], mode == L"--child-native-control", mode == L"--child-denied-qi", mode == L"--child-hook-all");
         return run_parent(argv[1], argv[2]);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL loaded proxy smoke: %s (Win32=%lu)\n", error.what(), GetLastError());

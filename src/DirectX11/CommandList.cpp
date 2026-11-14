@@ -6332,7 +6332,7 @@ void CustomResource::OverrideTexDesc(D3D11_TEXTURE3D_DESC *desc)
 	if (override_height != -1)
 		desc->Height = override_height;
 	if (override_depth != -1)
-		desc->Height = override_depth;
+		desc->Depth = override_depth;
 	if (override_mips != -1)
 		desc->MipLevels = override_mips;
 	if (override_format != (DXGI_FORMAT)-1)

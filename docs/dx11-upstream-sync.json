@@ -5280,7 +5280,7 @@
       "old STATIC pool initialization pollutes new globals during Constants"
     ],
     "validation": "PASS: full production and actual proxy DLL smoke CTest4/4 (13.77s); real valid-descriptor CreateBuffer E_OUTOFMEMORY and same-descriptor retry for copy/copy_desc; real native buffer RTV CRC; actual two-generation LoadConfig; optional export output combinations.",
-    "loop": "Round7 fixes verified; independent round8 ongoing. Review interruptions are not treated as passes.",
+    "loop": "Stopped further general adversarial review at user request: upstream feature synchronization is the acceptance scope. Round9 ABI review found no new confirmed issue; resource-pool failure-path candidate is recorded separately, not runtime-confirmed and not a synchronization blocker.",
     "targetRuntime": "Game testing deferred by user; isolated loaded-proxy harness is not target-game deployment or upstream binary differential run; original per-commit runtime statuses preserved.",
     "round6Confirmed": [
       "lazy GetImmediateContext successful QueryInterface reference imbalance",
@@ -5293,6 +5293,11 @@
       "rejected extended QI retains native interface",
       "pool lookup hash used as resource identity instead of complete normalized descriptor"
     ],
-    "round7Validation": "PASS: actual DLL deferred lifetime/null validation/denied QI controls; two real native texture descriptors with the same pool key A-B-A; normalized automatic mips allocation reuse; CTest4/4 (16.56s)."
+    "round7Validation": "PASS: actual DLL deferred lifetime/null validation/denied QI controls; two real native texture descriptors with the same pool key A-B-A; normalized automatic mips allocation reuse; CTest4/4 (16.56s).",
+    "round8Confirmed": [
+      "Texture3D override_depth writes Depth rather than Height",
+      "complete Context1 and Device1 hook/trampoline routing for hook=all"
+    ],
+    "round8Validation": "PASS: final full CTest 4/4 (17.89s), actual proxy DLL four-mode smoke, isolated pool/property regressions, DirectX12 compatibility build; SDK table/parameter review."
   }
 }

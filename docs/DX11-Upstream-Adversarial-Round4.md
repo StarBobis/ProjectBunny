@@ -69,3 +69,22 @@ STATIC 池回归为 `round5_config_regression.cpp`。第五轮 GPU 源链审查�
 最初的一组描述符在源端索引相同，经过 typeless 转换后却不同，不能据此确认错误；主审更换为池实际使用的 typeless 描述符后重新观察了 red/green。资源矩阵子代理曾被自动安全审查中断，主审接手完成了独立复现，该中断未计为审查通过。
 
 第七轮修复后完整 CTest 4/4 通过（16.56 秒），实际代理测试覆盖三种子进程模式：普通加载、原生库先加载、关闭 platform update。第八轮独立复审继续进行，仍未收尾。
+
+## 第八轮：三维资源及完整扩展接口
+
+- Texture3D 的 override_depth 误写到 Height。原生 Texture3D 8×4×2 的 copy_desc、height=4/depth=3 回归失败，修复为写 Depth，保留独立 Height 设置。
+- hook=all 且平台扩展开启时，Context1 路径访问空 trampoline 字段；独立实际 DLL 中合法 VSSetConstantBuffers1 调用访问冲突。初次把 DLL 放在宿主目录树外导致的 1114 属于目标校验，不算该缺陷的运行证据。
+
+补齐 Context1 19 个、Device1 7 个方法的适配函数、完整 trampoline 表及原生路由。接口业务仍由 HackerContext/HackerDevice 执行，适配层只转发。原生 QI 支持检查成功才读取/启用扩展表，否则只复制基础 Vtbl；额外 QI 引用平衡。SDK 类型检查及独立核对确认 Device1 50 槽、Context1 134 槽的顺序与 26 个扩展参数转发一致。
+
+实际 DLL 冒烟测试增加第四种 hook=all 模式，覆盖六阶段 CB1 窗口往返、UpdateSubresource1/CopySubresourceRegion1 实际 GPU 字节、扩展 blend/rasterizer/context state、Swap/Clear/Discard 及共享资源失败输入的转发。对 Clear/Discard 未声称内容完整性测试，discard 后数据本就未定义。基础 Vtbl 回退为源码检查，本机没有缺少 Context1 的原生运行库，不能称已实测该环境。
+
+第八轮修复后全 CTest 4/4 通过（21.23 秒），第九轮独立复审继续进行，未仅凭本轮绿色验证收尾。两次子代理遭自动安全审查中断的部分均未记为通过，主审或后续独立代理补足了本地复现/SDK/实际 DLL 验证。
+
+## 按特性同步范围收尾
+
+用户要求停止扩展一般缺陷审查，以同步上游特性为验收范围。基线后的 336 个提交已逐项处理，适用改动已适配本地 CMake/C++17；跳过项保留依据，目标游戏验证状态不提升。第八轮最终全 CTest 4/4 通过（17.89 秒），独立 pool/property 回归和 DirectX12 兼容构建通过。
+
+第九轮 ABI 复审没有新增确认问题。单独保留一个尚未运行故障注入确认的资源池候选：Variable 槽切换为 Resource 时，若 native 创建失败，变量值、槽类型或索引/更新时间可能已变化。此项属于后续失败路径健壮性调查，当前没有确认的上游特性遗漏，不继续扩展本次同步任务。
+
+未部署或运行目标游戏，未完成与上游预编译 DLL 的全面差分测试。少量被自动审批拒绝清理的失败测试临时目录仍保留在 build 下。

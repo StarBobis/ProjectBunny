@@ -914,6 +914,76 @@ static UINT STDMETHODCALLTYPE GetExceptionMode(
 	return orig_vtable.GetExceptionMode(This);
 }
 
+static void STDMETHODCALLTYPE GetImmediateContext1(ID3D11Device1* This,
+    _Out_ ID3D11DeviceContext1 **ppImmediateContext)
+{
+    ID3D11Device1* device = lookup_hooked_device(This);
+    if (device) return ID3D11Device1_GetImmediateContext1(device, ppImmediateContext);
+    return orig_vtable.GetImmediateContext1(This, ppImmediateContext);
+}
+
+static HRESULT STDMETHODCALLTYPE CreateDeferredContext1(ID3D11Device1* This,
+    UINT ContextFlags,
+    _Out_opt_ ID3D11DeviceContext1 **ppDeferredContext)
+{
+    ID3D11Device1* device = lookup_hooked_device(This);
+    if (device) return ID3D11Device1_CreateDeferredContext1(device, ContextFlags, ppDeferredContext);
+    return orig_vtable.CreateDeferredContext1(This, ContextFlags, ppDeferredContext);
+}
+
+static HRESULT STDMETHODCALLTYPE CreateBlendState1(ID3D11Device1* This,
+    _In_ const D3D11_BLEND_DESC1 *pBlendStateDesc,
+    _Out_opt_ ID3D11BlendState1 **ppBlendState)
+{
+    ID3D11Device1* device = lookup_hooked_device(This);
+    if (device) return ID3D11Device1_CreateBlendState1(device, pBlendStateDesc, ppBlendState);
+    return orig_vtable.CreateBlendState1(This, pBlendStateDesc, ppBlendState);
+}
+
+static HRESULT STDMETHODCALLTYPE CreateRasterizerState1(ID3D11Device1* This,
+    _In_ const D3D11_RASTERIZER_DESC1 *pRasterizerDesc,
+    _Out_opt_ ID3D11RasterizerState1 **ppRasterizerState)
+{
+    ID3D11Device1* device = lookup_hooked_device(This);
+    if (device) return ID3D11Device1_CreateRasterizerState1(device, pRasterizerDesc, ppRasterizerState);
+    return orig_vtable.CreateRasterizerState1(This, pRasterizerDesc, ppRasterizerState);
+}
+
+static HRESULT STDMETHODCALLTYPE CreateDeviceContextState(ID3D11Device1* This,
+    UINT Flags,
+    _In_reads_(FeatureLevels) const D3D_FEATURE_LEVEL *pFeatureLevels,
+    UINT FeatureLevels,
+    UINT SDKVersion,
+    REFIID EmulatedInterface,
+    _Out_opt_ D3D_FEATURE_LEVEL *pChosenFeatureLevel,
+    _Out_opt_ ID3DDeviceContextState **ppContextState)
+{
+    ID3D11Device1* device = lookup_hooked_device(This);
+    if (device) return ID3D11Device1_CreateDeviceContextState(device, Flags, pFeatureLevels, FeatureLevels, SDKVersion, EmulatedInterface, pChosenFeatureLevel, ppContextState);
+    return orig_vtable.CreateDeviceContextState(This, Flags, pFeatureLevels, FeatureLevels, SDKVersion, EmulatedInterface, pChosenFeatureLevel, ppContextState);
+}
+
+static HRESULT STDMETHODCALLTYPE OpenSharedResource1(ID3D11Device1* This,
+    _In_ HANDLE hResource,
+    _In_ REFIID returnedInterface,
+    _Out_ void **ppResource)
+{
+    ID3D11Device1* device = lookup_hooked_device(This);
+    if (device) return ID3D11Device1_OpenSharedResource1(device, hResource, returnedInterface, ppResource);
+    return orig_vtable.OpenSharedResource1(This, hResource, returnedInterface, ppResource);
+}
+
+static HRESULT STDMETHODCALLTYPE OpenSharedResourceByName(ID3D11Device1* This,
+    _In_ LPCWSTR lpName,
+    _In_ DWORD dwDesiredAccess,
+    _In_ REFIID returnedInterface,
+    _Out_ void **ppResource)
+{
+    ID3D11Device1* device = lookup_hooked_device(This);
+    if (device) return ID3D11Device1_OpenSharedResourceByName(device, lpName, dwDesiredAccess, returnedInterface, ppResource);
+    return orig_vtable.OpenSharedResourceByName(This, lpName, dwDesiredAccess, returnedInterface, ppResource);
+}
+
 static void install_hooks(ID3D11Device1 *device)
 {
 	SIZE_T hook_id;
@@ -926,7 +996,12 @@ static void install_hooks(ID3D11Device1 *device)
 
 	// Make sure that everything in the orig_vtable is filled in just in
 	// case we miss one of the hooks below:
-	memcpy(&orig_vtable, device->lpVtbl, sizeof(struct ID3D11Device1Vtbl));
+	ID3D11Device1* extended = nullptr;
+    const bool supports_device1 = SUCCEEDED(device->lpVtbl->QueryInterface(device,
+        IID_ID3D11Device1, reinterpret_cast<void**>(&extended))) && extended;
+    memcpy(&orig_vtable, device->lpVtbl, supports_device1 ?
+        sizeof(struct ID3D11Device1Vtbl) : sizeof(struct ID3D11DeviceVtbl));
+    if (extended) extended->lpVtbl->Release(extended);
 
 	// At the moment we are just throwing away the hook IDs - we should
 	// probably hold on to them incase we need to remove the hooks later:
@@ -973,6 +1048,16 @@ static void install_hooks(ID3D11Device1 *device)
 	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetImmediateContext,                  device->lpVtbl->GetImmediateContext,                  GetImmediateContext);
 	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetExceptionMode,                     device->lpVtbl->SetExceptionMode,                     SetExceptionMode);
 	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetExceptionMode,                     device->lpVtbl->GetExceptionMode,                     GetExceptionMode);
+    if (supports_device1) {
+        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetImmediateContext1, device->lpVtbl->GetImmediateContext1, GetImmediateContext1);
+        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDeferredContext1, device->lpVtbl->CreateDeferredContext1, CreateDeferredContext1);
+        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateBlendState1, device->lpVtbl->CreateBlendState1, CreateBlendState1);
+        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateRasterizerState1, device->lpVtbl->CreateRasterizerState1, CreateRasterizerState1);
+        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDeviceContextState, device->lpVtbl->CreateDeviceContextState, CreateDeviceContextState);
+        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OpenSharedResource1, device->lpVtbl->OpenSharedResource1, OpenSharedResource1);
+        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OpenSharedResourceByName, device->lpVtbl->OpenSharedResourceByName, OpenSharedResourceByName);
+    }
+
 }
 
 // This provides another ID3D11Device1 interface for calling the original
@@ -1472,6 +1557,62 @@ static UINT STDMETHODCALLTYPE TrampolineGetExceptionMode(
 	return orig_vtable.GetExceptionMode(((ID3D11Device1Trampoline*)This)->orig_this);
 }
 
+static void STDMETHODCALLTYPE TrampolineGetImmediateContext1(ID3D11Device1* This,
+    _Out_ ID3D11DeviceContext1 **ppImmediateContext)
+{
+    return orig_vtable.GetImmediateContext1(((ID3D11Device1Trampoline*)This)->orig_this, ppImmediateContext);
+}
+
+static HRESULT STDMETHODCALLTYPE TrampolineCreateDeferredContext1(ID3D11Device1* This,
+    UINT ContextFlags,
+    _Out_opt_ ID3D11DeviceContext1 **ppDeferredContext)
+{
+    return orig_vtable.CreateDeferredContext1(((ID3D11Device1Trampoline*)This)->orig_this, ContextFlags, ppDeferredContext);
+}
+
+static HRESULT STDMETHODCALLTYPE TrampolineCreateBlendState1(ID3D11Device1* This,
+    _In_ const D3D11_BLEND_DESC1 *pBlendStateDesc,
+    _Out_opt_ ID3D11BlendState1 **ppBlendState)
+{
+    return orig_vtable.CreateBlendState1(((ID3D11Device1Trampoline*)This)->orig_this, pBlendStateDesc, ppBlendState);
+}
+
+static HRESULT STDMETHODCALLTYPE TrampolineCreateRasterizerState1(ID3D11Device1* This,
+    _In_ const D3D11_RASTERIZER_DESC1 *pRasterizerDesc,
+    _Out_opt_ ID3D11RasterizerState1 **ppRasterizerState)
+{
+    return orig_vtable.CreateRasterizerState1(((ID3D11Device1Trampoline*)This)->orig_this, pRasterizerDesc, ppRasterizerState);
+}
+
+static HRESULT STDMETHODCALLTYPE TrampolineCreateDeviceContextState(ID3D11Device1* This,
+    UINT Flags,
+    _In_reads_(FeatureLevels) const D3D_FEATURE_LEVEL *pFeatureLevels,
+    UINT FeatureLevels,
+    UINT SDKVersion,
+    REFIID EmulatedInterface,
+    _Out_opt_ D3D_FEATURE_LEVEL *pChosenFeatureLevel,
+    _Out_opt_ ID3DDeviceContextState **ppContextState)
+{
+    return orig_vtable.CreateDeviceContextState(((ID3D11Device1Trampoline*)This)->orig_this, Flags, pFeatureLevels, FeatureLevels, SDKVersion, EmulatedInterface, pChosenFeatureLevel, ppContextState);
+}
+
+static HRESULT STDMETHODCALLTYPE TrampolineOpenSharedResource1(ID3D11Device1* This,
+    _In_ HANDLE hResource,
+    _In_ REFIID returnedInterface,
+    _Out_ void **ppResource)
+{
+    return orig_vtable.OpenSharedResource1(((ID3D11Device1Trampoline*)This)->orig_this, hResource, returnedInterface, ppResource);
+}
+
+static HRESULT STDMETHODCALLTYPE TrampolineOpenSharedResourceByName(ID3D11Device1* This,
+    _In_ LPCWSTR lpName,
+    _In_ DWORD dwDesiredAccess,
+    _In_ REFIID returnedInterface,
+    _Out_ void **ppResource)
+{
+    return orig_vtable.OpenSharedResourceByName(((ID3D11Device1Trampoline*)This)->orig_this, lpName, dwDesiredAccess, returnedInterface, ppResource);
+}
+
 static CONST_VTBL struct ID3D11Device1Vtbl trampoline_vtable = {
 	TrampolineQueryInterface,
 	TrampolineAddRef,
@@ -1516,6 +1657,13 @@ static CONST_VTBL struct ID3D11Device1Vtbl trampoline_vtable = {
 	TrampolineGetImmediateContext,
 	TrampolineSetExceptionMode,
 	TrampolineGetExceptionMode,
+    TrampolineGetImmediateContext1,
+    TrampolineCreateDeferredContext1,
+    TrampolineCreateBlendState1,
+    TrampolineCreateRasterizerState1,
+    TrampolineCreateDeviceContextState,
+    TrampolineOpenSharedResource1,
+    TrampolineOpenSharedResourceByName,
 };
 
 ID3D11Device1* hook_device(ID3D11Device1 *orig_device, ID3D11Device1 *hacker_device)
