@@ -70,6 +70,7 @@ void test_dx11_automatic_draw_count_regression();
 void test_dx11_shader_hash_miss_regression();
 void test_dx11_shader_header_file_regression();
 void test_dx11_resource_override_validation_regression();
+void test_dx11_resource_override_lifetime_regression(const std::filesystem::path&, const std::filesystem::path&);
 void test_dx11_ini_upload_failure_regression();
 void test_dx11_shader_model_bounds_regression();
 void test_dx11_initialization_gate_reliability_regression();
@@ -309,6 +310,13 @@ void test_f135()
         require_batch(rejected, "F135: the real input-button consumer rejects the invalid key");
     }
     VKInputButton valid(L"no_0x41");
+}
+
+void test_f176()
+{
+    AuditConfigScope config;
+    config.load("", 0, true);
+    test_dx11_resource_override_lifetime_regression(config.config, config.settings);
 }
 
 #include "ini_parameter_audit.inl"
@@ -709,6 +717,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-170", test_dx11_shader_hash_miss_regression},
     {"F-171", test_dx11_shader_header_file_regression},
     {"F-175", test_dx11_resource_override_validation_regression},
+    {"F-176", test_f176},
     {"F-186", test_f186},
     {"F-194", test_dx11_ini_upload_failure_regression},
     {"F-199", test_f199_review},

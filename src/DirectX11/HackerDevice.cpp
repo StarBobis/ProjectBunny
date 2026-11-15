@@ -1976,6 +1976,9 @@ static const DescType* process_texture_override(uint32_t hash,
 		const DescType *origDesc,
 		DescType *newDesc, bool& valid)
 {
+	// Consume configuration pointers and iteration state before reload can
+	// replace them. Only the caller-owned descriptor survives this scope.
+	CriticalSectionGuard(&G->mCriticalSection);
 	valid = true;
 	TextureOverrideMatches matches;
 	TextureOverride *textureOverride = NULL;

@@ -1,6 +1,18 @@
 // Substitute this TU only in the source regression executable, allowing tests
 // to invoke the unchanged production shader preparation path directly.
+#include "../lock.h"
+#include "../ResourceHash.h"
+static void resource_override_audit_match_boundary();
+template<class Desc>
+static void resource_override_audit_find(uint32_t hash, const Desc* desc, TextureOverrideMatches* matches, DrawCallInfo* draw)
+{
+    find_texture_overrides(hash, desc, matches, draw);
+    resource_override_audit_match_boundary();
+}
+// Schedule another thread after the real matcher; do not replace its results.
+#define find_texture_overrides resource_override_audit_find
 #include "../HackerDevice.cpp"
+#undef find_texture_overrides
 #include "slot_range_test_support.h"
 #include <filesystem>
 #include <fstream>
@@ -474,3 +486,4 @@ void test_dx11_resource_override_validation_regression()
     require_batch(SUCCEEDED(device.device->CreateTexture3D(&volume,nullptr,&rejected)),"F175: removing the bad override recovers normal creation");
 }
 #include "texture_initial_debug_audit.inl"
+#include "resource_override_lifetime_audit.inl"

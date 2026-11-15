@@ -479,6 +479,13 @@
       "summary": "legacy profiling start/end复用既有collection token与samples mutex，旧窗口end在触碰Overhead前丢弃；QPC起止不包含新增锁/token开销，Sample独立起点避免重复捕获。确定红、normal/idle/double-end/嵌套/复用/mode/clear先后/Finish专项、主线25+10全流程及独立审查通过。仅统计协议对齐，既有clear两段夹缝未原子化，不宣称渲染或性能收益。",
       "evidence": "validation/F-196.json",
       "commitLookup": "git log --fixed-strings --grep=F-196"
+    },
+    {
+      "id": "F-176",
+      "status": "validated-in-simulator",
+      "summary": "资源创建的匹配/iteration/F175数值处理在既有G域内完成，返回caller-owned最终desc后才调用D3D，消除reload使borrowed配置失效。真实exact/fuzzy reload、Buffer/1D、20次双线程iteration及F175边界专项、主线25+10全流程和独立审查通过；旧入口本已无条件取G，未新增项目锁边，既有C/G逆序与F174不外推修复。",
+      "evidence": "validation/F-176.json",
+      "commitLookup": "git log --fixed-strings --grep=F-176"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
