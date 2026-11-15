@@ -3414,7 +3414,7 @@ static bool parse_masked_flags_field(const wstring setting, unsigned *val, unsig
 {
 	std::vector<std::wstring> tokens;
 	std::wstring token;
-	int ret, len1, len2;
+	int ret, len1 = -1, len2 = -1;
 	unsigned i;
 	bool use_mask = false;
 	bool set;
@@ -3430,8 +3430,8 @@ static bool parse_masked_flags_field(const wstring setting, unsigned *val, unsig
 
 	// Try parsing the field as a hex string with an optional mask:
 	ret = swscanf_s(setting.c_str(), L"0x%x%n / 0x%x%n", val, &len1, mask, &len2);
-	if (ret != 0 && ret != EOF && (len1 == setting.length() || len2 == setting.length())) {
-		if (ret == 2)
+	if ((ret == 1 && len1 == setting.length()) || (ret == 2 && len2 == setting.length())) {
+		if (ret == 1)
 			*mask = 0xffffffff;
 		LogInfo("    Using: 0x%08x / 0x%08x\n", *val, *mask);
 		return true;

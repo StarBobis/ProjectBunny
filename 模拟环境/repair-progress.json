@@ -120,6 +120,13 @@
       "summary": "重载shader前校验完整16位ASCII十六进制hash，非法文件名返回失败与诊断而非抛异常或接受部分前缀；零/最大值/混合大小写及合法尚未加载shader保持成功跳过，专项与全流程通过。",
       "evidence": "validation/F-184.json",
       "commitLookup": "git log --fixed-strings --grep=F-184"
+    },
+    {
+      "id": "F-187",
+      "status": "validated-in-simulator",
+      "summary": "按成功转换数和对应消费长度解析数值flags；仅省略mask时设全1，显式mask含零值保持原值，初始化扫描长度。真实FuzzyMatch验证部分/完整mask、命名正负flags及三个实际枚举表，缺项尾随垃圾拒绝，专项与全流程通过。",
+      "evidence": "validation/F-187.json",
+      "commitLookup": "git log --fixed-strings --grep=F-187"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
