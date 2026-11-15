@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <string_view>
 
 ShaderRegexGroups shader_regex_groups;
 std::vector<ShaderRegexGroup*> shader_regex_group_index;
@@ -43,17 +44,60 @@ static bool get_shader_model(std::string *asm_text, std::string *shader_model)
 
 static bool find_dcl_end(std::string *asm_text, size_t *dcl_end_pos)
 {
-	// FIXME: Might be better to scan forwards
-
-	*dcl_end_pos = asm_text->rfind("\ndcl_");
-	*dcl_end_pos = asm_text->find("\n", *dcl_end_pos + 1);
-
-	if (*dcl_end_pos == std::string::npos) {
-		LogInfo("WARNING: Unable to locate end of shader declarations!\n");
-		return false;
+	size_t anchor = std::string::npos;
+	bool level9_header = false;
+	char level9_stage = 0;
+	for (size_t pos = 0; pos < asm_text->size();) {
+		const size_t line_end = asm_text->find('\n', pos);
+		const size_t end = line_end == std::string::npos ? asm_text->size() : line_end;
+		std::string_view line(asm_text->data() + pos, end - pos);
+		const size_t raw_first = line.find_first_not_of(" \t\r");
+		if (anchor == std::string::npos && raw_first != std::string_view::npos) {
+			auto comment = line.substr(raw_first);
+			comment = comment.substr(0, comment.find_last_not_of(" \t\r") + 1);
+			if (comment == "// Level9 shader bytecode:") level9_header = true;
+		}
+		line = line.substr(0, line.find("//"));
+		const size_t first = line.find_first_not_of(" \t\r");
+		if (first != std::string_view::npos) {
+			line.remove_prefix(first);
+			line = line.substr(0, line.find_last_not_of(" \t\r") + 1);
+			if (anchor == std::string::npos) {
+				const bool compatibility_model = line == "vs_2_0" || line == "vs_2_x" ||
+					line == "ps_2_0" || line == "ps_2_x";
+				if (level9_header && first != 0 && (level9_stage || compatibility_model)) {
+					// Like the assembler, ignore the indented Level9 bytecode
+					// until its unindented DXBC model, never treating it as dcl_.
+					if (!level9_stage) level9_stage = line[0];
+				} else {
+					const bool model = line.size() == 6 &&
+						std::string_view("pvghdc").find(line[0]) != std::string_view::npos &&
+						line[1] == 's' && line[2] == '_' && line[4] == '_' &&
+						line[3] >= '4' && line[3] <= '5' && line[5] >= '0' && line[5] <= '9';
+					if (!model || line_end == std::string::npos || (level9_stage && line[0] != level9_stage))
+						break;
+					anchor = line_end;
+				}
+			} else if (line.substr(0, 4) == "dcl_") {
+				if (line_end == std::string::npos) {
+					anchor = std::string::npos;
+					break;
+				}
+				// Keep the last declaration, including later hull-shader phases.
+				anchor = line_end;
+			}
+		}
+		if (line_end == std::string::npos)
+			break;
+		pos = line_end + 1;
 	}
 
-	return true;
+	if (anchor != std::string::npos) {
+		*dcl_end_pos = anchor;
+		return true;
+	}
+	LogInfo("WARNING: Unable to locate end of shader declarations!\n");
+	return false;
 }
 
 static bool insert_declarations(std::string *asm_text, ShaderRegexDeclarations *declarations)

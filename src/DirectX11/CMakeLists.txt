@@ -177,6 +177,10 @@ if(BUILD_TESTING)
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/hlsl_decompiler_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/HLSLDecompiler/DecompileHLSL.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)ShaderRegex\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/shader_regex_audit_regression.cpp)
+    set_source_files_properties(tests/shader_regex_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ShaderRegex.cpp")
     list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)HackerDevice\\.cpp$")
     list(APPEND DX11_REGRESSION_SOURCES tests/hacker_device_audit_regression.cpp)
     set_source_files_properties(tests/hacker_device_audit_regression.cpp PROPERTIES
@@ -214,6 +218,7 @@ if(BUILD_TESTING)
         tests/audit_regressions.cpp
         tests/audit_dx9_regression.cpp
         tests/shader_ownership_audit.cpp
+        tests/shader_regex_declaration_audit.cpp
         tests/file_publication_audit.cpp
         tests/device_initialization_audit.cpp
         tests/resource_file_audit.cpp

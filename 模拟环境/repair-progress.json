@@ -437,6 +437,13 @@
       "summary": "选中PS的VB只记入PS集合，消除串入VS集合的一行错误；保持IB offset0整体hash等旧规则。真实hunting72绘制矩阵覆盖VS/PS组合、region开关及IB无/offset0/offset2，专项和主线25+10全流程通过，独立候选审查与主线小增量复核通过。",
       "evidence": "validation/F-293.json",
       "commitLookup": "git log --fixed-strings --grep=F-293"
+    },
+    {
+      "id": "F-296",
+      "status": "validated-in-simulator",
+      "summary": "声明定位按真实主模型/声明行扫描，解决前导注释且无dcl时插入错误，保留HS最后声明策略。v1新模型识别误拒合法level9_3已由SDK47/WARP及逐字往返反例否决；v2仅跳明确Level9兼容段再找对应DXBC主模型，四profile/八修改shader及旧边界、主线25+10全流程与独立v2审查通过。",
+      "evidence": "validation/F-296.json",
+      "commitLookup": "git log --fixed-strings --grep=F-296"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
