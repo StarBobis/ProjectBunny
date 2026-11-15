@@ -173,6 +173,10 @@ if(BUILD_TESTING)
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/hlsl_decompiler_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/HLSLDecompiler/DecompileHLSL.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)HackerDevice\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/hacker_device_audit_regression.cpp)
+    set_source_files_properties(tests/hacker_device_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/HackerDevice.cpp")
     string(REPLACE "${CMAKE_SOURCE_DIR}/src/common/util.cpp" "tests/util_audit_regression.cpp"
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/util_audit_regression.cpp PROPERTIES

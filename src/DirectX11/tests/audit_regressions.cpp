@@ -37,6 +37,7 @@ void test_dx11_appended_vertex_layout_regression();
 void test_dx11_decompiler_literal_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
+void test_dx11_decompile_file_diagnostic_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -270,6 +271,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-100", test_dx11_decompiler_literal_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
+    {"F-111", test_dx11_decompile_file_diagnostic_regression},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},

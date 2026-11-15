@@ -180,3 +180,9 @@ std::array<unsigned char,4> render_dx11_audit_constant_pixel(dx11_slot_test::Bat
         "literal audit: native fullscreen vertex shader");
     return render_pixel(device, vertex.Get(), pixel);
 }
+
+void with_dx11_audit_shader_files(void (*scenario)(const std::filesystem::path&))
+{
+    ShaderFilesScope files;
+    scenario(files.root);
+}

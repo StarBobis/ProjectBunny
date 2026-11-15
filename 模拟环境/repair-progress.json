@@ -232,6 +232,13 @@
       "summary": "STATIC非有限/缺元素选择不再发布空目标，引用和间接flags消费者分别判空；无模板getter不分配残缺对象，动态无效数值变量读取返回NaN、写入不改模板。保留负数/大数环绕、missing模板、FIFO/SPATIAL NaN UID与代理；专项及真实DLL非法池配置继续Constants、25+10全流程通过，修正五处同型的报告说法。",
       "evidence": "validation/F-110.json",
       "commitLookup": "git log --fixed-strings --grep=F-110"
+    },
+    {
+      "id": "F-111",
+      "status": "validated-in-simulator",
+      "summary": "自动重编译无导出时辅助FILE判空，保持真实成功字节码后续处理；错误blob长度不回绕，文件关闭后查询真实属性，失败零时间戳。真实编译警告/失败、无日志、HLSL/ASM导出与时间戳故障专项及NativeVS接受通过；25+10全流程通过，初版缺初始化装置结果不采纳。",
+      "evidence": "validation/F-111.json",
+      "commitLookup": "git log --fixed-strings --grep=F-111"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

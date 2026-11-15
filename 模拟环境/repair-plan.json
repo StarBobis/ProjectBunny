@@ -264,7 +264,7 @@
       "originalSeverity": "high",
       "evidence": "src/DirectX11/HackerDevice.cpp:1025",
       "additionalEvidence": null,
-      "correctedConclusion": "空 fw 仅在 LogFile && pErrorMsgs 写错误支路触发；GetFileTime(FILE*) 是独立错误。不能以 if(!fw)return 跳过成功编译 shader 的后续处理。",
+      "correctedConclusion": "自动重编译但未启用导出时fw合法为空，LogFile与诊断blob存在才触发写入。开启导出而打开失败已提前回退，不能混淆；文件辅助写入判空但不跳过成功字节码。关闭后读原生属性，替代GetFileTime(FILE*)，失败保持零时间。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "pending"

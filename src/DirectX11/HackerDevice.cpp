@@ -1015,21 +1015,24 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 	{
 		LPVOID errMsg = pErrorMsgs->GetBufferPointer();
 		SIZE_T errSize = pErrorMsgs->GetBufferSize();
+		const SIZE_T textSize = errSize ? errSize - 1 : 0;
 		LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
-		fwrite(errMsg, 1, errSize - 1, LogFile);
+		if (textSize) fwrite(errMsg, 1, textSize, LogFile);
 		LogInfo("------------------------------------------- HLSL code -------------------------------------------\n");
 		fwrite(decompiledCode.c_str(), 1, decompiledCode.size(), LogFile);
 		LogInfo("\n---------------------------------------------- END ----------------------------------------------\n");
 
 		// And write the errors to the HLSL file as comments too, as a more convenient spot to see them.
-		fprintf_s(fw, "\n\n/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~ HLSL errors ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
-		fwrite(errMsg, 1, errSize - 1, fw);
-		fprintf_s(fw, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/\n");
+		if (fw) {
+			fprintf_s(fw, "\n\n/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~ HLSL errors ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
+			if (textSize) fwrite(errMsg, 1, textSize, fw);
+			fprintf_s(fw, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/\n");
+		}
 	}
 
 	// If requested by .ini, also write the newly re-compiled assembly code to the file.  This gives a direct
 	// comparison between original ASM, and recompiled ASM.
-	if ((G->EXPORT_HLSL >= 3) && pCompiledOutput)
+	if (fw && (G->EXPORT_HLSL >= 3) && pCompiledOutput)
 	{
 		asmText = BinaryToAsmText(pCompiledOutput->GetBufferPointer(), pCompiledOutput->GetBufferSize(), G->patch_cb_offsets);
 		if (asmText.empty())
@@ -1061,12 +1064,17 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 	if (fw)
 	{
 		// Any HLSL compiled shaders are reloading candidates, if moved to ShaderFixes
-		FILETIME ftWrite;
-		GetFileTime(fw, NULL, NULL, &ftWrite);
+		const bool write_ok = !ferror(fw);
+		const int close_result = fclose(fw);
+		fw = nullptr;
+		FILETIME ftWrite{};
+		WIN32_FILE_ATTRIBUTE_DATA attributes{};
+		if (write_ok && close_result == 0 && GetFileAttributesExW(val, GetFileExInfoStandard, &attributes))
+			ftWrite = attributes.ftLastWriteTime;
+		else
+			LogWarning("    unable to obtain completed HLSL export timestamp for %S\n", val);
 		foundShaderModel = shaderModel;
 		timeStamp = ftWrite;
-
-		fclose(fw);
 	}
 
 	return !!pCode;
