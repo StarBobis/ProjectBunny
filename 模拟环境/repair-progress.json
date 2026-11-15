@@ -324,6 +324,13 @@
       "summary": "拒绝不安全资源尺寸数值转换，保留合法float乘法/截断、有限中间零值的优先级修复和完整iteration消耗；错误字段明确失败，原生非法格式HRESULT保留，不fallback。隔离候选+主线专项、25+10全流程及独立对抗复审通过；诊断用中性匹配上下文，不误归因覆盖，F174/F176不改。",
       "evidence": "validation/F-175.json",
       "commitLookup": "git log --fixed-strings --grep=F-175"
+    },
+    {
+      "id": "F-177",
+      "status": "validated-in-simulator",
+      "summary": "DEBUG初始数据预览最多读可证明的16字节；复用surface布局，紧凑范围保留原诊断，padding/NV11仅首行，未知/opaque不读但保留描述。真实1字节R8保护页红版复现，开关/布局矩阵专项与主线25+10全流程、对抗复审通过；关闭debug早退，哈希/初始化/创建行为及const find_ptr不改。",
+      "evidence": "validation/F-177.json",
+      "commitLookup": "git log --fixed-strings --grep=F-177"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

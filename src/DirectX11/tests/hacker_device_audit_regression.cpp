@@ -473,3 +473,4 @@ void test_dx11_resource_override_validation_regression()
     configuration.clear();
     require_batch(SUCCEEDED(device.device->CreateTexture3D(&volume,nullptr,&rejected)),"F175: removing the bad override recovers normal creation");
 }
+#include "texture_initial_debug_audit.inl"

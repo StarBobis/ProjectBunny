@@ -23,6 +23,7 @@ void test_dx11_signature_feature_comment_regression();
 void test_dx11_shader_replacement_ownership_regression();
 void test_dx11_finish_failure_regression();
 void test_dx11_shader_diagnostic_failure_regression();
+void test_dx11_texture_initial_debug_regression();
 void test_dx11_empty_hunting_present_regression();
 void test_dx11_reload_shader_filename_regression();
 void test_dx11_masked_flags_regression();
@@ -559,6 +560,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-153", test_dx11_shader_replacement_ownership_regression},
     {"F-167", test_dx11_finish_failure_regression},
     {"F-172", test_dx11_shader_diagnostic_failure_regression},
+    {"F-177", test_dx11_texture_initial_debug_regression},
     {"F-179", test_dx11_empty_hunting_present_regression},
     {"F-184", test_dx11_reload_shader_filename_regression},
     {"F-187", test_dx11_masked_flags_regression},

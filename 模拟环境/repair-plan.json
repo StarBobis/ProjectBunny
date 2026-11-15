@@ -1020,7 +1020,7 @@
       "additionalEvidence": "src/common/log.h:42-76",
       "correctedConclusion": "hex[i] 位于LogDebug宏参数，只有debug日志启用才读取；并非无条件越界。日志最多读合法可用字节，BC/行距不能简单宽高乘bpp。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "LogFile+DEBUG开关；真实最小R8创建/回读与保护页；16字节/紧凑/最后行/padding/BC/packed/planar/opaque及恢复，不声称全格式GPU支持",
       "implementationStatus": "pending"
     },
     {

@@ -18,6 +18,56 @@
 #include "DirectXTK/Src/PlatformHelpers.h"
 #include "DirectXTK/Src/LoaderHelpers.h"
 
+static size_t texture2d_initial_debug_prefix(const D3D11_TEXTURE2D_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial)
+{
+	if (!desc || !desc->Width || !desc->Height || !desc->ArraySize || desc->SampleDesc.Count != 1 ||
+		desc->Width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || desc->Height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+		return 0;
+	bool first_row_only = false;
+	switch (desc->Format) {
+	case DXGI_FORMAT_420_OPAQUE:
+		return 0;
+	case DXGI_FORMAT_NV11:
+		if (desc->Width % 4) return 0;
+		// LoaderHelpers uses a deliberately enlarged NV11 plane-size approximation.
+		first_row_only = true;
+		break;
+	case DXGI_FORMAT_NV12:
+	case DXGI_FORMAT_P010:
+	case DXGI_FORMAT_P016:
+		if ((desc->Width | desc->Height) & 1) return 0;
+		break;
+	case DXGI_FORMAT_YUY2:
+	case DXGI_FORMAT_Y210:
+	case DXGI_FORMAT_Y216:
+		if (desc->Width & 1) return 0;
+		break;
+	}
+	size_t bytes = 0, row_bytes = 0, rows = 0;
+	DirectX::LoaderHelpers::GetSurfaceInfo(desc->Width, desc->Height, desc->Format, &bytes, &row_bytes, &rows);
+	if (!bytes || !row_bytes || !rows || initial->SysMemPitch < row_bytes)
+		return 0;
+	// Tight rows form one contiguous data range. Otherwise the gap after the
+	// first row is padding, not a promised readable part of the caller's data.
+	const size_t readable = !first_row_only && initial->SysMemPitch == row_bytes ? bytes : row_bytes;
+	return min<size_t>(16, readable);
+}
+
+void LogDebugTexture2DInitialData(const D3D11_TEXTURE2D_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial)
+{
+	if (!LogFile || gLogVerbosity < LogVerbosity::DEBUG || !initial || !initial->pSysMem)
+		return;
+	LogDebugNoNL("  pInitialData = %p->%p, SysMemPitch: %u, SysMemSlicePitch: %u ",
+		initial, initial->pSysMem, initial->SysMemPitch, initial->SysMemSlicePitch);
+	const size_t count = texture2d_initial_debug_prefix(desc, initial);
+	const auto *hex = static_cast<const uint8_t*>(initial->pSysMem);
+	for (size_t i = 0; i < count; ++i)
+		LogDebugNoNL(" %02hX", hex[i]);
+	if (!count)
+		LogDebugNoNL(" [data bytes unavailable]");
+	LogDebug("\n");
+}
+
 // Overloaded functions to log any kind of resource description (useful to call
 // from templates):
 
