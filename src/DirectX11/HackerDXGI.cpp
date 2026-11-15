@@ -366,6 +366,7 @@ STDMETHODIMP HackerSwapChain::QueryInterface(THIS_
 	if (riid == __uuidof(IDXGISwapChain4))
 	{
 		LogInfo("***  returns E_NOINTERFACE as error for IDXGISwapChain4.\n");
+		reinterpret_cast<IUnknown*>(*ppvObject)->Release();
 		*ppvObject = NULL;
 		return E_NOINTERFACE;
 	}

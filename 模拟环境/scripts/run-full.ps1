@@ -39,6 +39,10 @@ foreach($mode in @('special','business')) {
         $specialComponentPointer=Join-Path $caseRoot 'component-report-path.txt'
         $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-Item',$Item,'-SpecialOnly','-ReportPointer',$specialComponentPointer)
     }
+    if($mode -eq 'special' -and $Item -eq 'F-178') {
+        $exe=(Get-Process -Id $PID).Path
+        $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-SpecialItem',$Item)
+    }
     $result=Invoke-IsolatedSimulationProcess -Executable $exe -Arguments $arguments -WorkingDirectory $caseRoot -LogPrefix (Join-Path $caseRoot 'host') -TimeoutMs $TimeoutMs -EnvironmentOverrides @{ASAN_OPTIONS='halt_on_error=1:alloc_dealloc_mismatch=1:new_delete_type_mismatch=1'}
     if($mode -eq 'special' -and $Item -eq 'F-152' -and (Test-Path -LiteralPath $specialComponentPointer)) {
         $specialComponentReport=Get-Content -LiteralPath ([IO.File]::ReadAllText($specialComponentPointer)) -Raw | ConvertFrom-Json

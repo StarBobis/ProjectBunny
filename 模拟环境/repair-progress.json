@@ -99,6 +99,13 @@
       "summary": "附加D3DCreateBlob失败不覆盖shader原生成功HRESULT，并记录警告；专项验证真实渲染、正常hash发布、无半成品重载元数据及取消注入后的留存恢复，整套测试通过。",
       "evidence": "validation/F-172.json",
       "commitLookup": "git log --fixed-strings --grep=F-172"
+    },
+    {
+      "id": "F-178",
+      "status": "validated-in-simulator",
+      "summary": "拒绝SwapChain4前归还成功QI获得的引用；真实DLL32次查询前后引用数不增长，Native对照稳定，保持E_NOINTERFACE/空输出，整套18+10项集成组件通过。",
+      "evidence": "validation/F-178.json",
+      "commitLookup": "git log --fixed-strings --grep=F-178"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

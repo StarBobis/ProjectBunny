@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <d3d11_1.h>
+#include <dxgi1_5.h>
 #include <wrl/client.h>
 #include <array>
 #include <cstdio>
@@ -258,7 +259,7 @@ void deferred_replay(Device& gpu)
     read_buffer(gpu, buffer.Get(), expected.data(), sizeof(expected));
 }
 
-void swapchain(const Runtime& runtime)
+void swapchain(const Runtime& runtime, bool check_query4 = false, bool expect_proxy = false)
 {
     HiddenWindow window;
     DXGI_SWAP_CHAIN_DESC desc{};
@@ -273,6 +274,23 @@ void swapchain(const Runtime& runtime)
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
     succeeded(runtime.create_swapchain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, 1,
         D3D11_SDK_VERSION, &desc, &chain, &device, nullptr, &context), "create hidden WARP swapchain");
+    if (check_query4) {
+        auto query = [&]() {
+            void* output = nullptr;
+            const HRESULT result = chain->QueryInterface(__uuidof(IDXGISwapChain4), &output);
+            if (expect_proxy) require(result == E_NOINTERFACE && !output, "F178: unsupported wrapper interface returns no object");
+            else {
+                require(SUCCEEDED(result) && output, "F178: native control actually supports SwapChain4");
+                reinterpret_cast<IUnknown*>(output)->Release();
+            }
+        };
+        query(); // Warm native lazy state before comparing relative counts.
+        const ULONG before = chain->AddRef(); chain->Release();
+        for (unsigned i = 0; i < 32; ++i) query();
+        const ULONG after = chain->AddRef(); chain->Release();
+        std::printf("F178 relative references before=%lu after=%lu proxy=%d\n", before, after, expect_proxy); std::fflush(stdout);
+        require(before == after, "F178: rejecting/returning QI must not retain an extra native reference");
+    }
     ComPtr<ID3D11Texture2D> buffer;
     succeeded(chain->GetBuffer(0, IID_PPV_ARGS(&buffer)), "get actual backbuffer");
     ComPtr<ID3D11RenderTargetView> view;
@@ -342,6 +360,12 @@ int wmain(int argc, wchar_t** argv)
         Runtime runtime(argv[1]);
         if (scenario == L"injected-device-failure") injected_device_failure(runtime, argv[1]);
         else if (scenario == L"swapchain") swapchain(runtime);
+        else if (scenario == L"swapchain-qi") {
+            wchar_t system_directory[MAX_PATH]{};
+            require(GetSystemDirectoryW(system_directory, MAX_PATH) != 0, "F178: locate native comparison path");
+            const auto native = std::filesystem::path(system_directory) / L"d3d11.dll";
+            swapchain(runtime, true, !std::filesystem::equivalent(native, std::filesystem::path(argv[1])));
+        }
         else {
             Device gpu(runtime);
             if (scenario == L"capabilities") capabilities(gpu);

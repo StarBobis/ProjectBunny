@@ -3,10 +3,12 @@ param(
     [Parameter(Mandatory)][string]$CandidateDll,
     [string]$BaselineDll = '',
     [string]$ReportPointer = '',
+    [string]$SpecialItem = '',
     [ValidateRange(100, 60000)][int]$TimeoutMs = 20000
 )
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 or newer is required.' }
+if($SpecialItem -and $SpecialItem -ne 'F-178'){throw 'Unknown actual-DLL specialization.'}
 . (Join-Path $PSScriptRoot 'process.ps1')
 $simulationRoot = Split-Path -Parent $PSScriptRoot
 $repositoryRoot = Split-Path -Parent $simulationRoot
@@ -37,7 +39,8 @@ $runRoot = Join-Path $simulationRoot "build\runs\$runId"
 New-Item -ItemType Directory -Path $runRoot | Out-Null
 $results = [Collections.Generic.List[object]]::new()
 $artifacts = [Collections.Generic.List[object]]::new()
-$scenarios = @('capabilities','buffer','texture','deferred','swapchain')
+$scenarios = @('capabilities','buffer','texture','deferred','swapchain','swapchain-qi')
+if($SpecialItem){$scenarios=@('swapchain-qi')}
 $nativePassed = @{}
 $nativeDll = Join-Path ([Environment]::SystemDirectory) 'd3d11.dll'
 foreach ($scenario in $scenarios) {
@@ -62,6 +65,7 @@ foreach ($inputDll in $inputs) {
         [pscustomobject]@{name='smoke-hook-all';scenario='capabilities';exe=$smokePath;mode='--child-hook-all';config='hook-all.ini'},
         [pscustomobject]@{name='smoke-denied-qi';scenario='capabilities';exe=$smokePath;mode='--child-denied-qi';config='deny-interfaces.ini'}
     )
+    if($SpecialItem){$cases=@($cases | Where-Object name -eq 'swapchain-qi')}
     foreach ($case in $cases) {
         $caseId = "$($inputDll.label)-$($case.name)"
         if (-not $nativePassed[$case.scenario]) {
@@ -95,6 +99,7 @@ foreach ($inputDll in $inputs) {
 $head = & git -C $repositoryRoot rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { $head = 'unavailable' }
 $scope = 'Actual x64 DX11 DLL + WARP integration smoke only. No repair-item, real-game, hardware-driver or performance certification.'
+if($SpecialItem){$scope='F-178 actual proxy/native WARP SwapChain4 query and relative reference ownership scenario.'}
 $report = [ordered]@{
     schemaVersion=1; runId=$runId; utc=[DateTime]::UtcNow.ToString('o'); repositoryHead=$head
     os=[Environment]::OSVersion.VersionString; processArchitecture='x64'; driver='WARP'
@@ -125,3 +130,4 @@ if ($ReportPointer) {
     } finally { $pointerFile.Dispose() }
 }
 if (@($results | Where-Object status -ne 'PASS').Count -gt 0) { exit 1 }
+if($SpecialItem){Write-Host "PASS audit item: $SpecialItem"}
