@@ -416,6 +416,13 @@
       "summary": "fixImm初始化并验证整条immediate32及组件后才恢复精度，保留尾逗号/空白、整数/raw bits不该重写的路径和旧正INF特例，失败原样返回并诊断。53调用站点复核、真实公开精度往返和边界专项、主线25+10全流程及独立候选/合并审查通过；旧hex INF/NaN位解释差异未声称修复。",
       "evidence": "validation/F-282.json",
       "commitLookup": "git log --fixed-strings --grep=F-282"
+    },
+    {
+      "id": "F-285",
+      "status": "validated-in-simulator",
+      "summary": "DX9 CTAB反射的PT_SAMPLER3D改为3D维度，native sampler3D/2D/Cube/1D/generic+tex2D五组真实编译与binding/declaration专项、主线25+10全流程及独立候选/合并审查通过。generic+tex2D原夹具误期望1D已按原生2D纠正，未混修MemberCount或宣称SM3重编译支持。",
+      "evidence": "validation/F-285.json",
+      "commitLookup": "git log --fixed-strings --grep=F-285"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

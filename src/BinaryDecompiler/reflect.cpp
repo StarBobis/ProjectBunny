@@ -1091,7 +1091,7 @@ void LoadD3D9ConstantTable(const char* data,
 				res->eDimension = REFLECT_RESOURCE_DIMENSION_TEXTURE2D;
 				break;
 			case PT_SAMPLER3D:
-				res->eDimension = REFLECT_RESOURCE_DIMENSION_TEXTURE2D;
+				res->eDimension = REFLECT_RESOURCE_DIMENSION_TEXTURE3D;
 				break;
 			case PT_SAMPLERCUBE:
 				res->eDimension = REFLECT_RESOURCE_DIMENSION_TEXTURECUBE;

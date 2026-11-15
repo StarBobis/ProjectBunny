@@ -46,3 +46,40 @@ void test_dx11_dx9_constant_reset_regression()
         check(constant_kind(reg, false) == OPERAND_TYPE_CONSTANT_BUFFER, "F127: repeated non-DEF decodes stay independent");
     }
 }
+
+void check_dx11_dx9_sampler_dimension(const void* bytecode, unsigned expected_dimension)
+{
+    std::unique_ptr<Shader,ShaderDeleter> shader(DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode))));
+    check(shader && shader->dx9Shader && shader->ui32MajorVersion==3 && shader->eShaderType==PIXEL_SHADER,
+        "F285: production public decoder recognizes the native DX9 pixel shader");
+    const auto* info=shader->sInfo;
+    check(info && info->ui32NumConstantBuffers==1 && info->psConstantBuffers && info->psConstantBuffers[0].asVars.empty() &&
+        info->ui32NumResourceBindings==1 && info->psResourceBindings,
+        "F285: actual compiler CTAB contains a sampler resource and no struct variables");
+    ResourceBinding* resource=nullptr;
+    check(GetResourceFromBindingPoint(RGROUP_TEXTURE,3,info,&resource)==1 && resource==info->psResourceBindings &&
+        resource->Name=="Surface" && resource->ui32BindPoint==3 && resource->ui32BindCount==1 &&
+        resource->eType==RTYPE_TEXTURE && resource->ui32NumSamples==1,
+        "F285: downstream binding lookup preserves sampler identity and bind metadata");
+    std::fprintf(stderr,"F285: native CTAB dimension=%u expected=%u\n",static_cast<unsigned>(resource->eDimension),expected_dimension);
+    check(static_cast<unsigned>(resource->eDimension)==expected_dimension,
+        "F285: native sampler CTAB reflects its declared texture dimension");
+    ResourceBinding* missing=nullptr;
+    check(GetResourceFromBindingPoint(RGROUP_TEXTURE,2,info,&missing)==0 && missing==nullptr &&
+        GetResourceFromBindingPoint(RGROUP_SAMPLER,3,info,&missing)==0 && missing==nullptr,
+        "F285: unbound slots and separate sampler group remain absent for DX9 combined resources");
+    if (expected_dimension==REFLECT_RESOURCE_DIMENSION_TEXTURE2D || expected_dimension==REFLECT_RESOURCE_DIMENSION_TEXTURE3D ||
+            expected_dimension==REFLECT_RESOURCE_DIMENSION_TEXTURECUBE) {
+        const auto expected_declaration=expected_dimension==REFLECT_RESOURCE_DIMENSION_TEXTURE2D ? RESOURCE_DIMENSION_TEXTURE2D :
+            expected_dimension==REFLECT_RESOURCE_DIMENSION_TEXTURE3D ? RESOURCE_DIMENSION_TEXTURE3D : RESOURCE_DIMENSION_TEXTURECUBE;
+        bool found=false;
+        for (const auto& declaration : shader->asPhase[MAIN_PHASE].ppsDecl[0]) {
+            if (declaration.eOpcode==OPCODE_DCL_RESOURCE && declaration.asOperands[0].ui32RegisterNumber==3) {
+                check(declaration.value.eResourceDimension==expected_declaration,
+                    "F285: independent bytecode declaration agrees with reflected native sampler dimension");
+                found=true;
+            }
+        }
+        check(found,"F285: native bytecode exposes the real sampler resource declaration");
+    }
+}

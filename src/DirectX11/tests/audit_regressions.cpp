@@ -18,6 +18,8 @@ extern std::vector<CommandList*> pending_post_command_lists;
 std::array<unsigned char,4> render_dx11_audit_constant_pixel(dx11_slot_test::BatchDevice&, ID3D11PixelShader*);
 
 void test_dx11_dx9_constant_reset_regression();
+void check_dx11_dx9_sampler_dimension(const void*,unsigned);
+void test_dx11_dx9_sampler_dimension_regression();
 void test_dx11_assembler_double_index_regression();
 void test_dx11_assembler_interpolation_regression();
 void test_dx11_signature_register_eof_regression();
@@ -717,6 +719,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-184", test_dx11_reload_shader_filename_regression},
     {"F-187", test_dx11_masked_flags_regression},
     {"F-286", test_dx11_crash_help_regression},
+    {"F-285", test_dx11_dx9_sampler_dimension_regression},
     {"F-294", test_dx11_ini_enumeration_regression},
     {"F-295", test_dx11_stencil_diagnostic_regression},
     {"F-298", test_dx11_view_reference_null_diagnostic_regression},
@@ -1235,4 +1238,25 @@ void test_dx11_decompiler_public_immediate_regression()
             require_batch(failed,"F282: bad native immediate text propagates public failure instead of silently repairing it");
         }
     }
+}
+
+void test_dx11_dx9_sampler_dimension_regression()
+{
+    const std::pair<const char*,D3D_SRV_DIMENSION> cases[] = {
+        {"sampler3D Surface:register(s3);float4 main(float3 uv:TEXCOORD):COLOR0{return tex3D(Surface,uv);}",D3D_SRV_DIMENSION_TEXTURE3D},
+        {"sampler2D Surface:register(s3);float4 main(float2 uv:TEXCOORD):COLOR0{return tex2D(Surface,uv);}",D3D_SRV_DIMENSION_TEXTURE2D},
+        {"samplerCUBE Surface:register(s3);float4 main(float3 uv:TEXCOORD):COLOR0{return texCUBE(Surface,uv);}",D3D_SRV_DIMENSION_TEXTURECUBE},
+        {"sampler1D Surface:register(s3);float4 main(float uv:TEXCOORD):COLOR0{return tex1D(Surface,uv);}",D3D_SRV_DIMENSION_TEXTURE1D},
+        {"sampler Surface:register(s3);float4 main(float2 uv:TEXCOORD):COLOR0{return tex2D(Surface,uv);}",D3D_SRV_DIMENSION_TEXTURE2D}
+    };
+    for (const auto& fixture : cases) {
+        Microsoft::WRL::ComPtr<ID3DBlob> code,errors,assembly;
+        const auto hr=D3DCompile(fixture.first,std::strlen(fixture.first),nullptr,nullptr,nullptr,"main","ps_3_0",0,0,&code,&errors);
+        if (FAILED(hr) && errors) std::fprintf(stderr,"F285: compiler: %s\n",static_cast<const char*>(errors->GetBufferPointer()));
+        dx11_slot_test::require_batch(SUCCEEDED(hr),"F285: native compiler generates valid unmodified DX9 sampler bytecode with CTAB");
+        dx11_slot_test::require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&assembly)),
+            "F285: native disassembler accepts every compiled DX9 sampler fixture");
+        check_dx11_dx9_sampler_dimension(code->GetBufferPointer(),static_cast<unsigned>(fixture.second));
+    }
+    test_dx11_decompiler_public_literal_regression();
 }
