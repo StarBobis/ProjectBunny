@@ -7,16 +7,16 @@
   "oldPlanSha256": "83E9E7E8F523606455C8C1A81A5A11463159362AA61796B29AAB5A81663403E8",
   "counts": {
     "A": 23,
-    "B": 43,
+    "B": 42,
     "C": 29,
     "R": 26,
     "X": 4,
-    "E": 6,
+    "E": 7,
     "D12": 4,
     "N": 7
   },
   "total": 142,
-  "activeCandidateCount": 121,
+  "activeCandidateCount": 120,
   "rows": [
     {
       "id": "F-001",
@@ -596,16 +596,16 @@
     },
     {
       "id": "F-145",
-      "status": "成立但修正",
-      "group": "B",
-      "groupLabel": "跨函数语义，第二批候选",
+      "status": "局部成立，生产触达待证",
+      "group": "E",
+      "groupLabel": "证据不足，暂缓",
       "originalSeverity": "medium",
       "evidence": "src/D3D_Shaders/Assembler.cpp:2326",
       "additionalEvidence": null,
-      "correctedConclusion": "find失败后的部分substr起点回绕不抛，但后续sNew.substr(lastEnd)仍可能以npos抛异常；不是一概不抛/静默错文本。需整段delimiter/token检查。",
-      "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
+      "correctedConclusion": "合成缺右花括号ICB文本可使私有精度修补substr(npos)抛异常；但4个实际调用点只接受D3DDisassemble输出，未取得原生提供方产生该触发文本的DXBC。初次缺圆括号探针实为F142。正常精度修补/原生代码块位一致及WARP正例通过，生产不改，非已修复/误报。",
+      "executionGate": "冻结；补原生提供方版本、真实DXBC及原始输出，证明delimiter/token不一致可达，再设计完整段验证与失败回退",
       "targetedAcceptanceProposal": null,
-      "implementationStatus": "pending"
+      "implementationStatus": "frozen-awaiting-native-evidence"
     },
     {
       "id": "F-146",
@@ -1892,6 +1892,14 @@
       "previousGroup": "E",
       "currentGroup": "B",
       "reason": "旧复查遗漏未闭合操作数导致游标回零的可达循环，独立子进程专项已超时",
+      "detail": "执行复查修正报告.md"
+    },
+    {
+      "id": "F-145",
+      "date": "2026-11-15",
+      "previousGroup": "B",
+      "currentGroup": "E",
+      "reason": "私有函数合成输入可复现异常，实际调用仅处理原生反汇编输出；生产触发未补实",
       "detail": "执行复查修正报告.md"
     }
   ],

@@ -34,6 +34,28 @@ void test_dx11_assembler_word_progress_regression()
         "F142: the previously disputed ordinary final-word case retains its correct tokenization");
 }
 
+void test_dx11_precision_delimiter_review()
+{
+    const auto original=assembleIns("dcl_immediateConstantBuffer { { 1.0, 2.0, 3.0, 5.0} }");
+    bool local_exception=false;
+    try { (void)assembleAndCompare("dcl_immediateConstantBuffer { { 1.0, 2.0, 3.0, 4.0 missing",original); }
+    catch(const std::out_of_range&) {local_exception=true;}
+    check_assembler_audit(local_exception, "F145 review: malformed synthetic ICB text exposes a local delimiter exception");
+    std::fputs("F145 observation: local missing-brace exception confirmed; actual native producer reachability remains unproved\n",stderr);
+    for (const auto* text : {"mov r0.x, l(1.0)", "add r0.xyzw, l(1.0, 2.0, 3.0, 4.0), l(5.0, 6.0, 7.0, 8.0)",
+            "dmov r0.xyzw, d(1.0l, 2.0l)", "dcl_immediateConstantBuffer { { 1.0, 2.0, 3.0, 4.0} }"}) {
+        const auto words=assembleIns(text);
+        check_assembler_audit(assembleAndCompare(text,words)==text, "F145 review: preserve supported canonical literal formats");
+    }
+    for (const auto& pair : {std::pair<const char*,const char*>{"  mov r0.x, l(1.0)","mov r0.x, l(2.0)"},
+            {"mov r0.xyzw, l(1.0, 2.0, 3.0, 4.0)","mov r0.xyzw, l(2.0, 4.0, 6.0, 8.0)"},
+            {"dmov r0.xyzw, d(1.0l, 2.0l)","dmov r0.xyzw, d(3.0l, 4.0l)"}}) {
+        const auto bits=assembleIns(pair.second);
+        const auto corrected=assembleAndCompare(pair.first,bits);
+        check_assembler_audit(assembleIns(corrected)==bits, "F145 review: scalar/vector/double precision repair preserves exact binary words");
+    }
+}
+
 void test_dx11_assembler_declaration_regression()
 {
     const std::pair<const char*, DWORD> types[] = {

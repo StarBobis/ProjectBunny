@@ -41,6 +41,7 @@ void test_dx11_decompile_file_diagnostic_regression();
 void test_dx11_parameter_conversion_regression();
 void test_dx11_assembler_declaration_regression();
 void test_dx11_assembler_word_progress_regression();
+void test_dx11_precision_delimiter_review();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -368,6 +369,42 @@ void test_f142()
         "F142: explicit warning collection terminates and follows the existing continue policy");
 }
 
+std::vector<unsigned char> audit_shader_code(const std::vector<unsigned char>& binary)
+{
+    require_batch(binary.size()>=32,"shader code review: complete DXBC header");
+    uint32_t count=0; std::memcpy(&count,binary.data()+28,4);
+    require_batch(count<=(binary.size()-32)/4,"shader code review: complete chunk table");
+    for(uint32_t i=0;i<count;++i) {
+        uint32_t offset=0,length=0; std::memcpy(&offset,binary.data()+32+4*i,4);
+        require_batch(offset<=binary.size()-8,"shader code review: complete chunk header");
+        std::memcpy(&length,binary.data()+offset+4,4);
+        require_batch(length<=binary.size()-offset-8,"shader code review: complete chunk payload");
+        if(!std::memcmp(binary.data()+offset,"SHEX",4) || !std::memcmp(binary.data()+offset,"SHDR",4))
+            return {binary.begin()+offset+8,binary.begin()+offset+8+length};
+    }
+    throw std::runtime_error("shader code review: native shader has no code chunk");
+}
+
+void test_f145_review()
+{
+    test_dx11_precision_delimiter_review();
+    for(const auto* source : {"float4 main():SV_Target{return float4(0.02083333395421505,1.0000001192092896,-12345.6787109375,1.1754943508222875e-38);}",
+            "float4 main(float4 p:SV_Position):SV_Target{const float4 values[2]={float4(0.123456789,2.23456789,3,4),float4(5.3456789,6,7,8)};return values[(uint)p.x%2];}"}) {
+        ComPtr<ID3DBlob> code,errors;
+        require_batch(SUCCEEDED(D3DCompile(source,std::strlen(source),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+            "F145 review: actual native compiler creates scalar/vector and indexed constant shaders");
+        const auto* data=static_cast<const unsigned char*>(code->GetBufferPointer());
+        std::vector<unsigned char> original(data,data+code->GetBufferSize()),text;
+        require_batch(SUCCEEDED(disassembler(&original,&text,nullptr)),"F145 review: actual native disassembly and precision correction terminate");
+        std::vector<char> input(text.begin(),text.end());
+        const auto rebuilt=assembler(&input,original);
+        require_batch(audit_shader_code(rebuilt)==audit_shader_code(original),"F145 review: all native instruction bits survive precision round trip");
+        BatchDevice device; ComPtr<ID3D11PixelShader> shader;
+        require_batch(SUCCEEDED(device.native->CreatePixelShader(rebuilt.data(),rebuilt.size(),nullptr,&shader)),
+            "F145 review: native WARP accepts the complete corrected shader");
+    }
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -382,6 +419,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-138", test_f138},
     {"F-143", test_f143},
     {"F-142", test_f142},
+    {"F-145", test_f145_review},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
