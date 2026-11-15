@@ -35,6 +35,7 @@ void test_dx11_crash_help_regression();
 void test_dx11_ini_enumeration_regression();
 void test_dx11_stencil_diagnostic_regression();
 void test_dx11_view_reference_null_diagnostic_regression();
+void test_dx11_hunting_shader_selection_regression();
 void test_dx11_ini_lookup_performance();
 void test_dx11_file_publication_regression();
 void test_dx11_device_initialization_regression();
@@ -725,6 +726,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-294", test_dx11_ini_enumeration_regression},
     {"F-295", test_dx11_stencil_diagnostic_regression},
     {"F-298", test_dx11_view_reference_null_diagnostic_regression},
+    {"F-293", test_dx11_hunting_shader_selection_regression},
     {"P-01", test_dx11_ini_lookup_performance},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},

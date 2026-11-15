@@ -221,6 +221,7 @@ if(BUILD_TESTING)
         tests/finish_command_audit.cpp
         tests/d3d11_vtable_layout.c
         tests/hunting_present_audit.cpp
+        tests/hunting_shader_selection_audit.cpp
         tests/persistence_regression.cpp
         tests/input_layout_regression.cpp
         tests/ini_expression_regression.cpp

@@ -1004,7 +1004,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				if (mCurrentPixelShader == G->mSelectedPixelShader) {
 					for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
 						if (mCurrentVertexBuffers[i])
-							G->mSelectedVertexShader_VertexBuffer.insert(mCurrentVertexBuffers[i]);
+							G->mSelectedPixelShader_VertexBuffer.insert(mCurrentVertexBuffers[i]);
 					}
 					if (mCurrentIndexBuffer)
 						G->mSelectedPixelShader_IndexBuffer.insert(mCurrentIndexBuffer);

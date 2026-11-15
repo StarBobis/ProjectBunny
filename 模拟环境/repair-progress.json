@@ -430,6 +430,13 @@
       "summary": "仅_DEBUG_LAYER路径：主QI失败即返回，debug/infoqueue用ComPtr各释放一次；抽出真实helper由宏启用独立target验证，默认DLL设备标志不变。真实非debug WARP的E_NOINTERFACE、成功/次级QI失败/报告及引用数稳定专项、主线25+10全流程与候选独立审查通过。",
       "evidence": "validation/F-292.json",
       "commitLookup": "git log --fixed-strings --grep=F-292"
+    },
+    {
+      "id": "F-293",
+      "status": "validated-in-simulator",
+      "summary": "选中PS的VB只记入PS集合，消除串入VS集合的一行错误；保持IB offset0整体hash等旧规则。真实hunting72绘制矩阵覆盖VS/PS组合、region开关及IB无/offset0/offset2，专项和主线25+10全流程通过，独立候选审查与主线小增量复核通过。",
+      "evidence": "validation/F-293.json",
+      "commitLookup": "git log --fixed-strings --grep=F-293"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
