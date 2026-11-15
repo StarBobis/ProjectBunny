@@ -10,6 +10,43 @@ void check_assembler_audit(bool condition, const char* message)
 }
 struct IndexAddends { unsigned first, second; };
 struct InterpolationCase { const char* text; unsigned mode; };
+class GuardedAssemblySpan {
+    void* allocation=nullptr;
+    const char* view=nullptr;
+public:
+    explicit GuardedAssemblySpan(const std::string& text)
+    {
+        SYSTEM_INFO system{}; GetSystemInfo(&system);
+        check_assembler_audit(text.size()<=system.dwPageSize,"F146: guarded text fits the first page");
+        allocation=VirtualAlloc(nullptr,2*system.dwPageSize,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+        check_assembler_audit(allocation!=nullptr,"F146: allocate guarded input");
+        auto* boundary=static_cast<char*>(allocation)+system.dwPageSize;
+        DWORD previous=0;
+        if(!VirtualProtect(boundary,system.dwPageSize,PAGE_NOACCESS,&previous)) {
+            VirtualFree(allocation,0,MEM_RELEASE); allocation=nullptr;
+            throw std::runtime_error("F146: protect the byte immediately after the valid span");
+        }
+        view=boundary-text.size();
+        if(!text.empty()) std::memcpy(const_cast<char*>(view),text.data(),text.size());
+    }
+    ~GuardedAssemblySpan() {if(allocation) VirtualFree(allocation,0,MEM_RELEASE);}
+    const char* data() const {return view;}
+};
+}
+
+void test_dx11_assembler_line_bounds_regression()
+{
+    const std::pair<std::string,std::vector<std::string>> cases[] = {
+        {"ps_5_0",{"ps_5_0"}}, {"ps_5_0\nret",{"ps_5_0","ret"}}, {"ps_5_0\nret\n",{"ps_5_0","ret"}},
+        {"",{}}, {"\n\n",{"",""}}, {"\r\n   \r\nret   ",{"","","ret"}},
+        {std::string("\0ignored",8),{}}, {std::string("x\0y\nz",5),{std::string("x\0y",3),"z"}}};
+    for(const auto& entry:cases) {
+        GuardedAssemblySpan input(entry.first);
+        std::fprintf(stderr,"F146: split %zu valid bytes directly before an inaccessible page\n",entry.first.size()); std::fflush(stderr);
+        check_assembler_audit(stringToLines(input.data(),entry.first.size())==entry.second,
+            "F146: bounded splitting preserves line, CR, space and embedded-NUL behavior");
+    }
+    check_assembler_audit(stringToLines(nullptr,0).empty(),"F146: an empty span does not require a dereferenceable pointer");
 }
 
 void test_dx11_assembler_word_progress_regression()

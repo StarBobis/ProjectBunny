@@ -267,6 +267,13 @@
       "summary": "纠正错误暂缓：正常末词安全不代表未闭合操作数安全；缺右括号使find()+1回零，旧独立专项超时，F142由E恢复B。括号/引号缺闭合走现有解析错误，不再循环；保持普通末词、合法浮点/双精度、内嵌引号及公共第2行错误/显式collector策略，25+10全流程通过；F145探针未混入。",
       "evidence": "validation/F-142.json",
       "commitLookup": "git log --fixed-strings --grep=F-142"
+    },
+    {
+      "id": "F-146",
+      "status": "validated-in-simulator",
+      "summary": "行拆分先检查真实长度再读字符，空范围提前返回，末行不把指针递增到末尾之外；不补哨兵掩盖调用契约。旧7字节保护页访问冲突已复现，空/null+0、无末换行、空行/CR/空格/内嵌NUL和实际shader代码块位一致/WARP专项及25+10全流程通过；仅DX9消费者的未生效同名支路保留。",
+      "evidence": "validation/F-146.json",
+      "commitLookup": "git log --fixed-strings --grep=F-146"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

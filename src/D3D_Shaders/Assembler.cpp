@@ -2536,22 +2536,23 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 vector<string> stringToLines(const char* start, size_t size)
 {
 	vector<string> lines;
+	if (!size)
+		return lines;
 	const char* pStart = start;
-	const char* pEnd = pStart;
 	const char* pRealEnd = pStart + size;
-	while (true) {
-		while (*pEnd != '\n' && pEnd < pRealEnd) {
+	while (pStart < pRealEnd) {
+		const char* pEnd = pStart;
+		while (pEnd < pRealEnd && *pEnd != '\n') {
 			pEnd++;
 		}
 		if (*pStart == 0) {
 			break;
 		}
-		string s(pStart, pEnd++);
+		string s(pStart, pEnd);
 		pStart = pEnd;
+		if (pStart < pRealEnd)
+			++pStart;
 		lines.push_back(s);
-		if (pStart >= pRealEnd) {
-			break;
-		}
 	}
 	for (unsigned int i = 0; i < lines.size(); i++) {
 		string s = lines[i];

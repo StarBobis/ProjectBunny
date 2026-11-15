@@ -617,7 +617,7 @@
       "additionalEvidence": null,
       "correctedConclusion": "vector<char>无额外NUL时先解引用end可OOB；c_str提供哨兵的调用不同。交换条件还需处理空输入时后续*pStart和pEnd++越界。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "保护页处无NUL/无末换行、空范围/null+0、空行/CR/空格/内嵌NUL；真实shader去末换行后公共汇编代码块位一致及WARP接受",
       "implementationStatus": "pending"
     },
     {

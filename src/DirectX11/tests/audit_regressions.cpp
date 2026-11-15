@@ -42,6 +42,7 @@ void test_dx11_parameter_conversion_regression();
 void test_dx11_assembler_declaration_regression();
 void test_dx11_assembler_word_progress_regression();
 void test_dx11_precision_delimiter_review();
+void test_dx11_assembler_line_bounds_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -405,6 +406,29 @@ void test_f145_review()
     }
 }
 
+void test_f146()
+{
+    test_dx11_assembler_line_bounds_regression();
+    const char source[]="float4 main():SV_Target{return float4(0.125,0.25,0.5,1);}";
+    ComPtr<ID3DBlob> code,errors;
+    require_batch(SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+        "F146: actual original shader for bounded user assembly");
+    const auto* data=static_cast<const unsigned char*>(code->GetBufferPointer());
+    std::vector<unsigned char> original(data,data+code->GetBufferSize()),text;
+    require_batch(SUCCEEDED(disassembler(&original,&text,nullptr)),"F146: actual assembly fixture");
+    while(!text.empty() && (text.back()=='\n' || text.back()=='\r')) text.pop_back();
+    std::vector<char> input(text.begin(),text.end());
+    require_batch(!input.empty() && input.back()!=0 && input.back()!='\n',"F146: real user input has no NUL or final newline");
+    const auto rebuilt=assembler(&input,original);
+    require_batch(audit_shader_code(rebuilt)==audit_shader_code(original),"F146: no-newline assembly preserves exact native instruction bytes");
+    BatchDevice device; ComPtr<ID3D11PixelShader> shader;
+    require_batch(SUCCEEDED(device.native->CreatePixelShader(rebuilt.data(),rebuilt.size(),nullptr,&shader)),
+        "F146: WARP accepts the complete bounded result");
+    std::vector<char> empty; bool rejected=false;
+    try {assembler(&empty,original);} catch(const AssemblerParseError&) {rejected=true;}
+    require_batch(rejected,"F146: an empty public input reaches the existing missing-model error instead of reading null");
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -420,6 +444,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-143", test_f143},
     {"F-142", test_f142},
     {"F-145", test_f145_review},
+    {"F-146", test_f146},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
