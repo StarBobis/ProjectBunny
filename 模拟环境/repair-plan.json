@@ -7,16 +7,16 @@
   "oldPlanSha256": "83E9E7E8F523606455C8C1A81A5A11463159362AA61796B29AAB5A81663403E8",
   "counts": {
     "A": 23,
-    "B": 42,
+    "B": 41,
     "C": 29,
     "R": 26,
     "X": 4,
-    "E": 7,
+    "E": 8,
     "D12": 4,
     "N": 7
   },
   "total": 142,
-  "activeCandidateCount": 120,
+  "activeCandidateCount": 119,
   "rows": [
     {
       "id": "F-001",
@@ -1298,16 +1298,16 @@
     },
     {
       "id": "F-199",
-      "status": "成立",
-      "group": "B",
-      "groupLabel": "跨函数语义，第二批候选",
+      "status": "局部成立，生产触达待证",
+      "group": "E",
+      "groupLabel": "证据不足，暂缓",
       "originalSeverity": "medium",
       "evidence": "src/DirectX11/ShaderRegex.cpp:341-352",
       "additionalEvidence": null,
-      "correctedConclusion": "多pattern前项改写asm、后项失败只清patch不回滚；应组内事务提交，避免影响其他成功group。",
-      "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
+      "correctedConclusion": "手造组内多pattern可出现局部部分改写，但当前INI唯一入口只创建单.Pattern，大小写重复归同节，命名多pattern不支持；生产前提未补实，不做事务改造。修正文档误称支持多个命名pattern，F296另审。",
+      "executionGate": "冻结，先提供合法生产入口形成多pattern的证据或启用该功能，再设计事务/失败回退",
       "targetedAcceptanceProposal": null,
-      "implementationStatus": "pending"
+      "implementationStatus": "frozen-awaiting-production-reachability"
     },
     {
       "id": "F-200",
@@ -1921,6 +1921,14 @@
       "date": "2026-11-16",
       "kind": "adversarial-correction",
       "reason": "collector首行失败时过早codeStarted可让两条ret绕过model guard；状态发布延后，兼容后续合法model恢复",
+      "detail": "执行复查修正报告.md"
+    },
+    {
+      "id": "F-199",
+      "date": "2026-11-16",
+      "previousGroup": "B",
+      "currentGroup": "E",
+      "reason": "当前生产parser只建单Pattern，私有多pattern局部现象不证明生产故障；文档支持主张错误",
       "detail": "执行复查修正报告.md"
     }
   ],

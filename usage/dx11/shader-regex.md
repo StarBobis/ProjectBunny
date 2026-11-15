@@ -26,7 +26,7 @@ mov ${dst}, ${src}\n
 | `.Pattern.Replace` | 对应替换文本 |
 | `.InsertDeclarations` | 插入尚不存在的声明 |
 
-同一组可增加对应的命名 Pattern/Replace 配对。省略 Pattern 会匹配指定模型的所有候选，应严格限制用途。
+当前每组只支持一个 `.Pattern` 及其对应的 `.Pattern.Replace`。命名的多个 Pattern 尚未启用；需要连续规则时使用多个独立组。省略 Pattern 会匹配指定模型的所有候选，应严格限制用途。
 
 INI 会移除行首尾空白、空行和注释；需要缩进就匹配 `\s*`，需要换行就写 `\n`。
 

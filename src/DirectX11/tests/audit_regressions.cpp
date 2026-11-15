@@ -619,6 +619,37 @@ void test_f186()
     config.load("",0,true);
 }
 
+void test_f199_review()
+{
+    AuditConfigScope config;
+    config.load("[ShaderRegexAuditSingle]\nshader_model=ps_5_0\n[ShaderRegexAuditSingle.Pattern]\nbefore\n"
+        "[ShaderRegexAuditSingle.Pattern.Replace]\nafter\n",0,true);
+    require_batch(shader_regex_groups.size()==1 && shader_regex_groups.begin()->second.patterns.size()==1,
+        "F199 review: supported INI syntax creates exactly one real pattern");
+    config.load("[ShaderRegexAuditCase]\nshader_model=ps_5_0\n[ShaderRegexAuditCase.Pattern]\nbefore\n"
+        "[ShaderRegexAuditCase.pattern]\nafter\n[ShaderRegexAuditCase.Pattern.Replace]\nresult\n",0,true);
+    require_batch(shader_regex_groups.size()==1 && shader_regex_groups.begin()->second.patterns.size()==1,
+        "F199 review: case variants are one case-insensitive INI section, not multiple patterns");
+    config.load("[ShaderRegexAuditNamed]\nshader_model=ps_5_0\n[ShaderRegexAuditNamed.PatternA]\nbefore\n"
+        "[ShaderRegexAuditNamed.PatternA.Replace]\nafter\n[ShaderRegexAuditNamed.PatternB]\nsecond\n"
+        "[ShaderRegexAuditNamed.PatternB.Replace]\nthird\n",0,true);
+    require_batch(shader_regex_groups.empty(),"F199 review: named multiple patterns are rejected by the actual parser");
+    config.load("[ShaderRegexAuditA]\nshader_model=ps_5_0\n[ShaderRegexAuditA.Pattern]\nbefore\n"
+        "[ShaderRegexAuditB]\nshader_model=ps_5_0\n[ShaderRegexAuditB.Pattern]\nafter\n",0,true);
+    require_batch(shader_regex_groups.size()==2,"F199 review: separate INI groups stay separate");
+    for(const auto& group:shader_regex_groups)
+        require_batch(group.second.patterns.size()==1,"F199 review: no production group gained a second pattern");
+    ShaderRegexGroup synthetic;
+    std::string first="before",missing="does_not_exist";
+    require_batch(synthetic.patterns[L"first"].compile(&first) && synthetic.patterns[L"second"].compile(&missing),
+        "F199 review: explicit synthetic multi-pattern local probe");
+    synthetic.patterns[L"first"].do_replace=true; synthetic.patterns[L"first"].replace="after";
+    std::string text="before"; bool matched=false,patched=false;
+    synthetic.apply_regex_patterns(&text,&matched,&patched);
+    std::fprintf(stderr,"F199 synthetic-only observation: match=%d patch=%d changed=%d; not a production reachability proof\n",matched,patched,text!="before");
+    config.load("",0,true);
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -644,6 +675,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-175", test_dx11_resource_override_validation_regression},
     {"F-186", test_f186},
     {"F-194", test_dx11_ini_upload_failure_regression},
+    {"F-199", test_f199_review},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},

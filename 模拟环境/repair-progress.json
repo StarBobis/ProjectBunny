@@ -364,6 +364,13 @@
       "summary": "合成缺右花括号ICB可在私有函数复现异常；实际四处调用仅接原生D3DDisassemble文本，生产触发未补实。正常精度修补与原生代码块逐字节往返/WARP、25+10全流程通过；B移E，生产不改，不算已修复或误报。",
       "evidence": "validation/F-145-review.json",
       "commitLookup": "git log --fixed-strings --grep=F-145"
+    },
+    {
+      "id": "F-199",
+      "status": "reviewed-pending-production-reachability",
+      "summary": "真实INI仅单.Pattern，大小写重复不建第二项、命名多pattern禁组；私有手造多项局部风险未补生产前提，B移E不改事务逻辑。修正文档错误支持主张，独立专审及主线专项/25+10全流程通过，不计生产修复或绝对误报。",
+      "evidence": "validation/F-199-review.json",
+      "commitLookup": "git log --fixed-strings --grep=F-199"
     }
   ],
   "supplements": [
