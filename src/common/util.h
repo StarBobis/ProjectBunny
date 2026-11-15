@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <new>
 
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
@@ -869,26 +870,73 @@ static string GetShaderModel(const void *pShaderBytecode, size_t bytecodeLength)
 
 static HRESULT CreateTextFile(wchar_t *fullPath, string *asmText, bool overwrite)
 {
-	FILE *f;
+	try {
+		if (!overwrite && GetFileAttributesW(fullPath) != INVALID_FILE_ATTRIBUTES)
+			return HRESULT_FROM_WIN32(ERROR_FILE_EXISTS);
 
-	if (!overwrite) {
-		_wfopen_s(&f, fullPath, L"rb");
-		if (f)
-		{
-			fclose(f);
-			LogInfoW(L"    CreateTextFile error: file already exists %s\n", fullPath);
-			return ERROR_FILE_EXISTS;
+		wstring destination(fullPath);
+		const size_t separator = destination.find_last_of(L"/\\");
+		wstring directory = separator == wstring::npos ? L"" : destination.substr(0, separator + 1);
+		if (separator == wstring::npos && destination.size() >= 2 && destination[1] == L':')
+			directory = destination.substr(0, 2);
+		static volatile LONG sequence = 0;
+		wstring temporary;
+		HANDLE file = INVALID_HANDLE_VALUE;
+		DWORD error = ERROR_FILE_EXISTS;
+		for (unsigned attempt = 0; attempt < 32; ++attempt) {
+			wchar_t name[13];
+			swprintf_s(name, ARRAYSIZE(name), L"%08lx.tmp", GetCurrentProcessId() ^ static_cast<DWORD>(InterlockedIncrement(&sequence)));
+			temporary = directory + name;
+			file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file != INVALID_HANDLE_VALUE)
+				break;
+			error = GetLastError();
+			if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+				return HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE);
 		}
-	}
+		if (file == INVALID_HANDLE_VALUE)
+			return HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE);
 
-	_wfopen_s(&f, fullPath, L"wb");
-	if (f)
-	{
-		fwrite(asmText->data(), 1, asmText->size(), f);
-		fclose(f);
+		// All allocations precede acquiring the handle. Never publish partial
+		// bytes, and only remove the staging file created by this invocation.
+		error = ERROR_SUCCESS;
+		for (size_t offset = 0; offset < asmText->size();) {
+			const size_t remaining = asmText->size() - offset;
+			const DWORD count = static_cast<DWORD>(remaining > 1024 * 1024 ? 1024 * 1024 : remaining);
+			DWORD written = 0;
+			if (!WriteFile(file, asmText->data() + offset, count, &written, nullptr)) {
+				error = GetLastError();
+				if (!error) error = ERROR_WRITE_FAULT;
+				break;
+			}
+			if (written != count) {
+				error = ERROR_WRITE_FAULT;
+				break;
+			}
+			offset += written;
+		}
+		if (!error && !FlushFileBuffers(file)) {
+			error = GetLastError();
+			if (!error) error = ERROR_WRITE_FAULT;
+		}
+		const BOOL closed = CloseHandle(file);
+		if (!closed && !error) {
+			error = GetLastError();
+			if (!error) error = ERROR_WRITE_FAULT;
+		}
+		if (!error && !MoveFileExW(temporary.c_str(), fullPath,
+			MOVEFILE_WRITE_THROUGH | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0))) {
+			error = GetLastError();
+			if (!error) error = ERROR_GEN_FAILURE;
+		}
+		if (error) {
+			DeleteFileW(temporary.c_str());
+			return HRESULT_FROM_WIN32(error);
+		}
+		return S_OK;
+	} catch (const std::bad_alloc&) {
+		return E_OUTOFMEMORY;
 	}
-
-	return S_OK;
 }
 
 // Get shader type from asm, first non-commented line.  CS, PS, VS.

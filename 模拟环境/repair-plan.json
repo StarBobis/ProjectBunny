@@ -46,16 +46,20 @@
     },
     {
       "id": "F-003",
-      "status": "成立",
+      "status": "成立但修正",
       "group": "B",
       "groupLabel": "跨函数语义，第二批候选",
       "originalSeverity": "medium",
-      "evidence": "src/DirectX12/Resources/Dump/DX12ResourceDumpFileWriter.h:185",
-      "additionalEvidence": null,
-      "correctedConclusion": "部分保存/转储忽略写入与关闭错误会错误清dirty/记成功；需临时文件原子提交和完整关闭结果，不能只检查fwrite一次。",
+      "evidence": "src/common/util.h:870 CreateTextFile; src/DirectX11/HackerDevice.cpp CreateAsmTextFile 消费链",
+      "additionalEvidence": "src/DirectX11/IniHandler.cpp SavePersistentSettingsInternal 已有ferror/fclose/原子替换/dirty保护；原合并条目两处DX12站点另记",
+      "correctedConclusion": "DX11有效问题为shader文本导出的打开/写入/关闭失败及Win32正数误作HRESULT成功；用完整写入后原子发布，保留不覆盖及正常shader创建。现有DX11持久化已保护，不重做；VM和DX12 dump部分不在本轮DX11修复范围。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
       "targetedAcceptanceProposal": null,
-      "implementationStatus": "pending"
+      "implementationStatus": "validated-dx11-site;dx12-sites-deferred",
+      "deferredCrossPlatformSites": [
+        "src/common/MigotoCommandVmUtils.hpp::SavePersistedVariables（仅DX12）",
+        "src/DirectX12/Resources/Dump/DX12ResourceDumpFileWriter.h（DX12）"
+      ]
     },
     {
       "id": "F-005",

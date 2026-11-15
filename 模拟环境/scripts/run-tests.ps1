@@ -61,6 +61,7 @@ foreach ($inputDll in $inputs) {
     $cases += @(
         [pscustomobject]@{name='constants-missing-name';scenario='capabilities';exe=$hostPath;mode='constants-missing-name';config='constants-missing-name.ini'},
         [pscustomobject]@{name='kmt-binding';scenario='capabilities';exe=$hostPath;mode='kmt-binding';config='wrapper.ini'},
+        [pscustomobject]@{name='shader-export-failure';scenario='capabilities';exe=$hostPath;mode='shader-export-failure';config='export-failure.ini'},
         [pscustomobject]@{name='injected-device-failure';scenario='capabilities';exe=$hostPath;mode='injected-device-failure';config='device-failure.ini'},
         [pscustomobject]@{name='smoke-wrapper';scenario='capabilities';exe=$smokePath;mode='--child';config='wrapper.ini'},
         [pscustomobject]@{name='smoke-native-control';scenario='capabilities';exe=$smokePath;mode='--child-native-control';config='wrapper.ini'},
@@ -83,6 +84,10 @@ foreach ($inputDll in $inputs) {
         if ((Get-FileHash -LiteralPath $copiedDll -Algorithm SHA256).Hash -ne $sourceHash) { throw 'DLL changed while copying; rebuild must finish before testing.' }
         $configSource = Join-Path $simulationRoot "fixtures\$($case.config)"
         Copy-Item -LiteralPath $configSource -Destination (Join-Path $caseRoot 'd3dx.ini')
+        if($case.name -eq 'shader-export-failure') {
+            $null=New-Item -ItemType Directory -Path (Join-Path $caseRoot 'ShaderFixes')
+            [IO.File]::WriteAllText((Join-Path $caseRoot 'cache-blocker'),'F003 owned blocker')
+        }
         if ($case.name -eq 'injected-device-failure') {
             Copy-Item -LiteralPath $faultProviderPath -Destination (Join-Path $caseRoot 'dx11_fault_provider.dll')
         }

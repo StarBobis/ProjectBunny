@@ -176,6 +176,13 @@
       "summary": "同次INI解析复用已取值，避免重复查找，无跨重载缓存；默认/空/别名/整数/表达式/namespace/枚举/告警语义通过。无ASan同机9对与正式配置路径3对测量结果一致，后者局部中位数下降25%-46%；专项与全流程通过，不外推总重载或FPS。",
       "evidence": "validation/P-01.json",
       "commitLookup": "git log --fixed-strings --grep=P-01"
+    },
+    {
+      "id": "F-003",
+      "status": "validated-in-simulator",
+      "summary": "仅DX11生效站点：shader文本完整写入、刷新和关闭成功后原子发布，失败返回正确HRESULT；不覆盖已有文件。专项注入写/短写/刷新/关闭失败并验证旧文件、清理、重试和8线程单一发布者；真实DLL导出失败仍可创建绑定shader，20+10集成组件及DX12兼容构建通过；DX12另两站转交。",
+      "evidence": "validation/F-003.json",
+      "commitLookup": "git log --fixed-strings --grep=F-003"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

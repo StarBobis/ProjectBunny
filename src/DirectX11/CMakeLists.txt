@@ -190,6 +190,7 @@ if(BUILD_TESTING)
         tests/audit_regressions.cpp
         tests/audit_dx9_regression.cpp
         tests/shader_ownership_audit.cpp
+        tests/file_publication_audit.cpp
         tests/finish_command_audit.cpp
         tests/d3d11_vtable_layout.c
         tests/hunting_present_audit.cpp

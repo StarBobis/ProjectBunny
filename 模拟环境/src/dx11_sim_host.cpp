@@ -3,11 +3,14 @@
 #include <dxgi1_5.h>
 #include <winternl.h>
 #include <d3dkmthk.h>
+#include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <array>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 
@@ -119,6 +122,43 @@ public:
     ComPtr<ID3D11DeviceContext> context;
     D3D_FEATURE_LEVEL level{};
 };
+
+void shader_export_failure(Device& gpu)
+{
+    HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    require(compiler != nullptr, "F003: load actual system shader compiler");
+    const auto compile = reinterpret_cast<decltype(&D3DCompile)>(GetProcAddress(compiler, "D3DCompile"));
+    require(compile != nullptr, "F003: resolve actual compiler entry");
+    const char source[] = "float4 main():SV_Target{return float4(1,0,0,1);}";
+    ComPtr<ID3DBlob> code, errors;
+    succeeded(compile(source, sizeof(source)-1, nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &code, &errors),
+        "F003: compile real pixel shader before export failure");
+    const std::string original(static_cast<const char*>(code->GetBufferPointer()), code->GetBufferSize());
+    const auto read = [](const char* path) {
+        std::ifstream input(path, std::ios::binary); require(input.good(), "F003: read actual fixture/log");
+        return std::string(std::istreambuf_iterator<char>(input), {});
+    };
+    const auto before = read("d3d11_log.txt");
+    ComPtr<ID3D11PixelShader> pixel;
+    succeeded(gpu.device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &pixel),
+        "F003: optional assembly export failure cannot override native shader creation success");
+    require(pixel && !std::memcmp(original.data(), code->GetBufferPointer(), original.size()), "F003: retain shader and exact input bytecode");
+    gpu.context->PSSetShader(pixel.Get(), nullptr, 0);
+    ComPtr<ID3D11PixelShader> bound;
+    gpu.context->PSGetShader(&bound, nullptr, nullptr);
+    require(bound.Get() == pixel.Get(), "F003: successful shader remains usable in the real pipeline");
+    const auto after = read("d3d11_log.txt");
+    require(after.size() >= before.size() && after.compare(0, before.size(), before) == 0, "F003: diagnostic append preserves earlier log");
+    const auto appended = after.substr(before.size());
+    const auto contains = [&](const std::string& text) {
+        if (appended.find(text) != std::string::npos) return true;
+        std::string wide;
+        for (const auto character : text) { wide.push_back(character); wide.push_back('\0'); }
+        return appended.find(wide) != std::string::npos;
+    };
+    require(contains("error: ") && contains("storing disassembly"), "F003: actual failed text export is reported as a failed HRESULT");
+    require(read("cache-blocker") == "F003 owned blocker", "F003: failed export cannot modify an existing non-directory");
+}
 
 class HiddenWindow {
 public:
@@ -414,6 +454,7 @@ int wmain(int argc, wchar_t** argv)
             else if (scenario == L"constants-missing-name") constants_missing_name(gpu);
             else if (scenario == L"deferred") deferred_replay(gpu);
             else if (scenario == L"kmt-binding") runtime.shared_primary_binding();
+            else if (scenario == L"shader-export-failure") shader_export_failure(gpu);
             else throw std::runtime_error("unknown scenario");
         }
         std::puts("PASS: actual runtime scenario");
