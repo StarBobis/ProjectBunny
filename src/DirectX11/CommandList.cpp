@@ -1998,7 +1998,7 @@ void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 	COMMAND_LIST_LOG(state, "[%S] special = draw_3dmigoto_overlay\n", ini_section.c_str());
 
 	HackerSwapChain *mHackerSwapChain = state->mHackerDevice->GetHackerSwapChain();
-	if (mHackerSwapChain->mOverlay) {
+	if (mHackerSwapChain && mHackerSwapChain->mOverlay) {
 		mHackerSwapChain->mOverlay->DrawOverlay();
 		G->suppress_overlay = true;
 	}

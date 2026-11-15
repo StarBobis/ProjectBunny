@@ -183,6 +183,13 @@
       "summary": "仅DX11生效站点：shader文本完整写入、刷新和关闭成功后原子发布，失败返回正确HRESULT；不覆盖已有文件。专项注入写/短写/刷新/关闭失败并验证旧文件、清理、重试和8线程单一发布者；真实DLL导出失败仍可创建绑定shader，20+10集成组件及DX12兼容构建通过；DX12另两站转交。",
       "evidence": "validation/F-003.json",
       "commitLookup": "git log --fixed-strings --grep=F-003"
+    },
+    {
+      "id": "F-005",
+      "status": "validated-in-simulator",
+      "summary": "设备context/swapchain指针以nullptr初始化，overlay命令先判swapchain；非零堆内存构造、无swapchain/无overlay/实际overlay绘制/正常释放后重入均通过。旧DLL两条创建入口Constants均访问冲突，修复后真实IniParams继续上传7/9；专项及22+10项集成组件全流程通过。",
+      "evidence": "validation/F-005.json",
+      "commitLookup": "git log --fixed-strings --grep=F-005"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

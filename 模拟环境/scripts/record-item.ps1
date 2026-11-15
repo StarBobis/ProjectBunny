@@ -15,7 +15,7 @@ $report=Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
 $required=@('special','business','offline-shader-tool','legacy-version','version-generator','proxy-components','actual-dll-integration')
 if($report.item -ne $Item -or $report.status -ne 'PASS' -or @($report.checks | Where-Object status -ne 'PASS').Count){throw 'Requested item did not pass its entire validation cycle.'}
 foreach($name in $required){if(@($report.checks | Where-Object name -eq $name).Count -ne 1){throw "Missing validation: $name"}}
-if(-not $report.actualDllIntegration -or @($report.actualDllIntegration.cases).Count -lt 20 -or @($report.actualDllIntegration.cases | Where-Object status -ne 'PASS').Count){throw 'Actual DLL integration incomplete.'}
+if(-not $report.actualDllIntegration -or @($report.actualDllIntegration.cases).Count -lt 22 -or @($report.actualDllIntegration.cases | Where-Object status -ne 'PASS').Count){throw 'Actual DLL integration incomplete.'}
 if(-not $report.proxyComponents -or $report.proxyComponents.status -ne 'PASS' -or @($report.proxyComponents.cases).Count -lt 10 -or @($report.proxyComponents.cases | Where-Object status -ne 'PASS').Count){throw 'DXGI/compiler component business validation incomplete.'}
 $candidate=Join-Path $simulationRoot 'build\candidate\src\DirectX11\d3d11.dll'
 if((Get-FileHash -LiteralPath $candidate).Hash -ne $report.candidateSha256){throw 'Report does not describe the current candidate DLL.'}

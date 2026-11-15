@@ -51,8 +51,8 @@ private:
 	ID3D11DeviceContext1 *mOrigContext1;
 	IUnknown *mUnknown;
 
-	HackerContext *mHackerContext;
-	HackerSwapChain *mHackerSwapChain;
+	HackerContext *mHackerContext = nullptr;
+	HackerSwapChain *mHackerSwapChain = nullptr;
 	std::shared_ptr<HackerInputLayoutCache> mInputLayoutCache = std::make_shared<HackerInputLayoutCache>();
 
 	// Utility routines

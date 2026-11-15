@@ -8,7 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 or newer is required.' }
-if($SpecialItem -and $SpecialItem -notin @('F-178','F-291')){throw 'Unknown actual-DLL specialization.'}
+if($SpecialItem -and $SpecialItem -notin @('F-005','F-178','F-291')){throw 'Unknown actual-DLL specialization.'}
 . (Join-Path $PSScriptRoot 'process.ps1')
 $simulationRoot = Split-Path -Parent $PSScriptRoot
 $repositoryRoot = Split-Path -Parent $simulationRoot
@@ -42,6 +42,7 @@ $artifacts = [Collections.Generic.List[object]]::new()
 $scenarios = @('capabilities','buffer','texture','deferred','swapchain','swapchain-qi')
 if($SpecialItem -eq 'F-178'){$scenarios=@('swapchain-qi')}
 if($SpecialItem -eq 'F-291'){$scenarios=@('capabilities')}
+if($SpecialItem -eq 'F-005'){$scenarios=@('capabilities','swapchain')}
 $nativePassed = @{}
 $nativeDll = Join-Path ([Environment]::SystemDirectory) 'd3d11.dll'
 foreach ($scenario in $scenarios) {
@@ -60,6 +61,8 @@ foreach ($inputDll in $inputs) {
     $cases = @($scenarios | ForEach-Object { [pscustomobject]@{name=$_;scenario=$_;exe=$hostPath;mode=$_;config='wrapper.ini'} })
     $cases += @(
         [pscustomobject]@{name='constants-missing-name';scenario='capabilities';exe=$hostPath;mode='constants-missing-name';config='constants-missing-name.ini'},
+        [pscustomobject]@{name='constants-overlay-device';scenario='capabilities';exe=$hostPath;mode='constants-overlay-device';config='constants-overlay.ini'},
+        [pscustomobject]@{name='constants-overlay-swapchain';scenario='swapchain';exe=$hostPath;mode='constants-overlay-swapchain';config='constants-overlay.ini'},
         [pscustomobject]@{name='kmt-binding';scenario='capabilities';exe=$hostPath;mode='kmt-binding';config='wrapper.ini'},
         [pscustomobject]@{name='shader-export-failure';scenario='capabilities';exe=$hostPath;mode='shader-export-failure';config='export-failure.ini'},
         [pscustomobject]@{name='injected-device-failure';scenario='capabilities';exe=$hostPath;mode='injected-device-failure';config='device-failure.ini'},
@@ -70,6 +73,7 @@ foreach ($inputDll in $inputs) {
     )
     if($SpecialItem -eq 'F-178'){$cases=@($cases | Where-Object name -eq 'swapchain-qi')}
     if($SpecialItem -eq 'F-291'){$cases=@($cases | Where-Object name -eq 'kmt-binding')}
+    if($SpecialItem -eq 'F-005'){$cases=@($cases | Where-Object name -in @('constants-overlay-device','constants-overlay-swapchain'))}
     foreach ($case in $cases) {
         $caseId = "$($inputDll.label)-$($case.name)"
         if (-not $nativePassed[$case.scenario]) {
@@ -109,6 +113,7 @@ if ($LASTEXITCODE -ne 0) { $head = 'unavailable' }
 $scope = 'Actual x64 DX11 DLL + WARP integration smoke only. No repair-item, real-game, hardware-driver or performance certification.'
 if($SpecialItem -eq 'F-178'){$scope='F-178 actual proxy/native WARP SwapChain4 query and relative reference ownership scenario.'}
 if($SpecialItem -eq 'F-291'){$scope='F-291 current x64 export binding and invalid-window native comparison. No all-entry/x86 KMT certification.'}
+if($SpecialItem -eq 'F-005'){$scope='F-005 actual Constants overlay command before swapchain creation, through both native creation exports, with exact IniParams continuation.'}
 $report = [ordered]@{
     schemaVersion=1; runId=$runId; utc=[DateTime]::UtcNow.ToString('o'); repositoryHead=$head
     os=[Environment]::OSVersion.VersionString; processArchitecture='x64'; driver='WARP'

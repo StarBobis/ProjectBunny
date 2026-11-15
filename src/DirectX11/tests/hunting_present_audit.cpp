@@ -107,3 +107,56 @@ void test_dx11_empty_hunting_present_regression()
 {
     with_dx11_audit_hunting_configuration(&exercise_empty_hunting_present);
 }
+
+namespace {
+class OverlayAbsenceScope {
+    HackerSwapChain* owner;
+    Overlay* saved;
+public:
+    explicit OverlayAbsenceScope(HackerSwapChain* chain) : owner(chain), saved(chain->mOverlay) { owner->mOverlay = nullptr; }
+    ~OverlayAbsenceScope() { owner->mOverlay = saved; }
+};
+
+void exercise_overlay_lifecycle()
+{
+    using namespace dx11_slot_test;
+    HuntingStateScope globals; BatchDevice device;
+    Draw3DMigotoOverlayCommand command(L"CommandListOverlayInitializationAudit");
+    G->suppress_overlay = false;
+    command.run(&device.state);
+    require_batch(!G->suppress_overlay, "F005: absent swapchain is a no-op without suppressing a future overlay");
+
+    HuntingWindow window;
+    ComPtr<IDXGIDevice> dxgi_device; ComPtr<IDXGIAdapter> adapter; ComPtr<IDXGIFactory2> factory;
+    require_batch(SUCCEEDED(device.native.As(&dxgi_device)) && SUCCEEDED(dxgi_device->GetAdapter(&adapter)) &&
+        SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory))), "F005: native factory for overlay lifecycle");
+    DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width = desc.Height = 64; desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1; desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount = 1;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    {
+        ComPtr<IDXGISwapChain1> native;
+        require_batch(SUCCEEDED(factory->CreateSwapChainForHwnd(device.native.Get(), window.handle, &desc, nullptr, nullptr, &native)),
+            "F005: actual hidden swapchain");
+        ComPtr<HackerSwapChain> chain;
+        chain.Attach(new HackerSwapChain(native.Detach(), device.device, device.wrapper.get()));
+        require_batch(chain->mOverlay && device.device->GetHackerSwapChain() == chain.Get(), "F005: real overlay fonts and device/swapchain wiring");
+        {
+            OverlayAbsenceScope absent(chain.Get());
+            command.run(&device.state);
+            require_batch(!G->suppress_overlay, "F005: absent optional overlay preserves no-op behavior");
+        }
+        G->hunting = HUNTING_MODE_ENABLED;
+        command.run(&device.state);
+        require_batch(G->suppress_overlay, "F005: available overlay still executes and suppresses duplicate automatic drawing");
+    }
+    require_batch(device.device->GetHackerSwapChain() == nullptr, "F005: normal swapchain release clears its device link");
+    G->suppress_overlay = false;
+    command.run(&device.state);
+    require_batch(!G->suppress_overlay, "F005: command is safe again after normal swapchain release");
+}
+}
+
+void test_dx11_overlay_lifecycle_regression()
+{
+    with_dx11_audit_hunting_configuration(&exercise_overlay_lifecycle);
+}
