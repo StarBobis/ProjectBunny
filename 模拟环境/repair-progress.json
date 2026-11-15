@@ -456,5 +456,14 @@
       "countAsRepaired": false,
       "commitLookup": "git log --fixed-strings --grep=F-270"
     }
+  ],
+  "candidateHolds": [
+    {
+      "id": "F-281",
+      "status": "pending-native-modifier-validation",
+      "summary": "F281扫描缺陷仍成立；C27新增安全格式化的外负号/cast顺序尚缺合法原生专项，暂不合入。既有高范围OBS两版重建均与原shader不同，candidate保持输入FP32位模式，不能归因舍入或断言中间uint值。",
+      "evidence": "validation/F-281-candidate-review.json",
+      "countAsRepaired": false
+    }
   ]
 }

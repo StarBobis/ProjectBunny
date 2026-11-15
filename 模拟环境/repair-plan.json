@@ -1513,9 +1513,9 @@
       "evidence": "src/HLSLDecompiler/DecompileHLSL.cpp:2660",
       "additionalEvidence": null,
       "correctedConclusion": "扫描失败既可清空操作数，也可size已读为2/3/4而某float未读导致未初始化转换；不能统一要求返回5，因为合法float2/3转换数分别3/4。",
-      "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
+      "executionGate": "扫描结果检查缺陷仍成立，但C27候选尚不合入：新增越host-int范围的HLSL转换fallback将外负号置于cast外，需合法原生FTOU modifier及直接uint读回专项证明语义；旧高范围像素差异原因仍未明，不归因WARP或格式化，不扩写为undefined。保留原冻结补丁与失败回执，补证后重新专审。",
       "targetedAcceptanceProposal": null,
-      "implementationStatus": "pending"
+      "implementationStatus": "pending-native-modifier-validation"
     },
     {
       "id": "F-282",

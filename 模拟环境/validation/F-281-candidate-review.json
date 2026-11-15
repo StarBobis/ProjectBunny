@@ -1,0 +1,21 @@
+{
+  "id": "F-281",
+  "status": "pending-native-modifier-validation",
+  "summary": "F281扫描缺陷仍成立；C27新增安全格式化的外负号/cast顺序尚缺合法原生专项，暂不合入。既有高范围OBS两版重建均与原shader不同，candidate保持输入FP32位模式，不能归因舍入或断言中间uint值。",
+  "productionCodeChanged": false,
+  "newNativeTestExecuted": false,
+  "newFullRunExecuted": false,
+  "countAsRepaired": false,
+  "defectNotWithdrawn": true,
+  "candidatePatchSha256": "C27CF20336AEB7026D1CA3A99CD2601CC3D2A2A1706B1DA35C28A2A86CC14735",
+  "notesPath": "build/w/j/模拟环境/build/f281-obs-causal-notes.md",
+  "notesSha256": "385D0CCEF9003B24CA259795C1954CEB659A509859FBFD0F5B5C8FE1921437BA",
+  "frozenObservation": "build/patches/F-281/observation",
+  "facts": [
+    "Both rebuilt DXBC outputs fold to mov with X=0.5/raw0x3f000000; no intermediate uint survives in the artifact.",
+    "Original X raw0x4f000000 and candidate formatted value roundtrip to identical FP32; formatting-rounding explanation is unsupported.",
+    "Original native red255 versus rebuilt red128 remains unexplained; fixture/assembler/provider/runtime causes have not been excluded."
+  ],
+  "pendingInference": "For unsigned input modifiers, applying outer negation after integer cast differs from negating the float before conversion/clamping; current fallback has not demonstrated native equivalence.",
+  "nextEvidence": "Legal native signed/unsigned vector modifier fixtures, direct uint RTV/UAV readback, exact original and rebuilt DXBC/HLSL and native-provider identity; no guesses about unknown private ABI."
+}
