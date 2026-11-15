@@ -120,15 +120,17 @@ struct ConstantValue
 };
 //dx9
 
-// Convenience routine to calculate just the number of swizzle components.
-// Used for ibfe.  Inputs like 'o1.xy', return 2.
+// IBFE destination component suffix: scalar operands need no numeric suffix.
 
-static string swizCount(char *operand)
+static string swizCount(const char *operand)
 {
 	if (!operand)
 		return "";
 
-	size_t count = strlen(operand) - (strrchr(operand, '.') - operand) - 1;
+	const char *swizzle = strrchr(operand, '.');
+	if (!swizzle)
+		return "";
+	size_t count = strlen(swizzle + 1);
 	return (count == 1) ? "" : to_string(count);
 }
 
@@ -5032,6 +5034,7 @@ public:
 							// Instruction for sign extending field extraction. Used in new versions of Dolphin
 							// ibfe r0.xyzw, l(24, 24, 24, 24), l(0, 0, 0, 0), cb0[12].xyzw
 							remapTarget(op1);
+							const string cast_suffix = swizCount(op1);
 							removeBoolean(op1);
 							applySwizzle(op1, op2, true);
 							applySwizzle(op1, op3, true);
@@ -5044,8 +5047,8 @@ public:
 									")));\n",
 									writeTarget(op1), ci(op2).c_str(),
 										ci(op2).c_str(), ci(op3).c_str(),
-											swizCount(op4).c_str(), ci(op4).c_str(), ci(op2).c_str(), ci(op3).c_str(), ci(op2).c_str(),
-											swizCount(op4).c_str(), ci(op4).c_str(), ci(op3).c_str()
+										cast_suffix.c_str(), ci(op4).c_str(), ci(op2).c_str(), ci(op3).c_str(), ci(op2).c_str(),
+										cast_suffix.c_str(), ci(op4).c_str(), ci(op3).c_str()
 								);
 
 							appendOutput(buffer);

@@ -367,6 +367,13 @@
       "summary": "初始化测试先释放owner再回收已启线程，异常与局部期限清理，不能合作时独立Job硬截止；生产InitializationGate不改。修正全程无期限旧说法，保留F202/sim外层保护，主CTest加TIMEOUT60。真实红终止、正常8/故障1或4线程回收/子进程归零专项、独立对抗及主线25+10全流程通过。",
       "evidence": "validation/F-203.json",
       "commitLookup": "git log --fixed-strings --grep=F-203"
+    },
+    {
+      "id": "F-272",
+      "status": "validated-in-simulator",
+      "summary": "IBFE类型后缀取规范化目的mask宽度，避免无点号源操作数空指针相减及向量literal误当标量；原生合法DXBC公开反编译/重编译、六组WARP像素对照与边界专项、主线25+10全流程及独立对抗审查通过。",
+      "evidence": "validation/F-272.json",
+      "commitLookup": "git log --fixed-strings --grep=F-272"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 void test_dx11_decompiler_public_literal_regression();
+void test_dx11_decompiler_public_ibfe_regression();
 
 namespace {
 void check_literal_audit(bool condition, const char* message)
@@ -57,4 +58,18 @@ void test_dx11_decompiler_literal_regression()
     check_literal_audit(!Decompiler::applySwizzleLiteral("l(1,2,3,4)", output, false, 1, invalid_index) && !std::strcmp(output,"unchanged"),
         "F100: direct component selection cannot index past the four slots");
     test_dx11_decompiler_public_literal_regression();
+}
+
+void test_dx11_decompiler_swizzle_count_regression()
+{
+    // Enter through legal native DXBC and the actual public decompiler before
+    // checking private helper boundaries, so the missing-dot case is reachable.
+    test_dx11_decompiler_public_ibfe_regression();
+    const std::pair<const char*,const char*> cases[]={{"r0.x",""},{"r0.xy","2"},{"r0.xyz","3"},
+        {"r0.xyzw","4"},{"r0.wzyx","4"},{"r[cb0[0].x].yz","2"},{"scalar",""},{"",""}};
+    for(const auto& test:cases) {
+        char operand[opcodeSize]{}; strcpy_s(operand,test.first);
+        check_literal_audit(swizCount(operand)==test.second,"F272: destination masks and scalar/no-mask operands have a defined cast suffix");
+    }
+    check_literal_audit(swizCount(nullptr).empty(),"F272: the existing null operand scalar result is preserved");
 }
