@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 
+extern "C" decltype(&D3DCreateBlob) __imp_D3DCreateBlob;
+
 namespace {
 using namespace dx11_slot_test;
 ComPtr<ID3DBlob> compile_ownership(const char* text, const char* profile)
@@ -18,7 +20,8 @@ class ShaderFilesScope {
     std::wstring old_path = G->SHADER_PATH, old_cache_path = G->SHADER_CACHE_PATH;
     ShaderHashType old_hash = G->shader_hash_type;
     int old_hunting = G->hunting;
-    bool old_cache = G->CACHE_SHADERS, old_binary = G->EXPORT_BINARY, old_assembly = G->EXPORT_SHADERS, old_hlsl = G->EXPORT_HLSL;
+    bool old_cache = G->CACHE_SHADERS, old_binary = G->EXPORT_BINARY, old_assembly = G->EXPORT_SHADERS;
+    int old_hlsl = G->EXPORT_HLSL;
     int old_fix = G->decompiler_settings.fixSvPosition, old_recompile = G->decompiler_settings.recompileVs;
 public:
     std::filesystem::path root, fixes;
@@ -76,6 +79,34 @@ std::array<unsigned char,4> render_pixel(BatchDevice& device, ID3D11VertexShader
     std::array<unsigned char,4> colour{}; std::memcpy(colour.data(), mapped.pData, colour.size());
     device.context->Unmap(staging.Get(),0); return colour;
 }
+
+unsigned injected_blob_calls = 0;
+HRESULT WINAPI fail_diagnostic_blob(SIZE_T, ID3DBlob** output)
+{
+    ++injected_blob_calls;
+    if (output) *output = nullptr;
+    return E_OUTOFMEMORY;
+}
+class BlobFailureScope {
+    decltype(&D3DCreateBlob) original = __imp_D3DCreateBlob;
+    static void set(decltype(&D3DCreateBlob) value)
+    {
+        DWORD old_protection = 0;
+        if (!VirtualProtect(&__imp_D3DCreateBlob, sizeof(__imp_D3DCreateBlob), PAGE_READWRITE, &old_protection))
+            throw std::runtime_error("F172: change only this regression executable's import slot");
+        __imp_D3DCreateBlob = value;
+        DWORD ignored = 0;
+        if (!VirtualProtect(&__imp_D3DCreateBlob, sizeof(__imp_D3DCreateBlob), old_protection, &ignored))
+            std::abort();
+    }
+public:
+    BlobFailureScope() { injected_blob_calls = 0; set(&fail_diagnostic_blob); }
+    ~BlobFailureScope() noexcept
+    {
+        try { set(original); }
+        catch (...) { std::abort(); }
+    }
+};
 }
 void test_dx11_shader_replacement_ownership_regression()
 {
@@ -109,4 +140,34 @@ void test_dx11_shader_replacement_ownership_regression()
     create_and_render({255,0,0,255});
     std::filesystem::remove(binary);
     create_and_render({0,255,0,255});
+}
+
+void test_dx11_shader_diagnostic_failure_regression()
+{
+    using namespace dx11_slot_test;
+    BatchDevice device; ShaderFilesScope files;
+    auto code = compile_ownership("float4 main():SV_Target{return float4(1,0,1,1);}", "ps_5_0");
+    auto vertex_code = compile_ownership("float4 main(uint i:SV_VertexID):SV_Position{float2 p[3]={float2(-1,-1),float2(-1,3),float2(3,-1)};return float4(p[i],0,1);}", "vs_5_0");
+    ComPtr<ID3D11VertexShader> vertex;
+    require_batch(SUCCEEDED(device.native->CreateVertexShader(vertex_code->GetBufferPointer(),vertex_code->GetBufferSize(),nullptr,&vertex)), "F172: vertex shader");
+    G->hunting = 1;
+    ComPtr<ID3D11PixelShader> pixel;
+    HRESULT result;
+    std::fputs("F172: fail only optional D3DCreateBlob after real native shader creation\n",stderr); std::fflush(stderr);
+    { BlobFailureScope failure;
+      result=device.device->CreatePixelShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&pixel); }
+    require_batch(injected_blob_calls==1 && pixel, "F172: actual native shader exists and diagnostic boundary was reached once");
+    ComPtr<ID3D11Device> owner; pixel->GetDevice(&owner);
+    ComPtr<IUnknown> actual_owner, native_owner;
+    require_batch(SUCCEEDED(owner.As(&actual_owner)) && SUCCEEDED(device.native.As(&native_owner)) && actual_owner.Get()==native_owner.Get(),
+        "F172: returned shader belongs to the real WARP device");
+    require_batch(result==S_OK, "F172: optional bytecode-retention failure must not replace native shader success");
+    require_batch(G->mShaders.count(pixel.Get()) && G->mShaders.at(pixel.Get())==fnv_64_buf(code->GetBufferPointer(),code->GetBufferSize()) &&
+        !G->mReloadedShaders.count(pixel.Get()) && !G->mOriginalShaders.count(pixel.Get()),
+        "F172: publish normal shader tracking without fake partial reload metadata");
+    require_batch(render_pixel(device,vertex.Get(),pixel.Get())==std::array<unsigned char,4>{255,0,255,255}, "F172: created shader remains usable after diagnostic failure");
+    ComPtr<ID3D11PixelShader> recovered;
+    require_batch(SUCCEEDED(device.device->CreatePixelShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&recovered)) && recovered &&
+        G->mReloadedShaders.count(recovered.Get()), "F172: normal diagnostic retention works after import-slot restoration");
+    CleanupShaderMaps(recovered.Get()); CleanupShaderMaps(pixel.Get());
 }

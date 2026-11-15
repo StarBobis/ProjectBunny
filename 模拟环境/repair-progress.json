@@ -92,6 +92,13 @@
       "summary": "Finish失败时日志和延迟转储均不读取旧输出；真实deferred context注入保持录制状态的OOM，验证无错误发布及后续成功执行的转储字节，整套26项集成/组件与业务回归通过。",
       "evidence": "validation/F-167.json",
       "commitLookup": "git log --fixed-strings --grep=F-167"
+    },
+    {
+      "id": "F-172",
+      "status": "validated-in-simulator",
+      "summary": "附加D3DCreateBlob失败不覆盖shader原生成功HRESULT，并记录警告；专项验证真实渲染、正常hash发布、无半成品重载元数据及取消注入后的留存恢复，整套测试通过。",
+      "evidence": "validation/F-172.json",
+      "commitLookup": "git log --fixed-strings --grep=F-172"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

@@ -1276,9 +1276,9 @@ HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 	// regex engine counts as deferred, though that may change with optimisations in the future.
 	if (G->hunting || !shader_regex_groups.empty()) {
 		EnterCriticalSectionPretty(&G->mCriticalSection);
-			ID3DBlob* blob;
-			hr = D3DCreateBlob(BytecodeLength, &blob);
-			if (SUCCEEDED(hr)) {
+			ID3DBlob* blob = nullptr;
+			const HRESULT capture_hr = D3DCreateBlob(BytecodeLength, &blob);
+			if (SUCCEEDED(capture_hr)) {
 				memcpy(blob->GetBufferPointer(), pShaderBytecode, blob->GetBufferSize());
 				RegisterForReload(*ppShader, hash, shaderType, "bin", pClassLinkage, blob, {0}, L"", true);
 
@@ -1294,6 +1294,9 @@ HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 					(*ppShader)->AddRef();
 					G->mOriginalShaders[*ppShader] = *ppShader;
 				}
+			} else {
+				LogWarning("Optional shader bytecode retention failed: hr=0x%08x; preserving native shader success.\n",
+					static_cast<unsigned>(capture_hr));
 			}
 		LeaveCriticalSection(&G->mCriticalSection);
 	}
