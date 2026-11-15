@@ -253,6 +253,13 @@
       "summary": "ZRepair两个深度纹理调用者验证非空名字及.x/y/z/w后缀后再发布，消除*(end-1)短串越界，保留合法拆分而非残留点号。真实配置旧版接受单字符已复现；短串/空名/坏后缀、两键、四分量、空白和重载专项及25+10全流程通过；F138转换另项先完成。",
       "evidence": "validation/F-137.json",
       "commitLookup": "git log --fixed-strings --grep=F-137"
+    },
+    {
+      "id": "F-143",
+      "status": "validated-in-simulator",
+      "summary": "未知资源返回类型和系统值不再静默漏写token，改走既有AssemblerParseError；保留8种资源和22个系统值精确编码。专项验证完整指令、公共无collector行号异常/显式collector告警继续契约，以及原生shader往返和WARP接受；25+10全流程通过，不把未证实的必然挂死写为事实。",
+      "evidence": "validation/F-143.json",
+      "commitLookup": "git log --fixed-strings --grep=F-143"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

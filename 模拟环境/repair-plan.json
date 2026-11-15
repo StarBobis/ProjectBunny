@@ -578,7 +578,7 @@
       "additionalEvidence": null,
       "correctedConclusion": "未知资源类型/系统值遗漏token可造损坏shader；从FIXME不能断言汇编器必挂，需拒绝并走既有parse_errors接口。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "8种资源/22系统值精确编码、未知值拒绝、公共无collector异常与显式collector告警继续契约、实际shader往返及原生WARP接受",
       "implementationStatus": "pending"
     },
     {

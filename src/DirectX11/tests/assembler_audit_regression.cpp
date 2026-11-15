@@ -12,6 +12,44 @@ struct IndexAddends { unsigned first, second; };
 struct InterpolationCase { const char* text; unsigned mode; };
 }
 
+void test_dx11_assembler_declaration_regression()
+{
+    const std::pair<const char*, DWORD> types[] = {
+        {"(float,float,float,float)",0x5555}, {"(uint,uint,uint,uint)",0x4444},
+        {"(sint,sint,sint,sint)",0x3333}, {"(snorm,snorm,snorm,snorm)",0x2222},
+        {"(unorm,unorm,unorm,unorm)",0x1111}, {"(double,<continued>,<unused>,<unused>)",0x9987},
+        {"(double,<continued>,double,<continued>)",0x8787}, {"(mixed,mixed,mixed,mixed)",0x6666}};
+    for (const auto& entry : types) {
+        std::string text = entry.first; std::vector<DWORD> words{0x12345678};
+        assembleResourceDeclarationType(&text,&words);
+        check_assembler_audit(words == std::vector<DWORD>{0x12345678,entry.second}, "F143: preserve every supported resource return-type token");
+    }
+    const char* values[] = {"position","clip_distance","cull_distance","rendertarget_array_index","viewport_array_index",
+        "vertex_id","primitive_id","instance_id","is_front_face","sampleIndex","finalQuadUeq0EdgeTessFactor",
+        "finalQuadVeq0EdgeTessFactor","finalQuadUeq1EdgeTessFactor","finalQuadVeq1EdgeTessFactor","finalQuadUInsideTessFactor",
+        "finalQuadVInsideTessFactor","finalTriUeq0EdgeTessFactor","finalTriVeq0EdgeTessFactor","finalTriWeq0EdgeTessFactor",
+        "finalTriInsideTessFactor","finalLineDetailTessFactor","finalLineDensityTessFactor"};
+    for (size_t i=0; i<ARRAYSIZE(values); ++i) {
+        std::string text=values[i]; std::vector<DWORD> words;
+        assembleSystemValue(&text,&words);
+        check_assembler_audit(words == std::vector<DWORD>{static_cast<DWORD>(i+1)}, "F143: preserve all 22 system-value encodings");
+    }
+    for (const bool resource : {true,false}) {
+        for (const char* invalid : {"", "unknown", "(float,uint,sint,double)"}) {
+            std::string text=invalid; std::vector<DWORD> words{0x12345678}; bool rejected=false;
+            std::fputs("F143: unsupported declaration must report an actual parser error\n",stderr); std::fflush(stderr);
+            try { if(resource) assembleResourceDeclarationType(&text,&words); else assembleSystemValue(&text,&words); }
+            catch(const AssemblerParseError&) {rejected=true;}
+            check_assembler_audit(rejected && words == std::vector<DWORD>{0x12345678}, "F143: unknown declaration cannot silently omit a required token");
+        }
+    }
+    for (const auto* text : {"dcl_resource_texture2d (unknown,unknown,unknown,unknown) t0", "dcl_input_sgv v0.x, unknown"}) {
+        bool rejected=false;
+        try { assembleIns(text); } catch(const AssemblerParseError&) {rejected=true;}
+        check_assembler_audit(rejected, "F143: complete instruction parser propagates unsupported declaration errors");
+    }
+}
+
 void test_dx11_assembler_interpolation_regression()
 {
     const InterpolationCase valid[] = {

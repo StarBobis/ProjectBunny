@@ -1189,22 +1189,22 @@ static void assembleResourceDeclarationType(string *type, vector<DWORD> *v)
 
 	if (*type == "(float,float,float,float)")
 		v->push_back(0x5555);
-	if (*type == "(uint,uint,uint,uint)")
+	else if (*type == "(uint,uint,uint,uint)")
 		v->push_back(0x4444);
-	if (*type == "(sint,sint,sint,sint)")
+	else if (*type == "(sint,sint,sint,sint)")
 		v->push_back(0x3333);
-	if (*type == "(snorm,snorm,snorm,snorm)")
+	else if (*type == "(snorm,snorm,snorm,snorm)")
 		v->push_back(0x2222);
-	if (*type == "(unorm,unorm,unorm,unorm)")
+	else if (*type == "(unorm,unorm,unorm,unorm)")
 		v->push_back(0x1111);
-	if (*type == "(double,<continued>,<unused>,<unused>)")
+	else if (*type == "(double,<continued>,<unused>,<unused>)")
 		v->push_back(0x9987);
-	if (*type == "(double,<continued>,double,<continued>)")
+	else if (*type == "(double,<continued>,double,<continued>)")
 		v->push_back(0x8787);
-	if (*type == "(mixed,mixed,mixed,mixed)") // TestShaders/GameExamples/DR3/cc5538d28f8fd45e-vs
+	else if (*type == "(mixed,mixed,mixed,mixed)") // TestShaders/GameExamples/DR3/cc5538d28f8fd45e-vs
 		v->push_back(0x6666);
-	// FIXME: Fail gracefully if we don't recognise the type, since doing
-	// nothing here will cause a hang!
+	else
+		throw AssemblerParseError(*type, "Unrecognised resource return type");
 }
 
 static void assembleSystemValue(string *sv, vector<DWORD> *os)
@@ -1259,9 +1259,8 @@ static void assembleSystemValue(string *sv, vector<DWORD> *os)
 		os->push_back(21);
 	else if (*sv == "finalLineDensityTessFactor")
 		os->push_back(22);
-
-	// FIXME: Fail gracefully if we don't recognise the system value,
-	// otherwise we might generate a corrupt shader and crash DirectX.
+	else
+		throw AssemblerParseError(*sv, "Unrecognised system value");
 }
 
 static int interpolationMode(const vector<string> &w, int def, size_t required_operands)

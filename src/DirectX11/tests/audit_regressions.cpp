@@ -39,6 +39,7 @@ void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
 void test_dx11_parameter_conversion_regression();
+void test_dx11_assembler_declaration_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -317,6 +318,35 @@ void test_f138()
         "F138: subsequent real configuration preserves normal depth selectors and all three lists");
 }
 
+void test_f143()
+{
+    test_dx11_assembler_declaration_regression();
+    const char source[] = "Texture2D<float4> tex:register(t0);float4 main():SV_Target{return tex.Load(int3(0,0,0));}";
+    ComPtr<ID3DBlob> code, errors, assembly;
+    require_batch(SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)) &&
+        SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&assembly)),
+        "F143: native compiler produces actual resource declaration fixture");
+    const auto* data=static_cast<const unsigned char*>(code->GetBufferPointer());
+    const std::vector<unsigned char> original(data,data+code->GetBufferSize());
+    const std::string valid(static_cast<const char*>(assembly->GetBufferPointer()));
+    std::vector<char> normal(valid.begin(),valid.end()); std::vector<AssemblerParseError> warnings;
+    const auto rebuilt=assembler(&normal,original,&warnings);
+    BatchDevice device; ComPtr<ID3D11PixelShader> shader;
+    require_batch(warnings.empty() && SUCCEEDED(device.native->CreatePixelShader(rebuilt.data(),rebuilt.size(),nullptr,&shader)),
+        "F143: native WARP accepts unchanged supported declaration round trip");
+    const std::string token="(float,float,float,float)";
+    const auto position=valid.find(token);
+    require_batch(position!=std::string::npos, "F143: locate actual native resource type");
+    std::string invalid=valid; invalid.replace(position,token.size(),"(invalid,invalid,invalid,invalid)");
+    std::vector<char> bad(invalid.begin(),invalid.end()); bool rejected=false;
+    try { assembler(&bad,original); } catch(const AssemblerParseError& error) {rejected=error.line_no>0;}
+    require_batch(rejected, "F143: public assembly without warning collection reports a line-numbered parse error");
+    warnings.clear();
+    const auto with_warnings=assembler(&bad,original,&warnings);
+    require_batch(warnings.size()==1 && warnings.front().line_no>0 && !with_warnings.empty(),
+        "F143: preserve explicit warning-collection compatibility policy while reporting the rejected instruction");
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -329,6 +359,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
     {"F-137", test_f137},
     {"F-138", test_f138},
+    {"F-143", test_f143},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
