@@ -7,7 +7,7 @@
   "oldPlanSha256": "83E9E7E8F523606455C8C1A81A5A11463159362AA61796B29AAB5A81663403E8",
   "counts": {
     "A": 23,
-    "B": 41,
+    "B": 42,
     "C": 28,
     "R": 26,
     "X": 4,
@@ -15,8 +15,8 @@
     "D12": 4,
     "N": 8
   },
-  "total": 142,
-  "activeCandidateCount": 118,
+  "total": 143,
+  "activeCandidateCount": 119,
   "rows": [
     {
       "id": "F-001",
@@ -1869,6 +1869,21 @@
       "targetedAcceptanceProposal": "原生双float2及R16_UINT到R32_FLOAT对齐，逐记录重置、跨槽、实例步进、截断与极端偏移；缓存哈希/描述不变",
       "implementationStatus": "validated-in-simulator",
       "discovery": "执行复查F008时新增，原报告未列"
+    },
+    {
+      "id": "F-325",
+      "status": "执行新增，合法native反例已确认",
+      "group": "B",
+      "groupLabel": "跨函数语义，执行补充",
+      "originalSeverity": null,
+      "severity": "medium",
+      "evidence": "src/D3D_Shaders/Assembler.cpp:3131,3137 ComputeHash tail padding",
+      "additionalEvidence": "F105发现：SDK47 D3DSetBlobPart生成合法7字节PRIV，471字节原始/重建容器仅checksum四DWORD不同，其余字节相同。",
+      "correctedConclusion": "旧padding目的地址以DWORD rem/4取整，非4对齐尾部会被覆盖且填充位置错误。独立修字节偏移，不改MD5 rounds/constants/protocol；不能把本发现混入F105或称真实GPU失败已复现。",
+      "executionGate": "先独立baseline红与SDK oracle正常/非4尾/%64边界绿，准确SHA对抗审查，主线专项及完整装置后单独提交。",
+      "targetedAcceptanceProposal": "同一SDK shader的PRIV长度1..68覆盖(N-20)%4/%64，非checksum字节保持，Native checksum/生产assembler逐字往返及原生接受；对齐控制不回退。",
+      "implementationStatus": "pending",
+      "discovery": "执行F105复查时新增，原报告未列"
     }
   ],
   "executionCorrections": [
