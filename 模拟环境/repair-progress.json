@@ -36,6 +36,13 @@
       "summary": "按实际数组字节数清零DX9立即数寄存器标记；串行解码验证c0/63/64/127/200/255不跨shader残留，不扩张为并发解码协议修改。",
       "evidence": "validation/F-127.json",
       "commitLookup": "git log --fixed-strings --grep=F-127"
+    },
+    {
+      "id": "F-135",
+      "status": "validated-in-simulator",
+      "summary": "虚拟键十六进制解析拒绝缺数字、尾随垃圾及超255/溢出，保留合法别名和反向按键；DX11全流程16项通过，共享消费者DX12 Release兼容构建通过，未部署。",
+      "evidence": "validation/F-135.json",
+      "commitLookup": "git log --fixed-strings --grep=F-135"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

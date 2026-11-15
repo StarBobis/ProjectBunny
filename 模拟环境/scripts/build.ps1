@@ -1,6 +1,7 @@
 [CmdletBinding()]
-param([switch]$BuildCandidate, [switch]$BuildBusiness, [ValidateRange(1, 32)][int]$Parallel = 6)
+param([switch]$BuildCandidate, [switch]$BuildBusiness, [switch]$BuildDx12Compatibility, [ValidateRange(1, 32)][int]$Parallel = 6)
 $ErrorActionPreference = 'Stop'
+if($BuildDx12Compatibility -and -not $BuildBusiness){throw 'DX12 compatibility building requires BuildBusiness.'}
 . (Join-Path $PSScriptRoot 'toolchain.ps1')
 $simulationRoot = Split-Path -Parent $PSScriptRoot
 $repositoryRoot = Split-Path -Parent $simulationRoot
@@ -49,7 +50,9 @@ if ($BuildBusiness) {
     & $toolchain.cmake -S $repositoryRoot -B $candidateBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$($toolchain.ninja)" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DDX11_AUDIT_ASAN_LOCKS=ON -DDX12_RELEASE_TIMING=OFF "-DPython3_EXECUTABLE=$pythonPath" "-DCMAKE_PROJECT_INCLUDE=$(Join-Path $simulationRoot 'business-overlay.cmake')" 2>&1 |
         Tee-Object -FilePath (Join-Path $buildRoot 'business-configure.log')
     if ($LASTEXITCODE -ne 0) { throw "Business configuration failed: $LASTEXITCODE" }
-    & $toolchain.cmake --build $candidateBuild --target dx11_upstream_regression D3D_Shaders --parallel $Parallel 2>&1 |
+    $businessTargets=@('dx11_upstream_regression','D3D_Shaders')
+    if($BuildDx12Compatibility){$businessTargets+='DirectX12'}
+    & $toolchain.cmake --build $candidateBuild --target @businessTargets --parallel $Parallel 2>&1 |
         Tee-Object -FilePath (Join-Path $buildRoot 'business-build.log')
     if ($LASTEXITCODE -ne 0) { throw "Business build failed: $LASTEXITCODE" }
     Copy-Item -LiteralPath $asanRuntime -Destination (Join-Path $candidateBuild 'src\DirectX11\clang_rt.asan_dynamic-x86_64.dll') -Force
@@ -58,10 +61,12 @@ if ($BuildBusiness) {
     }
     $head = & git -C $repositoryRoot rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Cannot record build HEAD.' }
-    $products = @('src\DirectX11\d3d11.dll','src\DirectX11\dx11_upstream_regression.exe','src\DirectX11\Release\dx11_legacy_version_regression.exe','src\D3D_Shaders\D3D_Shaders.exe','src\DirectX11\clang_rt.asan_dynamic-x86_64.dll') | ForEach-Object {
+    $productPaths=@('src\DirectX11\d3d11.dll','src\DirectX11\dx11_upstream_regression.exe','src\DirectX11\Release\dx11_legacy_version_regression.exe','src\D3D_Shaders\D3D_Shaders.exe','src\DirectX11\clang_rt.asan_dynamic-x86_64.dll')
+    if($BuildDx12Compatibility){$productPaths+='src\DirectX12\d3d12.dll'}
+    $products = $productPaths | ForEach-Object {
         [pscustomobject]@{path=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $candidateBuild $_) -Algorithm SHA256).Hash}
     }
-    @{utc=[DateTime]::UtcNow.ToString('o');head=$head;configuration='Release';standard='C++17';lockCleanupAddressSanitizer=$true;python=$pythonPath;toolchain=$toolchain;sources=$sourceSnapshot;products=@($products)} |
+    @{utc=[DateTime]::UtcNow.ToString('o');head=$head;configuration='Release';standard='C++17';dx12CompatibilityBuilt=[bool]$BuildDx12Compatibility;lockCleanupAddressSanitizer=$true;python=$pythonPath;toolchain=$toolchain;sources=$sourceSnapshot;products=@($products)} |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $buildRoot 'business-build-info.json') -Encoding utf8
 }
 Write-Host "Test hosts: $hostBuild"

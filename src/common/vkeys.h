@@ -177,9 +177,21 @@ static int ParseVKey(const wchar_t *name)
 	}
 
 	if (!wcsncmp(name, L"0x", 2)) {
-		unsigned int vkey;
-		swscanf_s(name, L"%x", &vkey);
-		return vkey;
+		unsigned int vkey = 0;
+		const wchar_t *digit = name + 2;
+		if (!*digit)
+			return -1;
+		for (; *digit; ++digit) {
+			unsigned int value;
+			if (*digit >= L'0' && *digit <= L'9') value = *digit - L'0';
+			else if (*digit >= L'a' && *digit <= L'f') value = *digit - L'a' + 10;
+			else if (*digit >= L'A' && *digit <= L'F') value = *digit - L'A' + 10;
+			else return -1;
+			if (vkey > (0xffu - value) / 16u)
+				return -1;
+			vkey = vkey * 16u + value;
+		}
+		return static_cast<int>(vkey);
 	}
 
 	if (!_wcsnicmp(name, L"VK_", 3))

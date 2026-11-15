@@ -93,7 +93,7 @@ if(Test-Path -LiteralPath $pointer) {
     $integration=Get-Content -LiteralPath $integrationPath -Raw | ConvertFrom-Json
 }
 $status=if(@($checks | Where-Object status -ne 'PASS').Count -eq 0 -and $integration -and @($integration.cases | Where-Object status -ne 'PASS').Count -eq 0){'PASS'}else{'FAIL'}
-$report=[ordered]@{item=$label;status=$status;utc=[DateTime]::UtcNow.ToString('o');buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash;checks=$checks.ToArray();actualDllIntegration=$integration;businessSurface='Entire production-source DX11 business suite with real WARP resources; lock.cpp additionally ASan-instrumented in this host, while the actual DLL remains regular Release';lockCleanupAddressSanitizer=$info.lockCleanupAddressSanitizer;targetGameValidated=$false}
+$report=[ordered]@{item=$label;status=$status;utc=[DateTime]::UtcNow.ToString('o');buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash;checks=$checks.ToArray();actualDllIntegration=$integration;businessSurface='Entire production-source DX11 business suite with real WARP resources; lock.cpp additionally ASan-instrumented in this host, while the actual DLL remains regular Release';lockCleanupAddressSanitizer=$info.lockCleanupAddressSanitizer;dx12CompatibilityBuildOnly=$info.dx12CompatibilityBuilt;targetGameValidated=$false}
 $reportPath=Join-Path $runRoot 'results.json'
 $report | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $reportPath -Encoding utf8
 Write-Host "Full report: $reportPath"

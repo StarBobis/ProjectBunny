@@ -2,6 +2,7 @@
 #include "FrameAnalysis.h"
 #include "IniHandler.h"
 #include "Input.h"
+#include "vkeys.h"
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -208,9 +209,27 @@ void test_f114()
         persistent_variables.empty(), "F114: corrected config reload replaces declarations normally");
 }
 
+void test_f135()
+{
+    require_batch(ParseVKey(L"0x00") == 0 && ParseVKey(L"0xff") == 255 &&
+        ParseVKey(L"0x000041") == 65 && ParseVKey(L"A") == 65 && ParseVKey(L"a") == 65 &&
+        ParseVKey(L"VK_F1") == VK_F1 && ParseVKey(L"space") == VK_SPACE,
+        "F135: valid hexadecimal, letter and named keys retain their values");
+    for (const wchar_t* invalid : {L"0x100", L"0x", L"0xG", L"0x41junk", L"0x-1", L"0x10000000000000000"}) {
+        std::fprintf(stderr, "F135: reject malformed or out-of-range hexadecimal VK\n"); std::fflush(stderr);
+        require_batch(ParseVKey(invalid) == -1, "F135: reject missing digits, trailing garbage, negatives and overflow");
+        bool rejected = false;
+        try { VKInputButton button(invalid); }
+        catch (const std::exception&) { rejected = true; }
+        require_batch(rejected, "F135: the real input-button consumer rejects the invalid key");
+    }
+    VKInputButton valid(L"no_0x41");
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
+    {"F-135", test_f135},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
 #endif
