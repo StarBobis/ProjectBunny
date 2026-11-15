@@ -148,7 +148,7 @@ if(BUILD_TESTING)
     # Exercise the real parser/globals/resource lifecycle without exporting test
     # hooks from d3d11.dll or replacing production dependencies with mocks.
     get_target_property(DX11_REGRESSION_SOURCES DirectX11 SOURCES)
-    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "\\.(def|rc)$")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "\\.def$")
     string(REPLACE "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp" "tests/assembler_audit_regression.cpp"
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/assembler_audit_regression.cpp PROPERTIES
@@ -179,6 +179,7 @@ if(BUILD_TESTING)
         tests/shader_ownership_audit.cpp
         tests/finish_command_audit.cpp
         tests/d3d11_vtable_layout.c
+        tests/hunting_present_audit.cpp
         tests/persistence_regression.cpp
         tests/input_layout_regression.cpp
         tests/ini_expression_regression.cpp

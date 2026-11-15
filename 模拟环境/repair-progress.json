@@ -106,6 +106,13 @@
       "summary": "拒绝SwapChain4前归还成功QI获得的引用；真实DLL32次查询前后引用数不增长，Native对照稳定，保持E_NOINTERFACE/空输出，整套18+10项集成组件通过。",
       "evidence": "validation/F-178.json",
       "commitLookup": "git log --fixed-strings --grep=F-178"
+    },
+    {
+      "id": "F-179",
+      "status": "validated-in-simulator",
+      "summary": "Present仅在非空已访问集合中完成上一个选择的回绕，并在既有全局锁内同步选择元数据；真实INI初始化、TLS和字体资源下验证空集合/非空恢复/重复清空及帧流程，专项与全流程通过。",
+      "evidence": "validation/F-179.json",
+      "commitLookup": "git log --fixed-strings --grep=F-179"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

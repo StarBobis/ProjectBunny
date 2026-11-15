@@ -16,6 +16,7 @@ void test_dx11_signature_feature_comment_regression();
 void test_dx11_shader_replacement_ownership_regression();
 void test_dx11_finish_failure_regression();
 void test_dx11_shader_diagnostic_failure_regression();
+void test_dx11_empty_hunting_present_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -163,6 +164,8 @@ class AuditConfigScope {
     std::wstring old_user = G->user_config;
     int old_dirty = G->user_config_dirty;
     bool old_automatic = G->clear_unknown_settings, old_clear = G->clear_saved_persist_vars;
+    int old_hunting = G->hunting;
+    std::wstring old_shader_path = G->SHADER_PATH, old_shader_cache = G->SHADER_CACHE_PATH;
 public:
     std::filesystem::path config, settings;
     AuditConfigScope()
@@ -189,13 +192,16 @@ public:
         G->gShowWarnings = old_warnings; G->gConfigInitialized = old_initialized;
         G->user_config = old_user; G->user_config_dirty = old_dirty;
         G->clear_unknown_settings = old_automatic; G->clear_saved_persist_vars = old_clear;
+        G->hunting = old_hunting;
+        wcscpy_s(G->SHADER_PATH, MAX_PATH, old_shader_path.c_str()); wcscpy_s(G->SHADER_CACHE_PATH, MAX_PATH, old_shader_cache.c_str());
         DeleteFileW(config.c_str()); DeleteFileW(settings.c_str());
     }
-    void load(const char* constants)
+    void load(const char* constants, int hunting = 0, bool eager = false)
     {
         std::ofstream output(config, std::ios::binary | std::ios::trunc);
-        output << "[Logging]\ncalls=0\nshow_warnings=0\n[System]\nskip_early_includes_load=0\n"
-            "[Hunting]\nhunting=0\n[Include]\nuser_config=" << settings.filename().string() << "\n[Constants]\n" << constants;
+        output << "[Logging]\ncalls=0\nshow_warnings=0\n[System]\nskip_early_includes_load=0\n";
+        if (eager) output << "config_initialization_delay=-1\n";
+        output << "[Hunting]\nhunting=" << hunting << "\n[Include]\nuser_config=" << settings.filename().string() << "\n[Constants]\n" << constants;
         output.close(); require_batch(output.good(), "audit config: write complete production INI");
         WritePrivateProfileStringW(nullptr, nullptr, nullptr, config.c_str());
         ClearKeyBindings(); LoadConfigFile();
@@ -244,10 +250,22 @@ const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F
     {"F-153", test_dx11_shader_replacement_ownership_regression},
     {"F-167", test_dx11_finish_failure_regression},
     {"F-172", test_dx11_shader_diagnostic_failure_regression},
+    {"F-179", test_dx11_empty_hunting_present_regression},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
 #endif
 };
+}
+
+void with_dx11_audit_hunting_configuration(void (*scenario)())
+{
+    AuditConfigScope config;
+    // Use the supported eager-initialization option and the actual loader;
+    // do not fake the gConfigInitialized state used by Present.
+    config.load("", HUNTING_MODE_ENABLED, true);
+    require_batch(G->gConfigInitialized && G->hunting == HUNTING_MODE_ENABLED,
+        "hunting audit: real eager configuration initialization completed");
+    scenario();
 }
 
 bool test_dx11_audit_item(const char* id)

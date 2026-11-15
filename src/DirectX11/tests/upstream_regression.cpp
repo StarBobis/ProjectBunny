@@ -947,6 +947,24 @@ void test_dx11_slot_range_numeric_regression();
 bool test_dx11_audit_item(const char* id);
 void test_dx11_audit_regressions();
 
+// The regression host embeds production sources rather than loading their
+// DllMain. Supply the same real TLS initialization before exercising Present.
+class RegressionTlsScope {
+    DWORD previous = tls_idx;
+    DWORD owned = TlsAlloc();
+public:
+    RegressionTlsScope()
+    {
+        if (owned == TLS_OUT_OF_INDEXES) { std::fputs("FAIL: regression TLS allocation\n", stderr); std::exit(EXIT_FAILURE); }
+        tls_idx = owned;
+    }
+    ~RegressionTlsScope()
+    {
+        delete static_cast<TLS*>(TlsGetValue(owned));
+        TlsSetValue(owned, nullptr); TlsFree(owned); tls_idx = previous;
+    }
+};
+
 int main(int argc, char** argv)
 {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
@@ -956,6 +974,7 @@ int main(int argc, char** argv)
         std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN]\n", stderr);
         return EXIT_FAILURE;
     }
+    RegressionTlsScope runtime_tls;
     InitializeCriticalSection(&G->mCriticalSection);
     InitializeCriticalSection(&G->mResourcesLock);
     InitializeCriticalSection(&resource_creation_mode_lock);
