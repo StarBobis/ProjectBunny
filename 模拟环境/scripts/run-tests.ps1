@@ -66,6 +66,7 @@ foreach ($inputDll in $inputs) {
         [pscustomobject]@{name='constants-overlay-swapchain';scenario='swapchain';exe=$hostPath;mode='constants-overlay-swapchain';config='constants-overlay.ini'},
         [pscustomobject]@{name='kmt-binding';scenario='capabilities';exe=$hostPath;mode='kmt-binding';config='wrapper.ini'},
         [pscustomobject]@{name='shader-export-failure';scenario='capabilities';exe=$hostPath;mode='shader-export-failure';config='export-failure.ini'},
+        [pscustomobject]@{name='resource-extensionless';scenario='capabilities';exe=$hostPath;mode='resource-extensionless';config='resource-extensionless.ini'},
         [pscustomobject]@{name='injected-device-failure';scenario='capabilities';exe=$hostPath;mode='injected-device-failure';config='device-failure.ini'},
         [pscustomobject]@{name='smoke-wrapper';scenario='capabilities';exe=$smokePath;mode='--child';config='wrapper.ini'},
         [pscustomobject]@{name='smoke-native-control';scenario='capabilities';exe=$smokePath;mode='--child-native-control';config='wrapper.ini'},
@@ -92,6 +93,9 @@ foreach ($inputDll in $inputs) {
         if($case.name -eq 'shader-export-failure') {
             $null=New-Item -ItemType Directory -Path (Join-Path $caseRoot 'ShaderFixes')
             [IO.File]::WriteAllText((Join-Path $caseRoot 'cache-blocker'),'F003 owned blocker')
+        }
+        if($case.name -eq 'resource-extensionless') {
+            Copy-Item -LiteralPath (Join-Path $repositoryRoot 'src\DirectX11\tests\data\wic.png') -Destination (Join-Path $caseRoot 'image')
         }
         if ($case.name -eq 'injected-device-failure') {
             Copy-Item -LiteralPath $faultProviderPath -Destination (Join-Path $caseRoot 'dx11_fault_provider.dll')

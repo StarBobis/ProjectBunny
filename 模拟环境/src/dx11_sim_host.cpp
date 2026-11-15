@@ -295,6 +295,28 @@ void texture_clear(Device& gpu)
     read_texture(gpu.device.Get(), gpu.context.Get(), texture.Get(), {0, 128, 255, 255});
 }
 
+void extensionless_resource(Device& gpu)
+{
+    ComPtr<ID3D11ShaderResourceView> view;
+    gpu.context->PSGetShaderResources(0,1,&view);
+    require(view != nullptr, "F108: Constants binds the actual extensionless resource");
+    ComPtr<ID3D11Resource> resource; view->GetResource(&resource);
+    ComPtr<ID3D11Texture2D> texture, staging;
+    succeeded(resource.As(&texture), "F108: bound resource is a real texture");
+    D3D11_TEXTURE2D_DESC desc{}; texture->GetDesc(&desc);
+    const bool rgba = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    const bool bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    require(desc.Width==1 && desc.Height==1 && (rgba || bgra), "F108: expected fixture dimensions and native pixel layout");
+    desc.Usage=D3D11_USAGE_STAGING; desc.BindFlags=desc.MiscFlags=0; desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+    succeeded(gpu.device->CreateTexture2D(&desc,nullptr,&staging), "F108: actual DLL resource readback");
+    gpu.context->CopyResource(staging.Get(),texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    succeeded(gpu.context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped), "F108: Map extensionless texture pixels");
+    std::array<unsigned char,4> actual{}; std::memcpy(actual.data(),mapped.pData,actual.size()); gpu.context->Unmap(staging.Get(),0);
+    if(bgra) std::swap(actual[0],actual[2]);
+    require(actual==std::array<unsigned char,4>{128,64,32,255}, "F108: exact original PNG pixels survive loading without an extension");
+}
+
 void constants_values(ID3D11Device* device, ID3D11DeviceContext* context)
 {
     ComPtr<ID3D11ShaderResourceView> view;
@@ -457,6 +479,7 @@ int wmain(int argc, wchar_t** argv)
             else if (scenario == L"deferred") deferred_replay(gpu);
             else if (scenario == L"kmt-binding") runtime.shared_primary_binding();
             else if (scenario == L"shader-export-failure") shader_export_failure(gpu);
+            else if (scenario == L"resource-extensionless") extensionless_resource(gpu);
             else throw std::runtime_error("unknown scenario");
         }
         std::puts("PASS: actual runtime scenario");

@@ -5922,11 +5922,17 @@ ResourceHandleInfo* CustomResource::GetHandleInfo()
 	return handle_info.get();
 }
 
+class ResourceCreationModeScope {
+public:
+    ResourceCreationModeScope() { LockResourceCreationMode(); }
+    ~ResourceCreationModeScope() { UnlockResourceCreationMode(); }
+    ResourceCreationModeScope(const ResourceCreationModeScope&) = delete;
+    ResourceCreationModeScope& operator=(const ResourceCreationModeScope&) = delete;
+};
+
 void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 		D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags)
 {
-	bool restore_create_mode = false;
-
 	// We only allow a custom resource to be substantiated once. Otherwise
 	// we could end up reloading it again if it is later set to null. Also
 	// prevents us from endlessly retrying to load a custom resource from a
@@ -5959,7 +5965,7 @@ void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 	// parameters while probing the hardware before it settles on the one
 	// it will actually use.
 
-	LockResourceCreationMode();
+	ResourceCreationModeScope creation_mode;
 
 	if (!filename.empty()) {
 		LoadFromFile(mOrigDevice1);
@@ -5983,7 +5989,6 @@ void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 		}
 	}
 
-	UnlockResourceCreationMode();
 }
 
 void CustomResource::LoadBufferFromFile(ID3D11Device *mOrigDevice1)
@@ -6038,7 +6043,6 @@ DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(const wstring& path) const
 
 void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 {
-	wstring ext;
 	HRESULT hr;
 
 	switch (override_type) {
@@ -6076,8 +6080,10 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	if (!com)
 		return;
 
-	ext = filename.substr(filename.rfind(L"."));
-	if (!_wcsicmp(ext.c_str(), L".dds")) {
+	const size_t dot = filename.find_last_of(L'.');
+	const size_t separator = filename.find_last_of(L"/\\");
+	if (dot != wstring::npos && (separator == wstring::npos || dot > separator) &&
+		!_wcsicmp(filename.c_str() + dot, L".dds")) {
 		LogInfoW(L"Loading custom resource %s as DDS, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
 		hr = DirectX::CreateDDSTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
@@ -10862,14 +10868,6 @@ static ResourceType* RecreateCompatibleTexture(
 	return GetResourceFromPool<ResourceType, DescType, CreateTexture>
 		(ini_line, src_resource, dst_resource, resource_pool, state, &new_desc);
 }
-
-class ResourceCreationModeScope {
-public:
-    ResourceCreationModeScope() { LockResourceCreationMode(); }
-    ~ResourceCreationModeScope() { UnlockResourceCreationMode(); }
-    ResourceCreationModeScope(const ResourceCreationModeScope&) = delete;
-    ResourceCreationModeScope& operator=(const ResourceCreationModeScope&) = delete;
-};
 
 static bool RecreateCompatibleResource(
 		wstring *ini_line,
