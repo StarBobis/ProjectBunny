@@ -30,6 +30,7 @@ void test_dx11_ini_lookup_performance();
 void test_dx11_file_publication_regression();
 void test_dx11_device_initialization_regression();
 void test_dx11_vertex_dump_bounds_regression();
+void test_dx11_appended_vertex_layout_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -259,6 +260,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-005", test_dx11_device_initialization_regression},
     {"F-007", test_f007},
     {"F-008", test_dx11_vertex_dump_bounds_regression},
+    {"F-324", test_dx11_appended_vertex_layout_regression},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},

@@ -7,7 +7,7 @@
   "oldPlanSha256": "83E9E7E8F523606455C8C1A81A5A11463159362AA61796B29AAB5A81663403E8",
   "counts": {
     "A": 23,
-    "B": 41,
+    "B": 42,
     "C": 29,
     "R": 26,
     "X": 4,
@@ -15,8 +15,8 @@
     "D12": 4,
     "N": 7
   },
-  "total": 141,
-  "activeCandidateCount": 119,
+  "total": 142,
+  "activeCandidateCount": 120,
   "rows": [
     {
       "id": "F-001",
@@ -1854,6 +1854,21 @@
       "executionGate": "当前不修改生产路径；专项装置及目标游戏/驱动验证计划齐备后逐条重议，不能凭WARP基础冒烟放行",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "frozen-or-out-of-scope"
+    },
+    {
+      "id": "F-324",
+      "status": "成立",
+      "group": "B",
+      "groupLabel": "跨函数语义，执行补充",
+      "originalSeverity": null,
+      "severity": "medium",
+      "evidence": "src/DirectX11/FrameAnalysis.cpp dump_vb_elem局部offset清零",
+      "additionalEvidence": "HackerDevice::CreateInputLayout -> HackerInputLayoutCache保留APPEND；实际WARP stream-output与文本解码对照",
+      "correctedConclusion": "第二个APPEND字段重复首字段；已观察原生1,2,3,4而旧文本第二字段1,2。逐记录/槽传递宽游标，保持原布局与缓存身份及F008边界。",
+      "executionGate": "独立Native对照与边界专项+完整模拟装置流程通过后单独提交",
+      "targetedAcceptanceProposal": "原生双float2及R16_UINT到R32_FLOAT对齐，逐记录重置、跨槽、实例步进、截断与极端偏移；缓存哈希/描述不变",
+      "implementationStatus": "validated-in-simulator",
+      "discovery": "执行复查F008时新增，原报告未列"
     }
   ],
   "executionCorrections": [
@@ -1926,9 +1941,13 @@
   "supplementalObservations": [
     {
       "id": "OBS-FA-APPEND",
-      "status": "pending-native-layout-recheck",
+      "status": "confirmed-native;promoted-F-324",
       "evidence": "FrameAnalysis.cpp dump_vb_elem局部offset每次清零；需核HackerInputLayoutCache生产描述及原生对照",
       "executionGate": "独立复核与专项成立后作为独立条目修复、全流程并提交，不混入F008边界修复"
     }
+  ],
+  "originalReportItemCount": 141,
+  "newExecutionFindings": [
+    "F-324"
   ]
 }

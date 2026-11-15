@@ -204,6 +204,13 @@
       "summary": "VB元素读取前按真实映射剩余字节检查offset/格式宽度，顶点和实例两条路径均保护；保留合法跨stride、重叠和既有零stride策略。保护页旧版越界复现，完整字段/截断/极端offset/步进及实际WARP公共源码转储通过；专项与23+10集成组件全流程通过，APPEND状态另项复核。",
       "evidence": "validation/F-008.json",
       "commitLookup": "git log --fixed-strings --grep=F-008"
+    },
+    {
+      "id": "F-324",
+      "status": "validated-in-simulator",
+      "summary": "执行新增遗漏：APPEND字段每次从零解码，原生SO为1/2/3/4而旧文本第二字段重复1/2。按记录/槽传递64位转储游标，保留原布局哈希/描述及F008边界；原生双float2与16→32位对齐、重置/跨槽/实例/截断/大偏移专项和23+10全流程通过。",
+      "evidence": "validation/F-324.json",
+      "commitLookup": "git log --fixed-strings --grep=F-324"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
