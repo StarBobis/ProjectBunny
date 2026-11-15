@@ -233,6 +233,7 @@ struct OverrideTransitionParam
 
 class OverrideTransition
 {
+	bool ini_params_upload_pending = false;
 public:
 	std::map<OverrideParam, OverrideTransitionParam> params;
 	std::map<CommandListVariable*, OverrideTransitionParam> vars;

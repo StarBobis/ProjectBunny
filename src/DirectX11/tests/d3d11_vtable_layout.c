@@ -9,6 +9,14 @@ size_t dx11_audit_finish_command_slot(void)
 {
     return offsetof(ID3D11DeviceContext1Vtbl, FinishCommandList) / sizeof(void*);
 }
+size_t dx11_audit_map_slot(void)
+{
+    return offsetof(ID3D11DeviceContext1Vtbl, Map) / sizeof(void*);
+}
+size_t dx11_audit_unmap_slot(void)
+{
+    return offsetof(ID3D11DeviceContext1Vtbl, Unmap) / sizeof(void*);
+}
 size_t dx11_audit_device1_vtable_entries(void)
 {
     return sizeof(ID3D11Device1Vtbl) / sizeof(void*);

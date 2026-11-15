@@ -346,6 +346,13 @@
       "summary": "cycle每个有效档新建两临时CommandList，避免后档累积前档run；保留共享目标活引用、单档多run、空档/末项继承和transition后post顺序。真实事件红例、namespace/反向/条件/preset专项、对抗复审及主线25+10全流程通过，未改全局追加规则或生产gate。",
       "evidence": "validation/F-193.json",
       "commitLookup": "git log --fixed-strings --grep=F-193"
+    },
+    {
+      "id": "F-194",
+      "status": "validated-in-simulator",
+      "summary": "Map失败不写/Unmap/计成功，pending保留最新CPU数组，params空后仍可重试，成功清脏；Stop/reload清旧布局状态，变量/post只执行一次。真实Map注入红例、GPU恢复/暂缺纹理/重建专项，独立对抗复跑和主线25+10全流程通过；仅模拟DeviceRemoved HRESULT，非设备恢复。",
+      "evidence": "validation/F-194.json",
+      "commitLookup": "git log --fixed-strings --grep=F-194"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

@@ -443,17 +443,23 @@ void KeyOverrideCycleBack::DownEvent(HackerDevice *device)
 // This map/unmap code also requires that the texture be created with the D3D11_USAGE_DYNAMIC flag set.
 // This map operation can also cause the GPU to stall, so this should be done as rarely as possible.
 
-static void UpdateIniParams(HackerDevice* wrapper)
+static bool UpdateIniParams(HackerDevice* wrapper)
 {
+	if (!wrapper || !wrapper->mIniTexture)
+		return false;
 	ID3D11DeviceContext1* realContext = wrapper->GetPassThroughOrigContext1();
-	D3D11_MAPPED_SUBRESOURCE mappedResource;
-
-	if (wrapper->mIniTexture) {
-		realContext->Map(wrapper->mIniTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-		memcpy(mappedResource.pData, G->iniParams.data(), sizeof(DirectX::XMFLOAT4) * G->iniParams.size());
-		realContext->Unmap(wrapper->mIniTexture, 0);
-		Profiling::iniparams_updates++;
+	if (!realContext)
+		return false;
+	D3D11_MAPPED_SUBRESOURCE mappedResource{};
+	const HRESULT result = realContext->Map(wrapper->mIniTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+	if (FAILED(result)) {
+		LogWarning("UpdateIniParams: Map failed with HRESULT=%08lx; upload remains pending\n", static_cast<unsigned long>(result));
+		return false;
 	}
+	memcpy(mappedResource.pData, G->iniParams.data(), sizeof(DirectX::XMFLOAT4) * G->iniParams.size());
+	realContext->Unmap(wrapper->mIniTexture, 0);
+	Profiling::iniparams_updates++;
+	return true;
 }
 
 std::vector<CommandList*> pending_post_command_lists;
@@ -682,8 +688,10 @@ void OverrideTransition::UpdateTransitions(HackerDevice *wrapper)
 		}
 		LogDebug("\n");
 
-		UpdateIniParams(wrapper);
+		ini_params_upload_pending = true;
 	}
+	if (ini_params_upload_pending && UpdateIniParams(wrapper))
+		ini_params_upload_pending = false;
 
 	if (!vars.empty()) {
 		LogDebugNoNL(" Variables remapped to ");
@@ -718,6 +726,7 @@ void OverrideTransition::Stop()
 {
 	params.clear();
 	vars.clear();
+	ini_params_upload_pending = false;
 }
 
 OverrideGlobalSaveParam::OverrideGlobalSaveParam() :

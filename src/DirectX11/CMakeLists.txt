@@ -183,6 +183,7 @@ if(BUILD_TESTING)
     set_source_files_properties(tests/util_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/common/util.cpp")
     list(APPEND DX11_REGRESSION_SOURCES tests/shader_tool_audit_regression.cpp)
+    list(APPEND DX11_REGRESSION_SOURCES tests/ini_upload_audit_regression.cpp)
     set_source_files_properties(tests/shader_tool_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Shaders.cpp")
     list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)CommandList\\.cpp$")
