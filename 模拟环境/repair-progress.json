@@ -388,6 +388,13 @@
       "summary": "特殊输出路径更新真实外层numRead，两个扫描分支只读当前行且6字段完整才发布，保留F274类型检查/回滚与SM3兼容。原生深度/覆盖率及混合输出、截断3/4/5字段专项和主线25+10全流程通过，候选独立对抗审查通过。",
       "evidence": "validation/F-275.json",
       "commitLookup": "git log --fixed-strings --grep=F-275"
+    },
+    {
+      "id": "F-276",
+      "status": "validated-in-simulator",
+      "summary": "DX9 Registers行缓冲改为数组RAII，成功/continue/异常均自动释放，解析及SM3导出行为不变。64次真实成功解析旧增长5568字节、新增长0，拒绝/空表/CRLF/分配计数校准与原生兼容专项、主线25+10全流程和独立候选/合并审查通过。",
+      "evidence": "validation/F-276.json",
+      "commitLookup": "git log --fixed-strings --grep=F-276"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

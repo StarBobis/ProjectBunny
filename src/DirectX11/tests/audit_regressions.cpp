@@ -43,6 +43,7 @@ void test_dx11_decompiler_output_signature_regression();
 void test_dx11_decompiler_special_output_regression();
 void check_dx11_special_output_rows(const std::string&, const std::vector<std::string>&);
 void check_dx11_special_output_failure(const std::string&);
+void test_dx11_dx9_binding_lifetime_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
@@ -668,6 +669,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-100", test_dx11_decompiler_literal_regression},
     {"F-274", test_dx11_decompiler_output_signature_regression},
     {"F-275", test_dx11_decompiler_special_output_regression},
+    {"F-276", test_dx11_dx9_binding_lifetime_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -1018,4 +1020,40 @@ void test_dx11_decompiler_special_output_regression()
             require_batch(failed,"F275: malformed special output propagates public error flag in both modes");
         }
     }
+}
+
+std::string dx11_audit_dx9_binding_disassembly()
+{
+    using namespace dx11_slot_test;
+    const char source[] =
+        "float4 tint : register(c3); sampler2D diffuse : register(s2); bool enabled : register(b1);"
+        "float4 main(float2 uv:TEXCOORD0):COLOR0 { [branch] if(enabled) return tex2Dlod(diffuse,float4(uv,0,0))*tint; return tint; }";
+    ComPtr<ID3DBlob> code, errors, assembly;
+    const HRESULT result = D3DCompile(source, sizeof(source)-1, nullptr, nullptr, nullptr, "main", "ps_3_0", 0, 0, &code, &errors);
+    if (FAILED(result)) std::fprintf(stderr, "F276 native SM3 compilation: 0x%08lx %s\n", result,
+        errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no compiler diagnostic");
+    require_batch(SUCCEEDED(result),
+        "F276: native compiler produces real SM3 sampler/constant/bool bindings");
+    require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(), code->GetBufferSize(), 0, nullptr, &assembly)),
+        "F276: native disassembler produces the actual legacy Registers table");
+    return std::string(static_cast<const char*>(assembly->GetBufferPointer()));
+}
+
+void test_dx11_decompiler_public_dx9_binding_regression()
+{
+    using namespace dx11_slot_test;
+    const char source[] = "float4 tint : register(c3); float4 main():COLOR0 { return tint; }";
+    ComPtr<ID3DBlob> code, errors, assembly;
+    require_batch(SUCCEEDED(D3DCompile(source, sizeof(source)-1, nullptr, nullptr, nullptr, "main", "ps_3_0", 0, 0, &code, &errors)) &&
+        SUCCEEDED(D3DDisassemble(code->GetBufferPointer(), code->GetBufferSize(), 0, nullptr, &assembly)),
+        "F276: native SM3 bytecode and matching disassembly for the public decoder");
+    const std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
+    DecompilerSettings settings;
+    ParseParameters params{};
+    params.bytecode = code->GetBufferPointer(); params.decompiled = text.c_str();
+    params.decompiledSize = text.size(); params.G = &settings;
+    bool patched = false, failed = false; std::string model;
+    const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
+    require_batch(!failed && !patched && model == "ps_3_0" && hlsl.find("tint") != std::string::npos,
+        "F276: public production decoder retains SM3 register naming and source shader model");
 }

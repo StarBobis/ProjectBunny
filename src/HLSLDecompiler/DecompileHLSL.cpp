@@ -18,6 +18,7 @@
 // All sscanf that did not use %s or %c were switched to sscanf_s to avoid warnings.
 
 #include <map>
+#include <memory>
 #include <string>
 #include <cstdio>
 #include <vector>
@@ -861,22 +862,20 @@ public:
 
 			if (parseRegisters)
 			{
-				char * lineStr = new char[lineSize + 1];
-				memcpy(lineStr, lineStart, lineSize);
+				unique_ptr<char[]> lineStr(new char[lineSize + 1]);
+				memcpy(lineStr.get(), lineStart, lineSize);
 				lineStr[lineSize] = 0;
 
 				vector<string> result;
-				SplitString(lineStr, result, " ");
+				SplitString(lineStr.get(), result, " ");
 
 				if (result.size() != 4)
 				{
-					delete[] lineStr;
 					continue;
 				}
 
 				if (result[1] == "Name" || result[3] == "----")
 				{
-					delete[] lineStr;
 					continue;
 				}
 

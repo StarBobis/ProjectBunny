@@ -3,16 +3,98 @@
 #include "../../HLSLDecompiler/DecompileHLSL.cpp"
 #include <cstring>
 #include <stdexcept>
+#include <malloc.h>
+#ifdef DX11_AUDIT_ASAN_LOCKS
+#include <sanitizer/allocator_interface.h>
+#endif
 
 void test_dx11_decompiler_public_literal_regression();
 void test_dx11_decompiler_public_ibfe_regression();
 void test_dx11_decompiler_public_signature_regression();
+std::string dx11_audit_dx9_binding_disassembly();
+void test_dx11_decompiler_public_dx9_binding_regression();
 
 namespace {
 void check_literal_audit(bool condition, const char* message)
 {
     if (!condition) throw std::runtime_error(message);
 }
+}
+
+namespace {
+size_t binding_live_bytes()
+{
+#ifdef DX11_AUDIT_ASAN_LOCKS
+    // ASan's allocations are not reported by the CRT's native heap walker.
+    return __sanitizer_get_current_allocated_bytes();
+#else
+    size_t bytes = 0;
+    _HEAPINFO entry{};
+    int status;
+    while ((status = _heapwalk(&entry)) == _HEAPOK) {
+        if (entry._useflag == _USEDENTRY) bytes += entry._size;
+    }
+    check_literal_audit(status == _HEAPEND, "F276: inspect the actual CRT heap completely");
+    return bytes;
+#endif
+}
+
+void check_binding_allocation_counter()
+{
+    const auto before = binding_live_bytes();
+    void* probe = ::operator new[](8192);
+    const auto during = binding_live_bytes();
+    ::operator delete[](probe);
+    const auto after = binding_live_bytes();
+    check_literal_audit(during >= before + 8192 && after == before,
+        "F276: the live-byte counter must observe both allocation and release of real array storage");
+}
+
+void check_dx9_binding_lifetime(const std::string& assembly, bool has_bindings, const char* label)
+{
+    auto parse = [&] {
+        Decompiler decoder;
+        decoder.ReadResourceBindingsDX9(assembly.data(), assembly.size());
+        if (has_bindings) {
+            check_literal_audit(decoder.mTextureNames.size() == 1 && decoder.mTextureNames.at(2) == "diffuse" &&
+                decoder.mTextureNamesArraySize.at(2) == 1 && decoder.mTextureType.at(2) == "Texture2D<float4>" &&
+                decoder.mUniformNames.size() == 1 && decoder.mUniformNames.at(3) == "tint" &&
+                decoder.mBoolUniformNames.size() == 1 && decoder.mBoolUniformNames.at(1) == "b1",
+                "F276: preserve sampler, float and bool register metadata from native SM3 disassembly");
+        } else {
+            check_literal_audit(decoder.mTextureNames.empty() && decoder.mUniformNames.empty() && decoder.mBoolUniformNames.empty(),
+                "F276: rejected/header rows cannot publish register metadata");
+        }
+    };
+    parse(); // Exclude one-time runtime initialization from the live-allocation comparison.
+    const auto before = binding_live_bytes();
+    for (unsigned iteration = 0; iteration < 64; ++iteration) parse();
+    const auto after = binding_live_bytes();
+    std::fprintf(stderr, "F276 %s: live allocation bytes %zu -> %zu (64 parser lifetimes)\n", label, before, after);
+    check_literal_audit(before == after,
+        "F276: register-row storage must be released after successful and rejected parses");
+}
+}
+
+void test_dx11_dx9_binding_lifetime_regression()
+{
+    const auto assembly = dx11_audit_dx9_binding_disassembly();
+    check_binding_allocation_counter();
+    check_dx9_binding_lifetime("// Registers:\n//\n// Name Reg Size\n// ---- ---- ----\n// invalid\n// extra c0 1 field\nps_3_0\n",
+        false, "rejected rows");
+    check_dx9_binding_lifetime("// Registers:\n//\nps_3_0\n", false, "empty table");
+    check_dx9_binding_lifetime(assembly, true, "native SM3 rows");
+    std::string crlf;
+    crlf.reserve(assembly.size() * 2);
+    for (char ch : assembly) {
+        if (ch == '\n' && (crlf.empty() || crlf.back() != '\r')) crlf += '\r';
+        crlf += ch;
+    }
+    check_dx9_binding_lifetime(crlf, true, "CRLF rows");
+    test_dx11_decompiler_public_dx9_binding_regression();
+    test_dx11_decompiler_public_literal_regression();
+}
+namespace {
 std::string swizzle_literal_audit(const char* left, const char* literal, bool use_int = false)
 {
     Decompiler decoder;
