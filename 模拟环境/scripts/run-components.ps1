@@ -2,7 +2,7 @@
 param([string]$Item='',[switch]$SpecialOnly,[string]$ReportPointer='')
 $ErrorActionPreference='Stop'
 if(-not [Environment]::Is64BitProcess -or $PSVersionTable.PSVersion.Major -lt 7){throw 'Use x64 PowerShell 7.'}
-if($Item -and $Item -ne 'F-152'){throw 'Unknown component specialization.'}
+if($Item -and $Item -notin @('F-152','F-153')){throw 'Unknown component specialization.'}
 . (Join-Path $PSScriptRoot 'process.ps1')
 $simulationRoot=Split-Path -Parent $PSScriptRoot
 $buildRoot=Join-Path $simulationRoot 'build'
@@ -59,6 +59,30 @@ foreach($kind in @('compiler','dxgi')) {
         Write-Host "[$($result.status)] $id"
     }
 }
+ $asanRoot=Join-Path $runRoot 'compiler-ownership'
+New-Item -ItemType Directory -Path $asanRoot | Out-Null
+$asanHost=Join-Path $buildRoot 'tools\dx11_proxy_component_asan_host.exe'
+$asanSource=Join-Path $candidateBuild 'audit\compiler_audit_asan.dll'
+$asanExe=Join-Path $asanRoot 'component-host.exe'; $asanDll=Join-Path $asanRoot 'compiler_audit_asan.dll'
+Copy-Item -LiteralPath $asanHost -Destination $asanExe
+Copy-Item -LiteralPath $asanSource -Destination $asanDll
+Copy-Item -LiteralPath $nativeCompiler -Destination (Join-Path $asanRoot 'D3DCompiler_46_org.dll')
+Copy-Item -LiteralPath (Join-Path $candidateBuild 'src\DirectX11\clang_rt.asan_dynamic-x86_64.dll') -Destination $asanRoot
+$asanEnvironment=@{ASAN_OPTIONS='halt_on_error=1:alloc_dealloc_mismatch=1:new_delete_type_mismatch=1'}
+"[Logging]`ncalls=0`nunbuffered=0`n[Rendering]`nstorage_directory=shaders`nexport_shaders=1`n" | Set-Content -LiteralPath (Join-Path $asanRoot 'd3dx.ini') -Encoding utf8
+$export=Invoke-IsolatedSimulationProcess -Executable $asanExe -Arguments @($asanDll,'compiler-export') -WorkingDirectory $asanRoot -LogPrefix (Join-Path $asanRoot 'export') -EnvironmentOverrides $asanEnvironment
+$exported=@(Get-ChildItem -LiteralPath (Join-Path $asanRoot 'shaders') -Filter '*.txt' -ErrorAction SilentlyContinue)
+if($export.status -eq 'PASS' -and $exported.Count -ne 1){$export.status='FAIL';$export.message='Compiler did not export the unique real original source fixture.'}
+$results.Add([pscustomobject]@{id='compiler-asan-export';status=$export.status;input=$asanDll;sha256=(Get-FileHash -LiteralPath $asanDll).Hash;detail=$export})
+Write-Host "[$($export.status)] compiler-asan-export"
+if($export.status -eq 'PASS') {
+    $replace=Join-Path $exported[0].DirectoryName ($exported[0].BaseName+'_replace.txt')
+    [IO.File]::WriteAllText($replace,'float4 main():SV_Target{return float4(4,3,2,1);}',[Text.UTF8Encoding]::new($false))
+    "[Logging]`ncalls=0`nunbuffered=0`n[Rendering]`nstorage_directory=shaders`nexport_shaders=0`n" | Set-Content -LiteralPath (Join-Path $asanRoot 'd3dx.ini') -Encoding utf8
+    $replacement=Invoke-IsolatedSimulationProcess -Executable $asanExe -Arguments @($asanDll,'compiler-replacement') -WorkingDirectory $asanRoot -LogPrefix (Join-Path $asanRoot 'replacement') -EnvironmentOverrides $asanEnvironment
+}else{$replacement=[pscustomobject]@{status='NOT_RUN';exitCode=$null;message='Export prerequisite failed.'}}
+$results.Add([pscustomobject]@{id='compiler-asan-replacement';status=$replacement.status;input=$asanDll;sha256=(Get-FileHash -LiteralPath $asanDll).Hash;detail=$replacement})
+Write-Host "[$($replacement.status)] compiler-asan-replacement"
 $status=if(@($results | Where-Object status -ne 'PASS').Count){'FAIL'}else{'PASS'}
 $report=[ordered]@{item=$Item;status=$status;cases=$results.ToArray();nativeCompilerProvider=$nativeCompiler;providerSha256=$providerHash;providerMode='System D3DCompiler_47 copied under the declared legacy _46_org dependency name; public API compatibility coverage, not original 46/private export certification';scope='Actual DXGI/Compiler DLL public normal/failure business with real native providers and controlled logging modes';bridgeProtocolTested=$false}
 $reportPath=Join-Path $runRoot 'results.json'

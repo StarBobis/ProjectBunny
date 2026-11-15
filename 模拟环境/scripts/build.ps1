@@ -24,7 +24,7 @@ foreach ($source in $hostSourceHashes) {
         throw "Source changed during build; rebuild the test host: $($source.path)"
     }
 }
-$hosts = @('dx11_sim_host.exe','dx11_existing_smoke.exe','dx11_fault_provider.dll','dx11_proxy_component_host.exe') | ForEach-Object {
+$hosts = @('dx11_sim_host.exe','dx11_existing_smoke.exe','dx11_fault_provider.dll','dx11_proxy_component_host.exe','dx11_proxy_component_asan_host.exe') | ForEach-Object {
     [pscustomobject]@{name=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $hostBuild $_) -Algorithm SHA256).Hash}
 }
 @{utc=[DateTime]::UtcNow.ToString('o');configuration='Release';standard='C++17';toolchain=$toolchain;sources=$hostSourceHashes;hosts=@($hosts)} |
@@ -47,10 +47,10 @@ if ($BuildBusiness) {
     })
     $asanRuntime=Join-Path (Split-Path -Parent $toolchain.compiler) 'clang_rt.asan_dynamic-x86_64.dll'
     if(-not (Test-Path -LiteralPath $asanRuntime)){throw 'MSVC x64 AddressSanitizer runtime is required for lock cleanup validation.'}
-    & $toolchain.cmake -S $repositoryRoot -B $candidateBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$($toolchain.ninja)" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DDX11_AUDIT_ASAN_LOCKS=ON -DDX12_RELEASE_TIMING=OFF "-DPython3_EXECUTABLE=$pythonPath" "-DCMAKE_PROJECT_INCLUDE=$(Join-Path $simulationRoot 'business-overlay.cmake')" 2>&1 |
+    & $toolchain.cmake -S $repositoryRoot -B $candidateBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$($toolchain.ninja)" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DDX11_AUDIT_ASAN_LOCKS=ON -DBUNNY_PROXY_ASAN=ON -DDX12_RELEASE_TIMING=OFF "-DPython3_EXECUTABLE=$pythonPath" "-DCMAKE_PROJECT_INCLUDE=$(Join-Path $simulationRoot 'business-overlay.cmake')" 2>&1 |
         Tee-Object -FilePath (Join-Path $buildRoot 'business-configure.log')
     if ($LASTEXITCODE -ne 0) { throw "Business configuration failed: $LASTEXITCODE" }
-    $businessTargets=@('dx11_upstream_regression','D3D_Shaders','dxgi','D3DCompiler_46')
+    $businessTargets=@('dx11_upstream_regression','D3D_Shaders','dxgi','D3DCompiler_46','bunny_compiler_asan')
     if($BuildDx12Compatibility){$businessTargets+='DirectX12'}
     & $toolchain.cmake --build $candidateBuild --target @businessTargets --parallel $Parallel 2>&1 |
         Tee-Object -FilePath (Join-Path $buildRoot 'business-build.log')
@@ -61,7 +61,7 @@ if ($BuildBusiness) {
     }
     $head = & git -C $repositoryRoot rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Cannot record build HEAD.' }
-    $productPaths=@('src\DirectX11\d3d11.dll','src\DirectX11\dx11_upstream_regression.exe','src\DirectX11\Release\dx11_legacy_version_regression.exe','src\D3D_Shaders\D3D_Shaders.exe','src\DirectX11\clang_rt.asan_dynamic-x86_64.dll','src\DirectXGI\dxgi.dll','src\D3DCompiler_46\d3dcompiler_47.dll')
+    $productPaths=@('src\DirectX11\d3d11.dll','src\DirectX11\dx11_upstream_regression.exe','src\DirectX11\Release\dx11_legacy_version_regression.exe','src\D3D_Shaders\D3D_Shaders.exe','src\DirectX11\clang_rt.asan_dynamic-x86_64.dll','src\DirectXGI\dxgi.dll','src\D3DCompiler_46\d3dcompiler_47.dll','audit\compiler_audit_asan.dll')
     if($BuildDx12Compatibility){$productPaths+='src\DirectX12\d3d12.dll'}
     $products = $productPaths | ForEach-Object {
         [pscustomobject]@{path=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $candidateBuild $_) -Algorithm SHA256).Hash}

@@ -4,7 +4,8 @@ function Invoke-IsolatedSimulationProcess {
         [Parameter(Mandatory)][string[]]$Arguments,
         [Parameter(Mandatory)][string]$WorkingDirectory,
         [Parameter(Mandatory)][string]$LogPrefix,
-        [ValidateRange(100, 60000)][int]$TimeoutMs = 20000
+        [ValidateRange(100, 60000)][int]$TimeoutMs = 20000,
+        [hashtable]$EnvironmentOverrides = @{}
     )
     $processInfo = [Diagnostics.ProcessStartInfo]::new()
     $processInfo.FileName = $Executable
@@ -16,6 +17,7 @@ function Invoke-IsolatedSimulationProcess {
     $processInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
     $processInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
     foreach ($argument in $Arguments) { $processInfo.ArgumentList.Add($argument) }
+    foreach ($key in $EnvironmentOverrides.Keys) { $processInfo.Environment[$key] = [string]$EnvironmentOverrides[$key] }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $processInfo
     $watch = [Diagnostics.Stopwatch]::StartNew()

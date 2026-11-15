@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -87,6 +88,46 @@ void dxgi(HMODULE module)
         "returned adapter is software rather than an assumed hardware substitute");
     std::puts("PASS: DXGI factory and real WARP adapter");
 }
+
+void compiler_replacement(HMODULE module)
+{
+    const auto compile = resolve<decltype(&D3DCompile)>(module, "D3DCompile");
+    const char original[] = "float4 main():SV_Target{return float4(1,2,3,4);}";
+    const char replacement[] = "float4 main():SV_Target{return float4(4,3,2,1);}";
+    ComPtr<ID3DBlob> code, errors;
+    std::fputs("F153 compiler: compile owned replacement source under ASan\n", stderr); std::fflush(stderr);
+    check(SUCCEEDED(compile(original,sizeof(original)-1,"simulation.hlsl",nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)) && code,
+        "F153: compiler proxy replacement succeeds");
+    HMODULE provider=GetModuleHandleW(L"D3DCompiler_46_org.dll");
+    check(provider != nullptr, "F153: real native provider was actually loaded");
+    const auto native=resolve<decltype(&D3DCompile)>(provider,"D3DCompile");
+    ComPtr<ID3DBlob> expected, native_errors;
+    check(SUCCEEDED(native(replacement,sizeof(replacement)-1,"simulation.hlsl",nullptr,nullptr,"main","ps_5_0",0,0,&expected,&native_errors)) &&
+        expected && expected->GetBufferSize()==code->GetBufferSize() &&
+        !std::memcmp(expected->GetBufferPointer(),code->GetBufferPointer(),code->GetBufferSize()), "F153: actual replacement output equals native compilation");
+    wchar_t executable[MAX_PATH]{};
+    check(GetModuleFileNameW(nullptr,executable,MAX_PATH)!=0,"F153: locate owned replacement file");
+    const auto directory=std::filesystem::path(executable).parent_path()/L"shaders";
+    std::filesystem::path replace_file;
+    for(const auto& file:std::filesystem::directory_iterator(directory)) {
+        const auto name=file.path().filename().wstring();
+        if(name.size()>=12 && name.compare(name.size()-12,12,L"_replace.txt")==0) {
+            check(replace_file.empty(),"F153: replacement file is unique"); replace_file=file.path();
+        }
+    }
+    check(!replace_file.empty(),"F153: replacement file exists");
+    { std::ofstream output(replace_file,std::ios::binary|std::ios::trunc); output<<"this is not valid hlsl"; output.close(); check(output.good(),"F153: invalid-source fixture"); }
+    code.Reset(); errors.Reset();
+    check(FAILED(compile(original,sizeof(original)-1,"simulation.hlsl",nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)) && !code && errors,
+        "F153: failed replacement compilation also retires its owned array");
+    check(std::filesystem::remove(replace_file),"F153: remove only owned replacement");
+    code.Reset(); errors.Reset(); expected.Reset(); native_errors.Reset();
+    check(SUCCEEDED(compile(original,sizeof(original)-1,"simulation.hlsl",nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)) && code &&
+        SUCCEEDED(native(original,sizeof(original)-1,"simulation.hlsl",nullptr,nullptr,"main","ps_5_0",0,0,&expected,&native_errors)) && expected &&
+        expected->GetBufferSize()==code->GetBufferSize() && !std::memcmp(expected->GetBufferPointer(),code->GetBufferPointer(),code->GetBufferSize()),
+        "F153: missing replacement preserves borrowed original source and native output");
+    std::puts("PASS: compiler replacement success/failure/borrowed-input ownership");
+}
 }
 int wmain(int argc, wchar_t** argv)
 {
@@ -97,7 +138,8 @@ int wmain(int argc, wchar_t** argv)
         load_exact(system_dll(L"dxgi.dll"));
         load_exact(system_dll(L"d3d11.dll"));
         HMODULE module = load_exact(argv[1]);
-        if (!std::wcscmp(argv[2], L"compiler")) compiler(module);
+        if (!std::wcscmp(argv[2], L"compiler") || !std::wcscmp(argv[2],L"compiler-export")) compiler(module);
+        else if(!std::wcscmp(argv[2],L"compiler-replacement")) compiler_replacement(module);
         else if (!std::wcscmp(argv[2], L"dxgi")) dxgi(module);
         else throw std::runtime_error("unknown component scenario");
         return 0;

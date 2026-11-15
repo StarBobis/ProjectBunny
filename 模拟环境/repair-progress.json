@@ -78,6 +78,13 @@
       "summary": "DXGI和编译器代理仅对有效LogFile设置unbuffered，消除关闭日志/打开失败时的CRT终止；两模块8项真实业务及D3D11全流程16项均通过，编译器原生提供方明确为兼容系统47。",
       "evidence": "validation/F-152.json",
       "commitLookup": "git log --fixed-strings --grep=F-152"
+    },
+    {
+      "id": "F-153",
+      "status": "validated-in-simulator",
+      "summary": "两处new[]缓冲按数组释放：DX11替换字节码和编译器替换源码；两站点均有ASan失配反例，实际渲染/编译成功失败及借用数据回退通过，完整业务与26项集成/组件用例通过。",
+      "evidence": "validation/F-153.json",
+      "commitLookup": "git log --fixed-strings --grep=F-153"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

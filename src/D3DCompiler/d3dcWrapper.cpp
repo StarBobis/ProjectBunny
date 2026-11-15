@@ -495,7 +495,7 @@ HRESULT WINAPI D3DCompile(_In_reads_bytes_(SrcDataSize) LPCVOID pSrcData,
 						if (*ppCode) (*ppCode)->Release();
 						ret = (*_D3DCompile)(pSrcData, SrcDataSize, pSourceName, pDefines, pInclude, pEntrypoint,
 							pTarget, Flags1, Flags2, ppCode, ppErrorMsgs);
-						delete pSrcData;
+						delete[] static_cast<const char*>(pSrcData);
 					}
 				}
 			}

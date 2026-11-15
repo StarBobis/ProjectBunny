@@ -1234,7 +1234,7 @@ HRESULT HackerDevice::ReplaceShaderFromShaderFixes(UINT64 hash,
 		(hash, shaderType, *ppShader, pShaderBytecode, BytecodeLength, pClassLinkage);
 
 out_delete:
-	delete replaceShader;
+	delete[] replaceShader;
 	return hr;
 }
 
