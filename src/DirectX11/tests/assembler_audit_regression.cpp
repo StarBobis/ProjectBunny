@@ -1,0 +1,36 @@
+// The regression target replaces its Assembler.cpp object with this TU, so
+// these tests call the real private operand parser without copying its logic.
+#include "../../D3D_Shaders/Assembler.cpp"
+#include <stdexcept>
+
+namespace {
+void check_assembler_audit(bool condition, const char* message)
+{
+    if (!condition) throw std::runtime_error(message);
+}
+struct IndexAddends { unsigned first, second; };
+}
+
+void test_dx11_assembler_double_index_regression()
+{
+    for (const IndexAddends pair : {IndexAddends{3,7}, {0,7}, {3,0}, {0,0}, {15,2}}) {
+        const auto text = "v[r0.x + " + std::to_string(pair.first) + "][r1.y + " + std::to_string(pair.second) + "].xyzw";
+        std::fprintf(stderr, "F140: encode independent index addends %u/%u\n", pair.first, pair.second); std::fflush(stderr);
+        const auto words = assembleOp(text);
+        check_assembler_audit(words.size() == 5u + bool(pair.first) + bool(pair.second), "F140: exact operand length reflects each independent addend");
+        token_operand operand{}; operand.op = words[0];
+        check_assembler_audit(operand.file == 1 && operand.num_indices == 2 &&
+            operand.index0_repr == (pair.first ? 3u : 2u) && operand.index1_repr == (pair.second ? 3u : 2u),
+            "F140: both index representation fields independently describe immediate-plus-relative or relative-only");
+        size_t cursor = 1;
+        if (pair.first) check_assembler_audit(words[cursor++] == pair.first, "F140: first immediate matches the first source addend");
+        token_operand first{}; first.op = words[cursor++];
+        check_assembler_audit(first.file == 0 && first.num_indices == 1 && words[cursor++] == 0, "F140: first index still references r0");
+        if (pair.second) check_assembler_audit(words[cursor++] == pair.second, "F140: second immediate matches the second source addend");
+        token_operand second{}; second.op = words[cursor++];
+        check_assembler_audit(second.file == 0 && second.num_indices == 1 && words[cursor++] == 1 && cursor == words.size(),
+            "F140: second index still references r1 and consumes exactly its tokens");
+    }
+    const auto fixed = assembleOp("v[1][2].xyzw");
+    check_assembler_audit(fixed.size() == 3 && fixed[1] == 1 && fixed[2] == 2, "F140: fixed-index encoding remains unchanged");
+}

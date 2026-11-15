@@ -43,6 +43,13 @@
       "summary": "虚拟键十六进制解析拒绝缺数字、尾随垃圾及超255/溢出，保留合法别名和反向按键；DX11全流程16项通过，共享消费者DX12 Release兼容构建通过，未部署。",
       "evidence": "validation/F-135.json",
       "commitLookup": "git log --fixed-strings --grep=F-135"
+    },
+    {
+      "id": "F-140",
+      "status": "validated-in-simulator",
+      "summary": "第二动态索引使用自己的sAdd2编码；专项核对不同偏移、各自为零、固定索引及完整token字段，完整业务和16项DLL集成通过。",
+      "evidence": "validation/F-140.json",
+      "commitLookup": "git log --fixed-strings --grep=F-140"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

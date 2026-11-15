@@ -149,6 +149,10 @@ if(BUILD_TESTING)
     # hooks from d3d11.dll or replacing production dependencies with mocks.
     get_target_property(DX11_REGRESSION_SOURCES DirectX11 SOURCES)
     list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "\\.(def|rc)$")
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp" "tests/assembler_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/assembler_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp")
     if(DX11_AUDIT_ASAN_LOCKS)
         if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
             message(FATAL_ERROR "DX11_AUDIT_ASAN_LOCKS requires MSVC x64 with AddressSanitizer.")

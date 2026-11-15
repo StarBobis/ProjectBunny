@@ -412,7 +412,7 @@ static vector<DWORD> assemble_cbvox_operand(string &s, vector<DWORD> &v, token_o
 					string sAdd2 = index1.substr(index1.find(" + ") + 3);
 					vector<DWORD> reg2 = assembleOp(sReg2);
 					tOp->index1_repr = 2;
-					int iAdd2 = atoi(sAdd.c_str());
+					int iAdd2 = atoi(sAdd2.c_str());
 					if (iAdd2) tOp->index1_repr = 3;
 					string swizzle = s.substr(s.find("].") + 2);
 					handleSwizzle(swizzle, tOp);

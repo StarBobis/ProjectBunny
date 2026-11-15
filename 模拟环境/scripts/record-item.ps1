@@ -22,6 +22,12 @@ $progressPath=Join-Path $simulationRoot 'repair-progress.json'
 $progress=Get-Content -LiteralPath $progressPath -Raw | ConvertFrom-Json
 if(@($progress.completed | Where-Object id -eq $Item).Count){throw 'Item already recorded; do not overwrite its evidence.'}
 $evidence=[ordered]@{id=$Item;status='validated-in-simulator';summary=$Summary;utc=[DateTime]::UtcNow.ToString('o');buildHead=$report.buildHead;candidateSha256=$report.candidateSha256;fullReport=[IO.Path]::GetRelativePath($simulationRoot,$reportPath);fullReportSha256=(Get-FileHash -LiteralPath $reportPath).Hash;checks=$report.checks;integrationCases=@($report.actualDllIntegration.cases | Select-Object id,status);targetGameValidated=$false;commitLookup="git log --fixed-strings --grep=$Item"}
+$manifestArchive=Join-Path (Split-Path -Parent $reportPath) 'build-info.json'
+if(-not (Test-Path -LiteralPath $manifestArchive)){Copy-Item -LiteralPath $infoPath -Destination $manifestArchive}
+if((Get-FileHash -LiteralPath $manifestArchive).Hash -ne $report.buildInfoSha256){throw 'Archived build manifest differs from the tested build.'}
+$evidence.buildInfoSnapshot=[IO.Path]::GetRelativePath($simulationRoot,$manifestArchive)
+$evidence.buildInfoSha256=$report.buildInfoSha256
+$evidence.builtProducts=$info.products
 if($RedReport){
     $redPath=(Resolve-Path -LiteralPath $RedReport).Path
     $red=Get-Content -LiteralPath $redPath -Raw | ConvertFrom-Json
