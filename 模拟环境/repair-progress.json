@@ -274,6 +274,13 @@
       "summary": "行拆分先检查真实长度再读字符，空范围提前返回，末行不把指针递增到末尾之外；不补哨兵掩盖调用契约。旧7字节保护页访问冲突已复现，空/null+0、无末换行、空行/CR/空格/内嵌NUL和实际shader代码块位一致/WARP专项及25+10全流程通过；仅DX9消费者的未生效同名支路保留。",
       "evidence": "validation/F-146.json",
       "commitLookup": "git log --fixed-strings --grep=F-146"
+    },
+    {
+      "id": "F-148",
+      "status": "validated-in-simulator",
+      "summary": "离线工具用检查结果的64位seek/tell，拒绝负/超UINT32长度、短读及关闭失败；RAII确保关闭一次，入口诊断并返回1。专项透传真实静态CRT并在测试TU注入既有调用故障，2GiB重定位无实际大分配；原先__imp注入无效已排除。真实旧EXE缺BIN访问冲突、新EXE诊断退出1无CBO及正常字节一致，25+10全流程通过；不外推DLL热路径/完整畸形DXBC。",
+      "evidence": "validation/F-148.json",
+      "commitLookup": "git log --fixed-strings --grep=F-148"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

@@ -43,6 +43,7 @@ void test_dx11_assembler_declaration_regression();
 void test_dx11_assembler_word_progress_regression();
 void test_dx11_precision_delimiter_review();
 void test_dx11_assembler_line_bounds_regression();
+void test_dx11_shader_tool_read_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -445,6 +446,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-142", test_f142},
     {"F-145", test_f145_review},
     {"F-146", test_f146},
+    {"F-148", test_dx11_shader_tool_read_regression},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},

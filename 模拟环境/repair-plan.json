@@ -643,7 +643,7 @@
       "additionalEvidence": null,
       "correctedConclusion": "独立工具ftell负值/大文件int截断及短读未校验真实；与DLL运行影响区分，先检查fseek/64位长度。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "真实读函数missing/seek/tell/2GiB重定位/极大长度/短读/关闭/恢复；实际工具EXE缺BIN精确退出1和诊断无CBO，正常CLI完整字节一致",
       "implementationStatus": "pending"
     },
     {

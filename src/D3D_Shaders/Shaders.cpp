@@ -7,6 +7,9 @@
 #include <vector>
 #include <iostream>
 #include <direct.h>
+#include <memory>
+#include <limits>
+#include <stdexcept>
 
 using namespace std;
 
@@ -36,20 +39,28 @@ static vector<string> enumerateFiles(string pathName, string filter = "") {
 
 static vector<byte> readFile(string fileName) {
 	vector<byte> buffer;
-	FILE* f;
-	fopen_s(&f, fileName.c_str(), "rb");
-	if (f != NULL) {
-		fseek(f, 0L, SEEK_END);
-		int fileSize = ftell(f);
-		buffer.resize(fileSize);
-		fseek(f, 0L, SEEK_SET);
-		size_t numRead = fread(buffer.data(), 1, buffer.size(), f);
-		fclose(f);
-	}
+	FILE* input = nullptr;
+	if (fopen_s(&input, fileName.c_str(), "rb") || !input)
+		throw runtime_error("Cannot open shader input: " + fileName);
+	unique_ptr<FILE, decltype(&fclose)> file(input, &fclose);
+	if (_fseeki64(file.get(), 0, SEEK_END))
+		throw runtime_error("Cannot seek shader input: " + fileName);
+	const __int64 fileSize = _ftelli64(file.get());
+	// DXBC lengths and this tool's assembled code sizes are 32-bit.
+	if (fileSize < 0 || static_cast<unsigned long long>(fileSize) > (numeric_limits<uint32_t>::max)() ||
+		static_cast<unsigned long long>(fileSize) > buffer.max_size())
+		throw runtime_error("Invalid or unsupported shader input length: " + fileName);
+	if (_fseeki64(file.get(), 0, SEEK_SET))
+		throw runtime_error("Cannot rewind shader input: " + fileName);
+	buffer.resize(static_cast<size_t>(fileSize));
+	if ((!buffer.empty() && fread(buffer.data(), 1, buffer.size(), file.get()) != buffer.size()) || ferror(file.get()))
+		throw runtime_error("Cannot read complete shader input: " + fileName);
+	if (fclose(file.release()))
+		throw runtime_error("Cannot close shader input: " + fileName);
 	return buffer;
 }
 
-int _tmain(int argc, _TCHAR* argv[])
+static int runShaderTool()
 {
 	int shaderNo = 1;
 	vector<string> gameNames;
@@ -175,4 +186,14 @@ int _tmain(int argc, _TCHAR* argv[])
 		writeLUT();
 	}
 	return 0;
+}
+
+int _tmain(int argc, _TCHAR* argv[])
+{
+	try {
+		return runShaderTool();
+	} catch (const std::exception& error) {
+		std::cerr << "Shader tool failed: " << error.what() << std::endl;
+		return 1;
+	}
 }

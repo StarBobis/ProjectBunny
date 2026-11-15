@@ -79,6 +79,17 @@ if(Test-Path -LiteralPath (Join-Path $shaderRoot 'expected.cbo')) {
     if($shaderResult.status -eq 'PASS' -and (-not (Test-Path -LiteralPath $output) -or (Get-FileHash -LiteralPath $output).Hash -ne (Get-FileHash -LiteralPath (Join-Path $shaderRoot 'expected.cbo')).Hash)) {
         $shaderResult.status='FAIL';$shaderResult.message='CLI did not produce the complete native-validated bytecode.'
     }
+    if($shaderResult.status -eq 'PASS') {
+        $readFailureRoot=Join-Path $runRoot 'tool-input-failure'
+        New-Item -ItemType Directory -Path (Join-Path $readFailureRoot 'ShaderCache') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $readFailureRoot 'ShaderCache\0123456789abcdef-ps.txt'),"ps_5_0`nret`n",[Text.Encoding]::ASCII)
+        Copy-Item -LiteralPath $toolSource -Destination $readFailureRoot
+        $readFailure=Invoke-IsolatedSimulationProcess -Executable (Join-Path $readFailureRoot 'D3D_Shaders.exe') -Arguments @('--fixture-run') -WorkingDirectory $readFailureRoot -LogPrefix (Join-Path $readFailureRoot 'tool') -TimeoutMs $TimeoutMs
+        $diagnostic=Get-Content -LiteralPath (Join-Path $readFailureRoot 'tool.stderr.txt') -Raw
+        $passed=$readFailure.status -eq 'FAIL' -and $readFailure.exitCode -eq 1 -and $diagnostic.Contains('Cannot open shader input:') -and $diagnostic.Contains('0123456789abcdef-ps.bin') -and -not (Test-Path -LiteralPath (Join-Path $readFailureRoot 'ShaderCache\0123456789abcdef-ps.cbo'))
+        $shaderResult | Add-Member -NotePropertyName missingInput -NotePropertyValue ([pscustomobject]@{status=$(if($passed){'PASS'}else{'FAIL'});process=$readFailure;expectedExitCode=1;diagnosticChecked=$passed})
+        if(-not $passed){$shaderResult.status='FAIL';$shaderResult.message='CLI must report missing input and exit 1 without producing bytecode.'}
+    }
 }
 $checks.Add([pscustomobject]@{name='offline-shader-tool';status=$shaderResult.status;detail=$shaderResult})
 Write-Host "[$($shaderResult.status)] $label offline-shader-tool"
