@@ -3128,13 +3128,13 @@ static vector<DWORD> ComputeHash(byte const* input, DWORD size)
 					Dst[0] = size << 3;
 					DWORD remSize = size - processedSize;
 					std::memcpy(&Dst[1], pSrc, remSize);
-					std::memcpy(&Dst[1 + remSize / 4], Data, restSize);
+					std::memcpy(reinterpret_cast<byte*>(&Dst[1]) + remSize, Data, restSize);
 					Dst[15] = (size * 2) | 1;
 					pSrc = Dst;
 				} else {
 					DWORD remSize = size - processedSize;
 					std::memcpy(&Dst[0], pSrc, remSize);
-					std::memcpy(&Dst[remSize / 4], Data, 64 - remSize);
+					std::memcpy(reinterpret_cast<byte*>(Dst) + remSize, Data, 64 - remSize);
 					pSrc = Dst;
 				}
 			} else if (i > loopSize2) {
