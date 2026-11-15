@@ -353,6 +353,13 @@
       "summary": "Map失败不写/Unmap/计成功，pending保留最新CPU数组，params空后仍可重试，成功清脏；Stop/reload清旧布局状态，变量/post只执行一次。真实Map注入红例、GPU恢复/暂缺纹理/重建专项，独立对抗复跑和主线25+10全流程通过；仅模拟DeviceRemoved HRESULT，非设备恢复。",
       "evidence": "validation/F-194.json",
       "commitLookup": "git log --fixed-strings --grep=F-194"
+    },
+    {
+      "id": "F-201",
+      "status": "validated-in-simulator",
+      "summary": "仅DX11 ShaderRegex元数据入口：数字表跨度先验、memcpy offset、size_t逆序和减法12字节范围，保留坏chunk跳过/末chunk优先/xx与失败输出语义。真实回绕读取红例、原生模型/边界专项、独立对抗复跑及主线25+10全流程通过；不称完整DXBC验证，独立DX12站点另待办。",
+      "evidence": "validation/F-201.json",
+      "commitLookup": "git log --fixed-strings --grep=F-201"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

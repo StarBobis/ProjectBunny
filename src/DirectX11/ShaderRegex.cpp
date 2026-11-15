@@ -654,32 +654,21 @@ bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* 
 	if (memcmp(buffer, "DXBC", 4) != 0)
 		return false;
 
-	const uint8_t* ptr = buffer + 4 + 16; // Skip FOURCC + hash
+	uint32_t numChunks;
+	memcpy(&numChunks, buffer + 28, sizeof(numChunks));
 
-	// Read header fields
-	if (ptr + 12 > buffer + size)
+	// Check the table numerically before constructing pointers into it.
+	if (numChunks == 0 || numChunks > (size - 32) / sizeof(uint32_t))
 		return false;
-
-	uint32_t one, totalSize, numChunks;
-	memcpy(&one, ptr, 4); ptr += 4;
-	memcpy(&totalSize, ptr, 4); ptr += 4;
-	memcpy(&numChunks, ptr, 4); ptr += 4;
-
-	if (numChunks == 0)
-		return false;
-
-	// Validate chunk table bounds
-	if (ptr + numChunks * sizeof(uint32_t) > buffer + size)
-		return false;
-
-	const uint32_t* chunkOffsets = reinterpret_cast<const uint32_t*>(ptr);
 
 	// Iterate chunks backwards (same as disassembler)
-	for (int32_t i = (int32_t)numChunks - 1; i >= 0; --i)
+	for (size_t i = numChunks; i-- > 0;)
 	{
-		uint32_t offset = chunkOffsets[i];
+		uint32_t chunkOffset;
+		memcpy(&chunkOffset, buffer + 32 + i * sizeof(chunkOffset), sizeof(chunkOffset));
+		const size_t offset = chunkOffset;
 
-		if (offset + 12 > size)
+		if (offset > size || size - offset < 12)
 			continue;
 
 		const uint8_t* chunk = buffer + offset;

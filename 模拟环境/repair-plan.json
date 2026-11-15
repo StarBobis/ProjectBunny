@@ -1329,10 +1329,10 @@
       "groupLabel": "跨函数语义，第二批候选",
       "originalSeverity": "medium",
       "evidence": "src/DirectX12/ShaderTools/DX12ShaderDump.cpp:162",
-      "additionalEvidence": null,
+      "additionalEvidence": "DX11 ShaderRegex.cpp::get_shader_model_from_bytecode实际入口；原代表DX12ShaderDump独立方法保留另一平台待办",
       "correctedConclusion": "uint32 offset+12/+16会先回绕再与size比较；须减法或宽化校验并核chunk表乘法/最小头，DX11/DX12两平台一致。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "真实native model/非对齐/短头表与版本/极值count offset/输出不变/倒序优先，DX11只做有界提取不复制整体验证器",
       "implementationStatus": "pending"
     },
     {

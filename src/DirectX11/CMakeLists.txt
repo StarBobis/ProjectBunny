@@ -214,6 +214,7 @@ if(BUILD_TESTING)
         tests/file_publication_audit.cpp
         tests/device_initialization_audit.cpp
         tests/resource_file_audit.cpp
+        tests/shader_model_bounds_audit.cpp
         tests/finish_command_audit.cpp
         tests/d3d11_vtable_layout.c
         tests/hunting_present_audit.cpp
