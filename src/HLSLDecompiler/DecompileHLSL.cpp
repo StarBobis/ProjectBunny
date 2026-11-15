@@ -521,30 +521,50 @@ public:
 		}
 	}
 
-	void ParseOutputSignature(const char *c, size_t size)
+	bool ParseOutputSignature(const char *c, size_t size, bool dx9Shader = false)
 	{
+		const size_t outputStart = mOutput.size();
 		mOutputRegisterType.clear();
 		mRemappedOutputRegisters.clear();
 		mSV_Position.clear();
 		// Read until header.
 		const char *headerid = "// Output signature:";
+		const size_t headerLength = strlen(headerid);
 		size_t pos = 0;
-		while (pos < size - strlen(headerid))
+		while (pos <= size && headerLength <= size - pos)
 		{
-			if (!strncmp(c + pos, headerid, strlen(headerid)))
+			if (!strncmp(c + pos, headerid, headerLength))
 				break;
 			else
 			{
 				NextLine(c, pos, size);
 			}
 		}
-		if (pos >= size - strlen(headerid)) return;
+		if (pos > size || headerLength > size - pos)
+		{
+			// Native SM1-3 disassembly has no DXBC signature table.
+			if (dx9Shader)
+				return true;
+			logDecompileError("Missing output signature header");
+			return false;
+		}
 		// Skip header.
 		for (int i = 0; i < 4; ++i)
 		{
+			if (pos >= size)
+			{
+				logDecompileError("Incomplete output signature header");
+				return false;
+			}
 			NextLine(c, pos, size);
 		}
+		if (pos >= size)
+		{
+			logDecompileError("Missing output signature entries");
+			return false;
+		}
 		// Read list.
+		bool parsed = true;
 		while (pos < size)
 		{
 			char name[256], mask[16], format[16], format2[16];
@@ -595,12 +615,18 @@ public:
 					regNameStr = registerName;
 				}
 				// Write.
+				const DataType type = TranslateType(format2);
+				if (type == DT_Unknown)
+				{
+					parsed = false;
+					break;
+				}
 				char buffer[256];
 				sprintf(buffer, "  out %s %s : %s%d,\n", format2, regNameStr.c_str(), name, index);
 				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 				if (!strcmp(name, "SV_Position"))
 					mSV_Position = regNameStr;
-				mOutputRegisterType[regNameStr] = TranslateType(format2);
+				mOutputRegisterType[regNameStr] = type;
 			}
 			else if (numRead == 3)
 			{
@@ -612,12 +638,21 @@ public:
 				// SV_Depth                 0    N/A   oDepth    DEPTH   float    YES
 				numRead = sscanf_s(c + pos, "// %s %d %s %s %s %s",
 					name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), reg, UCOUNTOF(reg), sysValue, UCOUNTOF(sysValue), format, UCOUNTOF(format));
-				sprintf(buffer, "  out %s %s : %s,\n", format, reg, name);
-				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				if (numRead == 6)
+				{
+					if (TranslateType(format) == DT_Unknown)
+					{
+						parsed = false;
+						break;
+					}
+					sprintf(buffer, "  out %s %s : %s,\n", format, reg, name);
+					mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				}
 			}
 			if (numRead != 6)
 			{
-				logDecompileError("Error parsing output signature: " + string(c + pos, 80));
+				logDecompileError("Error parsing output signature: " + string(c + pos, std::min<size_t>(80, size - pos)));
+				parsed = false;
 				break;
 			}
 			NextLine(c, pos, size);
@@ -625,11 +660,21 @@ public:
 			if (!strncmp(c + pos, "//\n", 3) || !strncmp(c + pos, "//\r", 3))
 				break;
 		}
+		if (!parsed)
+		{
+			mOutput.resize(outputStart);
+			mOutputRegisterType.clear();
+			mRemappedOutputRegisters.clear();
+			mSV_Position.clear();
+			return false;
+		}
 		// Write footer.
-		mOutput.pop_back();
-		mOutput.pop_back();
+		// Inputs also have a trailing separator when there are no outputs.
+		if (mOutput.size() >= 2 && mOutput[mOutput.size() - 2] == ',' && mOutput.back() == '\n')
+			mOutput.resize(mOutput.size() - 2);
 		const char *mainFooter = ")\n{\n";
 		mOutput.insert(mOutput.end(), mainFooter, mainFooter + strlen(mainFooter));
+		return true;
 	}
 
 	void WriteZeroOutputSignature(const char *c, size_t size)
@@ -6879,7 +6924,13 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 		d.WriteResourceDefinitions();
 		d.WriteAddOnDeclarations();
 		d.ParseInputSignature(shader, params.decompiled, params.decompiledSize);
-		d.ParseOutputSignature(params.decompiled, params.decompiledSize);
+		if (!d.ParseOutputSignature(params.decompiled, params.decompiledSize, shader->dx9Shader))
+		{
+			errorOccurred = true;
+			FreeShaderInfo(shader->sInfo);
+			delete shader;
+			return string();
+		}
 		if (!params.ZeroOutput)
 		{
 			d.ParseCode(shader, params.decompiled, params.decompiledSize);

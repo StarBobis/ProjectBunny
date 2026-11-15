@@ -38,6 +38,7 @@ void test_dx11_device_initialization_regression();
 void test_dx11_vertex_dump_bounds_regression();
 void test_dx11_appended_vertex_layout_regression();
 void test_dx11_decompiler_literal_regression();
+void test_dx11_decompiler_output_signature_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
@@ -661,6 +662,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-008", test_dx11_vertex_dump_bounds_regression},
     {"F-324", test_dx11_appended_vertex_layout_regression},
     {"F-100", test_dx11_decompiler_literal_regression},
+    {"F-274", test_dx11_decompiler_output_signature_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -814,3 +816,89 @@ void test_dx11_decompiler_public_literal_regression()
 }
 
 #include "ibfe_swizzle_audit.inl"
+
+void test_dx11_decompiler_public_signature_regression()
+{
+    using namespace dx11_slot_test;
+    BatchDevice device;
+    const char* sources[] = {
+        "float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}",
+        "void main(){}",
+        "void main(float4 p:TEXCOORD){clip(p.x);}",
+        "float main():SV_Depth{return 0.5;}",
+        "struct O{float4 c:SV_Target;float d:SV_Depth;}; O main(){O o;o.c=float4(0.25,0.5,0.75,1);o.d=0.5;return o;}"
+    };
+    for (size_t index=0; index<std::size(sources); ++index) {
+        ComPtr<ID3DBlob> code, errors, assembly;
+        require_batch(SUCCEEDED(D3DCompile(sources[index],std::strlen(sources[index]),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+            "F274: native compiler accepts each normal, empty, input-only and special-semantic fixture");
+        ComPtr<ID3D11PixelShader> original;
+        require_batch(SUCCEEDED(device.native->CreatePixelShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&original)),
+            "F274: each original fixture is a valid native pixel shader");
+        require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&assembly)),
+            "F274: real native disassembly feeds the public decompiler");
+        std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
+        DecompilerSettings settings;
+        ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.decompiled=text.c_str();
+        params.decompiledSize=text.size(); params.G=&settings;
+        bool patched=false, failed=false; std::string model;
+        const auto hlsl=DecompileBinaryHLSL(params,patched,model,failed);
+        require_batch(!failed && !hlsl.empty(), "F274: public decompiler preserves valid zero-output and special-semantic shaders");
+        ComPtr<ID3DBlob> rebuilt;
+        const auto compiled=D3DCompile(hlsl.data(),hlsl.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors);
+        if (FAILED(compiled)) {
+            std::fprintf(stderr,"F274 native fixture %zu assembly:\n%s\nHLSL:\n%s\nCompiler:\n%s\n",index,text.c_str(),hlsl.c_str(),
+                errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no diagnostics");
+        }
+        require_batch(SUCCEEDED(compiled), "F274: regenerated complete signature recompiles with the native compiler");
+        ComPtr<ID3D11PixelShader> replacement;
+        require_batch(SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),nullptr,&replacement)),
+            "F274: native WARP accepts the regenerated shader");
+        if (index==0) {
+            const auto expected=render_dx11_audit_constant_pixel(device,original.Get());
+            require_batch(expected==std::array<unsigned char,4>{64,128,191,255} &&
+                render_dx11_audit_constant_pixel(device,replacement.Get())==expected,
+                "F274: normal output rendering keeps all component values");
+            const auto output=text.find("// Output signature:");
+            const auto row=text.find("// SV_Target",output);
+            require_batch(output!=std::string::npos && row!=std::string::npos, "F274: native normal output row is available for fault injection");
+            const auto row_end=text.find('\n',row);
+            require_batch(row_end!=std::string::npos, "F274: native normal output row is complete");
+            for (const auto& malformed : {text.substr(0,row)+"// unrecognized\n"+text.substr(row_end+1),
+                    text.substr(0,row_end+1)+"// unrecognized\n"+text.substr(row_end+1),
+                    text.substr(0,output)+"// unknown output section:"+text.substr(output+std::strlen("// Output signature:"))}) {
+                params.decompiled=malformed.c_str(); params.decompiledSize=malformed.size(); failed=false;
+                const auto rejected=DecompileBinaryHLSL(params,patched,model,failed);
+                require_batch(failed && rejected.empty(),
+                    "F274: malformed output metadata sets the public error flag and returns no partial HLSL to either consumer");
+            }
+        }
+        if (index==3) {
+            const auto row=text.find("// SV_Depth");
+            require_batch(row!=std::string::npos, "F274: real special-semantic row is available for fault injection");
+            const auto row_end=text.find('\n',row);
+            require_batch(row_end!=std::string::npos, "F274: native special-semantic row is complete");
+            for (const auto* bad_row : {"// SV_Depth 0 N/A oDepth\n", "// SV_Depth 0 N/A oDepth DEPTH unrecognized YES\n"}) {
+                const auto malformed=text.substr(0,row)+bad_row+text.substr(row_end+1);
+                params.decompiled=malformed.c_str(); params.decompiledSize=malformed.size(); failed=false;
+                require_batch(DecompileBinaryHLSL(params,patched,model,failed).empty() && failed,
+                    "F274: special-semantic parse failures cannot publish partial HLSL");
+            }
+        }
+    }
+    const char legacy_source[]="float4 tint : register(c3); float4 main():COLOR0 { return tint; }";
+    ComPtr<ID3DBlob> legacy_code,legacy_errors,legacy_assembly;
+    require_batch(SUCCEEDED(D3DCompile(legacy_source,sizeof(legacy_source)-1,nullptr,nullptr,nullptr,"main","ps_3_0",0,0,&legacy_code,&legacy_errors)) &&
+        SUCCEEDED(D3DDisassemble(legacy_code->GetBufferPointer(),legacy_code->GetBufferSize(),0,nullptr,&legacy_assembly)),
+        "F274: native compiler and disassembler produce an unmodified legacy SM3 fixture");
+    const std::string legacy_text(static_cast<const char*>(legacy_assembly->GetBufferPointer()));
+    require_batch(legacy_text.find("// Output signature:")==std::string::npos,
+        "F274: real native SM3 metadata has no DXBC output signature table");
+    DecompilerSettings legacy_settings;
+    ParseParameters legacy_params{}; legacy_params.bytecode=legacy_code->GetBufferPointer(); legacy_params.decompiled=legacy_text.c_str();
+    legacy_params.decompiledSize=legacy_text.size(); legacy_params.G=&legacy_settings;
+    bool legacy_patched=false,legacy_failed=false; std::string legacy_model;
+    const auto legacy_hlsl=DecompileBinaryHLSL(legacy_params,legacy_patched,legacy_model,legacy_failed);
+    require_batch(!legacy_failed && !legacy_patched && legacy_model=="ps_3_0" && legacy_hlsl.find("tint")!=std::string::npos,
+        "F274: native DX9 bytecode retains the existing public diagnostic/export model and register naming without a DXBC signature table");
+}

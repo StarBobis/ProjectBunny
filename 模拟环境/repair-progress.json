@@ -374,6 +374,13 @@
       "summary": "IBFE类型后缀取规范化目的mask宽度，避免无点号源操作数空指针相减及向量literal误当标量；原生合法DXBC公开反编译/重编译、六组WARP像素对照与边界专项、主线25+10全流程及独立对抗审查通过。",
       "evidence": "validation/F-272.json",
       "commitLookup": "git log --fixed-strings --grep=F-272"
+    },
+    {
+      "id": "F-274",
+      "status": "validated-in-simulator",
+      "summary": "输出签名按实际参数关闭分隔符，失败回滚文本及寄存器元数据；仅实际DX9 shader允许缺DXBC签名表，保留SM3既有诊断/导出行为。v1兼容回退已纠正，原生空输出/常规输出/坏表/SM3专项、主线25+10全流程与独立合并复审通过。",
+      "evidence": "validation/F-274.json",
+      "commitLookup": "git log --fixed-strings --grep=F-274"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

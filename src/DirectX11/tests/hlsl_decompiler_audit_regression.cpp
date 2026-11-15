@@ -6,6 +6,7 @@
 
 void test_dx11_decompiler_public_literal_regression();
 void test_dx11_decompiler_public_ibfe_regression();
+void test_dx11_decompiler_public_signature_regression();
 
 namespace {
 void check_literal_audit(bool condition, const char* message)
@@ -72,4 +73,44 @@ void test_dx11_decompiler_swizzle_count_regression()
         check_literal_audit(swizCount(operand)==test.second,"F272: destination masks and scalar/no-mask operands have a defined cast suffix");
     }
     check_literal_audit(swizCount(nullptr).empty(),"F272: the existing null operand scalar result is preserved");
+}
+
+void test_dx11_decompiler_output_signature_regression()
+{
+    const std::string header = "// Output signature:\n//\n"
+        "// Name Index Mask Register SysValue Format Used\n"
+        "// ---- ----- ---- -------- -------- ------ ----\n";
+    const std::string input = "\nvoid main(\n  float v0 : TEXCOORD0,\n";
+    for (const auto& prefix : {std::string("\nvoid main(\n"), input}) {
+        Decompiler decoder; decoder.mErrorOccurred = false;
+        decoder.mOutput.assign(prefix.begin(), prefix.end());
+        const auto text = header + "// no Output\n//\n";
+        decoder.ParseOutputSignature(text.c_str(), text.size());
+        const std::string expected = prefix == input ? "\nvoid main(\n  float v0 : TEXCOORD0)\n{\n" : "\nvoid main(\n)\n{\n";
+        check_literal_audit(!decoder.mErrorOccurred && std::string(decoder.mOutput.begin(),decoder.mOutput.end()) == expected,
+            "F274: zero outputs close the function without removing its opening parenthesis or retaining an input separator");
+    }
+    const std::string regular = "// SV_Target 0 xyzw 0 TARGET float xyzw\n";
+    for (const auto& rows : {std::string("// unrecognized\n"), regular + "// unrecognized\n",
+            regular + "// SV_Position 0 xyzw 1 POS float xyzw\n// unrecognized\n",
+            std::string("// SV_Target 0 xy 0 TARGET float xy\n// SV_Target 1 zw 0 TARGET float zw\n// unrecognized\n"),
+            std::string("// SV_Depth 0 N/A oDepth\n"), std::string("// SV_Target 0 xyzw 0 TARGET unrecognized xyzw\n"),
+            std::string("// SV_Depth 0 N/A oDepth DEPTH unrecognized YES\n")}) {
+        Decompiler decoder; decoder.mErrorOccurred = false;
+        decoder.mOutput.assign(input.begin(),input.end());
+        const auto text = header + rows + "//\n" + std::string(100,' ');
+        decoder.ParseOutputSignature(text.c_str(),text.size());
+        check_literal_audit(decoder.mErrorOccurred && std::string(decoder.mOutput.begin(),decoder.mOutput.end()) == input &&
+            decoder.mOutputRegisterType.empty() && decoder.mRemappedOutputRegisters.empty() && decoder.mSV_Position.empty(),
+            "F274: failed output parsing rolls back its text and register metadata before publishing any signature");
+    }
+    for (const auto& text : {std::string(), std::string("// unknown output section\n"),
+            std::string("// Output signature:\n"), header}) {
+        Decompiler decoder; decoder.mErrorOccurred=false;
+        decoder.mOutput.assign(input.begin(),input.end());
+        decoder.ParseOutputSignature(text.c_str(),text.size());
+        check_literal_audit(decoder.mErrorOccurred && std::string(decoder.mOutput.begin(),decoder.mOutput.end())==input,
+            "F274: missing or truncated output metadata is diagnosed without silently leaving a half signature");
+    }
+    test_dx11_decompiler_public_signature_regression();
 }
