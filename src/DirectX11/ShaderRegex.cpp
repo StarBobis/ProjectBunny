@@ -4,6 +4,7 @@
 #include "log.h"
 
 #include <algorithm>
+#include <charconv>
 #include <iterator>
 #include <string_view>
 
@@ -137,24 +138,42 @@ static bool find_dcl_temps(std::string *asm_text, size_t *dcl_temps_pos)
 	return true;
 }
 
-static unsigned get_dcl_temps(std::string *asm_text)
+static bool get_dcl_temps(std::string *asm_text, unsigned *tmp_regs)
 {
 	size_t dcl_temps;
-	unsigned tmp_regs = 0;
+	*tmp_regs = 0;
 
 	if (!find_dcl_temps(asm_text, &dcl_temps))
-		return 0;
+		return true;
 
-	tmp_regs = stoul(asm_text->substr(dcl_temps + 10, 4));
-	LogInfo("Found dcl_temps %d\n", tmp_regs);
+	size_t first = dcl_temps + 11;
+	size_t last = asm_text->find('\n', first);
+	if (last == std::string::npos)
+		last = asm_text->size();
+	while (first < last && ((*asm_text)[first] == ' ' || (*asm_text)[first] == '\t' || (*asm_text)[first] == '\r'))
+		first++;
+	while (last > first && ((*asm_text)[last - 1] == ' ' || (*asm_text)[last - 1] == '\t' || (*asm_text)[last - 1] == '\r'))
+		last--;
 
-	return tmp_regs;
+	const auto parsed = std::from_chars(asm_text->data() + first, asm_text->data() + last, *tmp_regs);
+	if (first == last || parsed.ec != std::errc() || parsed.ptr != asm_text->data() + last ||
+		*tmp_regs > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT) {
+		LogInfo("WARNING: Invalid dcl_temps count\n");
+		return false;
+	}
+	LogInfo("Found dcl_temps %u\n", *tmp_regs);
+	return true;
 }
 
 static bool update_dcl_temps(std::string *asm_text, size_t new_val)
 {
 	size_t dcl_temps, dcl_temps_end, dcl_end;
 	std::string insert_str;
+
+	if (new_val > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT) {
+		LogInfo("WARNING: ShaderRegex temporary-register count exceeds the shader limit\n");
+		return false;
+	}
 
 	if (find_dcl_temps(asm_text, &dcl_temps)) {
 		dcl_temps += 11;
@@ -305,6 +324,12 @@ bool ShaderRegexPattern::patch(std::string *asm_text, ShaderRegexTemps *temp_reg
 	uint32_t options;
 	int rc;
 
+	if (!temp_regs->empty() && (dcl_temps > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT ||
+		temp_regs->size() > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT - dcl_temps)) {
+		LogInfo("WARNING: ShaderRegex temporary-register allocation exceeds the shader limit\n");
+		return false;
+	}
+
 	static_assert(PCRE2_CODE_UNIT_WIDTH == 8, "Need to fix output buffer allocation for non-8bit pcre2");
 
 	// We operate on a copy of the replace string so that future shaders
@@ -379,8 +404,10 @@ void ShaderRegexGroup::apply_regex_patterns(std::string *asm_text, bool *match, 
 	*match = true;
 	*patch = false;
 
-	if (!temp_regs.empty())
-		dcl_temps = get_dcl_temps(asm_text);
+	if (!temp_regs.empty() && !get_dcl_temps(asm_text, &dcl_temps)) {
+		*match = false;
+		return;
+	}
 
 	for (i = patterns.begin(); i != patterns.end(); i++) {
 		pattern = &i->second;

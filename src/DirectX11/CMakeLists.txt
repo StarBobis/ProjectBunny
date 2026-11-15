@@ -217,6 +217,7 @@ if(BUILD_TESTING)
         tests/regression_isolation.cpp
         tests/audit_regressions.cpp
         tests/audit_dx9_regression.cpp
+        tests/shader_regex_temp_regression.cpp
         tests/shader_ownership_audit.cpp
         tests/shader_regex_declaration_audit.cpp
         tests/file_publication_audit.cpp
