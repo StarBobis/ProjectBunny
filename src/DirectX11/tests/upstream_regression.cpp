@@ -948,6 +948,7 @@ bool test_dx11_audit_item(const char* id);
 void test_dx11_audit_regressions();
 int run_dx11_regression_isolated(int argc, char** argv);
 int exit_dx11_regression_fixture();
+int run_dx11_initialization_gate_case(const char* scenario, const char* entered_event);
 
 // The regression host embeds production sources rather than loading their
 // DllMain. Supply the same real TLS initialization before exercising Present.
@@ -977,6 +978,8 @@ int main(int argc, char** argv)
     --argc;
     if (argc == 2 && !std::strcmp(argv[1], "--fixture-exit-test"))
         return exit_dx11_regression_fixture();
+    if (argc == 4 && !std::strcmp(argv[1], "--initialization-gate-case"))
+        return run_dx11_initialization_gate_case(argv[2], argv[3]);
     const char* audit_item = nullptr;
     if (argc == 3 && !std::strcmp(argv[1], "--audit-item")) audit_item = argv[2];
     else if (!(argc == 1 || (argc == 2 && !std::strcmp(argv[1], "--full")))) {

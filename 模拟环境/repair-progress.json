@@ -360,6 +360,13 @@
       "summary": "仅DX11 ShaderRegex元数据入口：数字表跨度先验、memcpy offset、size_t逆序和减法12字节范围，保留坏chunk跳过/末chunk优先/xx与失败输出语义。真实回绕读取红例、原生模型/边界专项、独立对抗复跑及主线25+10全流程通过；不称完整DXBC验证，独立DX12站点另待办。",
       "evidence": "validation/F-201.json",
       "commitLookup": "git log --fixed-strings --grep=F-201"
+    },
+    {
+      "id": "F-203",
+      "status": "validated-in-simulator",
+      "summary": "初始化测试先释放owner再回收已启线程，异常与局部期限清理，不能合作时独立Job硬截止；生产InitializationGate不改。修正全程无期限旧说法，保留F202/sim外层保护，主CTest加TIMEOUT60。真实红终止、正常8/故障1或4线程回收/子进程归零专项、独立对抗及主线25+10全流程通过。",
+      "evidence": "validation/F-203.json",
+      "commitLookup": "git log --fixed-strings --grep=F-203"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
