@@ -1,0 +1,5 @@
+LIBRARY dx11_fault_provider
+EXPORTS
+    D3D11CreateDevice=FaultCreateDevice @17
+    D3D11CreateDeviceAndSwapChain=FaultCreateDeviceAndSwapChain @18
+    BunnyFaultGetCounts

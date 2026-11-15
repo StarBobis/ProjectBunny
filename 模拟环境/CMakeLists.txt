@@ -1,0 +1,23 @@
+cmake_minimum_required(VERSION 3.20)
+project(BunnyDX11Simulation LANGUAGES CXX)
+# Match the production build's handling of Chinese MSVC /showIncludes output.
+if(MSVC AND CMAKE_CL_SHOWINCLUDES_PREFIX MATCHES "^娉ㄦ剰:")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件:  ")
+endif()
+if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "This test host requires Windows, MSVC and x64.")
+endif()
+get_filename_component(BUNNY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_executable(dx11_sim_host src/dx11_sim_host.cpp)
+add_library(dx11_fault_provider SHARED src/dx11_fault_provider.cpp src/dx11_fault_provider.def)
+# Compile the existing integration host unchanged, rather than reimplementing it.
+add_executable(dx11_existing_smoke "${BUNNY_ROOT}/src/DirectX11/tests/proxy_smoke.cpp")
+target_include_directories(dx11_existing_smoke PRIVATE "${BUNNY_ROOT}/src/DirectX11")
+foreach(target dx11_sim_host dx11_existing_smoke dx11_fault_provider)
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    target_compile_options(${target} PRIVATE /W4 /EHsc /utf-8)
+    target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+endforeach()
+target_link_libraries(dx11_sim_host PRIVATE user32)
+# Deliberately do not link d3d11.lib: tests must call exports of the loaded DLL.

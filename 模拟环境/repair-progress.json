@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "baselineHead": "38851ec207ea9cef3ad5cfceff435bd59a29be8f",
+  "completed": [],
+  "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
+  "rules": "专项与全流程均通过后单条提交；证据在对应commit与build日志中"
+}

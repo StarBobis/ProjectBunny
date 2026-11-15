@@ -1,0 +1,58 @@
+{
+  "phase": "bootstrap",
+  "baselineHead": "38851ec207ea9cef3ad5cfceff435bd59a29be8f",
+  "candidateSha256": "8746DC02D1F62E710640E2F58DA3E870C74CDD825080711B66C111B6B749BDC3",
+  "checks": [
+    {
+      "name": "business",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 7141,
+        "message": ""
+      }
+    },
+    {
+      "name": "legacy-version",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 50,
+        "message": ""
+      }
+    },
+    {
+      "name": "version-generator",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 14694,
+        "message": ""
+      }
+    },
+    {
+      "name": "actual-dll-integration",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 21404,
+        "message": ""
+      }
+    }
+  ],
+  "integrationPassCount": 15,
+  "fullReport": "build/f/54d8e3de0e84/results.json",
+  "reportSha256": "EB444F29B9F49B35B36E712AAD0ECB2729E2C59E8C73557F3626D7496359A20C",
+  "productionFixes": 0,
+  "scope": "完整既有业务回归+版本回归+真实DLL集成；未实测游戏",
+  "controllerSelfTests": {
+    "nonzeroExit": "PASS",
+    "timeout": "PASS",
+    "launchFailure": "PASS",
+    "report": "build/runner-self-test-d586f80325174de396d47bf28b85363b/results.json"
+  }
+}
