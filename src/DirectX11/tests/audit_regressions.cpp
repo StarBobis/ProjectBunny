@@ -278,7 +278,7 @@ void test_f137()
     const auto saved = G->decompiler_settings;
     AuditConfigScope config;
     config.load("[Rendering]\nfix_ZRepair_DepthTexture1=FirstDepth.w\nfix_ZRepair_DepthTexture2=SecondDepth.z\n");
-    for (const auto* invalid : {"x", ".x", "ab", "Depth.q", "Depthx", "Depth.xy", ".w"}) {
+    for (const auto* invalid : {"x", ".x", "ab", "Depth.q", "Depth.X", "Depth.R", "Depthx", "Depth.xy", ".w"}) {
         const auto text = std::string("[Rendering]\nfix_ZRepair_DepthTexture1=") + invalid +
             "\nfix_ZRepair_DepthTexture2=" + invalid + "\n";
         std::fprintf(stderr, "F137: reject malformed texture selector %s before splitting\n", invalid); std::fflush(stderr);
@@ -287,14 +287,18 @@ void test_f137()
             G->decompiler_settings.ZRepair_DepthTexture2 == "SecondDepth" && G->decompiler_settings.ZRepair_DepthTextureReg2 == 'z',
             "F137: both invalid selectors are rejected without publishing partial settings");
     }
-    for (const char component : {'x','y','z','w'}) {
+    for (const char component : {'x','y','z','w','r','g','b','a'}) {
+        const auto shader_source=std::string("float4 main():SV_Target{float4 zpos4=float4(0.25,0.5,0.75,1);float zpos=zpos4.")+component+";return zpos;}";
+        ComPtr<ID3DBlob> code,errors;
+        require_batch(SUCCEEDED(D3DCompile(shader_source.data(),shader_source.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+            "F137 correction: every accepted component is a native HLSL swizzle");
         const auto text = std::string("[Rendering]\nfix_ZRepair_DepthTexture1=  SceneDepthTexture.") + component +
             " \t\nfix_ZRepair_DepthTexture2=OtherDepth." + component + "\n";
         config.load(text.c_str());
         require_batch(G->decompiler_settings.ZRepair_DepthTexture1 == "SceneDepthTexture" &&
             G->decompiler_settings.ZRepair_DepthTexture2 == "OtherDepth" &&
             G->decompiler_settings.ZRepair_DepthTextureReg1 == component && G->decompiler_settings.ZRepair_DepthTextureReg2 == component,
-            "F137: preserve exact texture names and all four valid component suffixes");
+            "F137: preserve exact texture names and all eight valid HLSL component suffixes");
     }
     config.load("[Rendering]\nfix_ZRepair_DepthTexture1= \t\nfix_ZRepair_DepthTexture2=\n");
     require_batch(G->decompiler_settings.ZRepair_DepthTexture1 == "SceneDepthTexture" &&

@@ -498,9 +498,9 @@
       "originalSeverity": "medium",
       "evidence": "src/common/util.h:136-140",
       "additionalEvidence": "src/DirectX11/IniHandler.cpp:4881-4890",
-      "correctedConclusion": "越界写在ZRepair两个调用者的*(end-1)，不是RightStripA自身的单字符写；输入格式是纹理名.x，正常去掉点和分量是原设计。先完成F138转换检查，再验证非空名字及单个x/y/z/w后缀，非法值不发布半成品，不以*end=0残留点号。",
+      "correctedConclusion": "越界写在ZRepair两个调用者的*(end-1)，不是RightStripA自身单字符写；格式为纹理名.单分量。非空名字与小写xyzwrgba均须保留，HLSL合法rgba别名不能被边界修复误拒；非法值不发布半成品，转换先走F138检查。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "两键短串/空名/坏后缀与大写拒绝；小写xyzwrgba八分量逐个原生编译及真实LoadConfig，名字/原字符/空值语义保留",
       "implementationStatus": "pending"
     },
     {
@@ -1900,6 +1900,14 @@
       "previousGroup": "B",
       "currentGroup": "E",
       "reason": "私有函数合成输入可复现异常，实际调用仅处理原生反汇编输出；生产触发未补实",
+      "detail": "执行复查修正报告.md"
+    },
+    {
+      "id": "F-137",
+      "date": "2026-11-15",
+      "kind": "adversarial-regression-correction",
+      "reason": "原修复仅允许xyzw，错误拒绝HLSL合法rgba；原生52字母与真实LoadConfig反例已补实",
+      "originalCommit": "d48f5ca",
       "detail": "执行复查修正报告.md"
     }
   ],

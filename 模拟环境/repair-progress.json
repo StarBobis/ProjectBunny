@@ -250,9 +250,10 @@
     {
       "id": "F-137",
       "status": "validated-in-simulator",
-      "summary": "ZRepair两个深度纹理调用者验证非空名字及.x/y/z/w后缀后再发布，消除*(end-1)短串越界，保留合法拆分而非残留点号。真实配置旧版接受单字符已复现；短串/空名/坏后缀、两键、四分量、空白和重载专项及25+10全流程通过；F138转换另项先完成。",
+      "summary": "ZRepair短串保护保留，补回HLSL合法小写rgba别名；对抗审查发现原xyzw白名单误拒。原生52字母+独立LoadConfig反例确认，当前八分量逐个原生编译/两键配置、大写/坏后缀、专项与25+10全流程和对抗复审通过；原验证保留并追加纠正记录。",
       "evidence": "validation/F-137.json",
-      "commitLookup": "git log --fixed-strings --grep=F-137"
+      "commitLookup": "git log --fixed-strings --grep=F-137",
+      "latestEvidence": "validation/F-137-correction-1.json"
     },
     {
       "id": "F-143",
@@ -327,6 +328,15 @@
       "summary": "合成缺右花括号ICB可在私有函数复现异常；实际四处调用仅接原生D3DDisassemble文本，生产触发未补实。正常精度修补与原生代码块逐字节往返/WARP、25+10全流程通过；B移E，生产不改，不算已修复或误报。",
       "evidence": "validation/F-145-review.json",
       "commitLookup": "git log --fixed-strings --grep=F-145"
+    }
+  ],
+  "supplements": [
+    {
+      "id": "F-137",
+      "tag": "correction-1",
+      "status": "validated-correction-in-simulator",
+      "evidence": "validation/F-137-correction-1.json",
+      "summary": "ZRepair短串保护保留，补回HLSL合法小写rgba别名；对抗审查发现原xyzw白名单误拒。原生52字母+独立LoadConfig反例确认，当前八分量逐个原生编译/两键配置、大写/坏后缀、专项与25+10全流程和对抗复审通过；原验证保留并追加纠正记录。"
     }
   ]
 }

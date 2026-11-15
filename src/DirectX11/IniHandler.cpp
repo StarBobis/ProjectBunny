@@ -4635,8 +4635,8 @@ static void ParseDepthTextureParameter(const wchar_t *value, const wchar_t *key,
 	while (isspace(static_cast<unsigned char>(*start))) ++start;
 	size_t length = strlen(start);
 	while (length && isspace(static_cast<unsigned char>(start[length - 1]))) --length;
-	if (length < 3 || start[length - 2] != '.' || !strchr("xyzw", start[length - 1])) {
-		IniWarningW(L"Invalid %ls=%ls: expected texture.component (x/y/z/w)\n", key, value);
+	if (length < 3 || start[length - 2] != '.' || !strchr("xyzwrgba", start[length - 1])) {
+		IniWarningW(L"Invalid %ls=%ls: expected texture.component (x/y/z/w/r/g/b/a)\n", key, value);
 		return;
 	}
 	texture.assign(start, length - 2);
