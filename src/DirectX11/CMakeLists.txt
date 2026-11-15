@@ -153,6 +153,10 @@ if(BUILD_TESTING)
     # hooks from d3d11.dll or replacing production dependencies with mocks.
     get_target_property(DX11_REGRESSION_SOURCES DirectX11 SOURCES)
     list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "\\.def$")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)DLLMainHook\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/dllmain_hook_audit_regression.cpp)
+    set_source_files_properties(tests/dllmain_hook_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/DLLMainHook.cpp")
     string(REPLACE "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp" "tests/assembler_audit_regression.cpp"
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/assembler_audit_regression.cpp PROPERTIES

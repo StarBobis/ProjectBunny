@@ -4,6 +4,7 @@
 #include "D3D11Wrapper.h"
 #include "util_min.h"
 #include "globals.h"
+#include <limits>
 
 HINSTANCE migoto_handle;
 
@@ -172,6 +173,8 @@ static bool verify_intended_target(HINSTANCE our_dll)
 	wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
 	wchar_t *our_basename, *exe_basename;
 	DWORD filesize, readsize;
+	LARGE_INTEGER full_size{};
+	ULONGLONG allocation_size;
 	bool rc = false;
 	char *buf;
 	const char *section;
@@ -252,8 +255,16 @@ static bool verify_intended_target(HINSTANCE our_dll)
 	if (f == INVALID_HANDLE_VALUE)
 		return false;
 
-	filesize = GetFileSize(f, NULL);
-	buf = new char[filesize + 1];
+	// The complete file must fit one ReadFile call and its trailing NUL.
+	if (!GetFileSizeEx(f, &full_size) || full_size.QuadPart < 0 ||
+		full_size.QuadPart > static_cast<LONGLONG>(MAXDWORD))
+		goto out_close;
+	allocation_size = static_cast<ULONGLONG>(full_size.QuadPart) + 1;
+	if (allocation_size > (std::numeric_limits<SIZE_T>::max)())
+		goto out_close;
+	filesize = static_cast<DWORD>(full_size.QuadPart);
+	// Kernel32 allocation returns failure instead of throwing through DllMain.
+	buf = static_cast<char*>(HeapAlloc(GetProcessHeap(), 0, static_cast<SIZE_T>(allocation_size)));
 	if (!buf)
 		goto out_close;
 
@@ -310,7 +321,7 @@ static bool verify_intended_target(HINSTANCE our_dll)
 	}
 
 out_free:
-	delete [] buf;
+	HeapFree(GetProcessHeap(), 0, buf);
 out_close:
 	CloseHandle(f);
 	return rc;

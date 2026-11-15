@@ -77,6 +77,7 @@ void test_dx11_version_regression();
 void test_dx11_decompiler_swizzle_count_regression();
 void test_dx11_debug_layer_interfaces_regression();
 void test_dx11_hook_lookup_regression();
+void test_dx11_loader_file_bounds_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -676,6 +677,7 @@ void test_f199_review()
 
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
+    {"F-163", test_dx11_loader_file_bounds_regression},
     {"F-005", test_dx11_device_initialization_regression},
     {"F-007", test_f007},
     {"F-008", test_dx11_vertex_dump_bounds_regression},

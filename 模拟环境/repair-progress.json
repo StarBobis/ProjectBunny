@@ -465,6 +465,13 @@
       "summary": "Device/Context lookup在原锁内复制mapped pointer并销毁iterator，解锁后只返回借用值；不添加COM引用或改变F002/F182生命周期/安装协议。真实WARP保活下各16次rehash与16次其他节点erase、命中/未命中/引用数/锁释放专项，主线25+10全流程及独立候选对抗审查通过；基线也PASS，无伪造崩溃红例。",
       "evidence": "validation/F-181.json",
       "commitLookup": "git log --fixed-strings --grep=F-181"
+    },
+    {
+      "id": "F-163",
+      "status": "validated-in-simulator",
+      "summary": "DllMain目标验证读取先用64位GetFileSizeEx检查完整尺寸及DWORD单次读取/终NUL容量，改HeapAlloc/HeapFree避免new异常穿过DllMain；保留准入/loader/profile早放行策略。真实稀疏INI旧DLL误放行、新DLL拒绝1114；正常/无EOL/empty、尺寸/分配/短读/关闭计数专项、主线25+10全流程及独立审查通过。",
+      "evidence": "validation/F-163.json",
+      "commitLookup": "git log --fixed-strings --grep=F-163"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

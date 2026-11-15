@@ -453,6 +453,48 @@ void injected_device_failure(const Runtime& runtime, const wchar_t* runtime_path
 }
 }
 
+enum class LoaderProbe { Oversized, ProfileAllow, ProfileDeny };
+
+static void loader_file_probe(const wchar_t* path, LoaderProbe probe)
+{
+    const auto proxy = std::filesystem::canonical(path);
+    wchar_t executable[MAX_PATH]{}, system[MAX_PATH]{};
+    require(GetModuleFileNameW(nullptr, executable, MAX_PATH) && GetSystemDirectoryW(system, MAX_PATH),
+        "F163: real loader-test paths");
+    const auto executable_directory = std::filesystem::canonical(executable).parent_path().wstring();
+    if (probe != LoaderProbe::Oversized)
+        require(!_wcsicmp(std::filesystem::path(executable).filename().c_str(), L"rundll32.exe"),
+            "F163: profile-helper fixture has the actual rundll32.exe basename");
+    const auto proxy_directory = proxy.parent_path().wstring();
+    require(_wcsicmp(proxy_directory.c_str(), executable_directory.c_str()) &&
+        !wcsstr(proxy_directory.c_str(), executable_directory.c_str()), "F163: proxy reaches the outside-directory INI check");
+    const auto ini = proxy.parent_path() / L"d3dx.ini";
+    HANDLE input = CreateFileW(ini.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(input != INVALID_HANDLE_VALUE, "F163: actual outside-directory loader INI");
+    LARGE_INTEGER size{}; const BOOL sized = GetFileSizeEx(input, &size); CloseHandle(input);
+    require(sized && (probe == LoaderProbe::ProfileDeny ? size.QuadPart > 0 && size.QuadPart <= MAXDWORD : size.QuadPart > MAXDWORD),
+        "F163: actual INI size distinguishes overflow rejection from the profile-helper early decision");
+    // Keep the proxy's existing native hook dependencies available, as in the
+    // normal component host; no missing provider is replaced by a test stub.
+    const auto dxgi = std::filesystem::path(system) / L"dxgi.dll";
+    require(LoadLibraryExW(dxgi.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) != nullptr, "F163: real native DXGI provider");
+    const auto d3d11 = std::filesystem::path(system) / L"d3d11.dll";
+    Runtime native(d3d11.c_str());
+    HMODULE loaded = LoadLibraryExW(proxy.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    const DWORD error = GetLastError();
+    if (loaded) {
+        wchar_t actual[MAX_PATH]{};
+        require(GetModuleFileNameW(loaded, actual, MAX_PATH) && std::filesystem::equivalent(actual, proxy),
+            "F163: accepted module is the exact requested production DLL file");
+    }
+    std::printf("F163 DLL_LOAD=%s error=%lu logical=%lld path=%s\n", loaded ? "accepted" : "rejected",
+        error, size.QuadPart, utf8(proxy.c_str()).c_str());
+    // A successfully loaded production proxy owns process-wide hooks until
+    // this isolated child exits; unloading is outside this test's contract.
+    require(probe == LoaderProbe::ProfileAllow ? loaded != nullptr : !loaded && error == ERROR_DLL_INIT_FAILED,
+        "F163: real DllMain preserves the size/profile-helper allow and reject contracts");
+}
+
 int wmain(int argc, wchar_t** argv)
 {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
@@ -460,6 +502,9 @@ int wmain(int argc, wchar_t** argv)
         require(argc == 3, "usage: dx11_sim_host.exe <absolute DLL path> <scenario>");
         require(std::filesystem::path(argv[1]).is_absolute(), "runtime path must be absolute");
         const std::wstring scenario(argv[2]);
+        if (scenario == L"loader-size-rejection") { loader_file_probe(argv[1], LoaderProbe::Oversized); return 0; }
+        if (scenario == L"loader-profile-allow,Install3DMigotoDriverProfile ") { loader_file_probe(argv[1], LoaderProbe::ProfileAllow); return 0; }
+        if (scenario == L"loader-profile-deny") { loader_file_probe(argv[1], LoaderProbe::ProfileDeny); return 0; }
         Runtime runtime(argv[1]);
         if (scenario == L"injected-device-failure") injected_device_failure(runtime, argv[1]);
         else if (scenario == L"swapchain") swapchain(runtime);
