@@ -423,6 +423,13 @@
       "summary": "DX9 CTAB反射的PT_SAMPLER3D改为3D维度，native sampler3D/2D/Cube/1D/generic+tex2D五组真实编译与binding/declaration专项、主线25+10全流程及独立候选/合并审查通过。generic+tex2D原夹具误期望1D已按原生2D纠正，未混修MemberCount或宣称SM3重编译支持。",
       "evidence": "validation/F-285.json",
       "commitLookup": "git log --fixed-strings --grep=F-285"
+    },
+    {
+      "id": "F-292",
+      "status": "validated-in-simulator",
+      "summary": "仅_DEBUG_LAYER路径：主QI失败即返回，debug/infoqueue用ComPtr各释放一次；抽出真实helper由宏启用独立target验证，默认DLL设备标志不变。真实非debug WARP的E_NOINTERFACE、成功/次级QI失败/报告及引用数稳定专项、主线25+10全流程与候选独立审查通过。",
+      "evidence": "validation/F-292.json",
+      "commitLookup": "git log --fixed-strings --grep=F-292"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

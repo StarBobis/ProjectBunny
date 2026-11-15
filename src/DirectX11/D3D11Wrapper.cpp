@@ -1,6 +1,7 @@
 #include "D3D11Wrapper.h"
 #include "InitializationGate.h"
 #include "D3D11Initialization.h"
+#include "D3D11DebugInfo.h"
 
 #include "log.h"
 #include "Globals.h"
@@ -637,31 +638,6 @@ static UINT EnableDebugFlags(UINT flags)
 	LogInfo("  D3D11CreateDevice _DEBUG_LAYER flags set: %#x\n", flags);
 
 	return flags;
-}
-
-
-// Only where _DEBUG_LAYER=1.  This enables the debug layer for the GPU
-// itself, which will show GPU errors, warnings, and leaks in the console output.
-// This call shows that the layer is active, and the initial LiveObjectState.
-// And enable debugger breaks for errors that we might be introducing.
-
-static void ShowDebugInfo(ID3D11Device *origDevice)
-{
-	ID3D11Debug *d3dDebug = nullptr;
-	if (origDevice != nullptr)
-	{
-		if (SUCCEEDED(origDevice->QueryInterface(__uuidof(ID3D11Debug), (void**)&d3dDebug)))
-		{
-			ID3D11InfoQueue *d3dInfoQueue = nullptr;
-
-			if (SUCCEEDED(d3dDebug->QueryInterface(__uuidof(ID3D11InfoQueue), (void**)&d3dInfoQueue)))
-			{
-				d3dInfoQueue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_CORRUPTION, true);
-				d3dInfoQueue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_ERROR, true);
-			}
-		}
-		d3dDebug->ReportLiveDeviceObjects(D3D11_RLDO_SUMMARY | D3D11_RLDO_DETAIL);
-	}
 }
 
 

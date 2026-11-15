@@ -51,6 +51,7 @@ add_library(DirectX11 SHARED
     IniHandler.cpp
     InitializationGate.h
     D3D11Initialization.h
+    D3D11DebugInfo.h
     input.cpp
     lock.cpp
     Logging.cpp
@@ -330,6 +331,13 @@ if(BUILD_TESTING)
     set_target_common_definitions(dx11_upstream_regression)
     add_dependencies(dx11_upstream_regression DirectX11 dx11_version_header)
     target_link_libraries(dx11_upstream_regression PRIVATE Version.lib)
+    add_library(dx11_debug_layer_audit STATIC tests/debug_layer_audit_regression.cpp)
+    target_include_directories(dx11_debug_layer_audit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(dx11_debug_layer_audit PRIVATE _DEBUG_LAYER=1)
+    target_compile_features(dx11_debug_layer_audit PRIVATE cxx_std_17)
+    set_target_msvc_options(dx11_debug_layer_audit)
+    set_target_common_definitions(dx11_debug_layer_audit)
+    target_link_libraries(dx11_upstream_regression PRIVATE dx11_debug_layer_audit)
     add_executable(dx11_legacy_version_regression tests/legacy_version_regression.cpp)
     target_compile_definitions(dx11_legacy_version_regression PRIVATE MIGOTO_DX=12)
     target_include_directories(dx11_legacy_version_regression PRIVATE ${CMAKE_SOURCE_DIR}/src/common)
