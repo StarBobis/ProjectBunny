@@ -7,6 +7,8 @@
 #include <vector>
 #include <map>
 #include <new>
+#include <cerrno>
+#include <climits>
 
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
@@ -979,43 +981,43 @@ static HRESULT CreateHLSLTextFile(UINT64 hash, string hlslText)
 // Parses the name of one of the IniParam constants: x, y, z, w, x1, y1, ..., z7, w7
 static bool ParseIniParamName(const wchar_t *name, int *idx, float DirectX::XMFLOAT4::**component)
 {
-	int ret, len1, len2;
-	wchar_t component_chr;
-	size_t length = wcslen(name);
-
-	ret = swscanf_s(name, L"%lc%n%u%n", &component_chr, 1, &len1, idx, &len2);
-
-	// May or may not have matched index. Make sure entire string was
-	// matched either way and check index is valid if it was matched:
-	if (ret == 1 && len1 == length) {
-		*idx = 0;
-	} else if (ret == 2 && len2 == length) {
-#if MIGOTO_DX == 9
-		// Added gating for this DX9 specific limitation that we definitely do
-		// not want to enforce in DX11 as that would break a bunch of mods -DSS
-		if (*idx >= 225)
-			return false;
-#endif // MIGOTO_DX == 9
-	} else {
+	if (!name || !idx || !component || !*name)
 		return false;
-	}
-
-	switch (towlower(component_chr)) {
+	float DirectX::XMFLOAT4::*parsed_component;
+	switch (towlower(name[0])) {
 		case L'x':
-			*component = &DirectX::XMFLOAT4::x;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::x;
+			break;
 		case L'y':
-			*component = &DirectX::XMFLOAT4::y;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::y;
+			break;
 		case L'z':
-			*component = &DirectX::XMFLOAT4::z;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::z;
+			break;
 		case L'w':
-			*component = &DirectX::XMFLOAT4::w;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::w;
+			break;
+		default:
+			return false;
 	}
-
-	return false;
+	int parsed_index = 0;
+	if (name[1]) {
+		wchar_t *end = nullptr;
+		errno = 0;
+		const long long value = wcstoll(name + 1, &end, 10);
+		// Every consumer reserves index + 1 in a signed int. Keep the
+		// existing nonnegative scanf forms, without wrapping or truncating.
+		if (end == name + 1 || *end || errno == ERANGE || value < 0 || value >= INT_MAX)
+			return false;
+		parsed_index = static_cast<int>(value);
+	}
+#if MIGOTO_DX == 9
+	if (parsed_index >= 225)
+		return false;
+#endif
+	*idx = parsed_index;
+	*component = parsed_component;
+	return true;
 }
 
 // -----------------------------------------------------------------------------------------------

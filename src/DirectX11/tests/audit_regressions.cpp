@@ -2,11 +2,14 @@
 #include "FrameAnalysis.h"
 #include "IniHandler.h"
 #include "Input.h"
+#include "Override.h"
 #include "vkeys.h"
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include "D3D_Shaders/stdafx.h"
+
+extern std::vector<CommandList*> pending_post_command_lists;
 
 void test_dx11_dx9_constant_reset_regression();
 void test_dx11_assembler_double_index_regression();
@@ -248,9 +251,12 @@ void test_f135()
     VKInputButton valid(L"no_0x41");
 }
 
+#include "ini_parameter_audit.inl"
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
+    {"F-007", test_f007},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},

@@ -190,6 +190,13 @@
       "summary": "设备context/swapchain指针以nullptr初始化，overlay命令先判swapchain；非零堆内存构造、无swapchain/无overlay/实际overlay绘制/正常释放后重入均通过。旧DLL两条创建入口Constants均访问冲突，修复后真实IniParams继续上传7/9；专项及22+10项集成组件全流程通过。",
       "evidence": "validation/F-005.json",
       "commitLookup": "git log --fixed-strings --grep=F-005"
+    },
+    {
+      "id": "F-007",
+      "status": "validated-in-simulator",
+      "summary": "公共IniParam入口改为有符号宽范围解析，拒绝负值、溢出及无法安全index+1的INT_MAX，输出仅成功时发布；保留DX11超过225的范围及已有非负扫描形式。专项覆盖四个预留入口、表达式减法/读写、preset保存恢复、cycle、GPU上传和缩小重载清旧过渡；23+10集成组件及DX12兼容构建通过。",
+      "evidence": "validation/F-007.json",
+      "commitLookup": "git log --fixed-strings --grep=F-007"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
