@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <d3d11shader.h>
 #include "D3D_Shaders/stdafx.h"
 
 extern std::vector<CommandList*> pending_post_command_lists;
@@ -39,6 +40,9 @@ void test_dx11_vertex_dump_bounds_regression();
 void test_dx11_appended_vertex_layout_regression();
 void test_dx11_decompiler_literal_regression();
 void test_dx11_decompiler_output_signature_regression();
+void test_dx11_decompiler_special_output_regression();
+void check_dx11_special_output_rows(const std::string&, const std::vector<std::string>&);
+void check_dx11_special_output_failure(const std::string&);
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
@@ -663,6 +667,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-324", test_dx11_appended_vertex_layout_regression},
     {"F-100", test_dx11_decompiler_literal_regression},
     {"F-274", test_dx11_decompiler_output_signature_regression},
+    {"F-275", test_dx11_decompiler_special_output_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -901,4 +906,116 @@ void test_dx11_decompiler_public_signature_regression()
     const auto legacy_hlsl=DecompileBinaryHLSL(legacy_params,legacy_patched,legacy_model,legacy_failed);
     require_batch(!legacy_failed && !legacy_patched && legacy_model=="ps_3_0" && legacy_hlsl.find("tint")!=std::string::npos,
         "F274: native DX9 bytecode retains the existing public diagnostic/export model and register naming without a DXBC signature table");
+}
+
+namespace {
+struct SpecialOutputAuditFixture {
+    const char* name;
+    const char* source;
+    std::vector<std::string> registers;
+    ComPtr<ID3DBlob> code;
+    std::string text;
+};
+
+void check_special_output_reflection(ID3DBlob* original, ID3DBlob* rebuilt)
+{
+    ComPtr<ID3D11ShaderReflection> before,after;
+    require_batch(SUCCEEDED(D3DReflect(original->GetBufferPointer(),original->GetBufferSize(),
+        __uuidof(ID3D11ShaderReflection),reinterpret_cast<void**>(before.GetAddressOf()))) &&
+        SUCCEEDED(D3DReflect(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),
+        __uuidof(ID3D11ShaderReflection),reinterpret_cast<void**>(after.GetAddressOf()))),
+        "F275: reflect both native shader signatures independently");
+    D3D11_SHADER_DESC original_desc{},rebuilt_desc{};
+    require_batch(SUCCEEDED(before->GetDesc(&original_desc)) && SUCCEEDED(after->GetDesc(&rebuilt_desc)) &&
+        original_desc.OutputParameters==rebuilt_desc.OutputParameters,
+        "F275: regenerated shader retains the native output count");
+    for (UINT i=0;i<original_desc.OutputParameters;++i) {
+        D3D11_SIGNATURE_PARAMETER_DESC expected{};
+        require_batch(SUCCEEDED(before->GetOutputParameterDesc(i,&expected)),"F275: original output descriptor");
+        bool found=false;
+        for (UINT j=0;j<rebuilt_desc.OutputParameters;++j) {
+            D3D11_SIGNATURE_PARAMETER_DESC actual{};
+            require_batch(SUCCEEDED(after->GetOutputParameterDesc(j,&actual)),"F275: rebuilt output descriptor");
+            found |= !std::strcmp(actual.SemanticName,expected.SemanticName) && actual.SemanticIndex==expected.SemanticIndex &&
+                actual.SystemValueType==expected.SystemValueType && actual.ComponentType==expected.ComponentType && actual.Mask==expected.Mask;
+        }
+        require_batch(found,"F275: regenerated shader preserves each special semantic, scalar type and mask");
+    }
+}
+}
+
+void test_dx11_decompiler_special_output_regression()
+{
+    std::vector<SpecialOutputAuditFixture> fixtures = {
+        {"depth", "float main():SV_Depth{return 0.25;}", {"oDepth"}},
+        {"coverage", "uint main():SV_Coverage{return 1;}", {"oMask"}},
+        {"depth-ge", "float main():SV_DepthGreaterEqual{return 0.5;}", {"oDepthGE"}},
+        {"depth-le", "float main():SV_DepthLessEqual{return 0.5;}", {"oDepthLE"}},
+        {"mixed", "struct O{float4 color:SV_Target;float depth:SV_Depth;uint mask:SV_Coverage;};"
+            "O main(){O o;o.color=float4(0.25,0.5,0.75,1);o.depth=0.5;o.mask=1;return o;}", {"o0","oDepth","oMask"}}
+    };
+    for (auto& fixture : fixtures) {
+        ComPtr<ID3DBlob> errors, assembly;
+        require_batch(SUCCEEDED(D3DCompile(fixture.source,std::strlen(fixture.source),nullptr,nullptr,nullptr,
+            "main","ps_5_0",0,0,&fixture.code,&errors)), "F275: compile actual special system-output shader");
+        require_batch(SUCCEEDED(D3DDisassemble(fixture.code->GetBufferPointer(),fixture.code->GetBufferSize(),
+            0,nullptr,&assembly)), "F275: obtain native D3DDisassemble signature layout");
+        fixture.text = static_cast<const char*>(assembly->GetBufferPointer());
+        const auto header = fixture.text.find("// Output signature:");
+        const auto end = fixture.text.find("\n//\n", header + 21);
+        require_batch(header != std::string::npos && end != std::string::npos,
+            "F275: native fixture includes output signature table");
+        std::fprintf(stderr,"F275 native %s:\n%s\n",fixture.name,fixture.text.substr(header,end-header).c_str());
+    }
+    auto reordered=fixtures.back();
+    reordered.name="mixed-specials-first";
+    const auto ordinary=reordered.text.find("// SV_Target");
+    const auto ordinary_end=reordered.text.find('\n',ordinary)+1;
+    const auto ordinary_row=reordered.text.substr(ordinary,ordinary_end-ordinary);
+    reordered.text.erase(ordinary,ordinary_end-ordinary);
+    const auto table_end=reordered.text.find("\n//\n",ordinary);
+    require_batch(table_end!=std::string::npos,"F275: native mixed signature table terminator");
+    reordered.text.insert(table_end+1,ordinary_row);
+    fixtures.push_back(std::move(reordered));
+    BatchDevice device;
+    for (const auto& fixture : fixtures) {
+        check_dx11_special_output_rows(fixture.text,fixture.registers);
+        DecompilerSettings settings;
+        ParseParameters params{}; params.bytecode=fixture.code->GetBufferPointer(); params.G=&settings;
+        params.decompiled=fixture.text.c_str(); params.decompiledSize=fixture.text.size();
+        for (bool zero : {false,true}) {
+            params.ZeroOutput=zero;
+            bool patched=false,failed=false; std::string model;
+            const auto hlsl=DecompileBinaryHLSL(params,patched,model,failed);
+            require_batch(!failed && !hlsl.empty() && model=="ps_5_0",
+                "F275: public decompiler accepts native special outputs in both modes");
+            ComPtr<ID3DBlob> rebuilt,errors;
+            const auto hr=D3DCompile(hlsl.data(),hlsl.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors);
+            if (FAILED(hr)) std::fprintf(stderr,"F275 recompile %s zero=%d:\n%s\n%s\n",fixture.name,zero,hlsl.c_str(),
+                errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no compiler diagnostic");
+            require_batch(SUCCEEDED(hr),"F275: public regenerated HLSL recompiles using the native compiler");
+            check_special_output_reflection(fixture.code.Get(),rebuilt.Get());
+            ComPtr<ID3D11PixelShader> shader;
+            require_batch(SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),nullptr,&shader)),
+                "F275: WARP accepts regenerated special-output shader");
+        }
+    }
+    const auto& mixed=fixtures[4];
+    for (const auto* incomplete : {"// SV_Coverage 0 N/A\n", "// SV_Coverage 0 N/A oMask\n",
+            "// SV_Coverage 0 N/A oMask COVERAGE\n"}) {
+        auto text=mixed.text;
+        const auto row=text.find("// SV_Coverage");
+        const auto row_end=text.find('\n',row)+1;
+        text.replace(row,row_end-row,incomplete);
+        check_dx11_special_output_failure(text);
+        DecompilerSettings settings;
+        ParseParameters params{}; params.bytecode=mixed.code->GetBufferPointer(); params.G=&settings;
+        params.decompiled=text.c_str(); params.decompiledSize=text.size();
+        for (bool zero : {false,true}) {
+            params.ZeroOutput=zero;
+            bool patched=false,failed=false; std::string model;
+            (void)DecompileBinaryHLSL(params,patched,model,failed);
+            require_batch(failed,"F275: malformed special output propagates public error flag in both modes");
+        }
+    }
 }

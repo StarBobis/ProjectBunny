@@ -114,3 +114,45 @@ void test_dx11_decompiler_output_signature_regression()
     }
     test_dx11_decompiler_public_signature_regression();
 }
+
+void check_dx11_special_output_rows(const std::string& text,
+    const std::vector<std::string>& registers)
+{
+    Decompiler signature;
+    signature.mErrorOccurred = false;
+    const std::string header = "\nvoid main(\n";
+    signature.mOutput.assign(header.begin(), header.end());
+    signature.ParseOutputSignature(text.c_str(), text.size());
+    check_literal_audit(!signature.mErrorOccurred, "F275: native special output declarations parse successfully");
+    const std::string declarations(signature.mOutput.begin(), signature.mOutput.end());
+    for (const auto& reg : registers)
+        check_literal_audit(declarations.find(" " + reg + " : ") != std::string::npos,
+            "F275: retain every native special and ordinary output declaration");
+
+    Decompiler zero;
+    zero.mErrorOccurred = false;
+    zero.WriteZeroOutputSignature(text.c_str(), text.size());
+    check_literal_audit(!zero.mErrorOccurred, "F275: special zero-output scan must update the caller's conversion result");
+    const std::string assignments(zero.mOutput.begin(), zero.mOutput.end());
+    for (const auto& reg : registers)
+        check_literal_audit(assignments.find("  " + reg + " = 0;\n") != std::string::npos,
+            "F275: continue through every special output and the following ordinary row");
+}
+
+void check_dx11_special_output_failure(const std::string& text)
+{
+    Decompiler signature;
+    signature.mErrorOccurred = false;
+    const std::string header = "\nvoid main(\n";
+    signature.mOutput.assign(header.begin(), header.end());
+    signature.ParseOutputSignature(text.c_str(), text.size());
+    const std::string declarations(signature.mOutput.begin(), signature.mOutput.end());
+    check_literal_audit(signature.mErrorOccurred && declarations.find("oMask") == std::string::npos,
+        "F275: incomplete special declaration fails without publishing unread fields");
+    Decompiler zero;
+    zero.mErrorOccurred = false;
+    zero.WriteZeroOutputSignature(text.c_str(), text.size());
+    const std::string assignments(zero.mOutput.begin(), zero.mOutput.end());
+    check_literal_audit(zero.mErrorOccurred && assignments == "  o0 = 0;\n",
+        "F275: incomplete special row fails before publishing it or consuming the next valid row");
+}

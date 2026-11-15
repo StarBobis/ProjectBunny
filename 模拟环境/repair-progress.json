@@ -381,6 +381,13 @@
       "summary": "输出签名按实际参数关闭分隔符，失败回滚文本及寄存器元数据；仅实际DX9 shader允许缺DXBC签名表，保留SM3既有诊断/导出行为。v1兼容回退已纠正，原生空输出/常规输出/坏表/SM3专项、主线25+10全流程与独立合并复审通过。",
       "evidence": "validation/F-274.json",
       "commitLookup": "git log --fixed-strings --grep=F-274"
+    },
+    {
+      "id": "F-275",
+      "status": "validated-in-simulator",
+      "summary": "特殊输出路径更新真实外层numRead，两个扫描分支只读当前行且6字段完整才发布，保留F274类型检查/回滚与SM3兼容。原生深度/覆盖率及混合输出、截断3/4/5字段专项和主线25+10全流程通过，候选独立对抗审查通过。",
+      "evidence": "validation/F-275.json",
+      "commitLookup": "git log --fixed-strings --grep=F-275"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

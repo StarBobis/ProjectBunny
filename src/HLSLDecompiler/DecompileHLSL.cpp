@@ -636,7 +636,10 @@ public:
 				// Name                 Index   Mask Register SysValue  Format   Used
 				// -------------------- ----- ------ -------- -------- ------- ------
 				// SV_Depth                 0    N/A   oDepth    DEPTH   float    YES
-				numRead = sscanf_s(c + pos, "// %s %d %s %s %s %s",
+				size_t lineEnd = pos;
+				while (lineEnd < size && c[lineEnd] != '\r' && c[lineEnd] != '\n') ++lineEnd;
+				const string row(c + pos, lineEnd - pos);
+				numRead = sscanf_s(row.c_str(), "// %s %d %s %s %s %s",
 					name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), reg, UCOUNTOF(reg), sysValue, UCOUNTOF(sysValue), format, UCOUNTOF(format));
 				if (numRead == 6)
 				{
@@ -731,12 +734,18 @@ public:
 			else if (numRead == 3)
 			{
 				char sysValue[64];
-				int numRead = sscanf_s(c + pos, "// %s %d %s %s %s %s",
+				size_t lineEnd = pos;
+				while (lineEnd < size && c[lineEnd] != '\r' && c[lineEnd] != '\n') ++lineEnd;
+				const string row(c + pos, lineEnd - pos);
+				numRead = sscanf_s(row.c_str(), "// %s %d %s %s %s %s",
 					name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), sysValue, UCOUNTOF(sysValue), format2, UCOUNTOF(format2), format, UCOUNTOF(format));
-				// Write.
-				char buffer[256];
-				sprintf(buffer, "  %s = 0;\n", sysValue);
-				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				if (numRead == 6)
+				{
+					// Write.
+					char buffer[256];
+					sprintf(buffer, "  %s = 0;\n", sysValue);
+					mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				}
 			}
 			if (numRead != 6)
 			{
