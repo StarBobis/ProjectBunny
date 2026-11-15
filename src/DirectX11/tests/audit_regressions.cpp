@@ -41,6 +41,9 @@ void test_dx11_appended_vertex_layout_regression();
 void test_dx11_decompiler_literal_regression();
 void test_dx11_decompiler_output_signature_regression();
 void test_dx11_decompiler_special_output_regression();
+void test_dx11_decompiler_immediate_regression();
+void check_dx11_immediate_bytecode_precision(const void*, const void*);
+bool dx11_immediate_bytecode_precision_matches(const void*, const void*);
 void check_dx11_special_output_rows(const std::string&, const std::vector<std::string>&);
 void check_dx11_special_output_failure(const std::string&);
 void test_dx11_dx9_binding_lifetime_regression();
@@ -674,6 +677,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-276", test_dx11_dx9_binding_lifetime_regression},
     {"F-279", test_dx11_decompiler_suffix_regression},
     {"F-280", test_dx11_decompiler_texture_literal_regression},
+    {"F-282", test_dx11_decompiler_immediate_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -1166,5 +1170,69 @@ void test_dx11_decompiler_public_texture_literal_regression()
             "F280: actual WARP accepts both original and regenerated sampling shaders");
         std::fprintf(stderr, "F280: native/public/recompiled/WARP %s coordinates PASS\n",
             named_coordinate ? coordinate_name : "immediate");
+    }
+}
+
+void test_dx11_decompiler_public_immediate_regression()
+{
+    BatchDevice device;
+    const char special_source[]="float4 main():SV_Target{return asfloat(uint4(0x7f800000,0xff800000,0x7fc00000,0));}";
+    ComPtr<ID3DBlob> special_code,special_errors,special_assembly;
+    require_batch(SUCCEEDED(D3DCompile(special_source,sizeof(special_source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,
+        &special_code,&special_errors)) && SUCCEEDED(D3DDisassemble(special_code->GetBufferPointer(),special_code->GetBufferSize(),
+        0,nullptr,&special_assembly)),"F282: native exceptional-value compatibility probe");
+    const std::string special_text=static_cast<const char*>(special_assembly->GetBufferPointer());
+    DecompilerSettings special_settings;
+    ParseParameters special_params{}; special_params.bytecode=special_code->GetBufferPointer(); special_params.G=&special_settings;
+    special_params.decompiled=special_text.c_str(); special_params.decompiledSize=special_text.size();
+    bool special_patched=false,special_failed=false; std::string special_model;
+    const auto special_hlsl=DecompileBinaryHLSL(special_params,special_patched,special_model,special_failed);
+    ComPtr<ID3DBlob> special_rebuilt;
+    const auto special_hr=D3DCompile(special_hlsl.data(),special_hlsl.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,
+        &special_rebuilt,&special_errors);
+    const bool special_bits=SUCCEEDED(special_hr) &&
+        dx11_immediate_bytecode_precision_matches(special_code->GetBufferPointer(),special_rebuilt->GetBufferPointer());
+    std::fprintf(stderr,"F282 exceptional probe (observed compatibility, not a claimed supported round-trip): error=%d recompile=0x%08x bits_preserved=%d\n%s\n%s\n",
+        special_failed,static_cast<unsigned>(special_hr),special_bits,special_text.c_str(),special_hlsl.c_str());
+    const char* sources[]={
+        "float4 main():SV_Target{return float4(0.123456789,-0.333333343,3.14159274,1e20);}",
+        "float4 main():SV_Target{return float4(1e-20,3.402823466e38,-0.0,1.17549435e-38);}",
+        "float main():SV_Target{return -0.333333343;}"
+    };
+    for (const auto* source : sources) {
+        ComPtr<ID3DBlob> code,errors,assembly;
+        require_batch(SUCCEEDED(D3DCompile(source,std::strlen(source),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+            "F282: compile native scalar/vector precision fixture");
+        require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&assembly)),
+            "F282: obtain actual rounded native immediate text");
+        const std::string text=static_cast<const char*>(assembly->GetBufferPointer());
+        const auto literal=text.find("l(");
+        require_batch(literal!=std::string::npos,"F282: native shader contains an immediate operand");
+        std::fprintf(stderr,"F282 native literal: %s\n",text.substr(literal,text.find('\n',literal)-literal).c_str());
+        DecompilerSettings settings;
+        ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.G=&settings;
+        params.decompiled=text.c_str(); params.decompiledSize=text.size();
+        bool patched=false,failed=false; std::string model;
+        const auto hlsl=DecompileBinaryHLSL(params,patched,model,failed);
+        require_batch(!failed && !hlsl.empty(),"F282: real public decompiler accepts native precision fixtures");
+        ComPtr<ID3DBlob> rebuilt;
+        const auto hr=D3DCompile(hlsl.data(),hlsl.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors);
+        if (FAILED(hr)) std::fprintf(stderr,"F282 generated HLSL:\n%s\n%s\n",hlsl.c_str(),
+            errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no compiler diagnostic");
+        require_batch(SUCCEEDED(hr),"F282: generated precision HLSL recompiles natively");
+        check_dx11_immediate_bytecode_precision(code->GetBufferPointer(),rebuilt->GetBufferPointer());
+        ComPtr<ID3D11PixelShader> shader;
+        require_batch(SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),nullptr,&shader)),
+            "F282: WARP accepts precision-preserving regenerated shader");
+        for (const auto* invalid : {"l(bad)","l(0.123457junk)","l(0.123457,bad)"}) {
+            auto damaged=text;
+            const auto close=damaged.find(')',literal);
+            damaged.replace(literal,close-literal+1,invalid);
+            params.decompiled=damaged.c_str(); params.decompiledSize=damaged.size();
+            failed=false; patched=false;
+            (void)DecompileBinaryHLSL(params,patched,model,failed);
+            std::fprintf(stderr,"F282 reject %s: public error=%d\n",invalid,failed);
+            require_batch(failed,"F282: bad native immediate text propagates public failure instead of silently repairing it");
+        }
     }
 }

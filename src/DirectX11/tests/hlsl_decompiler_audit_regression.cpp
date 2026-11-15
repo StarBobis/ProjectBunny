@@ -15,6 +15,7 @@ std::string dx11_audit_dx9_binding_disassembly();
 void test_dx11_decompiler_public_dx9_binding_regression();
 void test_dx11_decompiler_public_suffix_regression();
 void test_dx11_decompiler_public_texture_literal_regression();
+void test_dx11_decompiler_public_immediate_regression();
 
 namespace {
 void check_literal_audit(bool condition, const char* message)
@@ -374,4 +375,86 @@ void test_dx11_decompiler_texture_literal_regression()
     check_literal_audit(decoder.mErrorOccurred && !std::strcmp(short_operand, "float2(1,2)"),
         "F280: an insufficient coordinate dimension is diagnosed without mutation");
     test_dx11_decompiler_public_texture_literal_regression();
+}
+
+bool dx11_immediate_bytecode_precision_matches(const void* original, const void* rebuilt)
+{
+    std::vector<std::vector<unsigned>> constants;
+    for (const auto* bytecode : {original,rebuilt}) {
+        Shader* shader=DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode)));
+        check_literal_audit(shader!=nullptr,"F282: decode actual native shader immediates");
+        std::vector<unsigned> values;
+        for (const auto& instruction : shader->asPhase[MAIN_PHASE].ppsInst[0])
+            for (unsigned i=0;i<instruction.ui32NumOperands;++i) {
+                const auto& operand=instruction.asOperands[i];
+                if (operand.eType!=OPERAND_TYPE_IMMEDIATE32) continue;
+                for (int j=0;j<operand.iNumComponents;++j) {
+                    unsigned bits;
+                    std::memcpy(&bits,&operand.afImmediates[j],sizeof(bits));
+                    values.push_back(bits);
+                }
+            }
+        FreeShaderInfo(shader->sInfo); delete shader;
+        constants.push_back(std::move(values));
+    }
+    return !constants[0].empty() && constants[0]==constants[1];
+}
+
+void check_dx11_immediate_bytecode_precision(const void* original, const void* rebuilt)
+{
+    check_literal_audit(dx11_immediate_bytecode_precision_matches(original,rebuilt),
+        "F282: public decompile/native recompile preserves the exact binary32 literal bits");
+}
+
+void test_dx11_decompiler_immediate_regression()
+{
+    test_dx11_decompiler_public_immediate_regression();
+    const float values[]={0.123456789f,-1.23456789f,16777216.0f,1e20f};
+    for (int size=1;size<=4;++size) {
+        Operand operand{}; operand.eType=OPERAND_TYPE_IMMEDIATE32; operand.iNumComponents=size;
+        std::memcpy(operand.afImmediates,values,sizeof(values));
+        char text[opcodeSize]="l(0.123457";
+        for (int i=1;i<size;++i) strcat_s(text,",0");
+        strcat_s(text,")");
+        if (size%2==0) strcat_s(text," , \t");
+        Decompiler decoder; decoder.mErrorOccurred=false;
+        check_literal_audit(decoder.fixImm(text,operand)==text && !decoder.mErrorOccurred,
+            "F282: valid immediate retains the pointer and restores decoded precision");
+        const char* next=text+2;
+        for (int i=0;i<size;++i) {
+            float number=0; int consumed=0;
+            check_literal_audit(sscanf_s(next,"%f%n",&number,&consumed)==1 &&
+                std::memcmp(&number,&values[i],sizeof(number))==0,
+                "F282: each emitted decimal round-trips to the decoded binary32 value");
+            next+=consumed;
+            check_literal_audit(*next==(i+1==size ? ')' : ','),"F282: emitted component count matches the decoded operand");
+            ++next;
+        }
+        check_literal_audit(*next==0,"F282: emitted immediate has no trailing garbage");
+    }
+    Operand operand{}; operand.eType=OPERAND_TYPE_IMMEDIATE32; operand.iNumComponents=1; operand.afImmediates[0]=0.25f;
+    for (const auto* pass : {"l(4)","l(4),","l(2147483647)","l(0x80000000)"}) {
+        Decompiler decoder; decoder.mErrorOccurred=false;
+        char text[opcodeSize]; strcpy_s(text,pass);
+        decoder.fixImm(text,operand);
+        check_literal_audit(!decoder.mErrorOccurred && !std::strcmp(text,pass),
+            "F282: values outside the existing float match threshold preserve integer and bit-pattern text");
+    }
+    Decompiler legacy_inf; legacy_inf.mErrorOccurred=false;
+    char infinity[opcodeSize]="l(1.#INF00)";
+    legacy_inf.fixImm(infinity,operand);
+    check_literal_audit(!legacy_inf.mErrorOccurred && !std::strcmp(infinity,"l(0.25)"),
+        "F282: retain the existing positive legacy-INF special rewrite");
+    operand.eType=OPERAND_TYPE_TEMP;
+    char reg[opcodeSize]="r0.x"; legacy_inf.fixImm(reg,operand);
+    check_literal_audit(!legacy_inf.mErrorOccurred && !std::strcmp(reg,"r0.x"),"F282: non-immediates remain untouched");
+    operand.eType=OPERAND_TYPE_IMMEDIATE32; operand.afImmediates[0]=0.123456789f;
+    for (const auto* invalid : {"", "l()", "l(bad)", "l(0.123457junk)", "l(0.123457,bad)",
+            "l(0.123457,)", "l(1.#INF00junk)"}) {
+        Decompiler decoder; decoder.mErrorOccurred=false;
+        char text[opcodeSize]; strcpy_s(text,invalid);
+        decoder.fixImm(text,operand);
+        check_literal_audit(decoder.mErrorOccurred && !std::strcmp(text,invalid),
+            "F282: failed or partial immediate scan reports an error without publishing decoded replacements");
+    }
 }

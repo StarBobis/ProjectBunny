@@ -3000,9 +3000,23 @@ public:
 		// Check old value.
 		if (o.eType == OPERAND_TYPE_IMMEDIATE32)
 		{
-			float oldValue;
-			sscanf_s(op, "l(%e", &oldValue);
-			if (!strncmp(op, "l(1.#INF00", strlen("l(1.#INF00")) || abs(oldValue - o.afImmediates[0]) < 0.1)
+			float oldValue = 0;
+			const bool legacyInf = !strncmp(op, "l(1.#INF00", strlen("l(1.#INF00"));
+			string literal(op);
+			while (!literal.empty() && isspace(static_cast<unsigned char>(literal.back()))) literal.pop_back();
+			if (!literal.empty() && literal.back() == ',') literal.pop_back();
+			while (!literal.empty() && isspace(static_cast<unsigned char>(literal.back()))) literal.pop_back();
+			if (legacyInf) literal.replace(2, strlen("1.#INF00"), "inf");
+			// Validate every component before replacing rounded disassembly text.
+			char checked[opcodeSize];
+			const char components[4] = { 0, 1, 2, 3 };
+			if ((!legacyInf && sscanf_s(op, "l(%e", &oldValue) != 1) ||
+				!applySwizzleLiteral(literal.c_str(), checked, false, o.iNumComponents, components))
+			{
+				logDecompileError("Invalid immediate32 operand: " + string(op));
+				return op;
+			}
+			if (legacyInf || abs(oldValue - o.afImmediates[0]) < 0.1)
 			{
 				if (o.iNumComponents == 4)
 					sprintf_s(op, opcodeSize, "l(%.9g,%.9g,%.9g,%.9g)", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2], o.afImmediates[3]);
