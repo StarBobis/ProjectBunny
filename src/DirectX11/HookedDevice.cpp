@@ -67,20 +67,20 @@ static bool hooks_installed = false;
 
 ID3D11Device1* lookup_hooked_device(ID3D11Device1 *orig_device)
 {
-	DeviceMap::iterator i;
+	ID3D11Device1 *device = NULL;
 
 	if (!hooks_installed)
 		return NULL;
 
 	EnterCriticalSectionPretty(&device_map_lock);
-	i = device_map.find(orig_device);
-	if (i == device_map.end()) {
-		LeaveCriticalSection(&device_map_lock);
-		return NULL;
+	{
+		auto i = device_map.find(orig_device);
+		if (i != device_map.end())
+			device = i->second;
 	}
 	LeaveCriticalSection(&device_map_lock);
 
-	return i->second;
+	return device;
 }
 
 

@@ -185,6 +185,18 @@ if(BUILD_TESTING)
     list(APPEND DX11_REGRESSION_SOURCES tests/hacker_device_audit_regression.cpp)
     set_source_files_properties(tests/hacker_device_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/HackerDevice.cpp")
+    foreach(component Context Device)
+        string(TOLOWER "${component}" component_lower)
+        list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)Hooked${component}\\.cpp$")
+        list(APPEND DX11_REGRESSION_SOURCES "tests/hooked_${component_lower}_lookup_audit.cpp")
+        set_source_files_properties("tests/hooked_${component_lower}_lookup_audit.cpp" PROPERTIES
+            OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Hooked${component}.cpp")
+        if(DX11_AUDIT_ASAN_LOCKS)
+            set_source_files_properties("tests/hooked_${component_lower}_lookup_audit.cpp" PROPERTIES
+                COMPILE_OPTIONS "/GL-;/fsanitize=address;/Zi"
+                COMPILE_DEFINITIONS "_DISABLE_VECTOR_ANNOTATION;_DISABLE_STRING_ANNOTATION")
+        endif()
+    endforeach()
     string(REPLACE "${CMAKE_SOURCE_DIR}/src/common/util.cpp" "tests/util_audit_regression.cpp"
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/util_audit_regression.cpp PROPERTIES
@@ -216,6 +228,7 @@ if(BUILD_TESTING)
         tests/upstream_regression.cpp
         tests/regression_isolation.cpp
         tests/audit_regressions.cpp
+        tests/hook_lookup_audit_regression.cpp
         tests/audit_dx9_regression.cpp
         tests/shader_regex_temp_regression.cpp
         tests/shader_ownership_audit.cpp

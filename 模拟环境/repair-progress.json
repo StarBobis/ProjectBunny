@@ -458,6 +458,13 @@
       "summary": "成功Decode后立即由custom deleter接管Shader，按FreeShaderInfo→delete完整释放，正常释放时点保持，早退和后续C++异常各释放一次。正常/异常/签名早退各64次实际Decode/Free及nested数组、存活字节稳定和保留HLSL原生重编译专项、主线25+10全流程及独立候选/合并审查通过；Decode内部部分失败仍归F104。",
       "evidence": "validation/F-283.json",
       "commitLookup": "git log --fixed-strings --grep=F-283"
+    },
+    {
+      "id": "F-181",
+      "status": "validated-in-simulator",
+      "summary": "Device/Context lookup在原锁内复制mapped pointer并销毁iterator，解锁后只返回借用值；不添加COM引用或改变F002/F182生命周期/安装协议。真实WARP保活下各16次rehash与16次其他节点erase、命中/未命中/引用数/锁释放专项，主线25+10全流程及独立候选对抗审查通过；基线也PASS，无伪造崩溃红例。",
+      "evidence": "validation/F-181.json",
+      "commitLookup": "git log --fixed-strings --grep=F-181"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

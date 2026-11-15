@@ -72,20 +72,20 @@ static bool hooks_installed = false;
 
 ID3D11DeviceContext1* lookup_hooked_context(ID3D11DeviceContext1 *orig_context)
 {
-	ContextMap::iterator i;
+	ID3D11DeviceContext1 *context = NULL;
 
 	if (!hooks_installed)
 		return NULL;
 
 	EnterCriticalSectionPretty(&context_map_lock);
-	i = context_map.find(orig_context);
-	if (i == context_map.end()) {
-		LeaveCriticalSection(&context_map_lock);
-		return NULL;
+	{
+		auto i = context_map.find(orig_context);
+		if (i != context_map.end())
+			context = i->second;
 	}
 	LeaveCriticalSection(&context_map_lock);
 
-	return i->second;
+	return context;
 }
 
 
