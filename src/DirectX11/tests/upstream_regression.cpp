@@ -944,13 +944,38 @@ void test_dx11_dds_mips_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
-int main()
+bool test_dx11_audit_item(const char* id);
+void test_dx11_audit_regressions();
+
+int main(int argc, char** argv)
 {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    const char* audit_item = nullptr;
+    if (argc == 3 && !std::strcmp(argv[1], "--audit-item")) audit_item = argv[2];
+    else if (!(argc == 1 || (argc == 2 && !std::strcmp(argv[1], "--full")))) {
+        std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN]\n", stderr);
+        return EXIT_FAILURE;
+    }
     InitializeCriticalSection(&G->mCriticalSection);
     InitializeCriticalSection(&G->mResourcesLock);
     InitializeCriticalSection(&resource_creation_mode_lock);
+    if (audit_item) {
+        bool passed = false;
+        try {
+            if (!test_dx11_audit_item(audit_item)) throw std::runtime_error("unknown audit item");
+            std::printf("PASS audit item: %s\n", audit_item);
+            passed = true;
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "FAIL audit item %s: %s\n", audit_item, error.what());
+        }
+        DeleteCriticalSection(&resource_creation_mode_lock);
+        DeleteCriticalSection(&G->mResourcesLock);
+        DeleteCriticalSection(&G->mCriticalSection);
+        return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
     test_dx11_version_regression();
     try {
+        test_dx11_audit_regressions();
         test_dx11_slot_range_numeric_regression();
         test_dx11_dynamic_slot_regression();
         test_dx11_dynamic_pipeline_slot_regression();

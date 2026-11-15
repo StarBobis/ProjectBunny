@@ -1436,7 +1436,7 @@ void FrameAnalysisContext::DumpVBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 		fprintf(fd, "first vertex: %u\n", first);
 		fprintf(fd, "vertex count: %u\n", count);
 	}
-	if (call_info && call_info->FirstInstance || call_info->InstanceCount) {
+	if (call_info && (call_info->FirstInstance || call_info->InstanceCount)) {
 		fprintf(fd, "first instance: %u\n", call_info->FirstInstance);
 		fprintf(fd, "instance count: %u\n", call_info->InstanceCount);
 	}

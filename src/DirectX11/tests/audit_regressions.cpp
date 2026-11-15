@@ -1,0 +1,119 @@
+#include "slot_range_test_support.h"
+#include "FrameAnalysis.h"
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+namespace {
+using namespace dx11_slot_test;
+
+std::string read_file(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    require_batch(input.good(), "audit: read actual output file");
+    return std::string(std::istreambuf_iterator<char>(input), {});
+}
+
+class AuditDumpScope {
+    std::wstring old_path = G->ANALYSIS_PATH;
+    bool old_analysis = G->analyse_frame, old_registered = G->frame_analysis_registered;
+    bool old_foreground = G->check_foreground_window;
+    std::wstring old_title = G->additionalForegroundWindowTitle;
+    int old_hunting = G->hunting;
+    FrameAnalysisOptions old_current = G->cur_analyse_options, old_default = G->def_analyse_options;
+public:
+    std::filesystem::path path;
+    AuditDumpScope()
+    {
+        wchar_t executable[MAX_PATH]{};
+        require_batch(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "audit: locate test host");
+        const auto base = std::filesystem::weakly_canonical(std::filesystem::path(executable).parent_path());
+        bool under_build = false;
+        for (const auto& part : base) under_build |= _wcsicmp(part.c_str(), L"build") == 0;
+        require_batch(under_build, "audit: outputs remain under build");
+        path = base / (L"audit-dump-" + std::to_wstring(GetCurrentProcessId()));
+        require_batch(!std::filesystem::exists(path) && std::filesystem::create_directory(path), "audit: exclusive output directory");
+        wcscpy_s(G->ANALYSIS_PATH, MAX_PATH, path.c_str());
+        G->analyse_frame = G->frame_analysis_registered = true;
+        G->check_foreground_window = true;
+        G->additionalForegroundWindowTitle.clear();
+        G->hunting = HUNTING_MODE_DISABLED;
+        G->cur_analyse_options = G->def_analyse_options = FrameAnalysisOptions::INVALID;
+    }
+    ~AuditDumpScope()
+    {
+        G->analyse_frame = old_analysis; G->frame_analysis_registered = old_registered;
+        G->check_foreground_window = old_foreground; G->additionalForegroundWindowTitle = std::move(old_title);
+        G->hunting = old_hunting; G->cur_analyse_options = old_current; G->def_analyse_options = old_default;
+        wcscpy_s(G->ANALYSIS_PATH, MAX_PATH, old_path.c_str());
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+    bool payload_contains(const char* expected)
+    {
+        for (const auto& file : std::filesystem::directory_iterator(path / L"deduped")) {
+            if (file.path().extension() == L".txt" && read_file(file.path()).find(expected) != std::string::npos) return true;
+        }
+        return false;
+    }
+};
+
+void test_f001()
+{
+    BatchDevice device;
+    AuditDumpScope output;
+    auto original = std::move(device.wrapper);
+    auto analysis = std::make_unique<FrameAnalysisContext>(device.native.Get(), device.context.Get());
+    analysis->SetHackerDevice(device.device);
+    auto* context = analysis.get();
+    device.wrapper = std::move(analysis);
+    device.device->SetHackerContext(context);
+    device.state.mHackerContext = context;
+    try {
+        auto vertices = buffer(device, 16, D3D11_BIND_VERTEX_BUFFER);
+        const float values[] = {1, 2, 3, 4};
+        device.context->UpdateSubresource(vertices.Get(), 0, nullptr, values, 0, 0);
+        const auto options = static_cast<FrameAnalysisOptions>(static_cast<unsigned>(FrameAnalysisOptions::DUMP_VB) |
+            static_cast<unsigned>(FrameAnalysisOptions::FMT_BUF_TXT) | static_cast<unsigned>(FrameAnalysisOptions::MONO));
+        std::fputs("F001: non-draw VB dump with null call_info\n", stderr); std::fflush(stderr);
+        context->FrameAnalysisDump(vertices.Get(), options, L"audit-nondraw", DXGI_FORMAT_UNKNOWN, 4, 0);
+        require_batch(output.payload_contains("stride: 4\r\n"), "F001: non-draw path writes the real VB header and payload");
+        require_batch(!output.payload_contains("first instance:"), "F001: absent draw info does not invent instance metadata");
+
+        ID3D11Buffer* bound = vertices.Get(); UINT stride = 4, offset = 0;
+        context->IASetVertexBuffers(0, 1, &bound, &stride, &offset);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+        context->FrameAnalysisTrigger(options); context->Draw(4, 0);
+        context->FrameAnalysisTrigger(options); context->DrawInstanced(4, 2, 0, 3);
+        require_batch(output.payload_contains("first instance: 3\r\ninstance count: 2\r\n"),
+            "F001: valid instanced draws retain both metadata values");
+        context->FrameAnalysisDump(vertices.Get(), options, L"audit-zero-stride", DXGI_FORMAT_UNKNOWN, 0, 0);
+        require_batch(output.payload_contains("stride: 0\r\n"), "F001: zero stride reaches its existing safe rejection");
+    } catch (...) {
+        device.wrapper = std::move(original); device.device->SetHackerContext(device.wrapper.get());
+        device.state.mHackerContext = device.wrapper.get();
+        throw;
+    }
+    device.wrapper = std::move(original); device.device->SetHackerContext(device.wrapper.get());
+    device.state.mHackerContext = device.wrapper.get();
+}
+
+struct AuditCase { const char* id; void (*run)(); };
+const AuditCase audit_cases[] = {{"F-001", test_f001}};
+}
+
+bool test_dx11_audit_item(const char* id)
+{
+    for (const auto& test : audit_cases) {
+        if (!std::strcmp(test.id, id)) { test.run(); return true; }
+    }
+    return false;
+}
+
+void test_dx11_audit_regressions()
+{
+    for (const auto& test : audit_cases) {
+        test.run();
+        std::printf("PASS audit item: %s\n", test.id);
+    }
+}

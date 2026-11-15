@@ -1,7 +1,15 @@
 {
   "schemaVersion": 1,
   "baselineHead": "38851ec207ea9cef3ad5cfceff435bd59a29be8f",
-  "completed": [],
+  "completed": [
+    {
+      "id": "F-001",
+      "status": "validated-in-simulator",
+      "summary": "VB文本转储完整保护空call_info；保留实例绘制元数据和既有零stride失败路径。",
+      "evidence": "validation/F-001.json",
+      "commitLookup": "git log --fixed-strings --grep=F-001"
+    }
+  ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
   "rules": "专项与全流程均通过后单条提交；证据在对应commit与build日志中"
 }
