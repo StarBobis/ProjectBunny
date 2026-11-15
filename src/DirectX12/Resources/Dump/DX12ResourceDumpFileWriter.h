@@ -182,8 +182,10 @@ static bool WriteBufferFileData(FILE *file, const DumpTask &task, const void *ma
 	if (!file || !mappedData)
 		return false;
 	const uint8_t *src = static_cast<const uint8_t*>(mappedData) + task.readbackOffset;
-	fwrite(src, 1, static_cast<size_t>(task.copyBytes), file);
-	return true;
+	const size_t copyBytes = static_cast<size_t>(task.copyBytes);
+	if (copyBytes && fwrite(src, 1, copyBytes, file) != copyBytes)
+		return false;
+	return ferror(file) == 0;
 }
 
 static void BuildTextFileName(const std::wstring &fileName, wchar_t *textName, size_t textNameCount)
@@ -213,9 +215,13 @@ static bool WriteBufferTextFile(const wchar_t *path, const DumpTask &task, const
 	if (!file)
 		return false;
 
-	const bool ok = DX12ResourceDumpBufferTextUtils::WriteBufferTextFile(file, task, mappedData);
-
-	fclose(file);
+	bool ok = DX12ResourceDumpBufferTextUtils::WriteBufferTextFile(file, task, mappedData);
+	if (ferror(file))
+		ok = false;
+	if (fflush(file) != 0)
+		ok = false;
+	if (fclose(file) != 0)
+		ok = false;
 	return ok;
 }
 
@@ -341,7 +347,12 @@ static bool WriteDedupedResourceFile(
 			return false;
 		bool ok = task->isTexture ? WriteTextureDDSFile(file, *task, mappedData) :
 			WriteBufferFileData(file, *task, mappedData);
-		fclose(file);
+		if (ferror(file))
+			ok = false;
+		if (fflush(file) != 0)
+			ok = false;
+		if (fclose(file) != 0)
+			ok = false;
 		if (!ok) {
 			DeleteFileW(dedupePath);
 			return false;
@@ -350,8 +361,11 @@ static bool WriteDedupedResourceFile(
 	if (!task->isTexture) {
 		wchar_t dedupeTextPath[MAX_PATH];
 		BuildTextFileName(dedupePath, dedupeTextPath, ARRAYSIZE(dedupeTextPath));
-		if (GetFileAttributesW(dedupeTextPath) == INVALID_FILE_ATTRIBUTES)
-			WriteBufferTextFile(dedupeTextPath, *task, mappedData);
+		if (GetFileAttributesW(dedupeTextPath) == INVALID_FILE_ATTRIBUTES &&
+				!WriteBufferTextFile(dedupeTextPath, *task, mappedData)) {
+			DeleteFileW(dedupeTextPath);
+			return false;
+		}
 	}
 	return true;
 }
