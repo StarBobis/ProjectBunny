@@ -8,7 +8,7 @@ $entry=@($plan.rows | Where-Object id -eq $Item)
 if($entry.Count -ne 1 -or $entry[0].group -notin @('A','B','C')){throw 'Item is frozen, out of scope, or unknown.'}
 $reportPath=(Resolve-Path -LiteralPath $FullReport).Path
 $report=Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-$required=@('special','business','legacy-version','version-generator','actual-dll-integration')
+$required=@('special','business','offline-shader-tool','legacy-version','version-generator','actual-dll-integration')
 if($report.item -ne $Item -or $report.status -ne 'PASS' -or @($report.checks | Where-Object status -ne 'PASS').Count){throw 'Requested item did not pass its entire validation cycle.'}
 foreach($name in $required){if(@($report.checks | Where-Object name -eq $name).Count -ne 1){throw "Missing validation: $name"}}
 if(-not $report.actualDllIntegration -or @($report.actualDllIntegration.cases).Count -lt 15 -or @($report.actualDllIntegration.cases | Where-Object status -ne 'PASS').Count){throw 'Actual DLL integration incomplete.'}

@@ -47,7 +47,7 @@ if ($BuildBusiness) {
     & $toolchain.cmake -S $repositoryRoot -B $candidateBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$($toolchain.ninja)" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DDX12_RELEASE_TIMING=OFF "-DPython3_EXECUTABLE=$pythonPath" "-DCMAKE_PROJECT_INCLUDE=$(Join-Path $simulationRoot 'business-overlay.cmake')" 2>&1 |
         Tee-Object -FilePath (Join-Path $buildRoot 'business-configure.log')
     if ($LASTEXITCODE -ne 0) { throw "Business configuration failed: $LASTEXITCODE" }
-    & $toolchain.cmake --build $candidateBuild --target dx11_upstream_regression --parallel $Parallel 2>&1 |
+    & $toolchain.cmake --build $candidateBuild --target dx11_upstream_regression D3D_Shaders --parallel $Parallel 2>&1 |
         Tee-Object -FilePath (Join-Path $buildRoot 'business-build.log')
     if ($LASTEXITCODE -ne 0) { throw "Business build failed: $LASTEXITCODE" }
     foreach ($source in $sourceSnapshot) {
@@ -55,7 +55,7 @@ if ($BuildBusiness) {
     }
     $head = & git -C $repositoryRoot rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Cannot record build HEAD.' }
-    $products = @('src\DirectX11\d3d11.dll','src\DirectX11\dx11_upstream_regression.exe','src\DirectX11\Release\dx11_legacy_version_regression.exe') | ForEach-Object {
+    $products = @('src\DirectX11\d3d11.dll','src\DirectX11\dx11_upstream_regression.exe','src\DirectX11\Release\dx11_legacy_version_regression.exe','src\D3D_Shaders\D3D_Shaders.exe') | ForEach-Object {
         [pscustomobject]@{path=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $candidateBuild $_) -Algorithm SHA256).Hash}
     }
     @{utc=[DateTime]::UtcNow.ToString('o');head=$head;configuration='Release';standard='C++17';python=$pythonPath;toolchain=$toolchain;sources=$sourceSnapshot;products=@($products)} |

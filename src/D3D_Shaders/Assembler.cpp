@@ -3225,6 +3225,8 @@ static vector<DWORD> ComputeHash(byte const* input, DWORD size)
 vector<byte> assembler(vector<char> *asmFile, vector<byte> origBytecode,
 		vector<AssemblerParseError> *parse_errors)
 {
+	if (asmFile->empty())
+		throw AssemblerParseError("", "Missing shader model declaration");
 	byte fourcc[4];
 	DWORD fHash[4];
 	DWORD one;
@@ -3279,6 +3281,8 @@ vector<byte> assembler(vector<char> *asmFile, vector<byte> origBytecode,
 				if (s.size() > 0 && s[0] != ' ') {
 					codeStarted = true;
 					vector<DWORD> ins = assembleIns(s);
+					if (ins.size() != 1 || (ins[0] >> 16) > 5)
+						throw AssemblerParseError(s, "Expected shader model declaration before instructions");
 					o.insert(o.end(), ins.begin(), ins.end());
 					o.push_back(0);
 				}
@@ -3320,6 +3324,8 @@ vector<byte> assembler(vector<char> *asmFile, vector<byte> origBytecode,
 			parse_errors->push_back(e);
 		}
 	}
+	if (o.size() < 2)
+		throw AssemblerParseError("", "Missing shader model declaration");
 	codeStart = (DWORD*)(codeByteStart); // Endian bug, not that we care
 	auto it = origBytecode.begin() + chunkOffsets[codeChunk] + 8;
 	size_t codeSize = codeStart[1];

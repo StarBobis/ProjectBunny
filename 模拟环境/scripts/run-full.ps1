@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Item = '',[ValidateRange(1000,60000)][int]$TimeoutMs=60000)
+param([string]$Item = '',[switch]$SpecialOnly,[ValidateRange(1000,60000)][int]$TimeoutMs=60000)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'process.ps1')
 $simulationRoot=Split-Path -Parent $PSScriptRoot
@@ -14,6 +14,7 @@ foreach($product in $info.products) {
     if((Get-FileHash -LiteralPath (Join-Path $candidateBuild $product.path) -Algorithm SHA256).Hash -ne $product.sha256) { throw "Built product changed: $($product.path)" }
 }
 $label=if($Item){$Item}else{'baseline'}
+if($SpecialOnly -and -not $Item){throw 'SpecialOnly requires an item.'}
 if($label -notmatch '^(baseline|F-\d{3}|P-\d{2})$'){throw 'Invalid item id.'}
 $runRoot=Join-Path $buildRoot ('f\'+[guid]::NewGuid().ToString('N').Substring(0,12))
 New-Item -ItemType Directory -Path $runRoot | Out-Null
@@ -22,6 +23,7 @@ $dll=Join-Path $candidateBuild 'src\DirectX11\d3d11.dll'
 $regression=Join-Path $candidateBuild 'src\DirectX11\dx11_upstream_regression.exe'
 foreach($mode in @('special','business')) {
     if($mode -eq 'special' -and -not $Item){continue}
+    if($mode -eq 'business' -and $SpecialOnly){continue}
     $caseRoot=Join-Path $runRoot $mode
     New-Item -ItemType Directory -Path $caseRoot | Out-Null
     foreach($path in @($dll,$regression,(Join-Path $candidateBuild 'src\DirectX11\wic-regression.png'))) {
@@ -39,6 +41,28 @@ foreach($mode in @('special','business')) {
     $checks.Add([pscustomobject]@{name=$mode;status=$result.status;detail=$result})
     Write-Host "[$($result.status)] $label $mode"
 }
+if($SpecialOnly) {
+    $status=if(@($checks | Where-Object status -ne 'PASS').Count){'FAIL'}else{'PASS'}
+    @{item=$label;status=$status;validationLevel='special-only';buildHead=$info.head;candidateSha256=(Get-FileHash -LiteralPath $dll).Hash;checks=$checks.ToArray()} |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runRoot 'results.json') -Encoding utf8
+    Write-Host "Special report: $(Join-Path $runRoot 'results.json')"
+    if($status -ne 'PASS'){exit 1}
+    exit 0
+}
+$shaderRoot=Join-Path $runRoot 'business\shader-fixture'
+$toolSource=Join-Path $candidateBuild 'src\D3D_Shaders\D3D_Shaders.exe'
+$shaderResult=[pscustomobject]@{status='NOT_RUN';exitCode=$null;elapsedMs=0;message='Business suite did not produce the native-validated shader fixture.'}
+if(Test-Path -LiteralPath (Join-Path $shaderRoot 'expected.cbo')) {
+    $toolCopy=Join-Path $shaderRoot 'D3D_Shaders.exe'
+    Copy-Item -LiteralPath $toolSource -Destination $toolCopy
+    $shaderResult=Invoke-IsolatedSimulationProcess -Executable $toolCopy -Arguments @('--fixture-run') -WorkingDirectory $shaderRoot -LogPrefix (Join-Path $shaderRoot 'tool') -TimeoutMs $TimeoutMs
+    $output=Join-Path $shaderRoot 'ShaderCache\0123456789abcdef-ps.cbo'
+    if($shaderResult.status -eq 'PASS' -and (-not (Test-Path -LiteralPath $output) -or (Get-FileHash -LiteralPath $output).Hash -ne (Get-FileHash -LiteralPath (Join-Path $shaderRoot 'expected.cbo')).Hash)) {
+        $shaderResult.status='FAIL';$shaderResult.message='CLI did not produce the complete native-validated bytecode.'
+    }
+}
+$checks.Add([pscustomobject]@{name='offline-shader-tool';status=$shaderResult.status;detail=$shaderResult})
+Write-Host "[$($shaderResult.status)] $label offline-shader-tool"
 $legacyRoot=Join-Path $runRoot 'legacy-version'
 New-Item -ItemType Directory -Path $legacyRoot | Out-Null
 $legacySource=Join-Path $candidateBuild 'src\DirectX11\Release\dx11_legacy_version_regression.exe'

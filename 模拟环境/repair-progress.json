@@ -8,6 +8,13 @@
       "summary": "VB文本转储完整保护空call_info；保留实例绘制元数据和既有零stride失败路径。",
       "evidence": "validation/F-001.json",
       "commitLookup": "git log --fixed-strings --grep=F-001"
+    },
+    {
+      "id": "F-106",
+      "status": "validated-in-simulator",
+      "summary": "缺少shader model时在改写长度前抛出既有解析异常；正常DXBC往返由WARP及离线Shader工具验证，Hunting/HackerDevice沿既有异常回退处理。",
+      "evidence": "validation/F-106.json",
+      "commitLookup": "git log --fixed-strings --grep=F-106"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include "D3D_Shaders/stdafx.h"
 
 namespace {
 using namespace dx11_slot_test;
@@ -98,8 +99,49 @@ void test_f001()
     device.state.mHackerContext = device.wrapper.get();
 }
 
+void test_f106()
+{
+    const char source[] = "float4 main():SV_Target{return float4(1,2,3,4);}";
+    ComPtr<ID3DBlob> code, errors;
+    require_batch(SUCCEEDED(D3DCompile(source, sizeof(source)-1, nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0,
+        &code, &errors)), "F106: compile valid original DXBC using the real compiler");
+    const auto* bytes = static_cast<const unsigned char*>(code->GetBufferPointer());
+    std::vector<unsigned char> original(bytes, bytes + code->GetBufferSize());
+    std::vector<unsigned char> assembly;
+    require_batch(SUCCEEDED(disassembler(&original, &assembly, nullptr)), "F106: disassemble real valid shader");
+    std::vector<char> text(assembly.begin(), assembly.end());
+    const auto rebuilt = assembler(&text, original);
+    BatchDevice device;
+    ComPtr<ID3D11PixelShader> shader;
+    require_batch(!rebuilt.empty() && SUCCEEDED(device.native->CreatePixelShader(rebuilt.data(), rebuilt.size(), nullptr, &shader)),
+        "F106: valid round-trip bytecode remains accepted by WARP");
+    for (const char* invalid : {"\n", "// no shader model\n", "", "ret\n"}) {
+        for (bool collect : {false, true}) {
+            std::vector<char> input(invalid, invalid + std::strlen(invalid));
+            std::vector<AssemblerParseError> warnings;
+            bool rejected = false;
+            std::fputs("F106: reject missing model before writing the token length\n", stderr); std::fflush(stderr);
+            try { assembler(&input, original, collect ? &warnings : nullptr); }
+            catch (const AssemblerParseError&) { rejected = true; }
+            require_batch(rejected, "F106: missing model is a fatal parse error with or without warning collection");
+        }
+    }
+    wchar_t executable[MAX_PATH]{};
+    require_batch(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "F106: locate owned shader-tool fixture");
+    const auto fixture = std::filesystem::path(executable).parent_path() / L"shader-fixture";
+    require_batch(std::filesystem::create_directories(fixture / L"ShaderCache"), "F106: exclusive shader-tool fixture");
+    const std::pair<std::filesystem::path, const std::vector<unsigned char>*> outputs[] = {
+        {fixture / L"ShaderCache/0123456789abcdef-ps.bin", &original}, {fixture / L"expected.cbo", &rebuilt}};
+    for (const auto& item : outputs) {
+        std::ofstream output(item.first, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(item.second->data()), item.second->size());
+        output.close();
+        require_batch(output.good(), "F106: persist exact native-validated shader bytes for CLI integration");
+    }
+}
+
 struct AuditCase { const char* id; void (*run)(); };
-const AuditCase audit_cases[] = {{"F-001", test_f001}};
+const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}};
 }
 
 bool test_dx11_audit_item(const char* id)
