@@ -57,6 +57,13 @@
       "summary": "按插值关键字实际消费数量验证输入/系统值操作数，避免vector越界；保留全部7种插值模式、无模式旧格式和d3dcompiler46/47的SGV形式，完整测试通过。",
       "evidence": "validation/F-144.json",
       "commitLookup": "git log --fixed-strings --grep=F-144"
+    },
+    {
+      "id": "F-150",
+      "status": "validated-in-simulator",
+      "summary": "真实签名解析中+/-的EOF转换不再继承前条寄存器5；普通0/31、oDepth、mask和used字段保持，完整业务及16项DLL集成通过。",
+      "evidence": "validation/F-150.json",
+      "commitLookup": "git log --fixed-strings --grep=F-150"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

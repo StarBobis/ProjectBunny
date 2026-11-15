@@ -367,7 +367,7 @@ static void* parse_signature_section(char *section24, char *section28, char *sec
 
 		// Try parsing register as a decimal number. If it is not, it
 		// is a special purpose register, in which case we store -1:
-		if (numRead = sscanf_s(reg, "%d", &entry.common.reg) == 0)
+		if (sscanf_s(reg, "%d", &entry.common.reg) != 1)
 			entry.common.reg = 0xffffffff;
 
 		entry.common.system_value = parse_system_value(system_value);

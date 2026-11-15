@@ -1,0 +1,178 @@
+{
+  "id": "F-150",
+  "status": "validated-in-simulator",
+  "summary": "真实签名解析中+/-的EOF转换不再继承前条寄存器5；普通0/31、oDepth、mask和used字段保持，完整业务及16项DLL集成通过。",
+  "utc": "2026-11-15T05:01:14.1913250Z",
+  "buildHead": "a113a22d4be31fc3f1c81ec86facd78bb1ae93ea",
+  "candidateSha256": "3531EA6C9A39EDE804A6429B3D02153AB6678C96106B605F0E05F652D03A0FD0",
+  "fullReport": "build\\f\\8884bcd0f55a\\results.json",
+  "fullReportSha256": "B93B6D74FDEDC55E806F4F3281E24CF53CDE68EF4A9EB3685A2DD39ED5826928",
+  "checks": [
+    {
+      "name": "special",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 2265,
+        "message": ""
+      }
+    },
+    {
+      "name": "business",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 16319,
+        "message": ""
+      }
+    },
+    {
+      "name": "offline-shader-tool",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 48,
+        "message": ""
+      }
+    },
+    {
+      "name": "legacy-version",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 35,
+        "message": ""
+      }
+    },
+    {
+      "name": "version-generator",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 14086,
+        "message": ""
+      }
+    },
+    {
+      "name": "actual-dll-integration",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 23891,
+        "message": ""
+      }
+    }
+  ],
+  "integrationCases": [
+    {
+      "id": "native-capabilities",
+      "status": "PASS"
+    },
+    {
+      "id": "native-buffer",
+      "status": "PASS"
+    },
+    {
+      "id": "native-texture",
+      "status": "PASS"
+    },
+    {
+      "id": "native-deferred",
+      "status": "PASS"
+    },
+    {
+      "id": "native-swapchain",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-capabilities",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-buffer",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-texture",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-deferred",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-swapchain",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-constants-missing-name",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-injected-device-failure",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-wrapper",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-native-control",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-hook-all",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-denied-qi",
+      "status": "PASS"
+    }
+  ],
+  "targetGameValidated": false,
+  "commitLookup": "git log --fixed-strings --grep=F-150",
+  "buildInfoSnapshot": "build\\f\\8884bcd0f55a\\build-info.json",
+  "buildInfoSha256": "814109CD1899EA45518CE40FE4C984A841F38D1CF8226E037286FB1081602D97",
+  "builtProducts": [
+    {
+      "path": "src\\DirectX11\\d3d11.dll",
+      "sha256": "3531EA6C9A39EDE804A6429B3D02153AB6678C96106B605F0E05F652D03A0FD0"
+    },
+    {
+      "path": "src\\DirectX11\\dx11_upstream_regression.exe",
+      "sha256": "799A0E9C1D33145D60471375D65CBD1C70C0393CE85B4676DCED09A74846D7F9"
+    },
+    {
+      "path": "src\\DirectX11\\Release\\dx11_legacy_version_regression.exe",
+      "sha256": "260F72DC55B6E439CFDD5557C0009658CBDA0840EB8E7A4F2DEB07464316E240"
+    },
+    {
+      "path": "src\\D3D_Shaders\\D3D_Shaders.exe",
+      "sha256": "AB064E008BB990C6E23A20AD3AA81C3322A8278BAFB819D8156823F9B0851375"
+    },
+    {
+      "path": "src\\DirectX11\\clang_rt.asan_dynamic-x86_64.dll",
+      "sha256": "7C4FA25B4A3123F2B698D9429B9CA9933C87AC4B7F1A5F5AD33772BDE231401E"
+    }
+  ],
+  "redReport": "build\\f\\77735e577e7a\\results.json",
+  "redReportSha256": "CB2FD84828C34119F57F07F6B548E372C7C0A9C05E5641A2EBA9DDB7CA453EDA",
+  "redChecks": [
+    {
+      "name": "special",
+      "status": "FAIL",
+      "detail": {
+        "status": "FAIL",
+        "exitCode": 1,
+        "elapsedMs": 2229,
+        "message": ""
+      }
+    }
+  ]
+}

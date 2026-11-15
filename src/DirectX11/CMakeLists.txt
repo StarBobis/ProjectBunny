@@ -153,6 +153,10 @@ if(BUILD_TESTING)
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/assembler_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp")
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/SignatureParser.cpp" "tests/signature_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/signature_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/SignatureParser.cpp")
     if(DX11_AUDIT_ASAN_LOCKS)
         if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
             message(FATAL_ERROR "DX11_AUDIT_ASAN_LOCKS requires MSVC x64 with AddressSanitizer.")
