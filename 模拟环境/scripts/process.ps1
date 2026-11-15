@@ -4,7 +4,7 @@ function Invoke-IsolatedSimulationProcess {
         [Parameter(Mandatory)][string[]]$Arguments,
         [Parameter(Mandatory)][string]$WorkingDirectory,
         [Parameter(Mandatory)][string]$LogPrefix,
-        [ValidateRange(100, 60000)][int]$TimeoutMs = 20000,
+        [ValidateRange(100, 600000)][int]$TimeoutMs = 20000,
         [hashtable]$EnvironmentOverrides = @{}
     )
     $processInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -27,7 +27,14 @@ function Invoke-IsolatedSimulationProcess {
         $started = $true
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutMs)) {
+        $waitWatch = [Diagnostics.Stopwatch]::StartNew()
+        $exited = $false
+        do {
+            $remaining = $TimeoutMs - [int]$waitWatch.ElapsedMilliseconds
+            if ($remaining -le 0) { break }
+            $exited = $process.WaitForExit([Math]::Min(1000, $remaining))
+        } while (-not $exited)
+        if (-not $exited) {
             $status = 'TIMEOUT'
             $process.Kill($true)
             if (-not $process.WaitForExit(5000)) { throw 'Timed-out child could not be terminated.' }

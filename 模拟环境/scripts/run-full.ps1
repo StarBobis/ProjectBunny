@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param([string]$Item = '',[switch]$SpecialOnly,[ValidateRange(1000,60000)][int]$TimeoutMs=60000)
+param([string]$Item = '',[switch]$SpecialOnly,[ValidateRange(1000,60000)][int]$TimeoutMs=60000,
+    [ValidateRange(1000,600000)][int]$IntegrationTimeoutMs=600000,
+    [ValidateRange(1000,600000)][int]$ComponentTimeoutMs=240000)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'process.ps1')
 $simulationRoot=Split-Path -Parent $PSScriptRoot
@@ -130,7 +132,7 @@ $checks.Add([pscustomobject]@{name='version-generator';status=$versionResult.sta
 Write-Host "[$($versionResult.status)] $label version-generator"
 $shell=(Get-Process -Id $PID).Path
 $componentPointer=Join-Path $runRoot 'component-report-path.txt'
-$componentResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-ReportPointer',$componentPointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'components') -TimeoutMs $TimeoutMs
+$componentResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-ReportPointer',$componentPointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'components') -TimeoutMs $ComponentTimeoutMs
 $componentReport=$null
 if(Test-Path -LiteralPath $componentPointer){$componentReport=Get-Content -LiteralPath ([IO.File]::ReadAllText($componentPointer)) -Raw | ConvertFrom-Json}
 if($componentResult.status -eq 'PASS' -and (-not $componentReport -or $componentReport.status -ne 'PASS')){$componentResult.status='FAIL';$componentResult.message='Component report is incomplete.'}
@@ -138,7 +140,7 @@ $checks.Add([pscustomobject]@{name='proxy-components';status=$componentResult.st
 Write-Host "[$($componentResult.status)] $label proxy-components"
 $pointer=Join-Path $runRoot 'integration-report-path.txt'
 $shell=(Get-Process -Id $PID).Path
-$integrationResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-ReportPointer',$pointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'integration') -TimeoutMs $TimeoutMs
+$integrationResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-ReportPointer',$pointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'integration') -TimeoutMs $IntegrationTimeoutMs
 $checks.Add([pscustomobject]@{name='actual-dll-integration';status=$integrationResult.status;detail=$integrationResult})
 Write-Host "[$($integrationResult.status)] $label actual-dll-integration"
 $integration=$null
