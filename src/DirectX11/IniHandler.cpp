@@ -3961,7 +3961,7 @@ static wchar_t *StencilOps[] = {
 	L"DECR",
 };
 
-static void ParseStencilOp(wchar_t *key, wchar_t *val, D3D11_DEPTH_STENCILOP_DESC *desc)
+static void ParseStencilOp(const wchar_t *key, wchar_t *val, D3D11_DEPTH_STENCILOP_DESC *desc)
 {
 	wchar_t func_buf[32], both_pass_buf[32], depth_fail_buf[32], stencil_fail_buf[32];
 	int i;
@@ -4006,7 +4006,6 @@ static void ParseDepthStencilState(CustomShader *shader, const wchar_t *section)
 	D3D11_DEPTH_STENCIL_DESC *desc = &shader->depth_stencil_desc;
 	D3D11_DEPTH_STENCIL_DESC *mask = &shader->depth_stencil_mask;
 	wchar_t setting[MAX_PATH];
-	wchar_t key[32];
 	bool found;
 
 	memset(desc, 0, sizeof(D3D11_DEPTH_STENCIL_DESC));
@@ -4062,13 +4061,13 @@ static void ParseDepthStencilState(CustomShader *shader, const wchar_t *section)
 
 	if (GetIniStringAndLog(section, L"stencil_front", 0, setting, MAX_PATH)) {
 		shader->depth_stencil_override = 1;
-		ParseStencilOp(key, setting, &desc->FrontFace);
+		ParseStencilOp(L"stencil_front", setting, &desc->FrontFace);
 		memset(&mask->FrontFace, 0, sizeof(D3D11_DEPTH_STENCILOP_DESC));
 	}
 
 	if (GetIniStringAndLog(section, L"stencil_back", 0, setting, MAX_PATH)) {
 		shader->depth_stencil_override = 1;
-		ParseStencilOp(key, setting, &desc->BackFace);
+		ParseStencilOp(L"stencil_back", setting, &desc->BackFace);
 		memset(&mask->BackFace, 0, sizeof(D3D11_DEPTH_STENCILOP_DESC));
 	}
 

@@ -155,6 +155,13 @@
       "summary": "递归INI枚举先验证文件名长度再比较后缀，忽略.ini大小写；真实文件与生产解析器验证1至3字符短名、.ini、大/混合后缀、Unicode文件、文件与目录排序、递归及skip排除，专项与19+10集成组件全流程通过。",
       "evidence": "validation/F-294.json",
       "commitLookup": "git log --fixed-strings --grep=F-294"
+    },
+    {
+      "id": "F-295",
+      "status": "validated-in-simulator",
+      "summary": "ParseStencilOp接收const真实stencil_front/back键名，删除未初始化key数组；实际INI日志验证两路错误诊断，非法值保持既有默认操作，合法8字段解析及原生WARP深度模板状态创建通过，专项与全流程通过。",
+      "evidence": "validation/F-295.json",
+      "commitLookup": "git log --fixed-strings --grep=F-295"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

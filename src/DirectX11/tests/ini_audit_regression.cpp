@@ -3,6 +3,7 @@
 #include "../IniHandler.cpp"
 #include <stdexcept>
 #include <filesystem>
+#include "slot_range_test_support.h"
 
 namespace {
 void check_ini_audit(bool condition, const char* message)
@@ -22,6 +23,39 @@ public:
     IniSectionStateScope() { saved.swap(ini_sections); }
     ~IniSectionStateScope() { ini_sections.clear(); saved.swap(ini_sections); }
 };
+
+class IniAuditLogCapture {
+    FILE* saved = LogFile;
+    LogVerbosity saved_level = gLogVerbosity;
+    bool saved_warnings = G->gShowWarnings;
+public:
+    FILE* capture = std::tmpfile();
+    IniAuditLogCapture()
+    {
+        check_ini_audit(capture != nullptr, "F295: create real log capture");
+        LogFile = capture; gLogVerbosity = LogVerbosity::INFO; G->gShowWarnings = false;
+    }
+    std::string read()
+    {
+        check_ini_audit(!std::fflush(capture) && !std::fseek(capture, 0, SEEK_SET), "F295: flush and rewind diagnostic stream");
+        std::string text; char buffer[1024]; size_t count;
+        while ((count = std::fread(buffer, 1, sizeof(buffer), capture)) != 0) text.append(buffer, count);
+        check_ini_audit(!std::fseek(capture, 0, SEEK_END), "F295: restore diagnostic append position");
+        return text;
+    }
+    ~IniAuditLogCapture()
+    {
+        LogFile = saved; gLogVerbosity = saved_level; G->gShowWarnings = saved_warnings; std::fclose(capture);
+    }
+};
+
+bool contains_ini_audit_text(const std::string& bytes, const std::string& text)
+{
+    if (bytes.find(text) != std::string::npos) return true;
+    std::string wide;
+    for (const auto character : text) { wide.push_back(character); wide.push_back('\0'); }
+    return bytes.find(wide) != std::string::npos;
+}
 
 class IniEnumerationFixture {
     std::filesystem::path base;
@@ -124,4 +158,35 @@ void test_dx11_ini_enumeration_regression()
     for (size_t i = 0; i < lines.size(); ++i)
         check_ini_audit(lines[i].second == std::to_wstring(i) && lines[i].ini_namespace == paths[i],
             "F294: preserve case-insensitive file ordering, directory recursion ordering and exact namespace paths");
+}
+
+void test_dx11_stencil_diagnostic_regression()
+{
+    IniWarningScope warnings; IniSectionStateScope sections; IniAuditLogCapture log;
+    ParseIniExcerpt(L"[CustomShaderAuditStencilBad]\nstencil_front=broken\nstencil_back=broken\n");
+    CustomShader invalid;
+    std::fputs("F295: malformed front/back diagnostics must name their actual keys\n", stderr); std::fflush(stderr);
+    ParseDepthStencilState(&invalid, L"CustomShaderAuditStencilBad");
+    const auto messages = log.read();
+    check_ini_audit(contains_ini_audit_text(messages, "Unrecognised stencil_front=broken") &&
+        contains_ini_audit_text(messages, "Unrecognised stencil_back=broken"),
+        "F295: both malformed stencil settings report their actual key names");
+    check_ini_audit(invalid.depth_stencil_desc.FrontFace.StencilPassOp == D3D11_STENCIL_OP_KEEP &&
+        invalid.depth_stencil_desc.BackFace.StencilPassOp == D3D11_STENCIL_OP_KEEP,
+        "F295: malformed values retain the existing default operation behavior");
+    ParseIniExcerpt(L"[CustomShaderAuditStencilValid]\nstencil_enable=true\n"
+        L"stencil_front=less replace incr_sat decr\nstencil_back=always keep invert zero\n");
+    CustomShader valid;
+    ParseDepthStencilState(&valid, L"CustomShaderAuditStencilValid");
+    const auto& desc = valid.depth_stencil_desc;
+    check_ini_audit(desc.StencilEnable && valid.depth_stencil_override == 1 &&
+        desc.FrontFace.StencilFunc == D3D11_COMPARISON_LESS && desc.FrontFace.StencilPassOp == D3D11_STENCIL_OP_REPLACE &&
+        desc.FrontFace.StencilDepthFailOp == D3D11_STENCIL_OP_INCR_SAT && desc.FrontFace.StencilFailOp == D3D11_STENCIL_OP_DECR &&
+        desc.BackFace.StencilFunc == D3D11_COMPARISON_ALWAYS && desc.BackFace.StencilPassOp == D3D11_STENCIL_OP_KEEP &&
+        desc.BackFace.StencilDepthFailOp == D3D11_STENCIL_OP_INVERT && desc.BackFace.StencilFailOp == D3D11_STENCIL_OP_ZERO,
+        "F295: legal front/back operations retain their original parsed values");
+    dx11_slot_test::BatchDevice device;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState> state;
+    check_ini_audit(SUCCEEDED(device.native->CreateDepthStencilState(&desc, &state)) && state,
+        "F295: native WARP accepts the actual parsed descriptor");
 }
