@@ -39,7 +39,7 @@ foreach($mode in @('special','business')) {
         $specialComponentPointer=Join-Path $caseRoot 'component-report-path.txt'
         $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-Item',$Item,'-SpecialOnly','-ReportPointer',$specialComponentPointer)
     }
-    if($mode -eq 'special' -and $Item -eq 'F-178') {
+    if($mode -eq 'special' -and $Item -in @('F-178','F-291')) {
         $exe=(Get-Process -Id $PID).Path
         $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-SpecialItem',$Item)
     }

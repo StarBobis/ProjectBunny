@@ -1,6 +1,8 @@
 #include <Windows.h>
 #include <d3d11_1.h>
 #include <dxgi1_5.h>
+#include <winternl.h>
+#include <d3dkmthk.h>
 #include <wrl/client.h>
 #include <array>
 #include <cstdio>
@@ -58,6 +60,44 @@ public:
     // module until process exit; unloading is a separate, currently frozen test.
     PFN_D3D11_CREATE_DEVICE create = nullptr;
     PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN create_swapchain = nullptr;
+    void shared_primary_binding() const
+    {
+        const auto entry = reinterpret_cast<decltype(&D3DKMTGetSharedPrimaryHandle)>(
+            GetProcAddress(module_, "D3DKMTGetSharedPrimaryHandle"));
+        require(entry != nullptr, "F291: resolve actual shared-primary export");
+        HMODULE entry_module = nullptr;
+        require(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(entry), &entry_module) && entry_module == module_,
+            "F291: resolved export belongs to the actual proxy module");
+        const auto* base = reinterpret_cast<const unsigned char*>(module_);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        require(dos->e_magic == IMAGE_DOS_SIGNATURE, "F291: loaded proxy PE header");
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        require(nt->Signature == IMAGE_NT_SIGNATURE, "F291: loaded proxy NT header");
+        const auto size = nt->OptionalHeader.SizeOfImage;
+        const auto* code = reinterpret_cast<const unsigned char*>(entry);
+        const auto offset = code - base;
+        require(offset >= 0 && static_cast<size_t>(offset) + 6 <= size && code[0] == 0xff && code[1] == 0x25,
+            "F291: current x64 export is an indirect import jump, not the C++ stub body");
+        int32_t displacement = 0; std::memcpy(&displacement, code + 2, sizeof(displacement));
+        const auto slot = static_cast<int64_t>(offset) + 6 + displacement;
+        require(slot >= 0 && static_cast<uint64_t>(slot) + sizeof(FARPROC) <= size, "F291: import slot stays inside loaded image");
+        FARPROC target = nullptr; std::memcpy(&target, base + slot, sizeof(target));
+        HMODULE gdi32 = GetModuleHandleW(L"gdi32.dll");
+        require(gdi32 != nullptr, "F291: system GDI32 is loaded");
+        wchar_t native_path[MAX_PATH]{}, system_path[MAX_PATH]{};
+        require(GetModuleFileNameW(gdi32, native_path, MAX_PATH) && GetSystemDirectoryW(system_path, MAX_PATH) &&
+            std::filesystem::equivalent(native_path, std::filesystem::path(system_path) / L"gdi32.dll"),
+            "F291: binding comparison uses the real system GDI32");
+        const auto native = reinterpret_cast<decltype(entry)>(GetProcAddress(gdi32, "D3DKMTGetSharedPrimaryHandle"));
+        require(native != nullptr && target == reinterpret_cast<FARPROC>(native), "F291: export forwards to the exact native GDI32 entry");
+        D3DKMT_GETSHAREDPRIMARYHANDLE request{}, native_request{};
+        const auto status = entry(&request), native_status = native(&native_request);
+        require(status == native_status && request.hSharedPrimary == native_request.hSharedPrimary,
+            "F291: invalid-window request preserves native status and output behavior");
+        std::printf("F291 EXPORT_BINDING=System32/GDI32 PROXY_RVA=%llx NATIVE_STATUS=%08lx\n",
+            static_cast<unsigned long long>(offset), static_cast<unsigned long>(native_status));
+    }
 private:
     HMODULE module_ = nullptr;
 };
@@ -373,6 +413,7 @@ int wmain(int argc, wchar_t** argv)
             else if (scenario == L"texture") texture_clear(gpu);
             else if (scenario == L"constants-missing-name") constants_missing_name(gpu);
             else if (scenario == L"deferred") deferred_replay(gpu);
+            else if (scenario == L"kmt-binding") runtime.shared_primary_binding();
             else throw std::runtime_error("unknown scenario");
         }
         std::puts("PASS: actual runtime scenario");

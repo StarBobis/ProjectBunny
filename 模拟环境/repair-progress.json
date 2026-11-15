@@ -141,6 +141,13 @@
       "summary": "删除交互崩溃帮助中没有处理分支的Ctrl+Alt+W提示；实际生产日志输出验证Q/K/C/B保留、W不存在及无日志流路径。按键处理未改，专项与全流程通过；当前CMake的util.cpp仅编入DX11。",
       "evidence": "validation/F-286.json",
       "commitLookup": "git log --fixed-strings --grep=F-286"
+    },
+    {
+      "id": "F-291",
+      "status": "reviewed-no-active-defect",
+      "summary": "执行复查纠正：当前x64公开导出是跳向System32/GDI32精确同名入口的IAT跳板，不运行报告中的C++桩。已撤回一行无效源码修复，F291移A至N；实际绑定和非法窗口原生状态/输出专项、整套19+10项集成组件及业务回归通过。",
+      "evidence": "validation/F-291.json",
+      "commitLookup": "git log --fixed-strings --grep=F-291"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

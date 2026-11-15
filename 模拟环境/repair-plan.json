@@ -6,17 +6,17 @@
   "sourceReviewSha256": "4F84E5049CEFF40BD379536BD03289D3456A2F4BEC2D88E0989C09E79153289B",
   "oldPlanSha256": "83E9E7E8F523606455C8C1A81A5A11463159362AA61796B29AAB5A81663403E8",
   "counts": {
-    "A": 24,
+    "A": 23,
     "B": 41,
     "C": 29,
     "R": 26,
     "X": 4,
     "E": 7,
     "D12": 4,
-    "N": 6
+    "N": 7
   },
   "total": 141,
-  "activeCandidateCount": 120,
+  "activeCandidateCount": 119,
   "rows": [
     {
       "id": "F-001",
@@ -1366,7 +1366,7 @@
       "evidence": "src/DirectXGI/DXGIWrapper.cpp:146-174",
       "additionalEvidence": null,
       "correctedConclusion": "未实现KMT桩返回0表示NTSTATUS成功而非HRESULT S_OK契约；应准确签名转发/返回STATUS_NOT_IMPLEMENTED，不能无脑E_NOTIMPL或把所有出口转同DLL。",
-      "executionGate": "先完成边界/ABI/清理或并发协议设计，接入组件DLL、故障注入/压力装置；证据齐备后才实施",
+      "executionGate": "F291已证明当前DX11至少一处公开导出绑定GDI32而非报告C++桩；先逐入口核当前目标DLL实际导出/IAT/签名，重新判断有效缺陷，再补对应ABI与失败输出测试，不得照桩列表直接修改",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "pending"
     },
@@ -1620,15 +1620,15 @@
     {
       "id": "F-291",
       "status": "成立但修正",
-      "group": "A",
-      "groupLabel": "局部低风险，第一批候选",
+      "group": "N",
+      "groupLabel": "当前构建未调用，归档维护",
       "originalSeverity": "low",
       "evidence": "src/DirectX11/D3D11Wrapper.cpp:234-238",
-      "additionalEvidence": null,
-      "correctedConclusion": "日志名错误真实，但该入口也是未实现KMT桩，应按真实NTSTATUS ABI处理，不能仅改日志就称修复输出。",
-      "executionGate": "讨论后逐条补针对性正常/边界/失败证据，保持修改局部；当前通用冒烟不代替该条回归",
-      "targetedAcceptanceProposal": "核本函数真实日志输出名；KMT返回/出参/ABI另由F-270验收，不在此条冒充修好",
-      "implementationStatus": "pending"
+      "additionalEvidence": "当前实际DLL的导出指令与IAT目标；模拟环境/src/dx11_sim_host.cpp 的 kmt-binding 运行验证",
+      "correctedConclusion": "当前MSVC x64公开导出是到System32/GDI32的导入跳板，未绑定错误日志所在的C++桩。源码文字错误属未生效代码，不修改导出绑定；F-270须逐入口重新核实际绑定。",
+      "executionGate": "不修改未生效C++桩，不激活旧桩；工具链或导出策略改变时重新核对",
+      "targetedAcceptanceProposal": "当前x64实际DLL导出归属、导入跳板及精确GDI32目标；非法窗口请求对照原生状态/输出",
+      "implementationStatus": "not-applicable-current-build"
     },
     {
       "id": "F-292",
@@ -1850,6 +1850,16 @@
       "executionGate": "当前不修改生产路径；专项装置及目标游戏/驱动验证计划齐备后逐条重议，不能凭WARP基础冒烟放行",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "frozen-or-out-of-scope"
+    }
+  ],
+  "executionCorrections": [
+    {
+      "id": "F-291",
+      "date": "2026-11-15",
+      "previousGroup": "A",
+      "currentGroup": "N",
+      "reason": "实际x64导出绑定到GDI32，报告中的C++桩未生效",
+      "detail": "执行复查修正报告.md"
     }
   ]
 }
