@@ -38,6 +38,7 @@ add_library(DirectX11 SHARED
     DHash64Gpu.cpp
     DHash64Gpu.h
     HackerDevice.cpp
+    ShaderHeader.h
     HackerDXGI.cpp
     HackerInputLayout.cpp
     HookAddresses.c

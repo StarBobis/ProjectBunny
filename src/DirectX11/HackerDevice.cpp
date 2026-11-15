@@ -15,6 +15,7 @@
 #include "HackerDevice.h"
 #include "HookedDevice.h"
 #include "FrameAnalysis.h"
+#include "ShaderHeader.h"
 
 #include <D3Dcompiler.h>
 #include <wrl/client.h>
@@ -682,12 +683,18 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 
 		DWORD srcDataSize = GetFileSize(f, 0);
 		char *srcData = new char[srcDataSize];
-		DWORD readSize;
-		FILETIME ftWrite;
-		if (!ReadFile(f, srcData, srcDataSize, &readSize, 0)
-			|| !GetFileTime(f, NULL, NULL, &ftWrite)
-			|| srcDataSize != readSize)
+		DWORD readSize = 0;
+		FILETIME ftWrite{};
+		if (!ReadFile(f, srcData, srcDataSize, &readSize, 0) || srcDataSize != readSize) {
 			LogInfo("    Error reading file.\n");
+			CloseHandle(f);
+			delete[] srcData;
+			return false;
+		}
+		if (!GetFileTime(f, NULL, NULL, &ftWrite)) {
+			LogInfo("    Shader input timestamp unavailable.\n");
+			ftWrite = {};
+		}
 		CloseHandle(f);
 		LogInfo("    Source code loaded. Size = %d\n", srcDataSize);
 
@@ -704,8 +711,7 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 			// Any HLSL compiled shaders are reloading candidates, if moved to ShaderFixes
 			pShaderModel = shaderModel;
 			pTimeStamp = ftWrite;
-			std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-			pHeaderLine = utf8_to_utf16.from_bytes(srcData, strchr(srcData, '\n'));
+			pHeaderLine = ReadShaderHeaderLine(srcData, readSize);
 
 			// Way too many obscure interractions in this function, using another
 			// temporary variable to not modify anything already here and reduce
@@ -812,12 +818,17 @@ static bool ReplaceASMShader(__in UINT64 hash, const wchar_t *pShaderType, const
 
 		DWORD srcDataSize = GetFileSize(f, 0);
 		vector<char> asmTextBytes(srcDataSize);
-		DWORD readSize;
-		FILETIME ftWrite;
-		if (!ReadFile(f, asmTextBytes.data(), srcDataSize, &readSize, 0)
-			|| !GetFileTime(f, NULL, NULL, &ftWrite)
-			|| srcDataSize != readSize)
+		DWORD readSize = 0;
+		FILETIME ftWrite{};
+		if (!ReadFile(f, asmTextBytes.data(), srcDataSize, &readSize, 0) || srcDataSize != readSize) {
 			LogInfo("    Error reading file.\n");
+			CloseHandle(f);
+			return false;
+		}
+		if (!GetFileTime(f, NULL, NULL, &ftWrite)) {
+			LogInfo("    Shader input timestamp unavailable.\n");
+			ftWrite = {};
+		}
 		CloseHandle(f);
 		LogInfo("    Asm source code loaded. Size = %d\n", srcDataSize);
 
@@ -832,8 +843,7 @@ static bool ReplaceASMShader(__in UINT64 hash, const wchar_t *pShaderType, const
 			// Any ASM shaders are reloading candidates, if moved to ShaderFixes
 			pShaderModel = shaderModel;
 			pTimeStamp = ftWrite;
-			std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-			pHeaderLine = utf8_to_utf16.from_bytes(asmTextBytes.data(), strchr(asmTextBytes.data(), '\n'));
+			pHeaderLine = ReadShaderHeaderLine(asmTextBytes.data(), readSize);
 
 			vector<byte> byteCode(pBytecodeLength);
 			memcpy(byteCode.data(), pShaderBytecode, pBytecodeLength);

@@ -8,8 +8,11 @@
 
 extern "C" decltype(&D3DCompile) __imp_D3DCompile;
 extern "C" decltype(&GetFileAttributesExW) __imp_GetFileAttributesExW;
+extern "C" decltype(&ReadFile) __imp_ReadFile;
+extern "C" decltype(&GetFileTime) __imp_GetFileTime;
 void with_dx11_audit_shader_files(void (*scenario)(const std::filesystem::path&));
 void with_dx11_audit_hunting_configuration(void (*scenario)());
+void test_dx11_reload_header_file_regression(const std::filesystem::path&,ID3DBlob*);
 
 namespace {
 using namespace dx11_slot_test;
@@ -169,4 +172,161 @@ static void initialize_decompile_file_fixture()
 void test_dx11_decompile_file_diagnostic_regression()
 {
     with_dx11_audit_hunting_configuration(initialize_decompile_file_fixture);
+}
+
+namespace {
+enum class HeaderInputFault {None,ReadFailure,ShortRead,TimestampFailure};
+HeaderInputFault header_input_fault=HeaderInputFault::None;
+unsigned header_read_calls=0,header_time_calls=0;
+const auto native_header_read=__imp_ReadFile;
+const auto native_header_time=__imp_GetFileTime;
+BOOL WINAPI audit_header_read(HANDLE file,LPVOID data,DWORD size,LPDWORD read,LPOVERLAPPED overlapped)
+{
+    ++header_read_calls;
+    if(header_input_fault==HeaderInputFault::ReadFailure) {*read=0; SetLastError(ERROR_READ_FAULT); return FALSE;}
+    if(header_input_fault==HeaderInputFault::ShortRead && size) --size;
+    return native_header_read(file,data,size,read,overlapped);
+}
+BOOL WINAPI audit_header_time(HANDLE file,LPFILETIME created,LPFILETIME access,LPFILETIME written)
+{
+    ++header_time_calls;
+    if(header_input_fault==HeaderInputFault::TimestampFailure) {SetLastError(ERROR_ACCESS_DENIED); return FALSE;}
+    return native_header_time(file,created,access,written);
+}
+template<class Function> class HeaderInputImportScope {
+    Function* slot; Function saved;
+    void set(Function value)
+    {
+        DWORD previous=0;
+        require_batch(VirtualProtect(slot,sizeof(*slot),PAGE_READWRITE,&previous)!=FALSE,"F171: this executable's existing Win32 file import");
+        *slot=value; DWORD ignored=0;
+        if(!VirtualProtect(slot,sizeof(*slot),previous,&ignored)) std::abort();
+    }
+public:
+    HeaderInputImportScope(Function& target,Function value):slot(&target),saved(target) {set(value);}
+    ~HeaderInputImportScope() {try {set(saved);} catch(...) {std::abort();}}
+};
+class HeaderInputFailureScope {
+    HeaderInputFault saved=header_input_fault;
+    HeaderInputImportScope<decltype(&ReadFile)> read{__imp_ReadFile,audit_header_read};
+    HeaderInputImportScope<decltype(&GetFileTime)> time{__imp_GetFileTime,audit_header_time};
+public:
+    explicit HeaderInputFailureScope(HeaderInputFault fault) {header_input_fault=fault; header_read_calls=header_time_calls=0;}
+    ~HeaderInputFailureScope() {header_input_fault=saved;}
+};
+
+class GuardedShaderHeaderSpan {
+    void* allocation=nullptr;
+public:
+    const char* data=nullptr;
+    explicit GuardedShaderHeaderSpan(const std::string& text)
+    {
+        SYSTEM_INFO info{}; GetSystemInfo(&info);
+        require_batch(text.size()<=info.dwPageSize,"F171: guarded header fits the input page");
+        allocation=VirtualAlloc(nullptr,2*info.dwPageSize,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+        require_batch(allocation!=nullptr,"F171: allocate guarded source span");
+        auto* end=static_cast<char*>(allocation)+info.dwPageSize; DWORD previous=0;
+        if(!VirtualProtect(end,info.dwPageSize,PAGE_NOACCESS,&previous)) {
+            VirtualFree(allocation,0,MEM_RELEASE); allocation=nullptr; throw std::runtime_error("F171: inaccessible end-of-span page");
+        }
+        data=end-text.size();
+        if(!text.empty()) std::memcpy(const_cast<char*>(data),text.data(),text.size());
+    }
+    ~GuardedShaderHeaderSpan() {if(allocation) VirtualFree(allocation,0,MEM_RELEASE);}
+};
+
+void exercise_shader_header_files(const std::filesystem::path& root)
+{
+    using Microsoft::WRL::ComPtr;
+    const std::pair<std::string,std::wstring> headers[] = {{"",L""},{"one line",L"one line"},{"first\nsecond",L"first"},
+        {"\nnext",L""},{"first\r\nnext",L"first\r"},{"\xe4\xb8\xad\xe6\x96\x87",L"\u4e2d\u6587"},
+        {"\xf0\x9f\x98\x80",L"\U0001f600"},{"\xef\xbb\xbfheader",L"\ufeffheader"},
+        {std::string(1,static_cast<char>(0xff)),L""},{"prefix\xe4\xb8",L""},{"\xc0\xaf",L""},
+        {std::string("good\n")+static_cast<char>(0xff),L"good"}};
+    for(const auto& entry:headers) {
+        GuardedShaderHeaderSpan span(entry.first);
+        require_batch(ReadShaderHeaderLine(span.data,entry.first.size())==entry.second,"F171: exact guard-page boundary and complete UTF-8 header decoding");
+    }
+    require_batch(ReadShaderHeaderLine(nullptr,0).empty(),"F171: null empty spans require no read");
+    BatchDevice device;
+    const char original_source[]="float4 main():SV_Target{return float4(1,0,0,1);}";
+    const std::string replacement="float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}";
+    ComPtr<ID3DBlob> original,errors;
+    require_batch(SUCCEEDED(native_compile_audit(original_source,sizeof(original_source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&original,&errors)),
+        "F171: actual original shader for replacement header paths");
+    const auto hash=fnv_64_buf(original->GetBufferPointer(),original->GetBufferSize());
+    wchar_t filename[64]{}; swprintf_s(filename,L"%016llx-ps_replace.txt",hash);
+    const auto path=root/L"fixes"/filename;
+    const auto write=[&](const std::filesystem::path& target,const std::string& text) {
+        std::ofstream output(target,std::ios::binary|std::ios::trunc);
+        output.write(text.data(),text.size()); output.close();
+        require_batch(output.good(),"F171: complete bounded source file fixture");
+    };
+    const auto invoke_hlsl=[&](const std::string& source,const std::wstring& expected_header,bool success) {
+        write(path,source);
+        char* result=nullptr; SIZE_T size=0; std::string model; FILETIME time{}; std::wstring header=L"stale";
+        const bool loaded=ReplaceHLSLShader(hash,L"ps",original->GetBufferPointer(),original->GetBufferSize(),nullptr,result,size,model,time,header);
+        std::unique_ptr<char[]> owned(result);
+        require_batch(loaded==success && header==expected_header,"F171: HLSL header respects actual source bounds and encoding failure policy");
+        if(success) {
+            ComPtr<ID3D11PixelShader> accepted;
+            require_batch(result && size && SUCCEEDED(device.native->CreatePixelShader(result,size,nullptr,&accepted)),
+                "F171: metadata handling preserves successful replacement shader bytes");
+        } else require_batch(!result,"F171: invalid HLSL still follows the original compile failure path");
+    };
+    std::fputs("F171: valid one-line HLSL has neither newline nor an allocated NUL sentinel\n",stderr); std::fflush(stderr);
+    invoke_hlsl(replacement,std::wstring(replacement.begin(),replacement.end()),true);
+    invoke_hlsl("// \xe4\xb8\xad\xe6\x96\x87\r\n"+replacement,L"// \u4e2d\u6587\r",true);
+    invoke_hlsl(std::string("// ")+static_cast<char>(0xff)+"\n"+replacement,L"",true);
+    invoke_hlsl("",L"",false);
+    write(path,replacement);
+    for(const auto fault:{HeaderInputFault::ReadFailure,HeaderInputFault::ShortRead,HeaderInputFault::TimestampFailure}) {
+        char* result=nullptr; SIZE_T size=0; std::string model; FILETIME time{}; std::wstring header;
+        bool loaded=false;
+        {
+            HeaderInputFailureScope input(fault); DiagnosticCompileScope compiler;
+            loaded=ReplaceHLSLShader(hash,L"ps",original->GetBufferPointer(),original->GetBufferSize(),nullptr,result,size,model,time,header);
+            require_batch(header_read_calls==1,"F171: fault injection reached the actual Win32 read call");
+            if(fault!=HeaderInputFault::TimestampFailure)
+                require_batch(!loaded && !result && diagnostic_compile_calls==0,"F171: failed or partial source is rejected before header decoding and compilation");
+            else require_batch(loaded && result && header_time_calls==1 && diagnostic_compile_calls==1 &&
+                !time.dwLowDateTime && !time.dwHighDateTime && header==std::wstring(replacement.begin(),replacement.end()),
+                "F171: unavailable timestamp remains zero and preserves successfully read/compiled source");
+        }
+        std::unique_ptr<char[]> owned_result(result);
+    }
+    require_batch(std::filesystem::remove(path),"F171: retire only this fixture's HLSL input before the ASM path");
+    ComPtr<ID3DBlob> assembly;
+    require_batch(SUCCEEDED(D3DDisassemble(original->GetBufferPointer(),original->GetBufferSize(),0,nullptr,&assembly)),"F171: actual native assembly fixture");
+    std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
+    text=std::string("// ")+static_cast<char>(0xff)+"\n"+text;
+    wchar_t asm_name[64]{}; swprintf_s(asm_name,L"%016llx-ps.txt",hash);
+    write(root/L"fixes"/asm_name,text);
+    char* assembled=nullptr; SIZE_T assembled_size=0; std::string model; FILETIME time{}; std::wstring header=L"stale";
+    const bool loaded=ReplaceASMShader(hash,L"ps",original->GetBufferPointer(),original->GetBufferSize(),assembled,assembled_size,model,time,header);
+    std::unique_ptr<char[]> owned(assembled); ComPtr<ID3D11PixelShader> accepted;
+    require_batch(loaded && header.empty() && assembled && SUCCEEDED(device.native->CreatePixelShader(assembled,assembled_size,nullptr,&accepted)),
+        "F171: an invalid optional ASM comment header cannot discard a successful assembly");
+    for(const auto fault:{HeaderInputFault::ReadFailure,HeaderInputFault::ShortRead,HeaderInputFault::TimestampFailure}) {
+        char* result=nullptr; SIZE_T size=0; std::string result_model; FILETIME stamp{}; std::wstring result_header;
+        bool succeeded=false;
+        {
+            HeaderInputFailureScope input(fault);
+            succeeded=ReplaceASMShader(hash,L"ps",original->GetBufferPointer(),original->GetBufferSize(),result,size,result_model,stamp,result_header);
+            require_batch(header_read_calls==1,"F171: actual ASM source read is inside the fault boundary");
+            if(fault!=HeaderInputFault::TimestampFailure) require_batch(!succeeded && !result,"F171: incomplete ASM input is rejected before parsing");
+            else require_batch(succeeded && result && header_time_calls==1 && !stamp.dwLowDateTime && !stamp.dwHighDateTime,
+                "F171: successful ASM survives optional timestamp failure");
+        }
+        std::unique_ptr<char[]> owned_result(result);
+    }
+    require_batch(std::filesystem::remove(root/L"fixes"/asm_name),"F171: retire owned ASM input before exercising HLSL reload");
+    test_dx11_reload_header_file_regression(root/L"fixes",original.Get());
+}
+void initialize_shader_header_files() {with_dx11_audit_shader_files(exercise_shader_header_files);}
+}
+
+void test_dx11_shader_header_file_regression()
+{
+    with_dx11_audit_hunting_configuration(initialize_shader_header_files);
 }

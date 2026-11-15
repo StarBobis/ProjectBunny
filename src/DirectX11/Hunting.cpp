@@ -1,5 +1,6 @@
 #include "ComScope.h"
 #include "Hunting.h"
+#include "ShaderHeader.h"
 
 #include <string>
 #include <sstream>
@@ -640,8 +641,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 
 	// For success, let's add the first line of text from the file to the OriginalShaderInfo,
 	// so the ShaderHacker can edit the line and reload and have it live.
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-	headerLine = utf8_to_utf16.from_bytes(srcData.data(), strchr(srcData.data(), '\n'));
+	headerLine = ReadShaderHeaderLine(srcData.data(), srcData.size());
 
 	// pCode on return == NULL for error cases, valid if made it this far.
 	*pCode = pByteCode;

@@ -48,6 +48,7 @@ void test_dx11_shader_tool_read_regression();
 void test_dx11_shader_tool_write_regression();
 void test_dx11_automatic_draw_count_regression();
 void test_dx11_shader_hash_miss_regression();
+void test_dx11_shader_header_file_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -541,6 +542,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-155", test_dx11_automatic_draw_count_regression},
     {"F-169", test_f169},
     {"F-170", test_dx11_shader_hash_miss_regression},
+    {"F-171", test_dx11_shader_header_file_regression},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
