@@ -7,6 +7,10 @@
 #include <iterator>
 #include "D3D_Shaders/stdafx.h"
 
+#ifdef DX11_AUDIT_ASAN_LOCKS
+void test_dx11_lock_cleanup_regression();
+#endif
+
 namespace {
 using namespace dx11_slot_test;
 
@@ -203,7 +207,11 @@ void test_f114()
 }
 
 struct AuditCase { const char* id; void (*run)(); };
-const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114}};
+const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
+#ifdef DX11_AUDIT_ASAN_LOCKS
+    {"F-115", test_dx11_lock_cleanup_regression},
+#endif
+};
 }
 
 bool test_dx11_audit_item(const char* id)

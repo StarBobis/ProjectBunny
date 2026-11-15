@@ -435,12 +435,16 @@ static void DeleteCriticalSectionHook(CRITICAL_SECTION *lock)
 {
 	// If a TLS structure hasn't been allocated yet for this thread, we
 	// might be in the TLS allocation itself!
-	if (!TlsGetValue(tls_idx))
+	if (!TlsGetValue(tls_idx)) {
+		_DeleteCriticalSection(lock);
 		return;
+	}
 
 	// Protect against reentrancy:
-	if (get_tls()->hooking_quirk_protection)
+	if (get_tls()->hooking_quirk_protection) {
+		_DeleteCriticalSection(lock);
 		return;
+	}
 	get_tls()->hooking_quirk_protection = true;
 
 	// Purge the lock from our data structures:
@@ -455,8 +459,8 @@ static void DeleteCriticalSectionHook(CRITICAL_SECTION *lock)
 		next++;
 		for (auto &info: stack->second) {
 			if (info.lock == lock) {
-				next = cached_stacks.erase(stack);
 				reported_stacks.erase(stack->first);
+				next = cached_stacks.erase(stack);
 				break;
 			}
 		}

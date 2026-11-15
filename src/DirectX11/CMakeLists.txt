@@ -143,11 +143,26 @@ set_target_msvc_options(DirectX11)
 set_target_common_definitions(DirectX11)
 
 if(BUILD_TESTING)
+    option(DX11_AUDIT_ASAN_LOCKS "Instrument lock cleanup in the regression host with AddressSanitizer" OFF)
     configure_file(tests/data/wic.png wic-regression.png COPYONLY)
     # Exercise the real parser/globals/resource lifecycle without exporting test
     # hooks from d3d11.dll or replacing production dependencies with mocks.
     get_target_property(DX11_REGRESSION_SOURCES DirectX11 SOURCES)
     list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "\\.(def|rc)$")
+    if(DX11_AUDIT_ASAN_LOCKS)
+        if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+            message(FATAL_ERROR "DX11_AUDIT_ASAN_LOCKS requires MSVC x64 with AddressSanitizer.")
+        endif()
+        # Include the unchanged production implementation in its test TU so its
+        # private cleanup state is observable; do not compile a second copy.
+        list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)lock\\.cpp$")
+        list(APPEND DX11_REGRESSION_SOURCES tests/lock_audit_regression.cpp)
+        set_source_files_properties(tests/lock_audit_regression.cpp PROPERTIES
+            OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/lock.cpp"
+            COMPILE_OPTIONS "/GL-;/fsanitize=address;/Zi"
+            # Match uninstrumented STL libraries; heap UAF detection stays on.
+            COMPILE_DEFINITIONS "_DISABLE_VECTOR_ANNOTATION;_DISABLE_STRING_ANNOTATION")
+    endif()
     add_executable(dx11_upstream_regression
         ${DX11_REGRESSION_SOURCES}
         tests/upstream_regression.cpp
@@ -252,6 +267,9 @@ if(BUILD_TESTING)
     target_link_libraries(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,LINK_LIBRARIES>>)
     target_compile_features(dx11_upstream_regression PRIVATE cxx_std_17)
+    if(DX11_AUDIT_ASAN_LOCKS)
+        target_compile_definitions(dx11_upstream_regression PRIVATE DX11_AUDIT_ASAN_LOCKS=1)
+    endif()
     set_target_msvc_options(dx11_upstream_regression)
     set_target_common_definitions(dx11_upstream_regression)
     add_dependencies(dx11_upstream_regression DirectX11 dx11_version_header)

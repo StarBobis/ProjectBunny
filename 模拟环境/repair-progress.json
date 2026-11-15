@@ -22,6 +22,13 @@
       "summary": "全flag声明缺名字走既有非法变量诊断而非空指针；专项覆盖解析与重载，真实DLL额外验证后续合法全局/持久变量上传值为7和9。",
       "evidence": "validation/F-114.json",
       "commitLookup": "git log --fixed-strings --grep=F-114"
+    },
+    {
+      "id": "F-115",
+      "status": "validated-in-simulator",
+      "summary": "ASan复现并消除锁缓存节点释放后读取；在erase前移除报告键，无TLS/重入路径仍调用真实DeleteCriticalSection，其他锁钩子策略保持原样。",
+      "evidence": "validation/F-115.json",
+      "commitLookup": "git log --fixed-strings --grep=F-115"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
