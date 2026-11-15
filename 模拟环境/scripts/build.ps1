@@ -41,7 +41,7 @@ if ($BuildBusiness) {
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $pythonPath)) { throw 'Python 3.11 is required for the existing version-generator regression.' }
     $sourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'src'),(Join-Path $repositoryRoot 'cmake') -Recurse -File)
     $sourceFiles += Get-ChildItem -LiteralPath (Join-Path $simulationRoot 'src'),(Join-Path $simulationRoot 'scripts') -Recurse -File
-    $sourceFiles += Get-Item -LiteralPath (Join-Path $repositoryRoot 'CMakeLists.txt'),(Join-Path $repositoryRoot 'scripts\build_release_dx11_x64.ps1'),(Join-Path $repositoryRoot 'scripts\test-dx11-version.py'),(Join-Path $simulationRoot 'CMakeLists.txt'),(Join-Path $simulationRoot 'business-overlay.cmake')
+    $sourceFiles += Get-Item -LiteralPath (Join-Path $repositoryRoot 'CMakeLists.txt'),(Join-Path $repositoryRoot 'scripts\build_release_dx11_x64.ps1'),(Join-Path $repositoryRoot 'scripts\test-dx11-version.py'),(Join-Path $repositoryRoot 'scripts\test-dx11-version-reader.py'),(Join-Path $simulationRoot 'CMakeLists.txt'),(Join-Path $simulationRoot 'business-overlay.cmake')
     $sourceSnapshot = @($sourceFiles | Sort-Object FullName | ForEach-Object {
         [pscustomobject]@{path=[IO.Path]::GetRelativePath($repositoryRoot,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}
     })

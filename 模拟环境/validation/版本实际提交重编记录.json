@@ -1,0 +1,13 @@
+{
+  "cxx": 3,
+  "rc": 2,
+  "steps": [
+    "[2/8] Building CXX object src\\DirectX11\\CMakeFiles\\DirectX11.dir\\DX11Version.cpp.obj",
+    "[3/8] Building RC object src\\DirectX11\\CMakeFiles\\DirectX11.dir\\DirectX11.rc.res",
+    "[4/8] Linking CXX shared library src\\DirectX11\\d3d11.dll",
+    "[5/8] Building CXX object src\\DirectX11\\CMakeFiles\\dx11_upstream_regression.dir\\DX11Version.cpp.obj",
+    "[6/8] Building RC object src\\DirectX11\\CMakeFiles\\dx11_upstream_regression.dir\\DirectX11.rc.res",
+    "[7/8] Building CXX object src\\DirectX11\\CMakeFiles\\dx11_upstream_regression.dir\\tests\\dx11_version_regression.cpp.obj",
+    "[8/8] Linking CXX executable src\\DirectX11\\dx11_upstream_regression.exe"
+  ]
+}

@@ -136,7 +136,19 @@
   "dependencyEvidence": "validation/版本头依赖输出.json",
   "reviewer": "/root/adversarial_v2",
   "independentSpecial": "build/w/r/模拟环境/build/adversarial-infra-dx11-version/result.json",
-  "actualGitChangeRebuild": "pending next build after this commit",
+  "actualGitChangeRebuild": {
+    "dependencyChangeCommit": "42a19022419c2681a2d8f96a5c25833d61895d63",
+    "actualRecompiledCxx": 3,
+    "actualRecompiledRc": 2,
+    "record": "validation/版本实际提交重编记录.json",
+    "log": "validation/版本实际提交重编记录.log",
+    "firstPostCommitFull": "build/f/da3a6aad475e/results.json",
+    "firstPostCommitResult": "FAIL: independent Python reader PermissionError",
+    "subsequentFull": "build/f/c8c98fc19636/results.json",
+    "subsequentFullResult": "PASS all seven stages with F272 integrated",
+    "readerCorrectedFull": "build/f/557578518ce2/results.json",
+    "readerCorrectedFullResult": "PASS all seven stages with companion snapshot and unchanged deadlines"
+  },
   "performanceScope": "Dependency count only; no elapsed-time or FPS claim",
   "targetGameValidated": false
 }
