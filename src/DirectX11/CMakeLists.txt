@@ -182,6 +182,7 @@ if(BUILD_TESTING)
     add_executable(dx11_upstream_regression
         ${DX11_REGRESSION_SOURCES}
         tests/upstream_regression.cpp
+        tests/regression_isolation.cpp
         tests/audit_regressions.cpp
         tests/audit_dx9_regression.cpp
         tests/shader_ownership_audit.cpp

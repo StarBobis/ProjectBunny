@@ -946,6 +946,8 @@ void test_dx11_slot_range_numeric_regression();
 
 bool test_dx11_audit_item(const char* id);
 void test_dx11_audit_regressions();
+int run_dx11_regression_isolated(int argc, char** argv);
+int exit_dx11_regression_fixture();
 
 // The regression host embeds production sources rather than loading their
 // DllMain. Supply the same real TLS initialization before exercising Present.
@@ -968,6 +970,13 @@ public:
 int main(int argc, char** argv)
 {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    // The simulator already gives each process a private EXE/DLL directory.
+    // Ordinary direct/CTest invocations acquire the same isolation here.
+    if (argc < 2 || std::strcmp(argv[argc - 1], "--fixture-isolated"))
+        return run_dx11_regression_isolated(argc, argv);
+    --argc;
+    if (argc == 2 && !std::strcmp(argv[1], "--fixture-exit-test"))
+        return exit_dx11_regression_fixture();
     const char* audit_item = nullptr;
     if (argc == 3 && !std::strcmp(argv[1], "--audit-item")) audit_item = argv[2];
     else if (!(argc == 1 || (argc == 2 && !std::strcmp(argv[1], "--full")))) {

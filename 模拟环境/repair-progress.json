@@ -127,6 +127,13 @@
       "summary": "按成功转换数和对应消费长度解析数值flags；仅省略mask时设全1，显式mask含零值保持原值，初始化扫描长度。真实FuzzyMatch验证部分/完整mask、命名正负flags及三个实际枚举表，缺项尾随垃圾拒绝，专项与全流程通过。",
       "evidence": "validation/F-187.json",
       "commitLookup": "git log --fixed-strings --grep=F-187"
+    },
+    {
+      "id": "F-202",
+      "status": "validated-in-simulator",
+      "summary": "原回归程序普通/CTest入口分配独立EXE、DLL、d3dx.ini目录；父进程按受控绝对路径清理，job约束子进程寿命。两实例实际INI加载、std::exit(37)遗留清理与原配置哈希保护通过；全流程及原CTest完整入口通过。",
+      "evidence": "validation/F-202.json",
+      "commitLookup": "git log --fixed-strings --grep=F-202"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

@@ -33,7 +33,7 @@ foreach($mode in @('special','business')) {
         Copy-Item -LiteralPath $path -Destination $caseRoot
     }
     $exe=Join-Path $caseRoot 'dx11_upstream_regression.exe'
-    $arguments=if($mode -eq 'special'){@('--audit-item',$Item)}else{@('--full')}
+    $arguments=if($mode -eq 'special'){@('--audit-item',$Item,'--fixture-isolated')}else{@('--full','--fixture-isolated')}
     if($mode -eq 'special' -and $Item -eq 'F-152') {
         $exe=(Get-Process -Id $PID).Path
         $specialComponentPointer=Join-Path $caseRoot 'component-report-path.txt'
@@ -42,6 +42,10 @@ foreach($mode in @('special','business')) {
     if($mode -eq 'special' -and $Item -eq 'F-178') {
         $exe=(Get-Process -Id $PID).Path
         $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-SpecialItem',$Item)
+    }
+    if($mode -eq 'special' -and $Item -eq 'F-202') {
+        $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-fixture-isolation.ps1'),'-Executable',$exe)
+        $exe=(Get-Process -Id $PID).Path
     }
     $result=Invoke-IsolatedSimulationProcess -Executable $exe -Arguments $arguments -WorkingDirectory $caseRoot -LogPrefix (Join-Path $caseRoot 'host') -TimeoutMs $TimeoutMs -EnvironmentOverrides @{ASAN_OPTIONS='halt_on_error=1:alloc_dealloc_mismatch=1:new_delete_type_mismatch=1'}
     if($mode -eq 'special' -and $Item -eq 'F-152' -and (Test-Path -LiteralPath $specialComponentPointer)) {
