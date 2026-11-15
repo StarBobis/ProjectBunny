@@ -336,6 +336,7 @@ if(BUILD_TESTING)
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
+        tests/profiling_legacy_regression.cpp
         tests/dx11_version_regression.cpp
         tests/dx11_version_fallback_regression.cpp
     )

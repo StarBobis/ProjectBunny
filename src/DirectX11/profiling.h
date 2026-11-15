@@ -24,35 +24,23 @@ namespace Profiling {
 		void clear();
 	};
 
+    using CollectionToken = std::shared_ptr<const void>;
 	struct State {
 		LARGE_INTEGER start_time = {};
         bool started = false;
+        CollectionToken collection{};
 	};
 
-	static inline void start(State *state)
-	{
-		QueryPerformanceCounter(&state->start_time);
-        state->started = true;
-	}
+    void start(State *state);
+    void end(State *state, Overhead *overhead);
 
-	static inline void end(State *state, Profiling::Overhead *overhead)
-	{
-		LARGE_INTEGER end_time;
-        if (!state->started) return;
-        state->started = false;
-
-		QueryPerformanceCounter(&end_time);
-		overhead->cpu.QuadPart += end_time.QuadPart - state->start_time.QuadPart;
-	}
-
-    using CollectionToken = std::shared_ptr<const void>;
     CollectionToken GetCollectionToken();
     bool IsCurrentCollection(const CollectionToken& token);
 
     // Completed samples belong to the window and mode observed at entry.
     class Sample {
         Overhead* overhead_;
-        State state_{};
+        LARGE_INTEGER start_time_{};
         CollectionToken token_;
         bool active_ = false;
         bool count_;

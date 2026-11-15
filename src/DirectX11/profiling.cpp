@@ -70,12 +70,31 @@ bool Profiling::IsCurrentCollection(const CollectionToken& token)
     return token == collection_token;
 }
 
+void Profiling::start(State* state)
+{
+    state->collection = GetCollectionToken();
+    QueryPerformanceCounter(&state->start_time);
+    state->started = true;
+}
+
+void Profiling::end(State* state, Overhead* overhead)
+{
+    if (!state->started) return;
+    state->started = false;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    auto token = std::move(state->collection);
+    std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+    if (token != collection_token) return;
+    overhead->cpu.QuadPart += now.QuadPart - state->start_time.QuadPart;
+}
+
 Profiling::Sample::Sample(Overhead& overhead, bool count) : overhead_(&overhead), count_(count)
 {
     if (mode.load(std::memory_order_relaxed) == Mode::SUMMARY) {
         token_ = GetCollectionToken();
         active_ = true;
-        start(&state_);
+        QueryPerformanceCounter(&start_time_);
     }
 }
 
@@ -89,7 +108,7 @@ void Profiling::Sample::Finish(bool hit) noexcept
     QueryPerformanceCounter(&now);
     std::lock_guard<std::mutex> lock(profiling_samples_mutex);
     if (token_ != collection_token) return;
-    overhead_->cpu.QuadPart += now.QuadPart - state_.start_time.QuadPart;
+    overhead_->cpu.QuadPart += now.QuadPart - start_time_.QuadPart;
     if (count_) {
         ++overhead_->count;
         if (hit) ++overhead_->hits;

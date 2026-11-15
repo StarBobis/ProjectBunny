@@ -472,6 +472,13 @@
       "summary": "DllMain目标验证读取先用64位GetFileSizeEx检查完整尺寸及DWORD单次读取/终NUL容量，改HeapAlloc/HeapFree避免new异常穿过DllMain；保留准入/loader/profile早放行策略。真实稀疏INI旧DLL误放行、新DLL拒绝1114；正常/无EOL/empty、尺寸/分配/短读/关闭计数专项、主线25+10全流程及独立审查通过。",
       "evidence": "validation/F-163.json",
       "commitLookup": "git log --fixed-strings --grep=F-163"
+    },
+    {
+      "id": "F-196",
+      "status": "validated-in-simulator",
+      "summary": "legacy profiling start/end复用既有collection token与samples mutex，旧窗口end在触碰Overhead前丢弃；QPC起止不包含新增锁/token开销，Sample独立起点避免重复捕获。确定红、normal/idle/double-end/嵌套/复用/mode/clear先后/Finish专项、主线25+10全流程及独立审查通过。仅统计协议对齐，既有clear两段夹缝未原子化，不宣称渲染或性能收益。",
+      "evidence": "validation/F-196.json",
+      "commitLookup": "git log --fixed-strings --grep=F-196"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
