@@ -50,6 +50,13 @@
       "summary": "第二动态索引使用自己的sAdd2编码；专项核对不同偏移、各自为零、固定索引及完整token字段，完整业务和16项DLL集成通过。",
       "evidence": "validation/F-140.json",
       "commitLookup": "git log --fixed-strings --grep=F-140"
+    },
+    {
+      "id": "F-144",
+      "status": "validated-in-simulator",
+      "summary": "按插值关键字实际消费数量验证输入/系统值操作数，避免vector越界；保留全部7种插值模式、无模式旧格式和d3dcompiler46/47的SGV形式，完整测试通过。",
+      "evidence": "validation/F-144.json",
+      "commitLookup": "git log --fixed-strings --grep=F-144"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

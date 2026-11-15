@@ -1264,28 +1264,34 @@ static void assembleSystemValue(string *sv, vector<DWORD> *os)
 	// otherwise we might generate a corrupt shader and crash DirectX.
 }
 
-static int interpolationMode(vector<string> &w, int def)
+static int interpolationMode(const vector<string> &w, int def, size_t required_operands)
 {
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/dn280473(v=vs.85).aspx
-
-	if (w[1] == "constant")
-		return 1;
-	if (w[1] != "linear")
-		return def;
-
-	if (w[2] == "noperspective") {
-		if (w[3] == "sample")
-			return 7;
-		if (w[3] == "centroid")
-			return 5;
-		return 4;
+	int mode = def;
+	size_t first_operand = 1;
+	if (w.size() > 1 && w[1] == "constant") {
+		mode = 1;
+		first_operand = 2;
+	} else if (w.size() > 1 && w[1] == "linear") {
+		mode = 2;
+		first_operand = 2;
+		if (w.size() > 2 && w[2] == "noperspective") {
+			mode = 4;
+			first_operand = 3;
+			if (w.size() > 3 && (w[3] == "sample" || w[3] == "centroid")) {
+				mode = w[3] == "sample" ? 7 : 5;
+				first_operand = 4;
+			}
+		} else if (w.size() > 2 && (w[2] == "centroid" || w[2] == "sample")) {
+			mode = w[2] == "centroid" ? 3 : 6;
+			first_operand = 3;
+		}
 	}
-	if (w[2] == "centroid")
-		return 3;
-	if (w[2] == "sample")
-		return 6;
-
-	return 2;
+	// Legacy declarations may omit the mode. System-value forms additionally
+	// require the semantic token after the input register.
+	if (w.size() < first_operand + required_operands)
+		throw AssemblerParseError(w.empty() ? "" : w[0], "Missing input or system-value operand in declaration");
+	return mode;
 }
 
 static unsigned parseSyncFlags(string *w)
@@ -2031,7 +2037,7 @@ static vector<DWORD> assembleIns(string s)
 		ins->opcode = 0x62;
 		// Switched to use common interpolation mode parsing to catch
 		// more variants -DarkStarSword
-		ins->_11_23 = interpolationMode(w, 0); // FIXME: Default?
+		ins->_11_23 = interpolationMode(w, 0, 1); // FIXME: Default?
 		os = assembleOp(w[w.size() - 1], true);
 		ins->length = 1 + os.size();
 		v.push_back(op);
@@ -2046,7 +2052,7 @@ static vector<DWORD> assembleIns(string s)
 		check_num_ops(s, w, 2, 5);
 		vector<DWORD> os = assembleOp(w[w.size() - 2], true);
 		ins->opcode = 0x63;
-		ins->_11_23 = interpolationMode(w, 1);
+		ins->_11_23 = interpolationMode(w, 1, 2);
 		if (w.size() > 2)
 			assembleSystemValue(&w[w.size() - 1], &os);
 		ins->length = 1 + os.size();
@@ -2060,7 +2066,7 @@ static vector<DWORD> assembleIns(string s)
 		// system value parsing (fixes missing viewport_array_index)
 		//   -DarkStarSword
 		check_num_ops(s, w, 2, 5);
-		ins->_11_23 = interpolationMode(w, 0); // FIXME: Default?
+		ins->_11_23 = interpolationMode(w, 0, 2); // FIXME: Default?
 		os = assembleOp(w[w.size() - 2], true);
 		assembleSystemValue(&w[w.size() - 1], &os);
 		ins->length = 1 + os.size();

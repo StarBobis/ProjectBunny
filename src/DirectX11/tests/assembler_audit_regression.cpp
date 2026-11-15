@@ -9,6 +9,37 @@ void check_assembler_audit(bool condition, const char* message)
     if (!condition) throw std::runtime_error(message);
 }
 struct IndexAddends { unsigned first, second; };
+struct InterpolationCase { const char* text; unsigned mode; };
+}
+
+void test_dx11_assembler_interpolation_regression()
+{
+    const InterpolationCase valid[] = {
+        {"dcl_input_ps v0.xy", 0}, {"dcl_input_ps constant v0.x", 1},
+        {"dcl_input_ps linear v0.xy", 2}, {"dcl_input_ps linear centroid v0.xy", 3},
+        {"dcl_input_ps linear noperspective v0.xy", 4}, {"dcl_input_ps linear noperspective centroid v0.xy", 5},
+        {"dcl_input_ps linear sample v0.xy", 6}, {"dcl_input_ps linear noperspective sample v0.xy", 7},
+        {"dcl_input_ps_sgv v6.x, is_front_face", 1},
+        {"dcl_input_ps_sgv constant v6.x, is_front_face", 1},
+        {"dcl_input_ps_siv v0.xy, position", 0},
+        {"dcl_input_ps_siv linear noperspective sample v0.xy, position", 7}};
+    for (const auto& test : valid) {
+        const auto words = assembleIns(test.text);
+        check_assembler_audit(!words.empty(), "F144: valid declaration emits actual instruction tokens");
+        shader_ins instruction{}; instruction.op = words[0];
+        check_assembler_audit(instruction._11_23 == test.mode && instruction.length == words.size(),
+            "F144: valid/legacy interpolation modes and token lengths are preserved");
+    }
+    for (const char* invalid : {"dcl_input_ps linear", "dcl_input_ps", "dcl_input_ps constant",
+            "dcl_input_ps linear noperspective", "dcl_input_ps linear noperspective centroid",
+            "dcl_input_ps linear centroid", "dcl_input_ps linear sample",
+            "dcl_input_ps_sgv constant is_front_face", "dcl_input_ps_siv linear noperspective sample position"}) {
+        bool rejected = false;
+        std::fprintf(stderr, "F144: reject incomplete declaration: %s\n", invalid); std::fflush(stderr);
+        try { assembleIns(invalid); }
+        catch (const AssemblerParseError&) { rejected = true; }
+        check_assembler_audit(rejected, "F144: missing input/system-value operands use the real parse-error channel");
+    }
 }
 
 void test_dx11_assembler_double_index_regression()
