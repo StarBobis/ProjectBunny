@@ -1538,7 +1538,7 @@
       "originalSeverity": "medium",
       "evidence": "src/HLSLDecompiler/DecompileHLSL.cpp:6797-6834",
       "additionalEvidence": "src/BinaryDecompiler/internal_includes/structs.h:253-257; src/BinaryDecompiler/reflect.cpp:850-866",
-      "correctedConclusion": "Decompile成功Decode后异常漏Shader及反射数组；Shader析构只delete sInfo，FreeShaderInfo才delete各反射数组。默认unique_ptr<Shader>不能完成嵌套清理，应自定义deleter/完整RAII并保护部分初始化失败。",
+      "correctedConclusion": "成功Decode后Decompile异常会漏Shader及反射数组；需FreeShaderInfo后delete，默认unique_ptr<Shader>不完成嵌套清理。已按此post-success范围修复；Decode内部部分初始化/未发布对象失败属F104/F101/F128，不能冒称本项已解决。",
       "executionGate": "先完成边界/ABI/清理或并发协议设计，接入组件DLL、故障注入/压力装置；证据齐备后才实施",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "pending"

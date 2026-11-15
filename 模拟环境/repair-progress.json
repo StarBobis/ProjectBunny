@@ -451,6 +451,13 @@
       "summary": "完整十进制解析dcl_temps并校验4096上限，临时分配与声明更新一并检查容量，拒绝无效token/超限且保持原文。旧4095读成409使活跃寄存器被复用，实际像素64/64/64/64替代96/159/223/255；新0→1、1→2、4095→4096及4096不分配、边界专项和主线25+10全流程通过，候选独立审查通过。",
       "evidence": "validation/F-297.json",
       "commitLookup": "git log --fixed-strings --grep=F-297"
+    },
+    {
+      "id": "F-283",
+      "status": "validated-in-simulator",
+      "summary": "成功Decode后立即由custom deleter接管Shader，按FreeShaderInfo→delete完整释放，正常释放时点保持，早退和后续C++异常各释放一次。正常/异常/签名早退各64次实际Decode/Free及nested数组、存活字节稳定和保留HLSL原生重编译专项、主线25+10全流程及独立候选/合并审查通过；Decode内部部分失败仍归F104。",
+      "evidence": "validation/F-283.json",
+      "commitLookup": "git log --fixed-strings --grep=F-283"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

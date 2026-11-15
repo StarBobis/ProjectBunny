@@ -1,6 +1,21 @@
 // Keep BinaryDecompiler's private token definitions separate from the SDK
 // headers in the WARP fixtures. This TU compiles the production decompiler once.
+#include "BinaryDecompiler/internal_includes/decode.h"
+#include "BinaryDecompiler/internal_includes/reflect.h"
+#include <cstdio>
+#include "log.h"
+namespace {
+Shader* decode_lifetime_audit(uint32_t*);
+void free_lifetime_audit(ShaderInfo*);
+std::string header_time_lifetime_audit();
+}
+#define DecodeDXBC decode_lifetime_audit
+#define FreeShaderInfo free_lifetime_audit
+#define LogTime header_time_lifetime_audit
 #include "../../HLSLDecompiler/DecompileHLSL.cpp"
+#undef LogTime
+#undef FreeShaderInfo
+#undef DecodeDXBC
 #include <cstring>
 #include <stdexcept>
 #include <malloc.h>
@@ -98,6 +113,107 @@ void test_dx11_dx9_binding_lifetime_regression()
     test_dx11_decompiler_public_literal_regression();
 }
 namespace {
+
+struct DecompilerLifetimeState {
+    bool enabled=false, throw_at_header=false, bad_release=false;
+    unsigned decoded=0, freed=0, faults=0, member_arrays=0;
+    ShaderInfo* current_info=nullptr;
+};
+DecompilerLifetimeState lifetime_state;
+
+unsigned member_array_count(const ShaderVarType& type) noexcept
+{
+    if (!type.Members) return 0;
+    unsigned count=1;
+    for (unsigned i=0; i<type.MemberCount; ++i) count+=member_array_count(type.Members[i]);
+    return count;
+}
+
+Shader* decode_lifetime_audit(uint32_t* data)
+{
+    Shader* shader=::DecodeDXBC(data);
+    if (lifetime_state.enabled && shader) {
+        ++lifetime_state.decoded;
+        lifetime_state.current_info=shader->sInfo;
+        for (unsigned i=0;i<shader->sInfo->ui32NumConstantBuffers;++i)
+            for (const auto& variable:shader->sInfo->psConstantBuffers[i].asVars)
+                lifetime_state.member_arrays+=member_array_count(variable.sType);
+    }
+    return shader;
+}
+
+void free_lifetime_audit(ShaderInfo* info)
+{
+    if (lifetime_state.enabled) {
+        ++lifetime_state.freed;
+        lifetime_state.bad_release|=info!=lifetime_state.current_info;
+        lifetime_state.current_info=nullptr;
+    }
+    ::FreeShaderInfo(info);
+    if (lifetime_state.enabled)
+        lifetime_state.bad_release|=info->psInputSignatures || info->psOutputSignatures || info->psPatchConstantSignatures ||
+            info->psResourceBindings || info->psConstantBuffers || info->psClassTypes || info->psClassInstances;
+}
+
+std::string header_time_lifetime_audit()
+{
+    if (lifetime_state.enabled && lifetime_state.throw_at_header) {
+        ++lifetime_state.faults;
+        throw std::runtime_error("F283 injected header failure after successful real Decode");
+    }
+    return ::LogTime();
+}
+
+size_t decompiler_live_bytes()
+{
+#ifdef DX11_AUDIT_ASAN_LOCKS
+    return __sanitizer_get_current_allocated_bytes();
+#else
+    size_t total=0;
+    _HEAPINFO entry{};
+    int status;
+    while ((status=_heapwalk(&entry))==_HEAPOK)
+        if (entry._useflag==_USEDENTRY) total+=entry._size;
+    check_literal_audit(status==_HEAPEND,"F283: inspect the complete CRT allocation set");
+    return total;
+#endif
+}
+
+class DecompilerLifetimeScope {
+public:
+    explicit DecompilerLifetimeScope(bool throw_at_header)
+    {
+        lifetime_state={}; lifetime_state.enabled=true; lifetime_state.throw_at_header=throw_at_header;
+    }
+    ~DecompilerLifetimeScope() { lifetime_state.enabled=false; }
+};
+
+void check_decompiler_lifetime(const void* bytecode,const std::string& assembly,bool throw_at_header,bool reject_signature)
+{
+    DecompilerSettings settings;
+    ParseParameters params{}; params.bytecode=bytecode; params.decompiled=assembly.c_str(); params.decompiledSize=assembly.size(); params.G=&settings;
+    DecompilerLifetimeScope scope(throw_at_header);
+    auto decompile=[&] {
+        bool patched=false,failed=false; std::string model;
+        const auto result=DecompileBinaryHLSL(params,patched,model,failed);
+        check_literal_audit(throw_at_header || reject_signature ? failed && result.empty() : !failed && !result.empty() && model=="ps_5_0",
+            "F283: the real public return and error contract survives normal and injected failures");
+    };
+    decompile(); // Exclude one-time runtime/logging initialization.
+    lifetime_state.decoded=lifetime_state.freed=lifetime_state.faults=lifetime_state.member_arrays=0;
+    const auto before=decompiler_live_bytes();
+    for (unsigned i=0;i<64;++i) decompile();
+    const auto after=decompiler_live_bytes();
+    lifetime_state.enabled=false;
+    std::fprintf(stderr,"F283 %s: live %zu -> %zu, decoded=%u freed=%u faults=%u nested-arrays=%u\n",
+        throw_at_header ? "post-decode exception" : reject_signature ? "signature early return" : "normal",
+        before,after,lifetime_state.decoded,lifetime_state.freed,lifetime_state.faults,lifetime_state.member_arrays);
+    check_literal_audit(before==after,"F283: successful Decode state and nested reflection storage must not survive a public call");
+    check_literal_audit(lifetime_state.decoded==64 && lifetime_state.freed==64 && lifetime_state.member_arrays>=128 &&
+        lifetime_state.faults==(throw_at_header ? 64u : 0u) && !lifetime_state.bad_release,
+        "F283: every successful real Decode with nested members is released once, including exception and early-return paths");
+}
+
 std::string swizzle_literal_audit(const char* left, const char* literal, bool use_int = false)
 {
     Decompiler decoder;
@@ -457,4 +573,31 @@ void test_dx11_decompiler_immediate_regression()
         check_literal_audit(decoder.mErrorOccurred && !std::strcmp(text,invalid),
             "F282: failed or partial immediate scan reports an error without publishing decoded replacements");
     }
+}
+
+void check_dx11_decompiler_lifetime(const void* bytecode,const char* assembly,size_t size)
+{
+    auto decode=[&] { return ::DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode))); };
+    auto destroy=[](Shader* shader) { ::FreeShaderInfo(shader->sInfo); delete shader; };
+    destroy(decode());
+    const auto before=decompiler_live_bytes();
+    Shader* shader=decode();
+    unsigned nested=0;
+    for (unsigned i=0;i<shader->sInfo->ui32NumConstantBuffers;++i)
+        for (const auto& variable:shader->sInfo->psConstantBuffers[i].asVars) nested+=member_array_count(variable.sType);
+    const auto during=decompiler_live_bytes();
+    destroy(shader);
+    const auto after=decompiler_live_bytes();
+    check_literal_audit(nested>=2 && during>before+sizeof(Shader)+sizeof(ShaderInfo) && after==before,
+        "F283: allocation observation sees real Shader, ShaderInfo and nested native reflection allocations and release");
+    const std::string text(assembly,size);
+    check_decompiler_lifetime(bytecode,text,false,false);
+    check_decompiler_lifetime(bytecode,text,true,false);
+    auto invalid=text;
+    const auto row=invalid.find("// SV_Target");
+    check_literal_audit(row!=std::string::npos,"F283: real native output row is available for early-return injection");
+    const auto end=invalid.find('\n',row);
+    check_literal_audit(end!=std::string::npos,"F283: native output row has its terminator");
+    invalid.replace(row,end-row,"// unrecognized output");
+    check_decompiler_lifetime(bytecode,invalid,false,true);
 }

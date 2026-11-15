@@ -6944,6 +6944,17 @@ public:
 	}
 };
 
+namespace {
+struct DecompiledShaderDeleter
+{
+	void operator()(Shader *shader) const noexcept
+	{
+		FreeShaderInfo(shader->sInfo);
+		delete shader;
+	}
+};
+}
+
 const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::string &shaderModel, bool &errorOccurred)
 {
 	Decompiler d;
@@ -6970,6 +6981,7 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 	{
 		Shader *shader = DecodeDXBC((uint32_t*)params.bytecode);
 		if (!shader) return string();
+		std::unique_ptr<Shader, DecompiledShaderDeleter> shaderOwner(shader);
 
 		if (shader->dx9Shader)
 		{
@@ -6988,8 +7000,6 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 		if (!d.ParseOutputSignature(params.decompiled, params.decompiledSize, shader->dx9Shader))
 		{
 			errorOccurred = true;
-			FreeShaderInfo(shader->sInfo);
-			delete shader;
 			return string();
 		}
 		if (!params.ZeroOutput)
@@ -7006,8 +7016,7 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 
 		shaderModel = d.mShaderType;
 		errorOccurred = d.mErrorOccurred;
-		FreeShaderInfo(shader->sInfo);
-		delete shader;
+		shaderOwner.reset();
 		patched = d.mPatched;
 		return string(d.mOutput.begin(), d.mOutput.end());
 	}

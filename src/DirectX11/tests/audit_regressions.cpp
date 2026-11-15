@@ -54,6 +54,8 @@ void test_dx11_decompiler_suffix_regression();
 void test_dx11_decompiler_texture_literal_regression();
 void test_dx11_shader_regex_declaration_regression();
 void test_dx11_shader_regex_temp_count_regression();
+void check_dx11_decompiler_lifetime(const void*,const char*,size_t);
+void test_dx11_decompiler_lifetime_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
@@ -686,6 +688,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-282", test_dx11_decompiler_immediate_regression},
     {"F-296", test_dx11_shader_regex_declaration_regression},
     {"F-297", test_dx11_shader_regex_temp_count_regression},
+    {"F-283", test_dx11_decompiler_lifetime_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -1267,4 +1270,34 @@ void test_dx11_dx9_sampler_dimension_regression()
         check_dx11_dx9_sampler_dimension(code->GetBufferPointer(),static_cast<unsigned>(fixture.second));
     }
     test_dx11_decompiler_public_literal_regression();
+}
+
+void test_dx11_decompiler_lifetime_regression()
+{
+    using namespace dx11_slot_test;
+    const char source[]="struct Inner{float4 color;};struct Outer{Inner nested;};cbuffer Params:register(b0){Outer data;}"
+        "float4 main():SV_Target{return data.nested.color;}";
+    ComPtr<ID3DBlob> code,errors,assembly;
+    require_batch(SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)) &&
+        SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&assembly)),
+        "F283: native compiler/disassembler generate genuine nested-structure reflection input");
+    const std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
+    DecompilerSettings settings;
+    ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.decompiled=text.c_str(); params.decompiledSize=text.size(); params.G=&settings;
+    bool patched=false,failed=false; std::string model;
+    const auto retained=DecompileBinaryHLSL(params,patched,model,failed);
+    require_batch(!failed && !retained.empty() && model=="ps_5_0","F283: normal native fixture decompiles before lifetime probes");
+    ComPtr<ID3DBlob> rebuilt;
+    auto compiled=D3DCompile(retained.data(),retained.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors);
+    if (FAILED(compiled)) std::fprintf(stderr,"F283 regenerated HLSL:\n%s\n%s\n",retained.c_str(),errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no diagnostic");
+    require_batch(SUCCEEDED(compiled),"F283: nested fixture's existing normal output is valid native HLSL");
+    check_dx11_decompiler_lifetime(code->GetBufferPointer(),text.data(),text.size());
+    rebuilt.Reset(); errors.Reset();
+    require_batch(SUCCEEDED(D3DCompile(retained.data(),retained.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors)),
+        "F283: returned HLSL remains independently usable after repeated real Decode and destruction");
+    BatchDevice device; ComPtr<ID3D11PixelShader> original,replacement;
+    require_batch(SUCCEEDED(device.native->CreatePixelShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&original)) &&
+        SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),nullptr,&replacement)),
+        "F283: native WARP accepts original and retained/recompiled output shaders");
+    test_dx11_decompiler_public_signature_regression();
 }
