@@ -2411,8 +2411,10 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 					LeaveCriticalSection(&G->mCriticalSection);
 				}
 			}
-			else
+			else {
+				*currentShaderHash = 0;
 				LogDebug("  shader %p not found\n", pShader);
+			}
 		} else {
 			// Not accurate, but if we have a bug where we
 			// reference this at least make sure we don't use the

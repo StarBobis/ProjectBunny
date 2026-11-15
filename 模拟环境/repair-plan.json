@@ -929,7 +929,7 @@
       "additionalEvidence": null,
       "correctedConclusion": "shader查表失败不清旧hash；须清hash并保留真正shader句柄和原始转发。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "六阶段真实已登记→原生未登记shader，确认注册表实际miss、hash/跟踪句柄/原生GetShader一致；空绑定/恢复/重复miss、真实filter表达式不继承旧值",
       "implementationStatus": "pending"
     },
     {

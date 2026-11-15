@@ -302,6 +302,13 @@
       "summary": "UpdateSubresource1在既有基类上传后、帧分析开启时补接一次FrameAnalysisAfterUpdate；原转发参数和上传跟踪不变。旧版上传字节正确但漏转储已复现；完整/局部上传、逐事件一份正确捕获、关闭分析/选项、旧API、真实转储IO失败与恢复专项及25+10全流程通过；WARP immediate/CopyFlags=0，不冒充实机。",
       "evidence": "validation/F-169.json",
       "commitLookup": "git log --fixed-strings --grep=F-169"
+    },
+    {
+      "id": "F-170",
+      "status": "validated-in-simulator",
+      "summary": "共享SetShader查表失败时仅清零旧hash，保留实际shader句柄、类实例参数和原生转发。六阶段真实包装创建→原生未登记对象已复现旧hash残留；GetShader/跟踪句柄、空绑定/恢复/重复miss与真实filter表达式专项及25+10全流程通过；测试只读子类不改变DLL接口，不宣称六阶段均渲染。",
+      "evidence": "validation/F-170.json",
+      "commitLookup": "git log --fixed-strings --grep=F-170"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
