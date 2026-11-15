@@ -184,6 +184,10 @@ if(BUILD_TESTING)
     list(APPEND DX11_REGRESSION_SOURCES tests/shader_tool_audit_regression.cpp)
     set_source_files_properties(tests/shader_tool_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Shaders.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)CommandList\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/command_list_audit_regression.cpp)
+    set_source_files_properties(tests/command_list_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/CommandList.cpp")
     if(DX11_AUDIT_ASAN_LOCKS)
         if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
             message(FATAL_ERROR "DX11_AUDIT_ASAN_LOCKS requires MSVC x64 with AddressSanitizer.")

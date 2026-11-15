@@ -288,6 +288,13 @@
       "summary": "三个工具转换主输出共用检查写函数，打开/短写/关闭失败明确诊断并返回1；旧实际EXE一处CRT终止、另两处静默成功均复现。正常/含NUL/空输出、失败关闭一次/恢复专项、实际EXE三站点输出诊断及25+10全流程通过；保留原wb覆盖，不承诺原子回滚；回执连行只修夹具。",
       "evidence": "validation/F-149.json",
       "commitLookup": "git log --fixed-strings --grep=F-149"
+    },
+    {
+      "id": "F-155",
+      "status": "validated-in-simulator",
+      "summary": "自动VB计数在减法/除法前拒绝零stride及过大offset，IB仅检查offset并保留R16/R32规则；复用现有0计数跳过而不估造数量，释放引用后再返回。原生WARP零stride除零已复现；正常/部分/末端/越界/缺资源、三个auto消费者/重绑恢复专项及25+10全流程通过，用户文档同步；显式draw不改。",
+      "evidence": "validation/F-155.json",
+      "commitLookup": "git log --fixed-strings --grep=F-155"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
