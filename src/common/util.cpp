@@ -601,6 +601,19 @@ static DWORD WINAPI crash_handler_switch_to_window(_In_ LPVOID lpParameter)
 	return 0;
 }
 
+static void log_interactive_crash_handler_help()
+{
+	if (!LogFile)
+		return;
+	LogInfo("3DMigoto interactive crash handler invoked:\n");
+	LogInfo(" Ctrl+Alt+Q: Quit (execute exception handler)\n");
+	LogInfo(" Ctrl+Alt+K: Kill process\n");
+	LogInfo(" Ctrl+Alt+C: Continue execution\n");
+	LogInfo(" Ctrl+Alt+B: Break into the debugger (make sure one is attached)\n");
+	LogInfo("\n");
+	fflush(LogFile);
+}
+
 static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *ExceptionInfo)
 {
 	wchar_t path[MAX_PATH];
@@ -682,16 +695,7 @@ static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *Exce
 	// 5 seconds. All key bindings in this mode are prefixed with Ctrl+Alt
 	// to prevent them being accidentally triggered.
 	if (crash_handler_level == 2) {
-		if (LogFile) {
-			LogInfo("3DMigoto interactive crash handler invoked:\n");
-			LogInfo(" Ctrl+Alt+Q: Quit (execute exception handler)\n");
-			LogInfo(" Ctrl+Alt+K: Kill process\n");
-			LogInfo(" Ctrl+Alt+C: Continue execution\n");
-			LogInfo(" Ctrl+Alt+B: Break into the debugger (make sure one is attached)\n");
-			LogInfo(" Ctrl+Alt+W: Attempt to switch to Windowed mode\n");
-			LogInfo("\n");
-			fflush(LogFile);
-		}
+		log_interactive_crash_handler_help();
 		while (1) {
 			Beep(500, 100);
 			for (int i = 0; i < 50; i++) {

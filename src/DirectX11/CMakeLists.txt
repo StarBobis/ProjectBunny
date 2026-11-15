@@ -165,6 +165,10 @@ if(BUILD_TESTING)
     list(APPEND DX11_REGRESSION_SOURCES tests/ini_audit_regression.cpp)
     set_source_files_properties(tests/ini_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/IniHandler.cpp")
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/common/util.cpp" "tests/util_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/util_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/common/util.cpp")
     if(DX11_AUDIT_ASAN_LOCKS)
         if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
             message(FATAL_ERROR "DX11_AUDIT_ASAN_LOCKS requires MSVC x64 with AddressSanitizer.")

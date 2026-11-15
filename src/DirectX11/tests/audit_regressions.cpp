@@ -19,6 +19,7 @@ void test_dx11_shader_diagnostic_failure_regression();
 void test_dx11_empty_hunting_present_regression();
 void test_dx11_reload_shader_filename_regression();
 void test_dx11_masked_flags_regression();
+void test_dx11_crash_help_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -255,6 +256,7 @@ const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F
     {"F-179", test_dx11_empty_hunting_present_regression},
     {"F-184", test_dx11_reload_shader_filename_regression},
     {"F-187", test_dx11_masked_flags_regression},
+    {"F-286", test_dx11_crash_help_regression},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
 #endif
