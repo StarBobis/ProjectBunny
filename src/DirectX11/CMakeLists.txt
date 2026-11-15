@@ -167,6 +167,7 @@ if(BUILD_TESTING)
         ${DX11_REGRESSION_SOURCES}
         tests/upstream_regression.cpp
         tests/audit_regressions.cpp
+        tests/audit_dx9_regression.cpp
         tests/persistence_regression.cpp
         tests/input_layout_regression.cpp
         tests/ini_expression_regression.cpp

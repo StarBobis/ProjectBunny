@@ -616,7 +616,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
     uint32_t bDeclareConstantTable = 0;
     Shader* psShader = new Shader();
 
-    memset(aui32ImmediateConst, 0, 256);
+    memset(aui32ImmediateConst, 0, sizeof(aui32ImmediateConst));
 
 	psShader->dx9Shader = true; // 3DMigoto specific
 	psShader->ui32MajorVersion = DecodeProgramMajorVersionDX9(*pui32CurrentToken);

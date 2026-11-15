@@ -7,6 +7,8 @@
 #include <iterator>
 #include "D3D_Shaders/stdafx.h"
 
+void test_dx11_dx9_constant_reset_regression();
+
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
 #endif
@@ -208,6 +210,7 @@ void test_f114()
 
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
+    {"F-127", test_dx11_dx9_constant_reset_regression},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
 #endif

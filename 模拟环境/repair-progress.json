@@ -29,6 +29,13 @@
       "summary": "ASan复现并消除锁缓存节点释放后读取；在erase前移除报告键，无TLS/重入路径仍调用真实DeleteCriticalSection，其他锁钩子策略保持原样。",
       "evidence": "validation/F-115.json",
       "commitLookup": "git log --fixed-strings --grep=F-115"
+    },
+    {
+      "id": "F-127",
+      "status": "validated-in-simulator",
+      "summary": "按实际数组字节数清零DX9立即数寄存器标记；串行解码验证c0/63/64/127/200/255不跨shader残留，不扩张为并发解码协议修改。",
+      "evidence": "validation/F-127.json",
+      "commitLookup": "git log --fixed-strings --grep=F-127"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
