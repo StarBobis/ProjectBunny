@@ -23,7 +23,9 @@ add_library(DirectX11 SHARED
     CommandList.cpp
     cursor.cpp
     D3D11Wrapper.cpp
+    DX11Version.cpp
     DX11Version.h
+    DX11ResourceIds.h
     DLLMainHook.cpp
     ExpressionFunctions.cpp
     FrameAnalysis.cpp
@@ -310,7 +312,10 @@ if(BUILD_TESTING)
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
         tests/dx11_version_regression.cpp
+        tests/dx11_version_fallback_regression.cpp
     )
+    set_source_files_properties(tests/dx11_version_fallback_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/DX11Version.cpp")
     target_include_directories(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,INCLUDE_DIRECTORIES>>)
     target_compile_definitions(dx11_upstream_regression PRIVATE

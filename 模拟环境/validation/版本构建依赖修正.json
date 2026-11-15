@@ -1,0 +1,142 @@
+{
+  "id": "INFRA-DX11-VERSION",
+  "date": "2026-11-16",
+  "status": "validated",
+  "temporarySpecialId": "F-900",
+  "preparationPatchSha256": "D56D457EF4FD359119DD93790FF797117EAC46D42C6EE687CAA22675777E77DB",
+  "sourceBaseTree": "503c5bc50c540fc6e887206fdeb147ee7dac698e",
+  "fullReport": "build/f/46047cdff905/results.json",
+  "fullReportSha256": "C6AA9CDF9EE928FBCC7EC36C75384D68B0CFCF62111A1B9D65F1564D415772D4",
+  "buildHead": "0dfcdfe56246c9d93c7f331afd177cf98514d40c",
+  "buildInfoSha256": "5DC6AB0E56142D3980FA4C9A7F50B5A58850ADFB01EC2DEADF7375A92E31D69D",
+  "candidateSha256": "12EA8739778FB77DF04E9E6DAF4F2EAC982C3792632D67DEA0D4EB872F7DE2F2",
+  "dx12CompatibilityBuilt": true,
+  "checks": [
+    {
+      "name": "special",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 2957,
+        "message": ""
+      }
+    },
+    {
+      "name": "business",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 27085,
+        "message": ""
+      }
+    },
+    {
+      "name": "offline-shader-tool",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 55,
+        "message": "",
+        "missingInput": {
+          "status": "PASS",
+          "process": {
+            "status": "FAIL",
+            "exitCode": 1,
+            "elapsedMs": 46,
+            "message": ""
+          },
+          "expectedExitCode": 1,
+          "diagnosticChecked": true
+        },
+        "outputFailures": [
+          {
+            "phase": "cache-text",
+            "status": "PASS",
+            "process": {
+              "status": "FAIL",
+              "exitCode": 1,
+              "elapsedMs": 52,
+              "message": ""
+            },
+            "expectedExitCode": 1,
+            "diagnosticChecked": true
+          },
+          {
+            "phase": "cache-binary",
+            "status": "PASS",
+            "process": {
+              "status": "FAIL",
+              "exitCode": 1,
+              "elapsedMs": 58,
+              "message": ""
+            },
+            "expectedExitCode": 1,
+            "diagnosticChecked": true
+          },
+          {
+            "phase": "mark-text",
+            "status": "PASS",
+            "process": {
+              "status": "FAIL",
+              "exitCode": 1,
+              "elapsedMs": 59,
+              "message": ""
+            },
+            "expectedExitCode": 1,
+            "diagnosticChecked": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "legacy-version",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 49,
+        "message": ""
+      }
+    },
+    {
+      "name": "version-generator",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 12618,
+        "message": ""
+      }
+    },
+    {
+      "name": "proxy-components",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 2070,
+        "message": ""
+      }
+    },
+    {
+      "name": "actual-dll-integration",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 42929,
+        "message": ""
+      }
+    }
+  ],
+  "generatedDependentOutputs": 5,
+  "dependencyEvidence": "validation/版本头依赖输出.json",
+  "reviewer": "/root/adversarial_v2",
+  "independentSpecial": "build/w/r/模拟环境/build/adversarial-infra-dx11-version/result.json",
+  "actualGitChangeRebuild": "pending next build after this commit",
+  "performanceScope": "Dependency count only; no elapsed-time or FPS claim",
+  "targetGameValidated": false
+}

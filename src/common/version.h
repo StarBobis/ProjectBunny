@@ -1,5 +1,10 @@
+#pragma once
+
 #if defined(MIGOTO_DX) && MIGOTO_DX == 11
-#include "DX11Version.h"
+#include "DX11ResourceIds.h"
+#ifdef __cplusplus
+const char* MigotoFileVersionString() noexcept;
+#endif
 #else
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
@@ -57,5 +62,12 @@
 #define VER_FILEFLAGS               VER_VER_DEBUG
 #define VER_FILETYPE                VFT_APP
 
+
+#ifdef __cplusplus
+inline const char* MigotoFileVersionString() noexcept
+{
+    return VER_FILE_VERSION_STR;
+}
+#endif
 
 #endif // MIGOTO_DX == 11

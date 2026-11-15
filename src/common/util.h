@@ -790,7 +790,7 @@ static string BinaryToAsmText(const void *pShaderBytecode, size_t BytecodeLength
 	vector<byte> disassembly;
 	HRESULT r;
 
-	comments = "//   using 3Dmigoto v" + string(VER_FILE_VERSION_STR) + " on " + LogTime() + "//\n";
+	comments = "//   using 3Dmigoto v" + string(MigotoFileVersionString()) + " on " + LogTime() + "//\n";
 	memcpy(byteCode.data(), pShaderBytecode, BytecodeLength);
 
 #if MIGOTO_DX == 9

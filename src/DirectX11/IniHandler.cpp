@@ -4668,7 +4668,7 @@ void LoadConfigFile()
     InitializeEarlyWarningSettings(iniFile);
 	if (LogFile)
 	{
-		LogWarning("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
+		LogWarning("\nD3D11 DLL starting init - v %s - %s\n", MigotoFileVersionString(), LogTime().c_str());
 
 		wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
 		GetModuleFileName(migoto_handle, our_path, MAX_PATH);
