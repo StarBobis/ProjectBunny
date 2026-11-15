@@ -416,5 +416,17 @@
       "evidence": "validation/F-106-correction-1.json",
       "summary": "缺model边界保留，collector只有在模型验证/两字头写入后才进入code状态；ret三行不再返回损坏DXBC，坏前缀+合法model仍可恢复。独立公开红例、原生恢复/行号专项、主线25+10全流程及对抗复审通过；整批期限装置问题另单独修正，旧验证和超时记录保留。"
     }
+  ],
+  "attributionReviews": [
+    {
+      "id": "F-270",
+      "status": "static-reviewed-no-active-defect-in-inspected-x64-export-path",
+      "summary": "F270仅按已检x64公开路径静态归N：68个KMT出口均跳向GDI32同名IAT，29个报告C++零桩未绑定。不改生产代码，不增加已修复数；F160本地CoreCreateDevice宽度风险保留，完整私有ABI待证。",
+      "evidence": "validation/F-270-review.json",
+      "productionCodeChanged": false,
+      "newSpecialOrFullRunExecuted": false,
+      "countAsRepaired": false,
+      "commitLookup": "git log --fixed-strings --grep=F-270"
+    }
   ]
 }

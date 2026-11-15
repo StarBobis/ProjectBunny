@@ -8,15 +8,15 @@
   "counts": {
     "A": 23,
     "B": 41,
-    "C": 29,
+    "C": 28,
     "R": 26,
     "X": 4,
     "E": 8,
     "D12": 4,
-    "N": 7
+    "N": 8
   },
   "total": 142,
-  "activeCandidateCount": 119,
+  "activeCandidateCount": 118,
   "rows": [
     {
       "id": "F-001",
@@ -791,14 +791,14 @@
     },
     {
       "id": "F-160",
-      "status": "成立",
+      "status": "局部成立，范围修正",
       "group": "C",
       "groupLabel": "高风险，最后评估",
       "originalSeverity": "medium",
       "evidence": "src/DirectX11/D3D11Wrapper.cpp:593; src/DirectXGI/DXGIWrapper.cpp:374",
-      "additionalEvidence": null,
-      "correctedConclusion": "x64指针被声明int是ABI缺陷；必须核对每个真实签名及导出/typedef，不能笼统删导出破兼容。",
-      "executionGate": "先完成边界/ABI/清理或并发协议设计，接入组件DLL、故障注入/压力装置；证据齐备后才实施",
+      "additionalEvidence": "归档PE中KMT及两个DXGI私有出口实际经IAT绕过int参数C++包装器；D3D11CoreCreateDevice则确为本地代码RVA 0x559A0，代理参数9/10以DWORD转发，而已检系统实现将其作为地址宽度输出指针读取。",
+      "correctedConclusion": "不能把全部int声明认作当前公开路径的ABI缺陷：已检KMT和两个DXGI私有出口绕过这些包装器。D3D11CoreCreateDevice是实际本地转发，参数9/10存在具体宽度风险；完整私有签名、输出归属及选中原DLL契约尚待证明，不能全部撤销或猜签名修改。",
+      "executionGate": "先取得权威私有声明或可信调用者ABI，核完整参数、输出所有权和支持的原DLL版本，再设计合法正常/失败/指针宽度专项；不加载未知ABI后凭猜测调用，不统一删除或转发所有入口。",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "pending"
     },
@@ -1363,16 +1363,16 @@
     },
     {
       "id": "F-270",
-      "status": "成立但修正",
-      "group": "C",
-      "groupLabel": "高风险，最后评估",
+      "status": "当前x64公开路径未生效",
+      "group": "N",
+      "groupLabel": "当前构建未调用，归档维护",
       "originalSeverity": "medium",
       "evidence": "src/DirectXGI/DXGIWrapper.cpp:146-174",
-      "additionalEvidence": null,
-      "correctedConclusion": "未实现KMT桩返回0表示NTSTATUS成功而非HRESULT S_OK契约；应准确签名转发/返回STATUS_NOT_IMPLEMENTED，不能无脑E_NOTIMPL或把所有出口转同DLL。",
-      "executionGate": "F291已证明当前DX11至少一处公开导出绑定GDI32而非报告C++桩；先逐入口核当前目标DLL实际导出/IAT/签名，重新判断有效缺陷，再补对应ABI与失败输出测试，不得照桩列表直接修改",
-      "targetedAcceptanceProposal": null,
-      "implementationStatus": "pending"
+      "additionalEvidence": "归档x64 d3d11/dxgi的89出口映射与独立静态复核：68个KMT出口均跳向GDI32同名IAT；29个DXGI零返回C++桩未绑定这些公开入口。既有F291动态证据仅覆盖一个入口。",
+      "correctedConclusion": "KMT采用NTSTATUS契约，但报告中的29个零返回C++桩不是已检x64 DLL的公开执行路径；两份DLL共68个KMT出口均为GDI32同名导入跳板。当前归N免修，不改绑定或激活旧桩；不外推x86、Debug、其它工具链或全部运行时provider身份。",
+      "executionGate": "保留公开导出与现有导入策略；工具链、def、链接方式或provider策略改变后重新核PE/IAT和合法SDK调用。不得依据未生效桩统一改HRESULT、删除导出或绕过GDI32函数体。",
+      "targetedAcceptanceProposal": "本轮只读静态归属复核，不新增动态专项；旧F291单入口运行证据保留其原范围。",
+      "implementationStatus": "not-applicable-current-build"
     },
     {
       "id": "F-271",
