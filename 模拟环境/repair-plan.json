@@ -1316,7 +1316,7 @@
       "groupLabel": "跨函数语义，第二批候选",
       "originalSeverity": "high",
       "evidence": "src/DirectX12/Config/DX12ConfigLoader.h:73; src/DirectX12/Core/Diag/DX12Diag.h:1032; src/DirectX12/ModRuntime/DX12ModRuntimeLoad.cpp:1679-1685; src/DirectX12/Proxy/D3D12ProcessGate.h:95",
-      "additionalEvidence": null,
+      "additionalEvidence": "validation/F-200-readonly-sites.json：原17位置项=8个DX11主模块+5个实编编译器代理+4仅DX12；不是17个独立故障。6处已知数组走安全CRT，3处wsprintfW非CRT模板，4处缓存有容量格式化的返回值被当size_t suffix使用。静态核查，未新跑故障或修复。",
       "correctedConclusion": "各站点机制不同：wsprintfW仍可溢出；已知数组wcscat/wcscpy在MSVC安全C++重载下有边界；PathAppend返回值、截断和GetModuleFileName无NUL另审。不能将17处全计无界栈溢出。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
       "targetedAcceptanceProposal": null,
