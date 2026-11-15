@@ -60,6 +60,18 @@ static vector<byte> readFile(string fileName) {
 	return buffer;
 }
 
+static void writeFile(const string& fileName, const vector<byte>& buffer)
+{
+	FILE* output = nullptr;
+	if (fopen_s(&output, fileName.c_str(), "wb") || !output)
+		throw runtime_error("Cannot open shader output: " + fileName);
+	unique_ptr<FILE, decltype(&fclose)> file(output, &fclose);
+	if ((!buffer.empty() && fwrite(buffer.data(), 1, buffer.size(), file.get()) != buffer.size()) || ferror(file.get()))
+		throw runtime_error("Cannot write complete shader output: " + fileName);
+	if (fclose(file.release()))
+		throw runtime_error("Cannot close shader output: " + fileName);
+}
+
 static int runShaderTool()
 {
 	int shaderNo = 1;
@@ -105,10 +117,7 @@ static int runShaderTool()
 
 				fileName.erase(fileName.size() - 3, 3);
 				fileName.append("txt");
-				FILE* f;
-				fopen_s(&f, fileName.c_str(), "wb");
-				fwrite(ASM.data(), 1, ASM.size(), f);
-				fclose(f);
+				writeFile(fileName, ASM);
 				
 				int newProgress = (int)(50.0 * i / files.size());
 				if (newProgress > progress) {
@@ -137,12 +146,7 @@ static int runShaderTool()
 
 				fileName.erase(fileName.size() - 3, 3);
 				fileName.append("cbo");
-				FILE* f;
-				fopen_s(&f, fileName.c_str(), "wb");
-				if (f) {
-					fwrite(CBO.data(), 1, CBO.size(), f);
-					fclose(f);
-				}
+				writeFile(fileName, CBO);
 
 				int newProgress = (int)(50.0 * i / files.size());
 				if (newProgress > progress) {
@@ -167,12 +171,7 @@ static int runShaderTool()
 
 				fileName.erase(fileName.size() - 3, 3);
 				fileName.append("txt");
-				FILE* f;
-				fopen_s(&f, fileName.c_str(), "wb");
-				if (f) {
-					fwrite(ASM.data(), 1, ASM.size(), f);
-					fclose(f);
-				}
+				writeFile(fileName, ASM);
 
 				int newProgress = (int)(50.0 * i / files.size());
 				if (newProgress > progress) {

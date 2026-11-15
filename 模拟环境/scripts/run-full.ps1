@@ -90,6 +90,24 @@ if(Test-Path -LiteralPath (Join-Path $shaderRoot 'expected.cbo')) {
         $shaderResult | Add-Member -NotePropertyName missingInput -NotePropertyValue ([pscustomobject]@{status=$(if($passed){'PASS'}else{'FAIL'});process=$readFailure;expectedExitCode=1;diagnosticChecked=$passed})
         if(-not $passed){$shaderResult.status='FAIL';$shaderResult.message='CLI must report missing input and exit 1 without producing bytecode.'}
     }
+    if($shaderResult.status -eq 'PASS') {
+        $outputFailures=@()
+        foreach($phase in @('cache-text','cache-binary','mark-text')) {
+            $failureRoot=Join-Path $runRoot "tool-output-$phase"
+            $folder=if($phase -eq 'mark-text'){'Mark'}else{'ShaderCache'}
+            New-Item -ItemType Directory -Path (Join-Path $failureRoot $folder) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $shaderRoot 'ShaderCache\0123456789abcdef-ps.bin') -Destination (Join-Path $failureRoot "$folder\0123456789abcdef-ps.bin")
+            $suffix=if($phase -eq 'cache-binary'){'cbo'}else{'txt'}
+            New-Item -ItemType Directory -Path (Join-Path $failureRoot "$folder\0123456789abcdef-ps.$suffix") | Out-Null
+            Copy-Item -LiteralPath $toolSource -Destination $failureRoot
+            $failure=Invoke-IsolatedSimulationProcess -Executable (Join-Path $failureRoot 'D3D_Shaders.exe') -Arguments @('--fixture-run') -WorkingDirectory $failureRoot -LogPrefix (Join-Path $failureRoot 'tool') -TimeoutMs $TimeoutMs
+            $diagnostic=Get-Content -LiteralPath (Join-Path $failureRoot 'tool.stderr.txt') -Raw
+            $passed=$failure.status -eq 'FAIL' -and $failure.exitCode -eq 1 -and $diagnostic.Contains('Cannot open shader output:') -and $diagnostic.Contains("0123456789abcdef-ps.$suffix")
+            $outputFailures += [pscustomobject]@{phase=$phase;status=$(if($passed){'PASS'}else{'FAIL'});process=$failure;expectedExitCode=1;diagnosticChecked=$passed}
+        }
+        $shaderResult | Add-Member -NotePropertyName outputFailures -NotePropertyValue $outputFailures
+        if(@($outputFailures | Where-Object status -ne 'PASS').Count){$shaderResult.status='FAIL';$shaderResult.message='Every CLI conversion output failure must report its filename and exit 1.'}
+    }
 }
 $checks.Add([pscustomobject]@{name='offline-shader-tool';status=$shaderResult.status;detail=$shaderResult})
 Write-Host "[$($shaderResult.status)] $label offline-shader-tool"

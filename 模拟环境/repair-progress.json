@@ -281,6 +281,13 @@
       "summary": "离线工具用检查结果的64位seek/tell，拒绝负/超UINT32长度、短读及关闭失败；RAII确保关闭一次，入口诊断并返回1。专项透传真实静态CRT并在测试TU注入既有调用故障，2GiB重定位无实际大分配；原先__imp注入无效已排除。真实旧EXE缺BIN访问冲突、新EXE诊断退出1无CBO及正常字节一致，25+10全流程通过；不外推DLL热路径/完整畸形DXBC。",
       "evidence": "validation/F-148.json",
       "commitLookup": "git log --fixed-strings --grep=F-148"
+    },
+    {
+      "id": "F-149",
+      "status": "validated-in-simulator",
+      "summary": "三个工具转换主输出共用检查写函数，打开/短写/关闭失败明确诊断并返回1；旧实际EXE一处CRT终止、另两处静默成功均复现。正常/含NUL/空输出、失败关闭一次/恢复专项、实际EXE三站点输出诊断及25+10全流程通过；保留原wb覆盖，不承诺原子回滚；回执连行只修夹具。",
+      "evidence": "validation/F-149.json",
+      "commitLookup": "git log --fixed-strings --grep=F-149"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
