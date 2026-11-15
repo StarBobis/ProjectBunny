@@ -62,6 +62,7 @@ foreach ($inputDll in $inputs) {
     $cases += @(
         [pscustomobject]@{name='constants-missing-name';scenario='capabilities';exe=$hostPath;mode='constants-missing-name';config='constants-missing-name.ini'},
         [pscustomobject]@{name='constants-invalid-index';scenario='capabilities';exe=$hostPath;mode='constants-missing-name';config='constants-invalid-index.ini'},
+        [pscustomobject]@{name='constants-invalid-pool';scenario='capabilities';exe=$hostPath;mode='constants-missing-name';config='constants-invalid-pool.ini'},
         [pscustomobject]@{name='constants-overlay-device';scenario='capabilities';exe=$hostPath;mode='constants-overlay-device';config='constants-overlay.ini'},
         [pscustomobject]@{name='constants-overlay-swapchain';scenario='swapchain';exe=$hostPath;mode='constants-overlay-swapchain';config='constants-overlay.ini'},
         [pscustomobject]@{name='kmt-binding';scenario='capabilities';exe=$hostPath;mode='kmt-binding';config='wrapper.ini'},

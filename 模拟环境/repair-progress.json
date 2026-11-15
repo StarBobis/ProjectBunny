@@ -225,6 +225,13 @@
       "summary": "纹理扩展名安全定位到最终文件名，无扩展走WIC；复用现有ResourceCreationModeScope保证加载异常解锁，不改变buffer分支或一次加载策略。PNG/DDS/目录点号/缺失文件、异常后锁探测与恢复及buffer字节通过；真实DLL无扩展纹理绑定和原像素回读、24+10全流程通过。",
       "evidence": "validation/F-108.json",
       "commitLookup": "git log --fixed-strings --grep=F-108"
+    },
+    {
+      "id": "F-110",
+      "status": "validated-in-simulator",
+      "summary": "STATIC非有限/缺元素选择不再发布空目标，引用和间接flags消费者分别判空；无模板getter不分配残缺对象，动态无效数值变量读取返回NaN、写入不改模板。保留负数/大数环绕、missing模板、FIFO/SPATIAL NaN UID与代理；专项及真实DLL非法池配置继续Constants、25+10全流程通过，修正五处同型的报告说法。",
+      "evidence": "validation/F-110.json",
+      "commitLookup": "git log --fixed-strings --grep=F-110"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

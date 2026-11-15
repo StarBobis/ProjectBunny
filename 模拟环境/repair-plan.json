@@ -251,7 +251,7 @@
       "originalSeverity": "high",
       "evidence": "src/DirectX11/CommandList.cpp:891",
       "additionalEvidence": null,
-      "correctedConclusion": "891/2838/8428等缺模板判空真实；7075是GetElementIndex结果守卫，7889是wcstof而非空解引用。应分别修空模板/缺元素/NaN索引，不能称五处同型。",
+      "correctedConclusion": "正常INI创建模板；STATIC非有限/缺元素选择仍发布空目标，导致引用/间接flags接收者空解引用，动态无效数值变量读取另有空指针。保留既有SIZE_MAX守卫，分别验证目标、模板、数值索引；FIFO/SPATIAL NaN位键是合法功能，不能统一禁止。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "pending"

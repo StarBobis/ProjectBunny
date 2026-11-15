@@ -889,6 +889,10 @@ static bool ParseDrawCommandArgs(const wchar_t* section, wstring *val, DrawComma
 
 		if (operation->indirect_buffer.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 			CustomResource* custom_resource = operation->indirect_buffer.GetCustomResource(nullptr, true);
+			if (!custom_resource) {
+				LogOverlayW(LOG_WARNING, L"Indirect resource or pool template is unavailable\n - [%ls]\n", section);
+				return false;
+			}
 			if (!custom_resource->AddFlags((D3D11_BIND_FLAG)0, D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, true)) {
 				LogOverlayW(LOG_WARNING, L"To use resources with incompatible flags explicitly add 'copy' keyword, e.g. 'vs-cb0 = copy ResourceRWBufferCB'\n - [%ls] @ [%ls]\n", section, ini_namespace ? ini_namespace->c_str() : L"");
 				return false;
@@ -2835,7 +2839,10 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 		}
 
 		case ResourceCopyTargetEvaluationMode::VARIABLE:
-			return texture_filter_target.GetPoolVariable(state, false)->fval;
+			if (auto* variable = texture_filter_target.GetPoolVariable(state, false))
+				return variable->fval;
+			LogDebug("Pool variable is unavailable for this selection\n");
+			return std::numeric_limits<float>::quiet_NaN();
 
 		case ResourceCopyTargetEvaluationMode::RESOURCE_IDENTITY:
 			return texture_filter_target.GetResourceId(state);
@@ -7046,6 +7053,8 @@ CustomResource* CustomResourcePool::GetResource(float id, bool template_lookup, 
 {
 	if (source_pool)
 		return source_pool->GetResource(id, template_lookup, use_ring_index, is_assignment);
+	if (!resource_template)
+		return nullptr;
 
 	// During static evaluation (parsing time) we cannot evaluate dynamic indexes
 	// So parsing-time config has to be applied to the entire pool
@@ -7071,6 +7080,8 @@ CommandListVariable* CustomResourcePool::GetVariable(float id, bool template_loo
 {
 	if (source_pool)
 		return source_pool->GetVariable(id, template_lookup, use_ring_index, is_assignment);
+	if (!variable_template)
+		return nullptr;
 
 	// During static evaluation (parsing time) we cannot evaluate dynamic indexes
 	// So parsing-time config has to be applied to the entire pool
@@ -7893,7 +7904,7 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 		// Parse value for STATIC index type.
 		wchar_t* end;
 		float static_pool_index = wcstof(pool_index_text.c_str(), &end);
-		if (*end != L'\0')
+		if (end == pool_index_text.c_str() || *end != L'\0' || !std::isfinite(static_pool_index))
 			return IniParserResult::SYNTAX_ERROR;
 		pool_static_index = static_pool_index;
 		pool_index_is_static = true;
@@ -7909,12 +7920,16 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 		case ResourceCopyTargetEvaluationMode::VARIABLE:
 			//LogInfo("ParseTargetPool: STATIC VARIABLE pool_index=%f\n", static_pool_index);
 			static_pool_variable = custom_resource_pool->GetVariable(static_pool_index, false, false, !is_source);
+			if (!static_pool_variable)
+				return IniParserResult::SYNTAX_ERROR;
 			type = ResourceCopyTargetType::VARIABLE;
 			return IniParserResult::TOKEN_FOUND;
 
 		default:
 			//LogInfo("ParseTargetPool: STATIC RESOURCE pool_index=%f\n", static_pool_index);
 			static_custom_resource = custom_resource_pool->GetResource(static_pool_index, false, false, !is_source);
+			if (!static_custom_resource)
+				return IniParserResult::SYNTAX_ERROR;
 			type = ResourceCopyTargetType::CUSTOM_RESOURCE;
 			return IniParserResult::TOKEN_FOUND;
 		}
@@ -8432,6 +8447,10 @@ static CommandListCommand* parse_resource_copy_operation(
 	// FIXME: The constant buffer bind flag can't be combined with others
 	if (src.type == ResourceCopyTargetType::CUSTOM_RESOURCE && (options & ResourceCopyOptions::REFERENCE)) {
 		CustomResource* src_custom_resource = src.GetCustomResource(nullptr, true);
+		if (!src_custom_resource) {
+			LogOverlayW(LOG_WARNING, L"Referenced resource or pool template is unavailable\n - [%ls]\n", section);
+			return nullptr;
+		}
 		D3D11_RESOURCE_MISC_FLAG misc_flags = (D3D11_RESOURCE_MISC_FLAG)0;
 		const D3D11_BIND_FLAG bind_flags = dst.BindFlags(NULL, &misc_flags);
 		if (!src_custom_resource->AddFlags(bind_flags, misc_flags, true)) {

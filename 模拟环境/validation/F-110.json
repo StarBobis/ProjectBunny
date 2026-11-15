@@ -1,0 +1,379 @@
+{
+  "id": "F-110",
+  "status": "validated-in-simulator",
+  "disposition": "repaired",
+  "summary": "STATIC非有限/缺元素选择不再发布空目标，引用和间接flags消费者分别判空；无模板getter不分配残缺对象，动态无效数值变量读取返回NaN、写入不改模板。保留负数/大数环绕、missing模板、FIFO/SPATIAL NaN UID与代理；专项及真实DLL非法池配置继续Constants、25+10全流程通过，修正五处同型的报告说法。",
+  "utc": "2026-11-15T11:42:52.7249971Z",
+  "buildHead": "ab4faf7bddf1f32fc1a6f35d3f8b459c94823f49",
+  "candidateSha256": "06653E69791CDBA4506018145CECAE5F462E44A3AE5BFD52936135B6703994B6",
+  "fullReport": "build\\f\\2b4fb2b34e72\\results.json",
+  "fullReportSha256": "00279B549239C423019F40DD1A896094B3B969AC91080D3A88D0B720055D6203",
+  "checks": [
+    {
+      "name": "special",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 184,
+        "message": ""
+      }
+    },
+    {
+      "name": "business",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 16172,
+        "message": ""
+      }
+    },
+    {
+      "name": "offline-shader-tool",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 47,
+        "message": ""
+      }
+    },
+    {
+      "name": "legacy-version",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 32,
+        "message": ""
+      }
+    },
+    {
+      "name": "version-generator",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 13880,
+        "message": ""
+      }
+    },
+    {
+      "name": "proxy-components",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 1536,
+        "message": ""
+      }
+    },
+    {
+      "name": "actual-dll-integration",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 30461,
+        "message": ""
+      }
+    }
+  ],
+  "integrationCases": [
+    {
+      "id": "native-capabilities",
+      "status": "PASS"
+    },
+    {
+      "id": "native-buffer",
+      "status": "PASS"
+    },
+    {
+      "id": "native-texture",
+      "status": "PASS"
+    },
+    {
+      "id": "native-deferred",
+      "status": "PASS"
+    },
+    {
+      "id": "native-swapchain",
+      "status": "PASS"
+    },
+    {
+      "id": "native-swapchain-qi",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-capabilities",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-buffer",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-texture",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-deferred",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-swapchain",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-swapchain-qi",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-constants-missing-name",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-constants-invalid-index",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-constants-invalid-pool",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-constants-overlay-device",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-constants-overlay-swapchain",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-kmt-binding",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-shader-export-failure",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-resource-extensionless",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-injected-device-failure",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-wrapper",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-native-control",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-hook-all",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-denied-qi",
+      "status": "PASS"
+    }
+  ],
+  "targetGameValidated": false,
+  "commitLookup": "git log --fixed-strings --grep=F-110",
+  "buildInfoSnapshot": "build\\f\\2b4fb2b34e72\\build-info.json",
+  "buildInfoSha256": "AD065CD73E68180142B9E1DAAA0E37825D7153AD823352FE16CB6EAED09C025B",
+  "builtProducts": [
+    {
+      "path": "src\\DirectX11\\d3d11.dll",
+      "sha256": "06653E69791CDBA4506018145CECAE5F462E44A3AE5BFD52936135B6703994B6"
+    },
+    {
+      "path": "src\\DirectX11\\dx11_upstream_regression.exe",
+      "sha256": "4EE5F0079FE32B3ADCE171BF2A733B3D55DAC2943868E852B6D10DD0ECB1C4C8"
+    },
+    {
+      "path": "src\\DirectX11\\Release\\dx11_legacy_version_regression.exe",
+      "sha256": "260F72DC55B6E439CFDD5557C0009658CBDA0840EB8E7A4F2DEB07464316E240"
+    },
+    {
+      "path": "src\\D3D_Shaders\\D3D_Shaders.exe",
+      "sha256": "9A4676AA51344B51BE1299F793996DF370DEF95EE1128DE554662311984D37F6"
+    },
+    {
+      "path": "src\\DirectX11\\clang_rt.asan_dynamic-x86_64.dll",
+      "sha256": "7C4FA25B4A3123F2B698D9429B9CA9933C87AC4B7F1A5F5AD33772BDE231401E"
+    },
+    {
+      "path": "src\\DirectXGI\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69"
+    },
+    {
+      "path": "src\\D3DCompiler_46\\d3dcompiler_47.dll",
+      "sha256": "8BE69DCBAE6BB9CE7DED2A67A701FB91937B15F49AEAB54B609A2738AD373A9B"
+    },
+    {
+      "path": "audit\\compiler_audit_asan.dll",
+      "sha256": "0299CF4F1E0E4D2ADC003DBEBA6E6478B0EF31D5ADCFD08D92DEF78334B31636"
+    }
+  ],
+  "proxyComponentCases": [
+    {
+      "id": "native-compiler",
+      "status": "PASS",
+      "input": "C:\\WINDOWS\\system32\\d3dcompiler_47.dll",
+      "sha256": "8C6D644F86724B542A490EB4F2BFDFAD759998B9A3C51FA46EB5DFC5460ED9D7",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 73,
+        "message": ""
+      }
+    },
+    {
+      "id": "native-dxgi",
+      "status": "PASS",
+      "input": "C:\\WINDOWS\\system32\\dxgi.dll",
+      "sha256": "5B93ACCDC90BB3A90ABE9B3060078044A9F9EE0063681C6B2BB695BC3131AA72",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 48,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-normal",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\compiler-normal\\d3dcompiler_47.dll",
+      "sha256": "8BE69DCBAE6BB9CE7DED2A67A701FB91937B15F49AEAB54B609A2738AD373A9B",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 54,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-disabled",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\compiler-disabled\\d3dcompiler_47.dll",
+      "sha256": "8BE69DCBAE6BB9CE7DED2A67A701FB91937B15F49AEAB54B609A2738AD373A9B",
+      "loggingCalls": 0,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 47,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-blocked",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\compiler-blocked\\d3dcompiler_47.dll",
+      "sha256": "8BE69DCBAE6BB9CE7DED2A67A701FB91937B15F49AEAB54B609A2738AD373A9B",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 52,
+        "message": ""
+      }
+    },
+    {
+      "id": "dxgi-normal",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\dxgi-normal\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 59,
+        "message": ""
+      }
+    },
+    {
+      "id": "dxgi-disabled",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\dxgi-disabled\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69",
+      "loggingCalls": 0,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 59,
+        "message": ""
+      }
+    },
+    {
+      "id": "dxgi-blocked",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\dxgi-blocked\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 55,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-asan-export",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\compiler-ownership\\compiler_audit_asan.dll",
+      "sha256": "0299CF4F1E0E4D2ADC003DBEBA6E6478B0EF31D5ADCFD08D92DEF78334B31636",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 157,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-asan-replacement",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\257a79a74903\\compiler-ownership\\compiler_audit_asan.dll",
+      "sha256": "0299CF4F1E0E4D2ADC003DBEBA6E6478B0EF31D5ADCFD08D92DEF78334B31636",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 157,
+        "message": ""
+      }
+    }
+  ],
+  "compilerProviderMode": "System D3DCompiler_47 copied under the declared legacy _46_org dependency name; public API compatibility coverage, not original 46/private export certification",
+  "redReport": "build\\f\\b0669686380e\\results.json",
+  "redReportSha256": "D68ED932C3E617238895D1F79BCC68A3BC75F12DC70FD819D1BC193E0D1B0EA4",
+  "redChecks": [
+    {
+      "name": "special",
+      "status": "FAIL",
+      "detail": {
+        "status": "FAIL",
+        "exitCode": 1,
+        "elapsedMs": 1432,
+        "message": ""
+      }
+    }
+  ],
+  "policyAudit": {
+    "productionTrigger": "Valid declared STATIC pool + nan selector yielded a null selected object, then reference flag propagation dereferenced it in the pre-fix executable.",
+    "normalTemplates": "Real INI creates both templates; explicit template-removal tests are declared low-level fault cases, not evidence that normal INI omits dependencies.",
+    "invalidNumeric": "STATIC parse fails; dynamic RING variable read yields NaN; assignment retains prior template/slot.",
+    "preserved": "FIFO/SPATIAL bitwise NaN UID, proxy delegation, default template reads, finite negative and large wrapping, and existing SIZE_MAX guard.",
+    "actualDll": "Invalid STATIC resource reference/indirect commands are rejected and valid x/y Constants continue to GPU 7/9."
+  }
+}
