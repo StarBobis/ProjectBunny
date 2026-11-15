@@ -211,6 +211,13 @@
       "summary": "执行新增遗漏：APPEND字段每次从零解码，原生SO为1/2/3/4而旧文本第二字段重复1/2。按记录/槽传递64位转储游标，保留原布局哈希/描述及F008边界；原生双float2与16→32位对齐、重置/跨槽/实例/截断/大偏移专项和23+10全流程通过。",
       "evidence": "validation/F-324.json",
       "commitLookup": "git log --fixed-strings --grep=F-324"
+    },
+    {
+      "id": "F-100",
+      "status": "validated-in-simulator",
+      "summary": "字面量按实际1至4分量解析并验证所选索引，单值广播保留；解析失败不拆坏原操作数，调用方设置现有decompile错误标记。精确保留32位整数、避免float取整越界，合法向量/修饰/边界与畸形输入专项通过；真实shader反编译重编译后WARP像素一致，23+10全流程通过。",
+      "evidence": "validation/F-100.json",
+      "commitLookup": "git log --fixed-strings --grep=F-100"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

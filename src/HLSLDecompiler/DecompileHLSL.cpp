@@ -23,6 +23,10 @@
 #include <vector>
 #include <set>
 #include <algorithm>
+#include <charconv>
+#include <climits>
+#include <cmath>
+#include <cctype>
 
 #include "DecompileHLSL.h"
 
@@ -1775,59 +1779,108 @@ public:
 		}
 	}
 
-	static void applySwizzleLiteral(char *right, char *right2, bool useInt, size_t pos, char idx[4])
-	{
-		// Single literal?
-		if (!strchr(right, ','))
-		{
-			strcpy_s(right2, opcodeSize, right + 2);
-			right2[strlen(right2) - 1] = 0;
-			return;
-		}
+	struct LiteralComponent {
+		float number;
+		int signed_value;
+		unsigned unsigned_value;
+		bool exact_signed;
+		bool exact_unsigned;
+		bool raw_hex;
+	};
 
-		char *beginPos = right + 2;
-		float args[4];
-		unsigned hex_args[4];
-		bool is_hex[4];
-		for (int i = 0; i < 4; ++i)
-		{
-			char *endPos = strchr(beginPos, ',');
-			if (endPos) *endPos = 0;
-			sscanf_s(beginPos, "%f", args + i);
-			is_hex[i] = (sscanf_s(beginPos, " 0x%x", hex_args + i) == 1);
-			beginPos = endPos + 1;
+	static bool applySwizzleLiteral(const char *right, char *right2, bool useInt, size_t pos, const char idx[4])
+	{
+		if (!right || !right2 || !idx || !pos || pos > 4)
+			return false;
+		const size_t length = strlen(right);
+		if (length < 4 || length >= opcodeSize || right[0] != 'l' || right[1] != '(' || right[length-1] != ')')
+			return false;
+		for (size_t i = 0; i < pos; ++i)
+			if (idx[i] < 0 || idx[i] >= 4) return false;
+
+		char contents[opcodeSize];
+		strcpy_s(contents, right + 2); contents[length-3] = 0;
+		LiteralComponent args[4]{};
+		size_t count = 0;
+		char *begin = contents;
+		char *scalar = nullptr;
+		while (true) {
+			if (count == 4) return false;
+			char *comma = strchr(begin, ',');
+			if (comma) *comma = 0;
+			while (isspace(static_cast<unsigned char>(*begin))) ++begin;
+			char *end = begin + strlen(begin);
+			while (end != begin && isspace(static_cast<unsigned char>(end[-1]))) *--end = 0;
+			if (begin == end) return false;
+			if (!scalar) scalar = begin;
+			int consumed = 0;
+			if (sscanf_s(begin, "%f %n", &args[count].number, &consumed) != 1 || consumed != end - begin)
+				return false;
+			if (end - begin >= 2 && begin[0] == '0' && (begin[1] == 'x' || begin[1] == 'X')) {
+				const auto parsed = std::from_chars(begin + 2, end, args[count].unsigned_value, 16);
+				if (parsed.ec != std::errc() || parsed.ptr != end) return false;
+				args[count].raw_hex = args[count].exact_unsigned = true;
+			} else {
+				const char *integer = *begin == '+' ? begin + 1 : begin;
+				const auto signed_result = std::from_chars(integer, end, args[count].signed_value);
+				args[count].exact_signed = signed_result.ec == std::errc() && signed_result.ptr == end;
+				const auto unsigned_result = std::from_chars(integer, end, args[count].unsigned_value);
+				args[count].exact_unsigned = unsigned_result.ec == std::errc() && unsigned_result.ptr == end;
+			}
+			++count;
+			if (!comma) break;
+			begin = comma + 1;
 		}
+		// A single literal broadcasts; vector literals require every selected
+		// component to have actually been supplied.
+		if (count == 1) {
+			strcpy_s(right2, opcodeSize, scalar);
+			return true;
+		}
+		for (size_t i = 0; i < pos; ++i)
+			if (static_cast<size_t>(idx[i]) >= count) return false;
 		if (pos == 1)
 		{
-			sprintf_s(right2, opcodeSize, "%.9g", args[idx[0]]);
+			const auto &value = args[idx[0]];
+			if (useInt && value.exact_signed) sprintf_s(right2, opcodeSize, "%d", value.signed_value);
+			else if (useInt && value.exact_unsigned) sprintf_s(right2, opcodeSize, "0x%x", value.unsigned_value);
+			else sprintf_s(right2, opcodeSize, "%.9g", value.number);
 		}
 		else
 		{
 			// Only integer values?
 			bool isInt = true;
-			for (int i = 0; idx[i] >= 0 && i < 4; ++i)
-				isInt = isInt && (is_hex[idx[i]] || (floor(args[idx[i]]) == args[idx[i]]));
+			for (size_t i = 0; i < pos; ++i) {
+				const auto &value = args[idx[i]];
+				isInt = isInt && (value.exact_signed || value.exact_unsigned ||
+					(std::isfinite(value.number) && floor(value.number) == value.number &&
+					static_cast<double>(value.number) >= INT_MIN && static_cast<double>(value.number) <= INT_MAX));
+			}
 			if (isInt && useInt)
 			{
-				sprintf_s(right2, opcodeSize, "int%Id(", pos);
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i) {
-					if (is_hex[idx[i]])
-						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "0x%x,", hex_args[idx[i]]);
+				sprintf_s(right2, opcodeSize, "int%zu(", pos);
+				for (size_t i = 0; i < pos; ++i) {
+					const auto &value = args[idx[i]];
+					if (value.raw_hex || (!value.exact_signed && value.exact_unsigned))
+						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "0x%x,", value.unsigned_value);
+					else if (value.exact_signed)
+						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%d,", value.signed_value);
 					else
-						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%d,", int(args[idx[i]]));
+						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%d,", static_cast<int>(value.number));
 				}
 				right2[strlen(right2) - 1] = 0;
 				strcat_s(right2, opcodeSize, ")");
 			}
 			else
 			{
-				sprintf_s(right2, opcodeSize, "float%Id(", pos);
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i)
-					sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%.9g,", args[idx[i]]);
+				sprintf_s(right2, opcodeSize, "float%zu(", pos);
+				for (size_t i = 0; i < pos; ++i)
+					sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%.9g,", args[idx[i]].number);
 				right2[strlen(right2) - 1] = 0;
 				strcat_s(right2, opcodeSize, ")");
 			}
 		}
+		return true;
 	}
 
 	void applySwizzle(const char *left, char *right, bool useInt = false)
@@ -1875,18 +1928,30 @@ public:
 		// Fairly bold change here- this fetches the source swizzle from 'left', and it previously would
 		// find the first dot in the string.  That's not right for left side array indices, so I changed it
 		// to look for the far right dot instead.  Should be correct, but this is used everywhere.
-		const char *strPos = strrchr(left, '.') + 1;
+		const char *strPos = strrchr(left, '.');
+		strPos = strPos ? strPos + 1 : "x";
 		char idx[4] = { -1, -1, -1, -1 };
 		char map[4] = { 3, 0, 1, 2 };
 		size_t pos = 0;							// Used as index into string buffer
-		if (strPos == (const char *)1)
-			strPos = "x";
-		while (*strPos && pos < 4)
+		while (*strPos && pos < 4) {
+			if (*strPos < 'w' || *strPos > 'z') {
+				logDecompileError("Invalid swizzle: " + string(left));
+				return;
+			}
 			idx[pos++] = map[*strPos++ - 'w'];
+		}
+		if (*strPos || !pos) {
+			logDecompileError("Invalid swizzle component count: " + string(left));
+			return;
+		}
 
 		// literal?
-		if (right[0] == 'l')
-			applySwizzleLiteral(right, right2, useInt, pos, idx);
+		if (right[0] == 'l') {
+			if (!applySwizzleLiteral(right, right2, useInt, pos, idx)) {
+				logDecompileError("Invalid literal or selected component: " + string(right));
+				return;
+			}
+		}
 		else if (right[0] == 'c' && right[1] != 'b')
 		{
 			//dx9 const register, start with c

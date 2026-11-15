@@ -169,6 +169,10 @@ if(BUILD_TESTING)
     list(APPEND DX11_REGRESSION_SOURCES tests/frame_analysis_audit_regression.cpp)
     set_source_files_properties(tests/frame_analysis_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/FrameAnalysis.cpp")
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/HLSLDecompiler/DecompileHLSL.cpp" "tests/hlsl_decompiler_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/hlsl_decompiler_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/HLSLDecompiler/DecompileHLSL.cpp")
     string(REPLACE "${CMAKE_SOURCE_DIR}/src/common/util.cpp" "tests/util_audit_regression.cpp"
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/util_audit_regression.cpp PROPERTIES

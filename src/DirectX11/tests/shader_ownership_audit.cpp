@@ -171,3 +171,12 @@ void test_dx11_shader_diagnostic_failure_regression()
         G->mReloadedShaders.count(recovered.Get()), "F172: normal diagnostic retention works after import-slot restoration");
     CleanupShaderMaps(recovered.Get()); CleanupShaderMaps(pixel.Get());
 }
+
+std::array<unsigned char,4> render_dx11_audit_constant_pixel(dx11_slot_test::BatchDevice& device, ID3D11PixelShader* pixel)
+{
+    auto code = compile_ownership("float4 main(uint id:SV_VertexID):SV_Position{float2 p=float2((id<<1)&2,id&2);return float4(p*float2(2,-2)+float2(-1,1),0,1);}", "vs_5_0");
+    ComPtr<ID3D11VertexShader> vertex;
+    require_batch(SUCCEEDED(device.native->CreateVertexShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&vertex)),
+        "literal audit: native fullscreen vertex shader");
+    return render_pixel(device, vertex.Get(), pixel);
+}

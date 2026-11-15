@@ -4,12 +4,15 @@
 #include "Input.h"
 #include "Override.h"
 #include "vkeys.h"
+#include "HLSLDecompiler/DecompileHLSL.h"
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include "D3D_Shaders/stdafx.h"
 
 extern std::vector<CommandList*> pending_post_command_lists;
+std::array<unsigned char,4> render_dx11_audit_constant_pixel(dx11_slot_test::BatchDevice&, ID3D11PixelShader*);
 
 void test_dx11_dx9_constant_reset_regression();
 void test_dx11_assembler_double_index_regression();
@@ -31,6 +34,7 @@ void test_dx11_file_publication_regression();
 void test_dx11_device_initialization_regression();
 void test_dx11_vertex_dump_bounds_regression();
 void test_dx11_appended_vertex_layout_regression();
+void test_dx11_decompiler_literal_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -261,6 +265,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-007", test_f007},
     {"F-008", test_dx11_vertex_dump_bounds_regression},
     {"F-324", test_dx11_appended_vertex_layout_regression},
+    {"F-100", test_dx11_decompiler_literal_regression},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
@@ -349,4 +354,41 @@ void test_dx11_vertex_dump_gpu_regression()
         throw;
     }
     device.wrapper = std::move(original); device.device->SetHackerContext(device.wrapper.get()); device.state.mHackerContext = device.wrapper.get();
+}
+
+void test_dx11_decompiler_public_literal_regression()
+{
+    using namespace dx11_slot_test;
+    const char source[] = "float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}";
+    ComPtr<ID3DBlob> code, errors, assembly;
+    require_batch(SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+        "F100: native compiler produces a real literal shader");
+    require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&assembly)),
+        "F100: actual native assembly input");
+    std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
+    DecompilerSettings settings;
+    ParseParameters params{}; params.bytecode = code->GetBufferPointer(); params.decompiled = text.c_str();
+    params.decompiledSize = text.size(); params.G = &settings;
+    bool patched = false, failed = false; std::string model;
+    const auto hlsl = DecompileBinaryHLSL(params,patched,model,failed);
+    require_batch(!failed && !hlsl.empty(), "F100: real public decompiler preserves a normal four-component shader");
+    ComPtr<ID3DBlob> rebuilt;
+    require_batch(SUCCEEDED(D3DCompile(hlsl.data(),hlsl.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors)),
+        "F100: regenerated HLSL compiles with the actual compiler");
+    BatchDevice device; ComPtr<ID3D11PixelShader> original, replacement;
+    require_batch(SUCCEEDED(device.native->CreatePixelShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&original)) &&
+        SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),nullptr,&replacement)),
+        "F100: native device accepts original and decompiled shaders");
+    const auto expected = render_dx11_audit_constant_pixel(device, original.Get());
+    require_batch(expected == std::array<unsigned char,4>{64,128,191,255} &&
+        render_dx11_audit_constant_pixel(device,replacement.Get()) == expected, "F100: actual rendered literal values remain unchanged");
+    const auto begin = text.find("l(");
+    require_batch(begin != std::string::npos, "F100: real disassembly contains the fixture literal");
+    const auto end = text.find(')',begin);
+    require_batch(end != std::string::npos, "F100: fixture has a complete literal");
+    text.replace(begin,end-begin+1,"l(1,2)");
+    params.decompiled = text.c_str(); params.decompiledSize = text.size();
+    failed = false; patched = false;
+    (void)DecompileBinaryHLSL(params,patched,model,failed);
+    require_batch(failed, "F100: unavailable components propagate the existing public error flag used by native shader fallback");
 }
