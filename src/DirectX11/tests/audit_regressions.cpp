@@ -166,7 +166,7 @@ void test_f106()
     ComPtr<ID3D11PixelShader> shader;
     require_batch(!rebuilt.empty() && SUCCEEDED(device.native->CreatePixelShader(rebuilt.data(), rebuilt.size(), nullptr, &shader)),
         "F106: valid round-trip bytecode remains accepted by WARP");
-    for (const char* invalid : {"\n", "// no shader model\n", "", "ret\n"}) {
+    for (const char* invalid : {"\n", "// no shader model\n", "", "ret\n", "ret\nret\nret\n", "unknown\nret\nret\n"}) {
         for (bool collect : {false, true}) {
             std::vector<char> input(invalid, invalid + std::strlen(invalid));
             std::vector<AssemblerParseError> warnings;
@@ -177,6 +177,16 @@ void test_f106()
             require_batch(rejected, "F106: missing model is a fatal parse error with or without warning collection");
         }
     }
+    ComPtr<ID3DBlob> native_assembly;
+    require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&native_assembly)),
+        "F106 correction: actual native assembly for warning-collector recovery");
+    const std::string prefixed=std::string("ret\n")+static_cast<const char*>(native_assembly->GetBufferPointer());
+    std::vector<char> recover_input(prefixed.begin(),prefixed.end()); std::vector<AssemblerParseError> recover_warnings;
+    const auto recovered=assembler(&recover_input,original,&recover_warnings);
+    shader.Reset();
+    require_batch(recover_warnings.size()==1 && recover_warnings.front().line_no==1 &&
+        SUCCEEDED(device.native->CreatePixelShader(recovered.data(),recovered.size(),nullptr,&shader)),
+        "F106 correction: a rejected prefix does not prevent a later valid model from recovering under the existing collector policy");
     wchar_t executable[MAX_PATH]{};
     require_batch(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "F106: locate owned shader-tool fixture");
     const auto fixture = std::filesystem::path(executable).parent_path() / L"shader-fixture";

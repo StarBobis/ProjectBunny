@@ -12,9 +12,10 @@
     {
       "id": "F-106",
       "status": "validated-in-simulator",
-      "summary": "缺少shader model时在改写长度前抛出既有解析异常；正常DXBC往返由WARP及离线Shader工具验证，Hunting/HackerDevice沿既有异常回退处理。",
+      "summary": "缺model边界保留，collector只有在模型验证/两字头写入后才进入code状态；ret三行不再返回损坏DXBC，坏前缀+合法model仍可恢复。独立公开红例、原生恢复/行号专项、主线25+10全流程及对抗复审通过；整批期限装置问题另单独修正，旧验证和超时记录保留。",
       "evidence": "validation/F-106.json",
-      "commitLookup": "git log --fixed-strings --grep=F-106"
+      "commitLookup": "git log --fixed-strings --grep=F-106",
+      "latestEvidence": "validation/F-106-correction-1.json"
     },
     {
       "id": "F-114",
@@ -351,6 +352,13 @@
       "status": "validated-correction-in-simulator",
       "evidence": "validation/F-137-correction-1.json",
       "summary": "ZRepair短串保护保留，补回HLSL合法小写rgba别名；对抗审查发现原xyzw白名单误拒。原生52字母+独立LoadConfig反例确认，当前八分量逐个原生编译/两键配置、大写/坏后缀、专项与25+10全流程和对抗复审通过；原验证保留并追加纠正记录。"
+    },
+    {
+      "id": "F-106",
+      "tag": "correction-1",
+      "status": "validated-correction-in-simulator",
+      "evidence": "validation/F-106-correction-1.json",
+      "summary": "缺model边界保留，collector只有在模型验证/两字头写入后才进入code状态；ret三行不再返回损坏DXBC，坏前缀+合法model仍可恢复。独立公开红例、原生恢复/行号专项、主线25+10全流程及对抗复审通过；整批期限装置问题另单独修正，旧验证和超时记录保留。"
     }
   ]
 }

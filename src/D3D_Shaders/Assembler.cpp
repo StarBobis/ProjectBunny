@@ -3291,12 +3291,12 @@ vector<byte> assembler(vector<char> *asmFile, vector<byte> origBytecode,
 			vector<DWORD> v;
 			if (!codeStarted) {
 				if (s.size() > 0 && s[0] != ' ') {
-					codeStarted = true;
 					vector<DWORD> ins = assembleIns(s);
 					if (ins.size() != 1 || (ins[0] >> 16) > 5)
 						throw AssemblerParseError(s, "Expected shader model declaration before instructions");
 					o.insert(o.end(), ins.begin(), ins.end());
 					o.push_back(0);
+					codeStarted = true;
 				}
 			} else if (s.find("{ {") < s.size()) {
 				s2 = s;

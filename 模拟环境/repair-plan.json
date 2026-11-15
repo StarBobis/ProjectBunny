@@ -1915,6 +1915,13 @@
       "date": "2026-11-15",
       "reason": "原生创建失败不等于缺陷，撤回自动fallback；只修不安全数值转换和明确诊断，且不将匹配规则误说为失败原因",
       "detail": "执行复查修正报告.md"
+    },
+    {
+      "id": "F-106",
+      "date": "2026-11-16",
+      "kind": "adversarial-correction",
+      "reason": "collector首行失败时过早codeStarted可让两条ret绕过model guard；状态发布延后，兼容后续合法model恢复",
+      "detail": "执行复查修正报告.md"
     }
   ],
   "performanceRows": [
