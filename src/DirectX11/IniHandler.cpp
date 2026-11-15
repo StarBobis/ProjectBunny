@@ -4626,6 +4626,23 @@ public:
     }
 };
 
+static void ParseDepthTextureParameter(const wchar_t *value, const wchar_t *key, std::string &texture, char &component)
+{
+	char buffer[MAX_PATH];
+	if (!ConvertStringParameter(value, buffer))
+		return;
+	const char *start = buffer;
+	while (isspace(static_cast<unsigned char>(*start))) ++start;
+	size_t length = strlen(start);
+	while (length && isspace(static_cast<unsigned char>(start[length - 1]))) --length;
+	if (length < 3 || start[length - 2] != '.' || !strchr("xyzw", start[length - 1])) {
+		IniWarningW(L"Invalid %ls=%ls: expected texture.component (x/y/z/w)\n", key, value);
+		return;
+	}
+	texture.assign(start, length - 2);
+	component = start[length - 1];
+}
+
 void LoadConfigFile()
 {
     EarlyConfigRegistries previous_registries;
@@ -4878,23 +4895,13 @@ void LoadConfigFile()
 	G->decompiler_settings.recompileVs = GetIniBool(L"Rendering", L"recompile_all_vs", false, NULL);
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTexture1", 0, setting, MAX_PATH))
 	{
-		char buf[MAX_PATH];
-		if (ConvertStringParameter(setting, buf)) {
-			char *end = RightStripA(buf);
-			G->decompiler_settings.ZRepair_DepthTextureReg1 = *end; *(end - 1) = 0;
-			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) start++;
-			G->decompiler_settings.ZRepair_DepthTexture1 = start;
-		}
+		ParseDepthTextureParameter(setting, L"fix_ZRepair_DepthTexture1", G->decompiler_settings.ZRepair_DepthTexture1,
+			G->decompiler_settings.ZRepair_DepthTextureReg1);
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTexture2", 0, setting, MAX_PATH))
 	{
-		char buf[MAX_PATH];
-		if (ConvertStringParameter(setting, buf)) {
-			char *end = RightStripA(buf);
-			G->decompiler_settings.ZRepair_DepthTextureReg2 = *end; *(end - 1) = 0;
-			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) start++;
-			G->decompiler_settings.ZRepair_DepthTexture2 = start;
-		}
+		ParseDepthTextureParameter(setting, L"fix_ZRepair_DepthTexture2", G->decompiler_settings.ZRepair_DepthTexture2,
+			G->decompiler_settings.ZRepair_DepthTextureReg2);
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_ZPosCalc1", 0, setting, MAX_PATH))
 		G->decompiler_settings.ZRepair_ZPosCalc1 = readStringParameter(setting);

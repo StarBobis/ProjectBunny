@@ -246,6 +246,13 @@
       "summary": "纠正原报告的未终止机制：当前安全CRT已清空编码错误结果，容量耗尽仍会终止或返回截断前缀。保持现有locale，预检完整字节数并核对转换；共享参数及5个直接调用拒绝错误/超限。C/UTF-8、边界、无效UTF-16、恢复和真实INI重载专项、25+10全流程与DX12兼容构建通过；_TRUNCATE初版被专项否决。",
       "evidence": "validation/F-138.json",
       "commitLookup": "git log --fixed-strings --grep=F-138"
+    },
+    {
+      "id": "F-137",
+      "status": "validated-in-simulator",
+      "summary": "ZRepair两个深度纹理调用者验证非空名字及.x/y/z/w后缀后再发布，消除*(end-1)短串越界，保留合法拆分而非残留点号。真实配置旧版接受单字符已复现；短串/空名/坏后缀、两键、四分量、空白和重载专项及25+10全流程通过；F138转换另项先完成。",
+      "evidence": "validation/F-137.json",
+      "commitLookup": "git log --fixed-strings --grep=F-137"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

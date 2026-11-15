@@ -263,6 +263,35 @@ void test_f135()
 
 #include "ini_parameter_audit.inl"
 
+void test_f137()
+{
+    const auto saved = G->decompiler_settings;
+    AuditConfigScope config;
+    config.load("[Rendering]\nfix_ZRepair_DepthTexture1=FirstDepth.w\nfix_ZRepair_DepthTexture2=SecondDepth.z\n");
+    for (const auto* invalid : {"x", ".x", "ab", "Depth.q", "Depthx", "Depth.xy", ".w"}) {
+        const auto text = std::string("[Rendering]\nfix_ZRepair_DepthTexture1=") + invalid +
+            "\nfix_ZRepair_DepthTexture2=" + invalid + "\n";
+        std::fprintf(stderr, "F137: reject malformed texture selector %s before splitting\n", invalid); std::fflush(stderr);
+        config.load(text.c_str());
+        require_batch(G->decompiler_settings.ZRepair_DepthTexture1 == "FirstDepth" && G->decompiler_settings.ZRepair_DepthTextureReg1 == 'w' &&
+            G->decompiler_settings.ZRepair_DepthTexture2 == "SecondDepth" && G->decompiler_settings.ZRepair_DepthTextureReg2 == 'z',
+            "F137: both invalid selectors are rejected without publishing partial settings");
+    }
+    for (const char component : {'x','y','z','w'}) {
+        const auto text = std::string("[Rendering]\nfix_ZRepair_DepthTexture1=  SceneDepthTexture.") + component +
+            " \t\nfix_ZRepair_DepthTexture2=OtherDepth." + component + "\n";
+        config.load(text.c_str());
+        require_batch(G->decompiler_settings.ZRepair_DepthTexture1 == "SceneDepthTexture" &&
+            G->decompiler_settings.ZRepair_DepthTexture2 == "OtherDepth" &&
+            G->decompiler_settings.ZRepair_DepthTextureReg1 == component && G->decompiler_settings.ZRepair_DepthTextureReg2 == component,
+            "F137: preserve exact texture names and all four valid component suffixes");
+    }
+    config.load("[Rendering]\nfix_ZRepair_DepthTexture1= \t\nfix_ZRepair_DepthTexture2=\n");
+    require_batch(G->decompiler_settings.ZRepair_DepthTexture1 == "SceneDepthTexture" &&
+        G->decompiler_settings.ZRepair_DepthTexture2 == "OtherDepth", "F137: empty or omitted values retain existing configuration semantics");
+    G->decompiler_settings = saved;
+}
+
 void test_f138()
 {
     test_dx11_parameter_conversion_regression();
@@ -298,6 +327,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
+    {"F-137", test_f137},
     {"F-138", test_f138},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
