@@ -157,6 +157,10 @@ if(BUILD_TESTING)
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/signature_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/SignatureParser.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)Hunting\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/hunting_audit_regression.cpp)
+    set_source_files_properties(tests/hunting_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Hunting.cpp")
     if(DX11_AUDIT_ASAN_LOCKS)
         if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
             message(FATAL_ERROR "DX11_AUDIT_ASAN_LOCKS requires MSVC x64 with AddressSanitizer.")

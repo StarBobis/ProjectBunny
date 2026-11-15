@@ -696,6 +696,12 @@ static bool ReloadShader(wchar_t *shaderPath, wchar_t *fileName, HackerDevice *d
 
 	// Extract hash from first 16 characters of file name so we can look up details by hash
 	wstring ws = fileName;
+	if (ws.size() < 16 || ws.find_first_not_of(L"0123456789abcdefABCDEF") < 16) {
+		LogInfo("> invalid shader hash in filename: %ls\n", fileName);
+		if (errText)
+			*errText = "Invalid shader hash in filename";
+		return false;
+	}
 	hash = stoull(ws.substr(0, 16), NULL, 16);
 
 	// This is probably unnecessary, because we modify already existing map entries, but
@@ -1165,7 +1171,6 @@ static void ReloadFixes(HackerDevice *device, void *private_data)
 
 		// Strict file name format, to allow renaming out of the way. 
 		// "00aa7fa12bbf66b3-ps_replace.txt" or "00aa7fa12bbf66b3-vs.txt"
-		// Will still blow up if the first characters are not hex.
 		swprintf_s(fileName, MAX_PATH, L"%ls\\????????????????-??*.txt", G->SHADER_PATH);
 		HANDLE hFind = FindFirstFile(fileName, &findFileData);
 		if (hFind != INVALID_HANDLE_VALUE)
