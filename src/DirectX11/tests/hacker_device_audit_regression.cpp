@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <array>
+#include <limits>
 
 extern "C" decltype(&D3DCompile) __imp_D3DCompile;
 extern "C" decltype(&GetFileAttributesExW) __imp_GetFileAttributesExW;
@@ -329,4 +330,146 @@ void initialize_shader_header_files() {with_dx11_audit_shader_files(exercise_sha
 void test_dx11_shader_header_file_regression()
 {
     with_dx11_audit_hunting_configuration(initialize_shader_header_files);
+}
+
+namespace {
+class ResourceOverrideAuditScope {
+    decltype(G->mTextureOverrideMap) overrides=std::move(G->mTextureOverrideMap);
+    decltype(G->mFuzzyTextureOverrides) fuzzy=std::move(G->mFuzzyTextureOverrides);
+    int hunting=G->hunting;
+public:
+    ResourceOverrideAuditScope() {InvalidateTextureOverrideCandidates(); G->hunting=0;}
+    ~ResourceOverrideAuditScope()
+    {
+        InvalidateTextureOverrideCandidates(); G->mTextureOverrideMap.clear(); G->mFuzzyTextureOverrides.clear();
+        G->mTextureOverrideMap=std::move(overrides); G->mFuzzyTextureOverrides=std::move(fuzzy); G->hunting=hunting;
+    }
+    void clear() {InvalidateTextureOverrideCandidates(); G->mTextureOverrideMap.clear();}
+};
+class ResourceOverrideLog {
+    FILE* previous=LogFile;
+    LogVerbosity level=gLogVerbosity;
+    bool debug=gLogDebug;
+    FILE* output=std::tmpfile();
+public:
+    explicit ResourceOverrideLog(LogVerbosity requested=LogVerbosity::INFO)
+    {
+        require_batch(output!=nullptr,"F175: actual diagnostic capture");
+        LogFile=output; gLogVerbosity=requested; gLogDebug=false;
+    }
+    ~ResourceOverrideLog() {LogFile=previous; gLogVerbosity=level; gLogDebug=debug; std::fclose(output);}
+    std::string text()
+    {
+        require_batch(!std::fflush(output) && !std::fseek(output,0,SEEK_SET),"F175: rewind runtime diagnostics");
+        std::string result; char data[1024]; size_t count;
+        while((count=std::fread(data,1,sizeof(data),output))!=0) result.append(data,count);
+        return result;
+    }
+};
+bool resource_override_log_contains(const std::string& bytes,const std::string& token)
+{
+    if(bytes.find(token)!=std::string::npos) return true;
+    std::string utf16;
+    for(const char character:token) {utf16.push_back(character); utf16.push_back('\0');}
+    return bytes.find(utf16)!=std::string::npos;
+}
+}
+
+void test_dx11_resource_override_validation_regression()
+{
+    ResourceOverrideAuditScope configuration; BatchDevice device;
+    D3D11_TEXTURE2D_DESC original{};
+    original.Width=4; original.Height=3; original.ArraySize=original.MipLevels=1;
+    original.Format=DXGI_FORMAT_R8G8B8A8_UNORM; original.SampleDesc.Count=1; original.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+    const uint32_t hash=CalcTexture2DDescHash(0,&original);
+    auto set_override=[&]() -> TextureOverride& {
+        configuration.clear(); auto& entries=G->mTextureOverrideMap[hash]; entries.resize(1);
+        entries.front().ini_section=L"TextureOverrideAuditF175"; return entries.front();
+    };
+    for(const float invalid:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity(),-1.0f,1073741824.0f,(std::numeric_limits<float>::max)()}) {
+        auto& entry=set_override(); entry.width_multiply=invalid;
+        ResourceOverrideLog diagnostic; ComPtr<ID3D11Texture2D> result;
+        const auto hr=device.device->CreateTexture2D(&original,nullptr,&result);
+        const auto text=diagnostic.text();
+        std::fputs("F175: invalid floating-point dimensions must fail with section/field diagnostics\n",stderr); std::fflush(stderr);
+        if(hr!=E_INVALIDARG || result || !resource_override_log_contains(text,"Invalid resource override") || !resource_override_log_contains(text,"width_multiply"))
+            std::fprintf(stderr,"F175 observed HRESULT=%08lx, result=%p, diagnostics=[%s]\n",static_cast<unsigned long>(hr),result.Get(),text.c_str());
+        require_batch(hr==E_INVALIDARG && !result && resource_override_log_contains(text,"Invalid resource override") &&
+            resource_override_log_contains(text,"TextureOverrideAuditF175") && resource_override_log_contains(text,"width_multiply"),
+            "F175: reject an unsafe float-to-UINT conversion explicitly, without restoring the original descriptor");
+    }
+    for(const unsigned field:{0u,1u,2u}) {
+        auto& entry=set_override();
+        if(field==0) entry.width=-2; else if(field==1) entry.height=-2; else entry.format=-2;
+        ResourceOverrideLog diagnostic; ComPtr<ID3D11Texture2D> result;
+        require_batch(device.device->CreateTexture2D(&original,nullptr,&result)==E_INVALIDARG && !result &&
+            resource_override_log_contains(diagnostic.text(),"Invalid resource override"),"F175: negative explicit values do not wrap into unsigned descriptors");
+    }
+    {
+        auto& entry=set_override(); entry.width_multiply=-1;
+        ResourceOverrideLog diagnostic(LogVerbosity::WARNING); ComPtr<ID3D11Texture2D> result;
+        require_batch(device.device->CreateTexture2D(&original,nullptr,&result)==E_INVALIDARG && !result &&
+            resource_override_log_contains(diagnostic.text(),"width_multiply"),"F175: numeric failures remain visible in warning-only logging");
+    }
+    for(const bool bad_format:{false,true}) {
+        auto& entry=set_override();
+        D3D11_TEXTURE2D_DESC invalid=original;
+        if(bad_format) {entry.format=999; invalid.Format=static_cast<DXGI_FORMAT>(999);}
+        else {entry.width_multiply=0; invalid.Width=0;}
+        ComPtr<ID3D11Texture2D> native,result; ResourceOverrideLog diagnostic;
+        const auto native_hr=device.native->CreateTexture2D(&invalid,nullptr,&native);
+        const auto hr=device.device->CreateTexture2D(&original,nullptr,&result);
+        const auto text=diagnostic.text();
+        require_batch(FAILED(native_hr) && hr==native_hr && !result && text.find("Resource creation failed with matching TextureOverride")!=std::string::npos,
+            "F175: native descriptor rejection is preserved and reported at INFO level, never retried with the original");
+    }
+    {
+        auto& entry=set_override(); entry.width_multiply=1.5f; entry.height_multiply=2.5f;
+        ComPtr<ID3D11Texture2D> result;
+        require_batch(SUCCEEDED(device.device->CreateTexture2D(&original,nullptr,&result)),"F175: valid dimension multipliers still create resources");
+        D3D11_TEXTURE2D_DESC actual{}; result->GetDesc(&actual);
+        require_batch(actual.Width==6 && actual.Height==7 && original.Width==4 && original.Height==3,
+            "F175: preserve valid truncation and never mutate the caller's descriptor");
+    }
+    {
+        configuration.clear(); auto& entries=G->mTextureOverrideMap[hash]; entries.resize(2);
+        entries[0].ini_section=L"TextureOverrideAuditF175Low"; entries[0].width=0; entries[0].iterations={0,1};
+        entries[1].ini_section=L"TextureOverrideAuditF175High"; entries[1].width=8; entries[1].iterations={0,1};
+        ComPtr<ID3D11Texture2D> result;
+        require_batch(SUCCEEDED(device.device->CreateTexture2D(&original,nullptr,&result)),"F175: a later absolute width preserves normal priority repair of a defined zero value");
+        D3D11_TEXTURE2D_DESC actual{}; result->GetDesc(&actual);
+        require_batch(actual.Width==8 && entries[0].iterations[0]==1 && entries[1].iterations[0]==1,
+            "F175: normal override order and per-entry iteration consumption remain unchanged");
+    }
+    {
+        D3D11_TEXTURE2D_DESC desc=original; desc.Width=16777219;
+        TextureOverride entry; entry.width_multiply=1.25f;
+        override_resource_desc_common_2d_3d(&desc,&entry);
+        require_batch(desc.Width==20971524,"F175: preserve the existing float product rounding before unsigned truncation");
+        desc=original; entry.width_multiply=1073741760.0f;
+        require_batch(override_resource_desc_common_2d_3d(&desc,&entry) && desc.Width==4294967040u,
+            "F175: the last representable float below 2^32 remains a defined conversion");
+    }
+    {
+        configuration.clear(); auto& entries=G->mTextureOverrideMap[hash]; entries.resize(2);
+        entries[0].ini_section=L"TextureOverrideAuditF175BadLow"; entries[0].width_multiply=std::numeric_limits<float>::quiet_NaN(); entries[0].iterations={0,1};
+        entries[1].ini_section=L"TextureOverrideAuditF175GoodHigh"; entries[1].width=8; entries[1].iterations={0,1};
+        ComPtr<ID3D11Texture2D> result; ResourceOverrideLog diagnostic;
+        require_batch(device.device->CreateTexture2D(&original,nullptr,&result)==E_INVALIDARG && !result &&
+            entries[0].iterations[0]==1 && entries[1].iterations[0]==1,"F175: unsafe numeric input fails without skipping later iteration bookkeeping");
+        require_batch(SUCCEEDED(device.device->CreateTexture2D(&original,nullptr,&result)),"F175: an inactive invalid iteration cannot poison later creations");
+        D3D11_TEXTURE2D_DESC actual{}; result->GetDesc(&actual);
+        require_batch(actual.Width==original.Width && entries[0].iterations[0]==2 && entries[1].iterations[0]==2,
+            "F175: subsequent iterations retain the original resource description");
+    }
+    D3D11_TEXTURE3D_DESC volume{}; volume.Width=volume.Height=volume.Depth=4; volume.MipLevels=1;
+    volume.Format=original.Format; volume.BindFlags=original.BindFlags;
+    configuration.clear(); auto& entries=G->mTextureOverrideMap[CalcTexture3DDescHash(0,&volume)]; entries.resize(1);
+    entries[0].ini_section=L"TextureOverrideAuditF175Volume"; entries[0].height_multiply=-1;
+    ComPtr<ID3D11Texture3D> rejected;
+    {ResourceOverrideLog diagnostic;
+        require_batch(device.device->CreateTexture3D(&volume,nullptr,&rejected)==E_INVALIDARG && !rejected &&
+            resource_override_log_contains(diagnostic.text(),"height_multiply"),"F175: 3D uses the same safe conversion failure boundary");}
+    configuration.clear();
+    require_batch(SUCCEEDED(device.device->CreateTexture3D(&volume,nullptr,&rejected)),"F175: removing the bad override recovers normal creation");
 }

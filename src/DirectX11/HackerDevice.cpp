@@ -20,6 +20,8 @@
 #include <D3Dcompiler.h>
 #include <wrl/client.h>
 #include <codecvt>
+#include <cmath>
+#include <limits>
 
 #include "log.h"
 #include "util.h"
@@ -1905,36 +1907,51 @@ static bool check_texture_override_iteration(TextureOverride *textureOverride)
 // buffer to be unstructured to allow it to be steroised when
 // StereoFlagsDX10=0x000C000.
 
-template <typename DescType>
-static void override_resource_desc_common_2d_3d(DescType *desc, TextureOverride *textureOverride)
+static bool override_resource_dimension(UINT* dimension, int absolute, float multiplier,
+		const char* name, const TextureOverride* textureOverride)
 {
-	if (textureOverride->format != -1) {
-		LogInfo("  setting custom format to %d\n", textureOverride->format);
-		desc->Format = (DXGI_FORMAT) textureOverride->format;
+	if (absolute != -1) {
+		if (absolute < 0) {
+			LogWarning("ERROR: Invalid resource override [%S]: %s=%d\n", textureOverride->ini_section.c_str(), name, absolute);
+			return false;
+		}
+		*dimension = static_cast<UINT>(absolute);
+		LogInfo("  setting custom %s to %u\n", name, *dimension);
 	}
-
-	if (textureOverride->width != -1) {
-		LogInfo("  setting custom width to %d\n", textureOverride->width);
-		desc->Width = textureOverride->width;
+	if (multiplier != 1.0f) {
+		// Retain the original float product and truncation for valid values.
+		const float scaled = *dimension * multiplier;
+		if (!std::isfinite(scaled) || scaled < 0 ||
+			static_cast<double>(scaled) > static_cast<double>((std::numeric_limits<UINT>::max)())) {
+			LogWarning("ERROR: Invalid resource override [%S]: %s_multiply=%g produces %g\n",
+				textureOverride->ini_section.c_str(), name, multiplier, scaled);
+			return false;
+		}
+		*dimension = static_cast<UINT>(scaled);
+		LogInfo("  multiplying custom %s by %f to %u\n", name, multiplier, *dimension);
 	}
-
-	if (textureOverride->width_multiply != 1.0f) {
-		desc->Width = (UINT)(desc->Width * textureOverride->width_multiply);
-		LogInfo("  multiplying custom width by %f to %d\n", textureOverride->width_multiply, desc->Width);
-	}
-
-	if (textureOverride->height != -1) {
-		LogInfo("  setting custom height to %d\n", textureOverride->height);
-		desc->Height = textureOverride->height;
-	}
-
-	if (textureOverride->height_multiply != 1.0f) {
-		desc->Height = (UINT)(desc->Height * textureOverride->height_multiply);
-		LogInfo("  multiplying custom height by %f to %d\n", textureOverride->height_multiply, desc->Height);
-	}
+	return true;
 }
 
-static void override_resource_desc(D3D11_BUFFER_DESC *desc, TextureOverride *textureOverride) {
+template <typename DescType>
+static bool override_resource_desc_common_2d_3d(DescType *desc, TextureOverride *textureOverride)
+{
+	bool valid = true;
+	if (textureOverride->format != -1) {
+		if (textureOverride->format < 0) {
+			LogWarning("ERROR: Invalid resource override [%S]: format=%d\n", textureOverride->ini_section.c_str(), textureOverride->format);
+			valid = false;
+		} else {
+			LogInfo("  setting custom format to %d\n", textureOverride->format);
+			desc->Format = static_cast<DXGI_FORMAT>(textureOverride->format);
+		}
+	}
+	const bool width_valid = override_resource_dimension(&desc->Width, textureOverride->width, textureOverride->width_multiply, "width", textureOverride);
+	const bool height_valid = override_resource_dimension(&desc->Height, textureOverride->height, textureOverride->height_multiply, "height", textureOverride);
+	return valid && width_valid && height_valid;
+}
+
+static bool override_resource_desc(D3D11_BUFFER_DESC *desc, TextureOverride *textureOverride) {
 	if (textureOverride->override_byte_width != -1) {
 		if (desc->ByteWidth < textureOverride->override_byte_width) {
 			LogInfo("  resizing buffer: %d->%d\n", desc->ByteWidth, textureOverride->override_byte_width);
@@ -1942,22 +1959,24 @@ static void override_resource_desc(D3D11_BUFFER_DESC *desc, TextureOverride *tex
 			desc->ByteWidth = textureOverride->override_byte_width;
 		}
 	}
+	return true;
 }
-static void override_resource_desc(D3D11_TEXTURE1D_DESC *desc, TextureOverride *textureOverride) {}
-static void override_resource_desc(D3D11_TEXTURE2D_DESC *desc, TextureOverride *textureOverride)
+static bool override_resource_desc(D3D11_TEXTURE1D_DESC *desc, TextureOverride *textureOverride) { return true; }
+static bool override_resource_desc(D3D11_TEXTURE2D_DESC *desc, TextureOverride *textureOverride)
 {
-	override_resource_desc_common_2d_3d(desc, textureOverride);
+	return override_resource_desc_common_2d_3d(desc, textureOverride);
 }
-static void override_resource_desc(D3D11_TEXTURE3D_DESC *desc, TextureOverride *textureOverride)
+static bool override_resource_desc(D3D11_TEXTURE3D_DESC *desc, TextureOverride *textureOverride)
 {
-	override_resource_desc_common_2d_3d(desc, textureOverride);
+	return override_resource_desc_common_2d_3d(desc, textureOverride);
 }
 
 template <typename DescType>
 static const DescType* process_texture_override(uint32_t hash,
 		const DescType *origDesc,
-		DescType *newDesc)
+		DescType *newDesc, bool& valid)
 {
+	valid = true;
 	TextureOverrideMatches matches;
 	TextureOverride *textureOverride = NULL;
 	const DescType* ret = origDesc;
@@ -1990,11 +2009,22 @@ static const DescType* process_texture_override(uint32_t hash,
 			if (!check_texture_override_iteration(textureOverride))
 				continue;
 
-			override_resource_desc(newDesc, textureOverride);
+			if (!override_resource_desc(newDesc, textureOverride))
+				valid = false;
 		}
 	}
 
 	return ret;
+}
+
+template <typename DescType>
+static void log_resource_override_failure(HRESULT result, uint32_t hash, const DescType* original, const DescType* overridden)
+{
+	if (FAILED(result) && original != overridden) {
+		char description[256];
+		StrResourceDesc(description, sizeof(description), overridden);
+		LogWarning("ERROR: Resource creation failed with matching TextureOverride: hash=%08x, HRESULT=%08lx, descriptor=%s\n", hash, static_cast<unsigned long>(result), description);
+	}
 }
 
 STDMETHODIMP HackerDevice::CreateBuffer(THIS_
@@ -2021,7 +2051,12 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 		hash = crc32c_hw(hash, pDesc, sizeof(D3D11_BUFFER_DESC));
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppBuffer) *ppBuffer = nullptr;
+		return E_INVALIDARG;
+	}
 
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateBuffer(pNewDesc, pInitialData, ppBuffer);
@@ -2077,7 +2112,12 @@ STDMETHODIMP HackerDevice::CreateTexture1D(THIS_
 	LogDebug("  InitialData = %p, hash = %08lx\n", pInitialData, hash);
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppTexture1D) *ppTexture1D = nullptr;
+		return E_INVALIDARG;
+	}
 
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateTexture1D(pNewDesc, pInitialData, ppTexture1D);
@@ -2190,12 +2230,18 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 	LogDebug("  InitialData = %p, hash = %08lx\n", pInitialData, hash);
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppTexture2D) *ppTexture2D = nullptr;
+		return E_INVALIDARG;
+	}
 
 	// Actual creation:
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateTexture2D(pNewDesc, pInitialData, ppTexture2D);
 	UnlockResourceCreationMode();
+	log_resource_override_failure(hr, hash, pDesc, pNewDesc);
 
 	if (ppTexture2D) LogDebug("  returns result = %x, handle = %p\n", hr, *ppTexture2D);
 
@@ -2268,11 +2314,17 @@ STDMETHODIMP HackerDevice::CreateTexture3D(THIS_
 	LogInfo("  InitialData = %p, hash = %08lx\n", pInitialData, hash);
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppTexture3D) *ppTexture3D = nullptr;
+		return E_INVALIDARG;
+	}
 
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateTexture3D(pNewDesc, pInitialData, ppTexture3D);
 	UnlockResourceCreationMode();
+	log_resource_override_failure(hr, hash, pDesc, pNewDesc);
 
 	// Register texture.
 	if (hr == S_OK && ppTexture3D)

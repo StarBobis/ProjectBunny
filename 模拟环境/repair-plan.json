@@ -992,9 +992,9 @@
       "originalSeverity": "medium",
       "evidence": "src/DirectX11/HackerDevice.cpp:1900-1903",
       "additionalEvidence": null,
-      "correctedConclusion": "非法覆盖值可使创建失败；是否失败回退是语义选择，不能自动掩盖mod错误或恢复不兼容格式。应先校验/明报失败。",
+      "correctedConclusion": "原生拒绝不支持/非法描述并失败本身正确，不自动回退；需防止非有限/负/超UINT倍率结果的不安全转换，保留合法float乘法截断和优先级/iteration，明确报字段错误并保留原生HRESULT。有限中间零值仍可被后续覆盖修复。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "真实2D/3D无initialData创建，NaN/Inf/负/2^32/overflow、浮点边界与截断、零值优先级、iteration继续/恢复、原生格式失败HRESULT一致和中性诊断；全流程+独立对抗gate",
       "implementationStatus": "pending"
     },
     {
@@ -1908,6 +1908,12 @@
       "kind": "adversarial-regression-correction",
       "reason": "原修复仅允许xyzw，错误拒绝HLSL合法rgba；原生52字母与真实LoadConfig反例已补实",
       "originalCommit": "d48f5ca",
+      "detail": "执行复查修正报告.md"
+    },
+    {
+      "id": "F-175",
+      "date": "2026-11-15",
+      "reason": "原生创建失败不等于缺陷，撤回自动fallback；只修不安全数值转换和明确诊断，且不将匹配规则误说为失败原因",
       "detail": "执行复查修正报告.md"
     }
   ],

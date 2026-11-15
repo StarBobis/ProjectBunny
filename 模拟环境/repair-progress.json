@@ -317,6 +317,13 @@
       "summary": "三处创建/重载首行按实际长度读取并严格UTF8解码，无换行取全行；非法显示信息诊断清空，保留主编译/汇编结果。旧合法单行HLSL已ASan复现堆越界；创建源先拒绝读失败/短读，可选时间戳失败零值但仍保留有效输出。保护页/编码/三路径/native shader/重载跳过/Win32失败专项和25+10全流程通过，新头完整接入CMake。",
       "evidence": "validation/F-171.json",
       "commitLookup": "git log --fixed-strings --grep=F-171"
+    },
+    {
+      "id": "F-175",
+      "status": "validated-in-simulator",
+      "summary": "拒绝不安全资源尺寸数值转换，保留合法float乘法/截断、有限中间零值的优先级修复和完整iteration消耗；错误字段明确失败，原生非法格式HRESULT保留，不fallback。隔离候选+主线专项、25+10全流程及独立对抗复审通过；诊断用中性匹配上下文，不误归因覆盖，F174/F176不改。",
+      "evidence": "validation/F-175.json",
+      "commitLookup": "git log --fixed-strings --grep=F-175"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
