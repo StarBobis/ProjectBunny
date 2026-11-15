@@ -867,7 +867,8 @@ static void ParseIniFilesRecursive(wchar_t *migoto_path, const wstring &rel_path
 		if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
 			if (wcscmp(find_data.cFileName, L".") && wcscmp(find_data.cFileName, L".."))
 				directories.insert(wstring(find_data.cFileName));
-		} else if (!wcscmp(find_data.cFileName + wcslen(find_data.cFileName) - 4, L".ini")) {
+		} else if (wcslen(find_data.cFileName) >= 4 &&
+			!_wcsicmp(find_data.cFileName + wcslen(find_data.cFileName) - 4, L".ini")) {
 			ini_files.insert(wstring(find_data.cFileName));
 		} else {
 			LogDebug("    Not a directory or ini file: \"%S\"\n", find_data.cFileName);

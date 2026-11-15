@@ -148,6 +148,13 @@
       "summary": "执行复查纠正：当前x64公开导出是跳向System32/GDI32精确同名入口的IAT跳板，不运行报告中的C++桩。已撤回一行无效源码修复，F291移A至N；实际绑定和非法窗口原生状态/输出专项、整套19+10项集成组件及业务回归通过。",
       "evidence": "validation/F-291.json",
       "commitLookup": "git log --fixed-strings --grep=F-291"
+    },
+    {
+      "id": "F-294",
+      "status": "validated-in-simulator",
+      "summary": "递归INI枚举先验证文件名长度再比较后缀，忽略.ini大小写；真实文件与生产解析器验证1至3字符短名、.ini、大/混合后缀、Unicode文件、文件与目录排序、递归及skip排除，专项与19+10集成组件全流程通过。",
+      "evidence": "validation/F-294.json",
+      "commitLookup": "git log --fixed-strings --grep=F-294"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

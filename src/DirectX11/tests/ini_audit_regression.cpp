@@ -2,6 +2,7 @@
 // production parser once and testing its private entry points directly.
 #include "../IniHandler.cpp"
 #include <stdexcept>
+#include <filesystem>
 
 namespace {
 void check_ini_audit(bool condition, const char* message)
@@ -13,6 +14,51 @@ class IniWarningScope {
     bool saved = ini_warned;
 public:
     ~IniWarningScope() { ini_warned = saved; }
+};
+
+class IniSectionStateScope {
+    IniSections saved;
+public:
+    IniSectionStateScope() { saved.swap(ini_sections); }
+    ~IniSectionStateScope() { ini_sections.clear(); saved.swap(ini_sections); }
+};
+
+class IniEnumerationFixture {
+    std::filesystem::path base;
+public:
+    std::filesystem::path root;
+    std::vector<pcre2_code*> exclusions;
+    IniEnumerationFixture()
+    {
+        wchar_t executable[MAX_PATH]{};
+        const auto length = GetModuleFileNameW(nullptr, executable, MAX_PATH);
+        check_ini_audit(length && length < MAX_PATH, "F294: locate test host");
+        base = std::filesystem::canonical(std::filesystem::path(executable).parent_path());
+        bool in_build = false;
+        for (const auto& part : base) in_build |= !_wcsicmp(part.c_str(), L"build");
+        check_ini_audit(in_build, "F294: fixture remains inside build");
+        root = base / L"ini-enumeration-audit";
+        check_ini_audit(std::filesystem::create_directory(root), "F294: reserve exclusive enumeration fixture");
+    }
+    void file(const wchar_t* name, unsigned value)
+    {
+        const auto path = root / name;
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path, std::ios::binary);
+        output << "[Present]\nx" << value << " = " << value << "\n";
+        output.close(); check_ini_audit(output.good(), "F294: write complete enumeration input");
+    }
+    ~IniEnumerationFixture()
+    {
+        free_globbing_vector(exclusions);
+        std::error_code error;
+        const auto resolved = std::filesystem::canonical(root, error);
+        if (error || resolved != root || resolved.parent_path() != base) {
+            std::fputs("FAIL F294: refuse unsafe fixture cleanup\n", stderr); std::abort();
+        }
+        std::filesystem::remove_all(root, error);
+        if (error) { std::fputs("FAIL F294: fixture cleanup\n", stderr); std::abort(); }
+    }
 };
 
 template <typename T>
@@ -56,4 +102,26 @@ void test_dx11_masked_flags_regression()
         check_ini_audit(!parse_masked_flags_field(std::wstring(bad), &value, &mask, CustomResourceBindFlagNames),
             "F187: incomplete numeric fields, trailing junk and invalid named flags are rejected");
     }
+}
+
+void test_dx11_ini_enumeration_regression()
+{
+    IniWarningScope warnings; IniSectionStateScope sections; IniEnumerationFixture files;
+    files.file(L"mods/c.InI", 3); files.file(L"mods/b.INI", 2); files.file(L"mods/A.ini", 1);
+    files.file(L"mods/.ini", 0); files.file(L"mods/\u4e2d\u6587.INI", 4);
+    files.file(L"mods/Achild/z.ini", 5); files.file(L"mods/zchild/A.INI", 6);
+    for (const auto* ignored : {L"mods/a", L"mods/ab", L"mods/abc", L"mods/readme.txt", L"mods/skip.INI",
+            L"mods/skip-dir/hidden.ini"}) files.file(ignored, 99);
+    std::vector<std::wstring> patterns{L"skip*"};
+    files.exclusions = globbing_vector_to_regex(patterns);
+    check_ini_audit(files.exclusions.size() == 1, "F294: compile actual exclusion glob");
+    std::wstring prefix = files.root.wstring() + L"\\";
+    ParseIniFilesRecursive(&prefix[0], L"mods", files.exclusions, (files.root / L"mods").wstring());
+    const auto& lines = ini_sections.at(L"Present").kv_vec;
+    check_ini_audit(lines.size() == 7, "F294: all INI suffix cases load while short, unrelated and excluded names do not");
+    const wchar_t* paths[] = {L"mods\\.ini", L"mods\\A.ini", L"mods\\b.INI", L"mods\\c.InI", L"mods\\\u4e2d\u6587.INI",
+        L"mods\\Achild\\z.ini", L"mods\\zchild\\A.INI"};
+    for (size_t i = 0; i < lines.size(); ++i)
+        check_ini_audit(lines[i].second == std::to_wstring(i) && lines[i].ini_namespace == paths[i],
+            "F294: preserve case-insensitive file ordering, directory recursion ordering and exact namespace paths");
 }
