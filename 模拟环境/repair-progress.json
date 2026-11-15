@@ -197,6 +197,13 @@
       "summary": "公共IniParam入口改为有符号宽范围解析，拒绝负值、溢出及无法安全index+1的INT_MAX，输出仅成功时发布；保留DX11超过225的范围及已有非负扫描形式。专项覆盖四个预留入口、表达式减法/读写、preset保存恢复、cycle、GPU上传和缩小重载清旧过渡；23+10集成组件及DX12兼容构建通过。",
       "evidence": "validation/F-007.json",
       "commitLookup": "git log --fixed-strings --grep=F-007"
+    },
+    {
+      "id": "F-008",
+      "status": "validated-in-simulator",
+      "summary": "VB元素读取前按真实映射剩余字节检查offset/格式宽度，顶点和实例两条路径均保护；保留合法跨stride、重叠和既有零stride策略。保护页旧版越界复现，完整字段/截断/极端offset/步进及实际WARP公共源码转储通过；专项与23+10集成组件全流程通过，APPEND状态另项复核。",
+      "evidence": "validation/F-008.json",
+      "commitLookup": "git log --fixed-strings --grep=F-008"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

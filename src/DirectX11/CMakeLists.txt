@@ -165,6 +165,10 @@ if(BUILD_TESTING)
     list(APPEND DX11_REGRESSION_SOURCES tests/ini_audit_regression.cpp)
     set_source_files_properties(tests/ini_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/IniHandler.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)FrameAnalysis\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/frame_analysis_audit_regression.cpp)
+    set_source_files_properties(tests/frame_analysis_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/FrameAnalysis.cpp")
     string(REPLACE "${CMAKE_SOURCE_DIR}/src/common/util.cpp" "tests/util_audit_regression.cpp"
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/util_audit_regression.cpp PROPERTIES

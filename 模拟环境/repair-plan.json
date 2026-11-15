@@ -108,7 +108,7 @@
       "originalSeverity": "medium",
       "evidence": "src/DirectX11/FrameAnalysis.cpp:1344",
       "additionalEvidence": null,
-      "correctedConclusion": "实际边界应按已映射缓冲总字节数判断；offset+元素宽度超过 stride 不自动非法，重叠元素及 stride=0 等布局不能被一刀切拒绝。",
+      "correctedConclusion": "按映射剩余字节检查元素offset/格式宽度，读指针构造前拒绝不完整字段；保留合法跨stride/重叠布局。公共DumpVBTxt原有stride=0早退未改变；APPEND偏移重置另作独立生产路径复核。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "pending"
@@ -1921,6 +1921,14 @@
       "group": "R",
       "implementationStatus": "pending-site-evidence",
       "summary": "日志/文件索引等按实际站点先测量，未放行实现"
+    }
+  ],
+  "supplementalObservations": [
+    {
+      "id": "OBS-FA-APPEND",
+      "status": "pending-native-layout-recheck",
+      "evidence": "FrameAnalysis.cpp dump_vb_elem局部offset每次清零；需核HackerInputLayoutCache生产描述及原生对照",
+      "executionGate": "独立复核与专项成立后作为独立条目修复、全流程并提交，不混入F008边界修复"
     }
   ]
 }

@@ -1313,7 +1313,7 @@ static int fprint_dxgi_format(FILE *fd, DXGI_FORMAT format, uint8_t *buf)
 }
 
 
-static void dump_vb_elem(FILE *fd, uint8_t *buf,
+static void dump_vb_elem(FILE *fd, uint8_t *buf, UINT bytes_remaining,
 		const D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
 		int slot, UINT vb_idx, UINT elem, UINT stride)
 {
@@ -1335,6 +1335,13 @@ static void dump_vb_elem(FILE *fd, uint8_t *buf,
 		}
 	}
 
+	size = dxgi_format_size(layout_desc[elem].Format);
+	if (offset > bytes_remaining || size > bytes_remaining - offset) {
+		fprintf(fd, "# WARNING: vb%i[%u] element %u at offset %u (%u bytes) exceeds mapped buffer (%u bytes remaining)\n",
+			slot, vb_idx, elem, offset, size, bytes_remaining);
+		return;
+	}
+
 	if (layout_desc[elem].SemanticIndex)
 		fprintf(fd, "vb%i[%u]+%03u %s%u: ", slot, vb_idx, offset,
 			layout_desc[elem].SemanticName, layout_desc[elem].SemanticIndex);
@@ -1344,7 +1351,6 @@ static void dump_vb_elem(FILE *fd, uint8_t *buf,
 	fprint_dxgi_format(fd, layout_desc[elem].Format, buf + offset);
 	fprintf(fd, "\n");
 
-	size = dxgi_format_size(layout_desc[elem].Format);
 	if (!size)
 		fprintf(fd, "# WARNING: Unknown format size, vertex buffer may be decoded incorrectly\n");
 	offset += size;
@@ -1369,7 +1375,7 @@ static void dump_vb_known_layout(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 			if (layout_desc[elem].InputSlotClass != D3D11_INPUT_PER_VERTEX_DATA)
 				continue;
 
-			dump_vb_elem(fd, (uint8_t*)map->pData + stride*vertex,
+			dump_vb_elem(fd, (uint8_t*)map->pData + stride*vertex, size - stride*vertex,
 					layout_desc, layout_elements, slot,
 					vertex - start, elem, stride);
 		}
@@ -1398,7 +1404,7 @@ static void dump_vb_instance_data(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 			else
 				idx = instance;
 
-			dump_vb_elem(fd, (uint8_t*)map->pData + stride*idx,
+			dump_vb_elem(fd, (uint8_t*)map->pData + stride*idx, size - stride*idx,
 					layout_desc, layout_elements, slot,
 					idx - start, elem, stride);
 		}

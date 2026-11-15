@@ -29,6 +29,7 @@ void test_dx11_view_reference_null_diagnostic_regression();
 void test_dx11_ini_lookup_performance();
 void test_dx11_file_publication_regression();
 void test_dx11_device_initialization_regression();
+void test_dx11_vertex_dump_bounds_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -257,6 +258,7 @@ struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
     {"F-007", test_f007},
+    {"F-008", test_dx11_vertex_dump_bounds_regression},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
@@ -306,4 +308,43 @@ void test_dx11_audit_regressions()
         test.run();
         std::printf("PASS audit item: %s\n", test.id);
     }
+}
+
+void test_dx11_vertex_dump_gpu_regression()
+{
+    using namespace dx11_slot_test;
+    AuditDumpScope output; BatchDevice device;
+    auto original = std::move(device.wrapper);
+    auto analysis = std::make_unique<FrameAnalysisContext>(device.native.Get(), device.context.Get());
+    analysis->SetHackerDevice(device.device);
+    auto* context = analysis.get(); device.wrapper = std::move(analysis);
+    device.device->SetHackerContext(context); device.state.mHackerContext = context;
+    try {
+        const char source[] = "float4 main(float4 p:DATA):SV_Position{return p;}";
+        ComPtr<ID3DBlob> code, errors;
+        require_batch(SUCCEEDED(D3DCompile(source, sizeof(source)-1, nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &code, &errors)),
+            "F008: compile actual input signature");
+        ComPtr<ID3D11VertexShader> shader;
+        require_batch(SUCCEEDED(device.native->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &shader)),
+            "F008: native shader for actual public frame analysis");
+        D3D11_INPUT_ELEMENT_DESC desc{"DATA",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0};
+        ComPtr<ID3D11InputLayout> layout;
+        require_batch(SUCCEEDED(device.device->CreateInputLayout(&desc, 1, code->GetBufferPointer(), code->GetBufferSize(), &layout)),
+            "F008: real cached production input layout");
+        auto vertices = buffer(device, 32, D3D11_BIND_VERTEX_BUFFER);
+        const float data[] = {1,2,3,4,5,6,7,8};
+        device.context->UpdateSubresource(vertices.Get(), 0, nullptr, data, 0, 0);
+        ID3D11Buffer* bound = vertices.Get(); UINT stride = 4, offset = 0;
+        context->IASetInputLayout(layout.Get()); context->IASetVertexBuffers(0, 1, &bound, &stride, &offset);
+        context->VSSetShader(shader.Get(), nullptr, 0); context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+        const auto options = static_cast<FrameAnalysisOptions>(static_cast<unsigned>(FrameAnalysisOptions::DUMP_VB) |
+            static_cast<unsigned>(FrameAnalysisOptions::FMT_BUF_TXT) | static_cast<unsigned>(FrameAnalysisOptions::MONO));
+        context->FrameAnalysisTrigger(options); context->Draw(8, 0);
+        require_batch(output.payload_contains("DATA: 1, 2, 3, 4") && output.payload_contains("DATA: 5, 6, 7, 8") &&
+            output.payload_contains("exceeds mapped buffer"), "F008: actual WARP buffer staging and public dump preserve complete fields and diagnose the tail");
+    } catch (...) {
+        device.wrapper = std::move(original); device.device->SetHackerContext(device.wrapper.get()); device.state.mHackerContext = device.wrapper.get();
+        throw;
+    }
+    device.wrapper = std::move(original); device.device->SetHackerContext(device.wrapper.get()); device.state.mHackerContext = device.wrapper.get();
 }
