@@ -1,5 +1,7 @@
 #include "slot_range_test_support.h"
 #include "FrameAnalysis.h"
+#include "IniHandler.h"
+#include "Input.h"
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -140,8 +142,68 @@ void test_f106()
     }
 }
 
+class AuditConfigScope {
+    HINSTANCE old_module = migoto_handle;
+    LogVerbosity old_log_level = gLogVerbosity;
+    bool old_debug = gLogDebug, old_warnings = G->gShowWarnings, old_initialized = G->gConfigInitialized;
+    std::wstring old_user = G->user_config;
+    int old_dirty = G->user_config_dirty;
+    bool old_automatic = G->clear_unknown_settings, old_clear = G->clear_saved_persist_vars;
+public:
+    std::filesystem::path config, settings;
+    AuditConfigScope()
+    {
+        wchar_t executable[MAX_PATH]{};
+        require_batch(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "audit config: locate host");
+        const auto base = std::filesystem::path(executable).parent_path();
+        bool under_build = false;
+        for (const auto& part : base) under_build |= _wcsicmp(part.c_str(), L"build") == 0;
+        require_batch(under_build, "audit config: owned directory remains under build");
+        config = base / L"d3dx.ini";
+        settings = base / (L"audit-user-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
+        HANDLE file = CreateFileW(config.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        require_batch(file != INVALID_HANDLE_VALUE, "audit config: do not overwrite another fixture");
+        CloseHandle(file);
+        migoto_handle = nullptr;
+    }
+    ~AuditConfigScope()
+    {
+        ClearKeyBindings(); G->constants_command_list.clear(); G->post_constants_command_list.clear();
+        registered_command_lists.clear(); explicitCommandListSections.clear();
+        customResourcePools.clear(); customResources.clear(); persistent_variables.clear(); command_list_globals.clear();
+        migoto_handle = old_module; gLogVerbosity = old_log_level; gLogDebug = old_debug;
+        G->gShowWarnings = old_warnings; G->gConfigInitialized = old_initialized;
+        G->user_config = old_user; G->user_config_dirty = old_dirty;
+        G->clear_unknown_settings = old_automatic; G->clear_saved_persist_vars = old_clear;
+        DeleteFileW(config.c_str()); DeleteFileW(settings.c_str());
+    }
+    void load(const char* constants)
+    {
+        std::ofstream output(config, std::ios::binary | std::ios::trunc);
+        output << "[Logging]\ncalls=0\nshow_warnings=0\n[System]\nskip_early_includes_load=0\n"
+            "[Hunting]\nhunting=0\n[Include]\nuser_config=" << settings.filename().string() << "\n[Constants]\n" << constants;
+        output.close(); require_batch(output.good(), "audit config: write complete production INI");
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, config.c_str());
+        ClearKeyBindings(); LoadConfigFile();
+    }
+};
+
+void test_f114()
+{
+    AuditConfigScope config;
+    std::fputs("F114: load all-flag Constants declarations without a variable name\n", stderr); std::fflush(stderr);
+    config.load("global=1\nglobal persist=2\nGLOBAL LOCKED=3\nglobal persist\n"
+        "global $audit_valid=7\nglobal persist $audit_persist=9\n");
+    require_batch(command_list_globals.size() == 2 && command_list_globals.at(L"$audit_valid").fval == 7 &&
+        command_list_globals.at(L"$audit_persist").fval == 9 && persistent_variables.size() == 1,
+        "F114: reject missing names and continue parsing valid ordinary/persistent declarations");
+    config.load("global $audit_valid=11\n");
+    require_batch(command_list_globals.size() == 1 && command_list_globals.at(L"$audit_valid").fval == 11 &&
+        persistent_variables.empty(), "F114: corrected config reload replaces declarations normally");
+}
+
 struct AuditCase { const char* id; void (*run)(); };
-const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}};
+const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114}};
 }
 
 bool test_dx11_audit_item(const char* id)

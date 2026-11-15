@@ -214,6 +214,32 @@ void texture_clear(Device& gpu)
     read_texture(gpu.device.Get(), gpu.context.Get(), texture.Get(), {0, 128, 255, 255});
 }
 
+void constants_missing_name(Device& gpu)
+{
+    ComPtr<ID3D11ShaderResourceView> view;
+    gpu.context->PSGetShaderResources(120, 1, &view);
+    require(view != nullptr, "F114: valid constants still create the real IniParams view");
+    ComPtr<ID3D11Resource> resource;
+    view->GetResource(&resource);
+    ComPtr<ID3D11Texture1D> source;
+    succeeded(resource.As(&source), "F114: obtain the real IniParams texture");
+    D3D11_TEXTURE1D_DESC desc{};
+    source->GetDesc(&desc);
+    require(desc.Width >= 1 && desc.Format == DXGI_FORMAT_R32G32B32A32_FLOAT,
+        "F114: IniParams has the expected float4 layout");
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = desc.MiscFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture1D> staging;
+    succeeded(gpu.device->CreateTexture1D(&desc, nullptr, &staging), "F114: create constants readback");
+    gpu.context->CopyResource(staging.Get(), source.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    succeeded(gpu.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "F114: Map actual constants");
+    float values[4]{};
+    std::memcpy(values, mapped.pData, sizeof(values));
+    gpu.context->Unmap(staging.Get(), 0);
+    require(values[0] == 7 && values[1] == 9, "F114: real DLL parses valid globals after malformed flags and uploads exact values");
+}
+
 void deferred_replay(Device& gpu)
 {
     std::array<unsigned, 64> expected{};
@@ -321,6 +347,7 @@ int wmain(int argc, wchar_t** argv)
             if (scenario == L"capabilities") capabilities(gpu);
             else if (scenario == L"buffer") buffer_copy(gpu);
             else if (scenario == L"texture") texture_clear(gpu);
+            else if (scenario == L"constants-missing-name") constants_missing_name(gpu);
             else if (scenario == L"deferred") deferred_replay(gpu);
             else throw std::runtime_error("unknown scenario");
         }

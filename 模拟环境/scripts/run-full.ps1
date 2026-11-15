@@ -6,7 +6,9 @@ $simulationRoot=Split-Path -Parent $PSScriptRoot
 $repositoryRoot=Split-Path -Parent $simulationRoot
 $buildRoot=Join-Path $simulationRoot 'build'
 $candidateBuild=Join-Path $buildRoot 'candidate'
-$info=Get-Content -LiteralPath (Join-Path $buildRoot 'business-build-info.json') -Raw | ConvertFrom-Json
+$infoPath=Join-Path $buildRoot 'business-build-info.json'
+$info=Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+$buildInfoSha256=(Get-FileHash -LiteralPath $infoPath).Hash
 foreach($source in $info.sources) {
     if((Get-FileHash -LiteralPath (Join-Path $repositoryRoot $source.path) -Algorithm SHA256).Hash -ne $source.sha256) { throw "Rebuild before testing changed source: $($source.path)" }
 }
@@ -43,7 +45,7 @@ foreach($mode in @('special','business')) {
 }
 if($SpecialOnly) {
     $status=if(@($checks | Where-Object status -ne 'PASS').Count){'FAIL'}else{'PASS'}
-    @{item=$label;status=$status;validationLevel='special-only';buildHead=$info.head;candidateSha256=(Get-FileHash -LiteralPath $dll).Hash;checks=$checks.ToArray()} |
+    @{item=$label;status=$status;validationLevel='special-only';buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll).Hash;checks=$checks.ToArray()} |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runRoot 'results.json') -Encoding utf8
     Write-Host "Special report: $(Join-Path $runRoot 'results.json')"
     if($status -ne 'PASS'){exit 1}
@@ -91,7 +93,7 @@ if(Test-Path -LiteralPath $pointer) {
     $integration=Get-Content -LiteralPath $integrationPath -Raw | ConvertFrom-Json
 }
 $status=if(@($checks | Where-Object status -ne 'PASS').Count -eq 0 -and $integration -and @($integration.cases | Where-Object status -ne 'PASS').Count -eq 0){'PASS'}else{'FAIL'}
-$report=[ordered]@{item=$label;status=$status;utc=[DateTime]::UtcNow.ToString('o');buildHead=$info.head;candidateSha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash;checks=$checks.ToArray();actualDllIntegration=$integration;businessSurface='Entire existing production-source DX11 regression suite with real WARP resources; distinct from actual-DLL integration';targetGameValidated=$false}
+$report=[ordered]@{item=$label;status=$status;utc=[DateTime]::UtcNow.ToString('o');buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash;checks=$checks.ToArray();actualDllIntegration=$integration;businessSurface='Entire existing production-source DX11 regression suite with real WARP resources; distinct from actual-DLL integration';targetGameValidated=$false}
 $reportPath=Join-Path $runRoot 'results.json'
 $report | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $reportPath -Encoding utf8
 Write-Host "Full report: $reportPath"

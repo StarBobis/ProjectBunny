@@ -2592,7 +2592,7 @@ static void ParseConstantsSection()
             ++write_index;
             continue;
         }
-		name = name_pos;
+		name = name_pos ? name_pos : L"";
 
 		if (!valid_variable_name(name)) {
 			IniWarningW(L"Illegal global variable name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), ini_namespace->c_str());

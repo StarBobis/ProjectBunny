@@ -14,7 +14,9 @@ foreach($name in $required){if(@($report.checks | Where-Object name -eq $name).C
 if(-not $report.actualDllIntegration -or @($report.actualDllIntegration.cases).Count -lt 15 -or @($report.actualDllIntegration.cases | Where-Object status -ne 'PASS').Count){throw 'Actual DLL integration incomplete.'}
 $candidate=Join-Path $simulationRoot 'build\candidate\src\DirectX11\d3d11.dll'
 if((Get-FileHash -LiteralPath $candidate).Hash -ne $report.candidateSha256){throw 'Report does not describe the current candidate DLL.'}
-$info=Get-Content -LiteralPath (Join-Path $simulationRoot 'build\business-build-info.json') -Raw | ConvertFrom-Json
+$infoPath=Join-Path $simulationRoot 'build\business-build-info.json'
+$info=Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+if($report.buildInfoSha256 -ne (Get-FileHash -LiteralPath $infoPath).Hash){throw 'Complete tests must describe the current source, test executables and build manifest.'}
 foreach($source in $info.sources){if((Get-FileHash -LiteralPath (Join-Path $repositoryRoot $source.path)).Hash -ne $source.sha256){throw "Source changed since validation build: $($source.path)"}}
 $progressPath=Join-Path $simulationRoot 'repair-progress.json'
 $progress=Get-Content -LiteralPath $progressPath -Raw | ConvertFrom-Json

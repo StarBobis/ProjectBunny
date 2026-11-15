@@ -15,6 +15,13 @@
       "summary": "缺少shader model时在改写长度前抛出既有解析异常；正常DXBC往返由WARP及离线Shader工具验证，Hunting/HackerDevice沿既有异常回退处理。",
       "evidence": "validation/F-106.json",
       "commitLookup": "git log --fixed-strings --grep=F-106"
+    },
+    {
+      "id": "F-114",
+      "status": "validated-in-simulator",
+      "summary": "全flag声明缺名字走既有非法变量诊断而非空指针；专项覆盖解析与重载，真实DLL额外验证后续合法全局/持久变量上传值为7和9。",
+      "evidence": "validation/F-114.json",
+      "commitLookup": "git log --fixed-strings --grep=F-114"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

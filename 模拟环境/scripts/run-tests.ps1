@@ -55,6 +55,7 @@ foreach ($inputDll in $inputs) {
     $artifacts.Add([pscustomobject]@{label=$inputDll.label;path=$inputDll.path;sha256=$sourceHash;fileVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo($inputDll.path).FileVersion})
     $cases = @($scenarios | ForEach-Object { [pscustomobject]@{name=$_;scenario=$_;exe=$hostPath;mode=$_;config='wrapper.ini'} })
     $cases += @(
+        [pscustomobject]@{name='constants-missing-name';scenario='capabilities';exe=$hostPath;mode='constants-missing-name';config='constants-missing-name.ini'},
         [pscustomobject]@{name='injected-device-failure';scenario='capabilities';exe=$hostPath;mode='injected-device-failure';config='device-failure.ini'},
         [pscustomobject]@{name='smoke-wrapper';scenario='capabilities';exe=$smokePath;mode='--child';config='wrapper.ini'},
         [pscustomobject]@{name='smoke-native-control';scenario='capabilities';exe=$smokePath;mode='--child-native-control';config='wrapper.ini'},
