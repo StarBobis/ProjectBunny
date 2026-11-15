@@ -4879,20 +4879,22 @@ void LoadConfigFile()
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTexture1", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *end = RightStripA(buf);
-		G->decompiler_settings.ZRepair_DepthTextureReg1 = *end; *(end - 1) = 0;
-		char *start = buf; while (isspace(*start)) start++;
-		G->decompiler_settings.ZRepair_DepthTexture1 = start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *end = RightStripA(buf);
+			G->decompiler_settings.ZRepair_DepthTextureReg1 = *end; *(end - 1) = 0;
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) start++;
+			G->decompiler_settings.ZRepair_DepthTexture1 = start;
+		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTexture2", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *end = RightStripA(buf);
-		G->decompiler_settings.ZRepair_DepthTextureReg2 = *end; *(end - 1) = 0;
-		char *start = buf; while (isspace(*start)) start++;
-		G->decompiler_settings.ZRepair_DepthTexture2 = start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *end = RightStripA(buf);
+			G->decompiler_settings.ZRepair_DepthTextureReg2 = *end; *(end - 1) = 0;
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) start++;
+			G->decompiler_settings.ZRepair_DepthTexture2 = start;
+		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_ZPosCalc1", 0, setting, MAX_PATH))
 		G->decompiler_settings.ZRepair_ZPosCalc1 = readStringParameter(setting);
@@ -4905,37 +4907,40 @@ void LoadConfigFile()
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_Dependencies1", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *start = buf; while (isspace(*start)) ++start;
-		while (*start)
-		{
-			char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
-			G->decompiler_settings.ZRepair_Dependencies1.push_back(string(start, end));
-			start = end; if (*start == ',') ++start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) ++start;
+			while (*start)
+			{
+				char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
+				G->decompiler_settings.ZRepair_Dependencies1.push_back(string(start, end));
+				start = end; if (*start == ',') ++start;
+			}
 		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_Dependencies2", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *start = buf; while (isspace(*start)) ++start;
-		while (*start)
-		{
-			char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
-			G->decompiler_settings.ZRepair_Dependencies2.push_back(string(start, end));
-			start = end; if (*start == ',') ++start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) ++start;
+			while (*start)
+			{
+				char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
+				G->decompiler_settings.ZRepair_Dependencies2.push_back(string(start, end));
+				start = end; if (*start == ',') ++start;
+			}
 		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_InvTransform", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *start = buf; while (isspace(*start)) ++start;
-		while (*start)
-		{
-			char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
-			G->decompiler_settings.InvTransforms.push_back(string(start, end));
-			start = end; if (*start == ',') ++start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) ++start;
+			while (*start)
+			{
+				char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
+				G->decompiler_settings.InvTransforms.push_back(string(start, end));
+				start = end; if (*start == ',') ++start;
+			}
 		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTextureHash", 0, setting, MAX_PATH))

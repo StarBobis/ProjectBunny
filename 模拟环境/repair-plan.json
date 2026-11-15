@@ -505,13 +505,13 @@
     },
     {
       "id": "F-138",
-      "status": "成立",
+      "status": "成立但修正",
       "group": "B",
       "groupLabel": "跨函数语义，第二批候选",
       "originalSeverity": "medium",
       "evidence": "src/common/util.h:154-156",
-      "additionalEvidence": null,
-      "correctedConclusion": "转换失败或长度耗尽不保证NUL，后续strlen不安全；需明确编码、转换结果和终止符，不得静默改变合法路径。",
+      "additionalEvidence": "MSVC/UCRT安全重载与容量耗尽原生专项；同段5个直接转换调用及真实INI加载",
+      "correctedConclusion": "当前MSVC安全C++重载已保证编码错误时清空目标；字节容量耗尽仍可触发CRT终止或成功返回截断前缀。UTF-8宽字符数未超限也可触达。保持现有locale，先查询完整字节数并验证包含NUL的容量，再检查转换结果，不接受静默截断。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
       "targetedAcceptanceProposal": null,
       "implementationStatus": "pending"
@@ -1879,6 +1879,12 @@
       "currentGroup": "N",
       "reason": "实际x64导出绑定到GDI32，报告中的C++桩未生效",
       "detail": "执行复查修正报告.md"
+    },
+    {
+      "id": "F-138",
+      "date": "2026-11-15",
+      "reason": "安全CRT重载改变了原报告的失败机制：错误已终止，容量耗尽可终止进程",
+      "detail": "执行复查修正报告.md"
     }
   ],
   "performanceRows": [
@@ -1944,6 +1950,18 @@
       "status": "confirmed-native;promoted-F-324",
       "evidence": "FrameAnalysis.cpp dump_vb_elem局部offset每次清零；需核HackerInputLayoutCache生产描述及原生对照",
       "executionGate": "独立复核与专项成立后作为独立条目修复、全流程并提交，不混入F008边界修复"
+    },
+    {
+      "id": "OBS-INI-MODEL-CAPACITY",
+      "status": "pending-runtime-evidence",
+      "evidence": "IniHandler.cpp model[20]独立wcstombs安全重载站点；与F138自动修复参数分开",
+      "executionGate": "独立真实配置复现后登记条目，禁止仅凭宏推断计为修复"
+    },
+    {
+      "id": "OBS-INI-AUTOFIX-LIST-SPACE",
+      "status": "pending-runtime-evidence",
+      "evidence": "ZRepair依赖和InvTransform列表遇空格的游标推进需核对",
+      "executionGate": "独立配置子进程限时复现并核对既有条目后再登记，不混入F138转换修复"
     }
   ],
   "originalReportItemCount": 141,

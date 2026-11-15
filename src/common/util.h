@@ -137,7 +137,7 @@ static UINT64 fnv_64_buf(const void *buf, size_t len)
 static char *RightStripA(char *buf)
 {
 	char *end = buf + strlen(buf) - 1;
-	while (end > buf && isspace(*end))
+	while (end > buf && isspace(static_cast<unsigned char>(*end)))
 		end--;
 	*(end + 1) = 0;
 	return end;
@@ -151,12 +151,30 @@ static wchar_t *RightStripW(wchar_t *buf)
 	return end;
 }
 
+template<size_t Size>
+static bool ConvertStringParameter(const wchar_t *value, char (&buffer)[Size])
+{
+	size_t required = 0, converted = 0;
+	errno_t error = wcstombs_s(&required, nullptr, 0, value, 0);
+	if (!error && required > Size)
+		error = ERANGE;
+	if (!error)
+		error = wcstombs_s(&converted, buffer, Size, value, _TRUNCATE);
+	if (error || converted != required) {
+		buffer[0] = 0;
+		LogInfo("WARNING: Parameter conversion failed or exceeded %zu bytes (error %d)\n", Size, error);
+		return false;
+	}
+	return true;
+}
+
 static char *readStringParameter(wchar_t *val)
 {
 	static char buf[MAX_PATH];
-	wcstombs(buf, val, MAX_PATH);
+	if (!ConvertStringParameter(val, buf) || !buf[0])
+		return buf;
 	RightStripA(buf);
-	char *start = buf; while (isspace(*start)) start++;
+	char *start = buf; while (isspace(static_cast<unsigned char>(*start))) start++;
 	return start;
 }
 

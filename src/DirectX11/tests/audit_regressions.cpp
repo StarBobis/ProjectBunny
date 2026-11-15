@@ -38,6 +38,7 @@ void test_dx11_decompiler_literal_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
+void test_dx11_parameter_conversion_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -262,6 +263,31 @@ void test_f135()
 
 #include "ini_parameter_audit.inl"
 
+void test_f138()
+{
+    test_dx11_parameter_conversion_regression();
+    AuditConfigScope config;
+    std::string overflow;
+    for (int i = 0; i < 87; ++i) overflow += "\xe4\xb8\xad";
+    std::string settings = "[Rendering]\n";
+    for (const auto* key : {"fix_ZRepair_DepthTexture1", "fix_ZRepair_DepthTexture2", "fix_ZRepair_ZPosCalc1",
+            "fix_ZRepair_Dependencies1", "fix_ZRepair_Dependencies2", "fix_InvTransform"})
+        settings += std::string(key) + "=" + overflow + "\n";
+    config.load(settings.c_str());
+    require_batch(G->decompiler_settings.ZRepair_ZPosCalc1.empty() &&
+        G->decompiler_settings.ZRepair_Dependencies1.empty() && G->decompiler_settings.ZRepair_Dependencies2.empty() &&
+        G->decompiler_settings.InvTransforms.empty(), "F138: real INI loading rejects oversized UTF-8 parameter bytes");
+    config.load("[Rendering]\nfix_ZRepair_DepthTexture1=SceneDepthTexture.x\n"
+        "fix_ZRepair_DepthTexture2=OtherDepth.y\nfix_ZRepair_ZPosCalc1= alpha beta \n"
+        "fix_ZRepair_Dependencies1=a,b\nfix_ZRepair_Dependencies2=c,d\nfix_InvTransform=e,f\n");
+    const auto& settings_ok = G->decompiler_settings;
+    require_batch(settings_ok.ZRepair_DepthTexture1 == "SceneDepthTexture" && settings_ok.ZRepair_DepthTextureReg1 == 'x' &&
+        settings_ok.ZRepair_DepthTexture2 == "OtherDepth" && settings_ok.ZRepair_DepthTextureReg2 == 'y' &&
+        settings_ok.ZRepair_ZPosCalc1 == "alpha beta" && settings_ok.ZRepair_Dependencies1 == std::vector<std::string>{"a","b"} &&
+        settings_ok.ZRepair_Dependencies2 == std::vector<std::string>{"c","d"} && settings_ok.InvTransforms == std::vector<std::string>{"e","f"},
+        "F138: subsequent real configuration preserves normal depth selectors and all three lists");
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -272,6 +298,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
+    {"F-138", test_f138},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
