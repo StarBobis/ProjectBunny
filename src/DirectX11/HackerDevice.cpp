@@ -1236,9 +1236,9 @@ HRESULT HackerDevice::ReplaceShaderFromShaderFixes(UINT64 hash,
 
 	if (G->hunting) {
 		// Hunting mode:  keep byteCode around for possible replacement or marking
-		ID3DBlob* blob;
-		hr = D3DCreateBlob(BytecodeLength, &blob);
-		if (SUCCEEDED(hr)) {
+		ID3DBlob* blob = nullptr;
+		const HRESULT capture_hr = D3DCreateBlob(BytecodeLength, &blob);
+		if (SUCCEEDED(capture_hr)) {
 			// We save the *original* shader bytecode, not the replaced shader,
 			// because we will use this in CopyToFixes and ShaderRegex in the
 			// event that the shader is deleted.
@@ -1246,6 +1246,16 @@ HRESULT HackerDevice::ReplaceShaderFromShaderFixes(UINT64 hash,
 			EnterCriticalSectionPretty(&G->mCriticalSection);
 			RegisterForReload(*ppShader, hash, shaderType, shaderModel, pClassLinkage, blob, ftWrite, headerLine, false);
 			LeaveCriticalSection(&G->mCriticalSection);
+		} else {
+			// Optional retention: never clobber the successful native shader HRESULT.
+			// D3DCreateBlob does not normally return a blob on failure, but release
+			// one defensively in case it does, so this branch cannot leak.
+			if (blob) {
+				blob->Release();
+				blob = nullptr;
+			}
+			LogWarning("Optional shader bytecode retention failed: hr=0x%08x; preserving native shader success.\n",
+				static_cast<unsigned>(capture_hr));
 		}
 	}
 
