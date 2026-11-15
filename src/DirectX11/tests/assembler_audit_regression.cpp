@@ -12,6 +12,28 @@ struct IndexAddends { unsigned first, second; };
 struct InterpolationCase { const char* text; unsigned mode; };
 }
 
+void test_dx11_assembler_word_progress_regression()
+{
+    for (const auto* malformed : {"mov r0.x, l(1.0", "add r0.xyzw, r1.xyzw, l(1.0, 2.0, 3.0, 4.0",
+            "dmov r0.xyzw, d(1.0l, 2.0l", "printf \"unterminated", "errorf \""}) {
+        bool rejected=false;
+        std::fprintf(stderr,"F142: tokenization must terminate and reject %s\n",malformed); std::fflush(stderr);
+        try { (void)strToWords(malformed); } catch(const AssemblerParseError&) {rejected=true;}
+        check_assembler_audit(rejected,"F142: missing operand delimiters use the normal parse-error channel");
+        rejected=false;
+        try { (void)assembleIns(malformed); } catch(const AssemblerParseError&) {rejected=true;}
+        check_assembler_audit(rejected,"F142: actual instruction assembly propagates missing-delimiter failures");
+    }
+    for (const auto* text : {"mov r0.x, r1.x", "mov r0.x, l(1.0)",
+            "add r0.xyzw, r1.xyzw, l(1.0, 2.0, 3.0, 4.0)",
+            "printf \"a message with \"inner\" quotes\", r0.x", "printf \"\"", "dmov r0.xyzw, d(1.0l, 2.0l)"}) {
+        const auto words=strToWords(text);
+        check_assembler_audit(!words.empty() && !assembleIns(text).empty(),"F142: preserve ordinary final words, closed literals and right-most quote matching");
+    }
+    check_assembler_audit(strToWords("mov r0.x, r1.x")==std::vector<std::string>{"mov","r0.x","r1.x"},
+        "F142: the previously disputed ordinary final-word case retains its correct tokenization");
+}
+
 void test_dx11_assembler_declaration_regression()
 {
     const std::pair<const char*, DWORD> types[] = {

@@ -799,7 +799,10 @@ static vector<string> strToWords(string s)
 		if (start >= s.size())
 			break;
 		if (s[start] == '(' || s[start + 1] == '(') {
-			end = s.find(')', start) + 1;
+			end = s.find(')', start);
+			if (end == string::npos)
+				throw AssemblerParseError(s, "Unterminated operand parentheses");
+			++end;
 			if (end < s.size() && s[end] == ',')
 				end++;
 		} else if (s[start] == '"') {
@@ -807,12 +810,15 @@ static vector<string> strToWords(string s)
 			// instructions, and we need to match until the
 			// right-most quote in case there are extra quotes
 			// inside the string (which are not escaped).
-			end = s.rfind('"') + 1;
+			end = s.rfind('"');
+			if (end == start)
+				throw AssemblerParseError(s, "Unterminated string operand");
+			++end;
 			if (end < s.size() && s[end] == ',')
 				end++;
 		} else {
 			end = s.find(' ', start);
-			if (s[end + 1] == '+') {
+			if (end != string::npos && s[end + 1] == '+') {
 				end = s.find(' ', end + 3);
 				if (s.size() > end && s[end + 1] == '+') {
 					end = s.find(' ', end + 3);

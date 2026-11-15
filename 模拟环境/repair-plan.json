@@ -7,16 +7,16 @@
   "oldPlanSha256": "83E9E7E8F523606455C8C1A81A5A11463159362AA61796B29AAB5A81663403E8",
   "counts": {
     "A": 23,
-    "B": 42,
+    "B": 43,
     "C": 29,
     "R": 26,
     "X": 4,
-    "E": 7,
+    "E": 6,
     "D12": 4,
     "N": 7
   },
   "total": 142,
-  "activeCandidateCount": 120,
+  "activeCandidateCount": 121,
   "rows": [
     {
       "id": "F-001",
@@ -557,16 +557,16 @@
     },
     {
       "id": "F-142",
-      "status": "证据不足",
-      "group": "E",
-      "groupLabel": "证据不足，暂缓",
+      "status": "成立但修正",
+      "group": "B",
+      "groupLabel": "跨函数语义，第二批候选",
       "originalSeverity": "medium",
       "evidence": "src/D3D_Shaders/Assembler.cpp:814-816",
-      "additionalEvidence": null,
-      "correctedConclusion": "npos+1回绕本身无OOB，正常合法指令首字符不是+时839-844正确处理末词；报告未给合法输入切词错误，保留健壮性建议，不算已证实普通末词缺陷。",
-      "executionGate": "不修复；补可达调用链/合法输入/完整所有权或锁环证据后重新评审",
-      "targetedAcceptanceProposal": null,
-      "implementationStatus": "frozen-or-out-of-scope"
+      "additionalEvidence": "build/f/e37a79d70e66/results.json；公共assembler用户文本错误与告警收集链",
+      "correctedConclusion": "此前只核正常末词，遗漏括号/引号分支：缺右括号使find()+1回零，strToWords反复处理同一段；用户汇编文本可达，旧独立专项已超时。不能要求非法输入先能合法汇编才认可解析器拒绝缺陷；未闭合操作数应走现有parse-error通道。",
+      "executionGate": "独立专项与完整业务装置通过后单独提交，不混入F145私有反汇编修补",
+      "targetedAcceptanceProposal": "缺右括号/引号拒绝并终止，正常末词/字面量/内嵌引号保留，公共API行号异常与告警继续",
+      "implementationStatus": "pending"
     },
     {
       "id": "F-143",
@@ -1884,6 +1884,14 @@
       "id": "F-138",
       "date": "2026-11-15",
       "reason": "安全CRT重载改变了原报告的失败机制：错误已终止，容量耗尽可终止进程",
+      "detail": "执行复查修正报告.md"
+    },
+    {
+      "id": "F-142",
+      "date": "2026-11-15",
+      "previousGroup": "E",
+      "currentGroup": "B",
+      "reason": "旧复查遗漏未闭合操作数导致游标回零的可达循环，独立子进程专项已超时",
       "detail": "执行复查修正报告.md"
     }
   ],

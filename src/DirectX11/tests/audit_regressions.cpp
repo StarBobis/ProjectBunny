@@ -40,6 +40,7 @@ void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
 void test_dx11_parameter_conversion_regression();
 void test_dx11_assembler_declaration_regression();
+void test_dx11_assembler_word_progress_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -347,6 +348,26 @@ void test_f143()
         "F143: preserve explicit warning-collection compatibility policy while reporting the rejected instruction");
 }
 
+void test_f142()
+{
+    test_dx11_assembler_word_progress_regression();
+    const char source[]="float4 main():SV_Target{return 1;}";
+    ComPtr<ID3DBlob> code,errors;
+    require_batch(SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+        "F142: actual native DXBC for the public shader replacement parser");
+    const auto* data=static_cast<const unsigned char*>(code->GetBufferPointer());
+    const std::vector<unsigned char> original(data,data+code->GetBufferSize());
+    const std::string malformed="ps_5_0\nmov r0.x, l(1.0\nret\n";
+    std::vector<char> text(malformed.begin(),malformed.end());
+    bool rejected=false;
+    try {assembler(&text,original);} catch(const AssemblerParseError& error) {rejected=error.line_no==2;}
+    require_batch(rejected,"F142: user assembly missing a delimiter reports line 2 instead of hanging");
+    std::vector<AssemblerParseError> warnings;
+    const auto warned=assembler(&text,original,&warnings);
+    require_batch(warnings.size()==1 && warnings.front().line_no==2 && !warned.empty(),
+        "F142: explicit warning collection terminates and follows the existing continue policy");
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -360,6 +381,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-137", test_f137},
     {"F-138", test_f138},
     {"F-143", test_f143},
+    {"F-142", test_f142},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},
