@@ -1954,9 +1954,11 @@
     },
     {
       "id": "P-03",
-      "group": "B",
-      "implementationStatus": "pending-measurement",
-      "summary": "编译代理无用hash/格式化"
+      "group": "E",
+      "implementationStatus": "measured-inconclusive-deferred",
+      "summary": "编译代理无用hash/格式化",
+      "evidence": "validation/P-03-review.json",
+      "executionGate": "指定真实public/native47负载的48腿收益波动大，按证据不足暂不合生产；先以更有代表性的可比负载取得可重复收益，再重新专审/专项/full，不用静态估计或挑最快样本推动。"
     },
     {
       "id": "P-04",

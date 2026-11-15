@@ -472,5 +472,14 @@
       "evidence": "validation/F-281-candidate-review.json",
       "countAsRepaired": false
     }
+  ],
+  "performanceDeferred": [
+    {
+      "id": "P-03",
+      "status": "measured-inconclusive-deferred",
+      "summary": "真实public/native47、同Release flags、3层源长度、8对AB/BA各64次共48腿全部保留；独立中位数变化-0.94%/+3.90%/+2.97%，配对波动最高约32%，64KiB仅4/8更快。收益证据不足，生产守卫与接入均不合入，P03由B移E暂缓，不计完成。",
+      "evidence": "validation/P-03-review.json",
+      "countAsRepaired": false
+    }
   ]
 }
