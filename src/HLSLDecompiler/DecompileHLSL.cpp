@@ -2600,29 +2600,58 @@ public:
 
 		if (!strncmp(op, "float", 5))
 		{
-			if (!strncmp(textype, "Texture2D", 9))
+			const size_t length = strlen(op);
+			// Constant-buffer identifiers may also start with "float".
+			const char *typeEnd = op + 5;
+			while (isdigit(static_cast<unsigned char>(*typeEnd))) ++typeEnd;
+			const bool bareType = length == 5 || (length == 6 && op[5] >= '1' && op[5] <= '4');
+			if (*typeEnd != '(' && !bareType)
+				return;
+			if (length < 8 || op[5] < '2' || op[5] > '4' || op[6] != '(')
 			{
-				cpos = strchr(op, ',');
-				cpos++;
-				cpos = strchr(cpos, ',');
-				cpos[0] = ')';
-				cpos[1] = 0;
-				op[5] = '2';	// now: float2(x,y)
+				logDecompileError("Invalid float texture coordinate: " + string(op));
+				return;
 			}
-			else if (!strncmp(textype, "Texture3D", 9))
+			const int components = op[5] - '0';
+			char *componentEnds[4]{};
+			char *cursor = op + 7;
+			// Validate every component before publishing a shortened constructor.
+			// Keep the original text so precision and special values are unchanged.
+			for (int i = 0; i < components; ++i)
 			{
-				cpos = strchr(op, ',');
-				cpos++;
-				cpos = strchr(cpos, ',');
-				cpos++;
-				cpos = strchr(cpos, ',');
-				cpos[0] = ')';
-				cpos[1] = 0;
-				op[5] = '3';	// now: float3(x,y,z)
+				float number;
+				int consumed = 0;
+				if (sscanf_s(cursor, "%f %n", &number, &consumed) != 1 || !consumed)
+				{
+					logDecompileError("Invalid float texture coordinate: " + string(op));
+					return;
+				}
+				cursor += consumed;
+				if (*cursor != (i + 1 == components ? ')' : ','))
+				{
+					logDecompileError("Invalid float texture coordinate: " + string(op));
+					return;
+				}
+				componentEnds[i] = cursor++;
 			}
-			else // if (!strncmp(textype, "TextureCube", 11) || !strncmp(textype, "TextureCubeArray", 11))
+			if (*cursor)
 			{
-				// left as: float4(x,y,z,w)
+				logDecompileError("Invalid float texture coordinate: " + string(op));
+				return;
+			}
+			int dimensions = components;
+			if (!strncmp(textype, "Texture2D", 9)) dimensions = 2;
+			else if (!strncmp(textype, "Texture3D", 9)) dimensions = 3;
+			if (components < dimensions)
+			{
+				logDecompileError("Insufficient float texture coordinate components: " + string(op));
+				return;
+			}
+			if (components > dimensions)
+			{
+				componentEnds[dimensions - 1][0] = ')';
+				componentEnds[dimensions - 1][1] = 0;
+				op[5] = '0' + dimensions;
 			}
 		}
 		else

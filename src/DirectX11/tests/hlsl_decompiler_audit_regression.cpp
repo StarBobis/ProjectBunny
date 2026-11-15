@@ -14,6 +14,7 @@ void test_dx11_decompiler_public_signature_regression();
 std::string dx11_audit_dx9_binding_disassembly();
 void test_dx11_decompiler_public_dx9_binding_regression();
 void test_dx11_decompiler_public_suffix_regression();
+void test_dx11_decompiler_public_texture_literal_regression();
 
 namespace {
 void check_literal_audit(bool condition, const char* message)
@@ -312,4 +313,65 @@ void test_dx11_decompiler_suffix_regression()
     char input[opcodeSize] = {};
     check_literal_audit(empty.GetSuffix(input, 0).empty() && empty.mErrorOccurred,
         "F279: an absent operand reports the existing error state before testing its last character");
+}
+
+void test_dx11_decompiler_texture_literal_regression()
+{
+    std::fputs("F280: complete texture-coordinate constructors through the production truncator\n", stderr);
+    std::fflush(stderr);
+    for (const auto* type : {"Texture2D<float4>", "Texture3D<float4>"}) {
+        for (const auto* input : {"float4(1,2)", "float4(1)", "float4(1,2,3)",
+                "float4(1,2,3,)", "float4(1,2,,4)", "float4(1,2,3,4,5)",
+                "float4(1,2,3,4", "float4(1,2,3,4))", "float4(1,2,3,bad)",
+                "float4(1,2,3,4junk)", "float4(1 2,3,4)", "float4(1,2 3,4)",
+                "float4(1,2,3 4)", "float3(1,2)", "float2(1)",
+                "float5(1,2,3,4,5)", "float(1)", "float", "float1", "float2", "float3", "float4", "float4()"}) {
+            Decompiler decoder; decoder.mErrorOccurred = false;
+            char operand[opcodeSize]; strcpy_s(operand, input);
+            decoder.truncateTexturePos(operand, type);
+            check_literal_audit(decoder.mErrorOccurred && !std::strcmp(operand, input),
+                "F280: reject every malformed constructor without publishing a truncated prefix");
+        }
+    }
+    struct TextureLiteralCase {
+        const char* input;
+        const char* type;
+        const char* expected;
+    };
+    const TextureLiteralCase valid[] = {
+        {"float2(1,2)", "Texture2D<float4>", "float2(1,2)"},
+        {"float3(1,2,3)", "Texture2D<float4>", "float2(1,2)"},
+        {"float3(1,2,3)", "Texture3D<float4>", "float3(1,2,3)"},
+        {"float4(1,2,3,4)", "Texture2D<float4>", "float2(1,2)"},
+        {"float4(1,2,3,4)", "Texture3D<float4>", "float3(1,2,3)"},
+        {"float4(1,2,3,4)", "TextureCubeArray<float4>", "float4(1,2,3,4)"},
+        {"floatCoords.xyzx", "TextureCube<float4>", "floatCoords.xyzx"},
+        {"float2Indices.xyzx", "TextureCubeArray<float4>", "float2Indices.xyzx"},
+        {"float123.xyzx", "TextureCube<float4>", "float123.xyzx"},
+        {"floatCoords", "Texture1D<float4>", "floatCoords"},
+        {"float123", "Texture1D<float4>", "float123"},
+        {"float4(1.23456789e-19,-0.00000000,inf,nan)", "Texture2D<float4>",
+            "float2(1.23456789e-19,-0.00000000)"},
+        {"float4(inf,-inf,nan,-0)", "Texture3D<float4>", "float3(inf,-inf,nan)"},
+        {"float4(3.40282347e+38,1.40129846e-45,-0,1)", "Texture3D<float4>",
+            "float3(3.40282347e+38,1.40129846e-45,-0)"},
+        {"float3( 1.23456789e-19 , -0 , nan )", "Texture3D<float4>",
+            "float3( 1.23456789e-19 , -0 , nan )"},
+    };
+    for (const auto& test : valid) {
+        Decompiler decoder; decoder.mErrorOccurred = false;
+        char operand[opcodeSize]; strcpy_s(operand, test.input);
+        decoder.truncateTexturePos(operand, test.type);
+        check_literal_audit(!decoder.mErrorOccurred && !std::strcmp(operand, test.expected),
+            "F280: valid coordinates preserve component spelling, precision and special values");
+        decoder.truncateTexturePos(operand, test.type);
+        check_literal_audit(!decoder.mErrorOccurred && !std::strcmp(operand, test.expected),
+            "F280: truncation is safe when the operand already has the requested dimension");
+    }
+    Decompiler decoder; decoder.mErrorOccurred = false;
+    char short_operand[opcodeSize] = "float2(1,2)";
+    decoder.truncateTexturePos(short_operand, "Texture3D<float4>");
+    check_literal_audit(decoder.mErrorOccurred && !std::strcmp(short_operand, "float2(1,2)"),
+        "F280: an insufficient coordinate dimension is diagnosed without mutation");
+    test_dx11_decompiler_public_texture_literal_regression();
 }

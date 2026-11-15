@@ -45,6 +45,7 @@ void check_dx11_special_output_rows(const std::string&, const std::vector<std::s
 void check_dx11_special_output_failure(const std::string&);
 void test_dx11_dx9_binding_lifetime_regression();
 void test_dx11_decompiler_suffix_regression();
+void test_dx11_decompiler_texture_literal_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
@@ -672,6 +673,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-275", test_dx11_decompiler_special_output_regression},
     {"F-276", test_dx11_dx9_binding_lifetime_regression},
     {"F-279", test_dx11_decompiler_suffix_regression},
+    {"F-280", test_dx11_decompiler_texture_literal_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -1111,5 +1113,58 @@ void test_dx11_decompiler_public_suffix_regression()
                     "F279: each consumer preserves the rendered scalar/vector component values");
             }
         }
+    }
+}
+
+void test_dx11_decompiler_public_texture_literal_regression()
+{
+    using namespace dx11_slot_test;
+    const char* sources[] = {
+        "Texture2D<float4> tex:register(t0); SamplerState samp:register(s0);"
+        "float4 main():SV_Target{return tex.SampleLevel(samp,float2(0.25,0.75),0);}",
+        "Texture3D<float4> tex:register(t0); SamplerState samp:register(s0);"
+        "float4 main():SV_Target{return tex.SampleLevel(samp,float3(0.25,0.75,0.5),0);}",
+        "cbuffer C{float3 floatCoords;}; TextureCube<float4> tex:register(t0); SamplerState samp:register(s0);"
+        "float4 main():SV_Target{return tex.SampleLevel(samp,floatCoords,0);}",
+        "cbuffer C{float3 float2Indices;}; TextureCube<float4> tex:register(t0); SamplerState samp:register(s0);"
+        "float4 main():SV_Target{return tex.SampleLevel(samp,float2Indices,0);}",
+        "cbuffer C{float floatCoords;}; Texture1D<float4> tex:register(t0); SamplerState samp:register(s0);"
+        "float4 main():SV_Target{return tex.SampleLevel(samp,floatCoords,0);}",
+        "cbuffer C{float float123;}; Texture1D<float4> tex:register(t0); SamplerState samp:register(s0);"
+        "float4 main():SV_Target{return tex.SampleLevel(samp,float123,0);}",
+    };
+    BatchDevice device;
+    for (const auto* source : sources) {
+        ComPtr<ID3DBlob> code, errors, assembly;
+        require_batch(SUCCEEDED(D3DCompile(source, std::strlen(source), nullptr, nullptr, nullptr,
+            "main", "ps_5_0", 0, 0, &code, &errors)), "F280: native compiler produces an actual texture-sampling shader");
+        require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(), code->GetBufferSize(), 0, nullptr, &assembly)),
+            "F280: native disassembler supplies the public decompiler input");
+        const std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
+        const bool named_coordinate = std::strstr(source, "cbuffer") != nullptr;
+        const char* coordinate_name = std::strstr(source, "float2Indices") ? "float2Indices" :
+            std::strstr(source, "float123") ? "float123" : "floatCoords";
+        require_batch(text.find("sample_l") != std::string::npos && (named_coordinate ?
+            text.find(coordinate_name) != std::string::npos && text.find("cb0[0]") != std::string::npos :
+            text.find("l(0.250000, 0.750000") != std::string::npos),
+            "F280: real disassembly contains the expected immediate or named-cbuffer sampling coordinates");
+        DecompilerSettings settings;
+        ParseParameters params{};
+        params.bytecode = code->GetBufferPointer(); params.decompiled = text.c_str();
+        params.decompiledSize = text.size(); params.G = &settings;
+        bool patched = false, failed = false; std::string model;
+        const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
+        if (failed) std::fprintf(stderr, "F280 rejected native shader:\n%s\n", hlsl.c_str());
+        require_batch(!failed && !hlsl.empty() && model == "ps_5_0",
+            "F280: public decompilation accepts native literal and named-cbuffer coordinates");
+        ComPtr<ID3DBlob> rebuilt;
+        require_batch(SUCCEEDED(D3DCompile(hlsl.data(), hlsl.size(), nullptr, nullptr, nullptr,
+            "main", "ps_5_0", 0, 0, &rebuilt, &errors)), "F280: native compiler accepts the regenerated texture-sampling HLSL");
+        ComPtr<ID3D11PixelShader> original, replacement;
+        require_batch(SUCCEEDED(device.native->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &original)) &&
+            SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(), rebuilt->GetBufferSize(), nullptr, &replacement)),
+            "F280: actual WARP accepts both original and regenerated sampling shaders");
+        std::fprintf(stderr, "F280: native/public/recompiled/WARP %s coordinates PASS\n",
+            named_coordinate ? coordinate_name : "immediate");
     }
 }

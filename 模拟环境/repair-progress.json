@@ -402,6 +402,13 @@
       "summary": "GetSuffix检查实际swizzle长度、标量广播和空操作数，保留typed member及abs文本，不从短mask读旧字节生成错误表达式。实际UBFE/BFI/SWAPC共24组原始DXBC与重编译HLSL像素对照、专项边界、主线25+10全流程与独立候选/合并审查通过；相邻旧移位等问题未混修。",
       "evidence": "validation/F-279.json",
       "commitLookup": "git log --fixed-strings --grep=F-279"
+    },
+    {
+      "id": "F-280",
+      "status": "validated-in-simulator",
+      "summary": "浮点坐标构造器逐分量验证完成后才截取，缺逗号/分量/闭合保持原操作数并诊断；v2保留floatCoords/float2Indices/float123合法名称，纠正v1误报。真实公开2D坐标/命名cbuffer、原生重编译WARP与边界专项、主线25+10全流程及独立候选/合并复核通过；未扩展Array/Cube既有维度策略。",
+      "evidence": "validation/F-280.json",
+      "commitLookup": "git log --fixed-strings --grep=F-280"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
