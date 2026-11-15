@@ -162,6 +162,13 @@
       "summary": "ParseStencilOp接收const真实stencil_front/back键名，删除未初始化key数组；实际INI日志验证两路错误诊断，非法值保持既有默认操作，合法8字段解析及原生WARP深度模板状态创建通过，专项与全流程通过。",
       "evidence": "validation/F-295.json",
       "commitLookup": "git log --fixed-strings --grep=F-295"
+    },
+    {
+      "id": "F-298",
+      "status": "validated-in-simulator",
+      "summary": "原view-reference回归读取SRV描述符前使用require_batch检查；真实空CS槽先产生可捕获诊断，旧路径ASan复现访问冲突；合法视图往返与各类型保留通过，专项与全流程通过，仅改测试。",
+      "evidence": "validation/F-298.json",
+      "commitLookup": "git log --fixed-strings --grep=F-298"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

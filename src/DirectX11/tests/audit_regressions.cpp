@@ -22,6 +22,7 @@ void test_dx11_masked_flags_regression();
 void test_dx11_crash_help_regression();
 void test_dx11_ini_enumeration_regression();
 void test_dx11_stencil_diagnostic_regression();
+void test_dx11_view_reference_null_diagnostic_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -261,6 +262,7 @@ const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F
     {"F-286", test_dx11_crash_help_regression},
     {"F-294", test_dx11_ini_enumeration_regression},
     {"F-295", test_dx11_stencil_diagnostic_regression},
+    {"F-298", test_dx11_view_reference_null_diagnostic_regression},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
 #endif

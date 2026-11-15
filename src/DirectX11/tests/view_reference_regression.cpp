@@ -20,6 +20,14 @@ ComPtr<ID3D11Resource> view_resource(ID3D11View* view)
     return result;
 }
 
+D3D11_SHADER_RESOURCE_VIEW_DESC describe_roundtrip_srv(const ComPtr<ID3D11ShaderResourceView>& view)
+{
+    require_batch(view != nullptr, "ref: scalar roundtrip must bind a CS SRV before reading its description");
+    D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+    view->GetDesc(&desc);
+    return desc;
+}
+
 void view_kinds(BatchDevice& device, Registry& registry)
 {
     auto native = array_texture(device, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -38,7 +46,7 @@ void view_kinds(BatchDevice& device, Registry& registry)
     device.context->ClearState();
     scalar(device, L"cs-t7", L"ref resourceref_view_hold");
     auto rebound = get_slot(device, L'c', 7);
-    D3D11_SHADER_RESOURCE_VIEW_DESC actual = {}; rebound->GetDesc(&actual);
+    const auto actual = describe_roundtrip_srv(rebound);
     require_batch(rebound.Get() == original.Get() && actual.Texture2DArray.MostDetailedMip == 1 &&
         actual.Texture2DArray.FirstArraySlice == 1 && actual.Texture2DArray.ArraySize == 1,
         "ref: scalar roundtrip retains array/mip subview rather than widening to full resource");
@@ -143,4 +151,22 @@ void test_dx11_view_reference_regression()
     BatchDevice device; Registry registry;
     view_kinds(device, registry);
     structured_to_cb_and_flags(device, registry);
+}
+
+void test_dx11_view_reference_null_diagnostic_regression()
+{
+    BatchDevice device;
+    device.context->ClearState();
+    auto empty = get_slot(device, L'c', 7);
+    require_batch(!empty, "F298: actual cleared CS slot returns a null SRV");
+    std::fputs("F298: describe an actual empty slot through the ordinary regression consumer\n", stderr); std::fflush(stderr);
+    bool diagnosed = false;
+    try { describe_roundtrip_srv(empty); }
+    catch (const std::runtime_error& error) {
+        std::fprintf(stderr, "F298 caught diagnostic: %s\n", error.what());
+        diagnosed = std::string(error.what()).find("scalar roundtrip must bind a CS SRV") != std::string::npos;
+    }
+    require_batch(diagnosed, "F298: missing SRV must produce the existing diagnostic exception before GetDesc");
+    Registry registry;
+    view_kinds(device, registry);
 }
