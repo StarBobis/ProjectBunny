@@ -4871,6 +4871,9 @@ void STDMETHODCALLTYPE FrameAnalysisContext::UpdateSubresource1(
 	FrameAnalysisLogResourceHash(pDstResource);
 
 	HackerContext::UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
+
+	if (G->analyse_frame)
+		FrameAnalysisAfterUpdate(pDstResource);
 }
 
 void STDMETHODCALLTYPE FrameAnalysisContext::DiscardResource(

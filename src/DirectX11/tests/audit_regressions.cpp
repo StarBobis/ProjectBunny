@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include "D3D_Shaders/stdafx.h"
 
 extern std::vector<CommandList*> pending_post_command_lists;
@@ -432,6 +433,92 @@ void test_f146()
     require_batch(rejected,"F146: an empty public input reaches the existing missing-model error instead of reading null");
 }
 
+class AuditAnalysisDeviceScope {
+    BatchDevice& device;
+    std::unique_ptr<HackerContext> original;
+public:
+    FrameAnalysisContext* context=nullptr;
+    explicit AuditAnalysisDeviceScope(BatchDevice& value):device(value)
+    {
+        auto analysis=std::make_unique<FrameAnalysisContext>(device.native.Get(),device.context.Get());
+        analysis->SetHackerDevice(device.device); context=analysis.get();
+        original=std::move(device.wrapper); device.wrapper=std::move(analysis);
+        device.device->SetHackerContext(context); device.state.mHackerContext=context;
+    }
+    ~AuditAnalysisDeviceScope()
+    {
+        auto analysis=std::move(device.wrapper);
+        device.wrapper=std::move(original);
+        device.device->SetHackerContext(device.wrapper.get()); device.state.mHackerContext=device.wrapper.get();
+        analysis.reset();
+    }
+};
+
+std::string audit_read_native_buffer(BatchDevice& device,ID3D11Buffer* input)
+{
+    D3D11_BUFFER_DESC desc{}; input->GetDesc(&desc);
+    desc.Usage=D3D11_USAGE_STAGING; desc.BindFlags=desc.MiscFlags=desc.StructureByteStride=0; desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Buffer> staging;
+    require_batch(SUCCEEDED(device.native->CreateBuffer(&desc,nullptr,&staging)),"F169: real staging buffer");
+    device.context->CopyResource(staging.Get(),input);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    require_batch(SUCCEEDED(device.context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped)),"F169: read the real uploaded bytes");
+    const std::string bytes(static_cast<const char*>(mapped.pData),desc.ByteWidth);
+    device.context->Unmap(staging.Get(),0);
+    return bytes;
+}
+
+std::map<std::wstring,std::string> audit_update_dump_files(const std::filesystem::path& path)
+{
+    std::map<std::wstring,std::string> files;
+    for(const auto& file:std::filesystem::directory_iterator(path)) {
+        if(file.is_regular_file() && file.path().extension()==L".buf" && file.path().filename().wstring().find(L"-update")!=std::wstring::npos)
+            files.emplace(file.path().filename().wstring(),read_file(file.path()));
+    }
+    return files;
+}
+
+void test_f169()
+{
+    AuditDumpScope output; BatchDevice device; AuditAnalysisDeviceScope analysis(device);
+    auto target=buffer(device,16,D3D11_BIND_VERTEX_BUFFER);
+    const auto options=static_cast<FrameAnalysisOptions>(FrameAnalysisOptions::DUMP_ON_UPDATE | FrameAnalysisOptions::FMT_BUF_BIN);
+    G->cur_analyse_options=options;
+    std::array<UINT,4> values{11,22,33,44};
+    auto expected=[&] {return std::string(reinterpret_cast<const char*>(values.data()),sizeof(values));};
+    auto verify_upload=[&] {require_batch(audit_read_native_buffer(device,target.Get())==expected(),"F169: capture controls never change native upload data");};
+    auto files=audit_update_dump_files(output.path);
+    auto verify_dump=[&] {
+        const auto next=audit_update_dump_files(output.path);
+        require_batch(next.size()==files.size()+1,"F169: exactly one new capture is emitted per enabled update");
+        for(const auto& entry:files) require_batch(next.at(entry.first)==entry.second,"F169: previous captures remain unchanged");
+        for(const auto& entry:next) if(!files.count(entry.first)) require_batch(entry.second==expected(),"F169: capture contains the complete updated bytes");
+        files=next;
+    };
+    std::fputs("F169: UpdateSubresource1 must emit one dump of the completed native upload\n",stderr); std::fflush(stderr);
+    analysis.context->UpdateSubresource1(target.Get(),0,nullptr,values.data(),0,0,0);
+    verify_upload(); verify_dump();
+    const UINT partial[]={77,88}; const D3D11_BOX box{4,0,0,12,1,1};
+    values[1]=partial[0]; values[2]=partial[1];
+    analysis.context->UpdateSubresource1(target.Get(),0,&box,partial,0,0,0);
+    verify_upload(); verify_dump();
+    G->analyse_frame=false; values[0]=99;
+    analysis.context->UpdateSubresource1(target.Get(),0,nullptr,values.data(),0,0,0); verify_upload();
+    require_batch(audit_update_dump_files(output.path)==files,"F169: disabled analysis adds no capture");
+    G->analyse_frame=true; G->cur_analyse_options=FrameAnalysisOptions::FMT_BUF_BIN; values[0]=111;
+    analysis.context->UpdateSubresource1(target.Get(),0,nullptr,values.data(),0,0,0); verify_upload();
+    require_batch(audit_update_dump_files(output.path)==files,"F169: missing dump_on_update adds no capture");
+    G->cur_analyse_options=options; values[0]=222;
+    analysis.context->UpdateSubresource(target.Get(),0,nullptr,values.data(),0,0); verify_upload(); verify_dump();
+    const auto blocked=output.path/L"blocked-parent";
+    {std::ofstream file(blocked,std::ios::binary); file<<"not a directory"; file.close(); require_batch(file.good(),"F169: actual filesystem capture failure fixture");}
+    wcscpy_s(G->ANALYSIS_PATH,MAX_PATH,blocked.c_str()); values[0]=333;
+    analysis.context->UpdateSubresource1(target.Get(),0,nullptr,values.data(),0,0,0); verify_upload();
+    require_batch(audit_update_dump_files(output.path)==files,"F169: failed capture does not replace earlier output");
+    wcscpy_s(G->ANALYSIS_PATH,MAX_PATH,output.path.c_str()); values[0]=444;
+    analysis.context->UpdateSubresource1(target.Get(),0,nullptr,values.data(),0,0,0); verify_upload(); verify_dump();
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -451,6 +538,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-148", test_dx11_shader_tool_read_regression},
     {"F-149", test_dx11_shader_tool_write_regression},
     {"F-155", test_dx11_automatic_draw_count_regression},
+    {"F-169", test_f169},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},

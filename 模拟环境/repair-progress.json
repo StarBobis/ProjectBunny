@@ -295,6 +295,13 @@
       "summary": "自动VB计数在减法/除法前拒绝零stride及过大offset，IB仅检查offset并保留R16/R32规则；复用现有0计数跳过而不估造数量，释放引用后再返回。原生WARP零stride除零已复现；正常/部分/末端/越界/缺资源、三个auto消费者/重绑恢复专项及25+10全流程通过，用户文档同步；显式draw不改。",
       "evidence": "validation/F-155.json",
       "commitLookup": "git log --fixed-strings --grep=F-155"
+    },
+    {
+      "id": "F-169",
+      "status": "validated-in-simulator",
+      "summary": "UpdateSubresource1在既有基类上传后、帧分析开启时补接一次FrameAnalysisAfterUpdate；原转发参数和上传跟踪不变。旧版上传字节正确但漏转储已复现；完整/局部上传、逐事件一份正确捕获、关闭分析/选项、旧API、真实转储IO失败与恢复专项及25+10全流程通过；WARP immediate/CopyFlags=0，不冒充实机。",
+      "evidence": "validation/F-169.json",
+      "commitLookup": "git log --fixed-strings --grep=F-169"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

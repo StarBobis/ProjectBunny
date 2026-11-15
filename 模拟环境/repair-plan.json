@@ -916,7 +916,7 @@
       "additionalEvidence": null,
       "correctedConclusion": "UpdateSubresource1未接FrameAnalysisAfterUpdate导致dump_on_update漏采；转发和上传跟踪不能重复触发。",
       "executionGate": "先列全部消费者和失败/恢复语义，补生产逻辑与适用DLL用例；有语义决策未定则不实施",
-      "targetedAcceptanceProposal": null,
+      "targetedAcceptanceProposal": "真实WARP上传及staging字节读回，完整/局部更新每次仅一份正确转储、分析或选项关闭无转储、旧API、真实转储IO失败与恢复；原基类转发/跟踪不变",
       "implementationStatus": "pending"
     },
     {
