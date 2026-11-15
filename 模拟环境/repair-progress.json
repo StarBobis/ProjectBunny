@@ -64,6 +64,13 @@
       "summary": "真实签名解析中+/-的EOF转换不再继承前条寄存器5；普通0/31、oDepth、mask和used字段保持，完整业务及16项DLL集成通过。",
       "evidence": "validation/F-150.json",
       "commitLookup": "git log --fixed-strings --grep=F-150"
+    },
+    {
+      "id": "F-151",
+      "status": "validated-in-simulator",
+      "summary": "SFI特性注释先验证长度和//加空白前缀再偏移读取；拒绝伪九字节前缀，保留空格/制表符合法格式、已有flags和位置回退，完整测试通过。",
+      "evidence": "validation/F-151.json",
+      "commitLookup": "git log --fixed-strings --grep=F-151"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

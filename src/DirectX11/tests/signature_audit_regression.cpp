@@ -10,6 +10,28 @@ void check_signature_audit(bool condition, const char* message)
 {
     if (!condition) throw std::runtime_error(message);
 }
+
+uint64_t audit_feature_flags(std::string text)
+{
+    size_t position = 0;
+    const auto flags = parse_subshader_feature_info_comment(&text, &position, 0x10);
+    check_signature_audit(position == 0, "F151: feature-comment parsing preserves existing rewind semantics");
+    return flags;
+}
+}
+
+void test_dx11_signature_feature_comment_regression()
+{
+    const std::string stop = "// terminal comment long enough to stop feature parsing\n";
+    check_signature_audit(audit_feature_flags("//       Double-precision floating point\n//       Raw and Structured buffers\n" + stop) == 0x13,
+        "F151: standard feature comments retain feature bits and preexisting flags");
+    check_signature_audit(audit_feature_flags("//\t\t\t\t\t\t\tRaw and Structured buffers\n" + stop) == 0x12,
+        "F151: existing nine-byte tab-padded comment format remains supported");
+    std::fputs("F151: reject feature text without a real comment prefix\n", stderr); std::fflush(stderr);
+    check_signature_audit(audit_feature_flags("123456789Raw and Structured buffers\n" + stop) == 0x10,
+        "F151: arbitrary nine-byte prefixes must not set feature flags");
+    for (const char* short_line : {"", "/\n", "//\n", "// x\n", "//       Unknown future feature\n"})
+        check_signature_audit(audit_feature_flags(short_line) == 0x10, "F151: short/unknown comments do not read past the line or invent flags");
 }
 
 void test_dx11_signature_register_eof_regression()

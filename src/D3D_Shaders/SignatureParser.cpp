@@ -534,6 +534,9 @@ static uint64_t parse_subshader_feature_info_comment(string *shader, size_t *pos
 		line = next_line(shader, pos);
 
 		LogDebug("%s\n", line.c_str());
+		if (line.size() < 9 || line.compare(0, 2, "//") != 0 ||
+			line.find_first_not_of(" \t", 2) != 9)
+			break;
 
 		for (i = 0; i < ARRAYSIZE(subshader_feature_comments); i++) {
 			if (!strcmp(line.c_str() + 9, subshader_feature_comments[i])) {
