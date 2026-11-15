@@ -332,6 +332,13 @@
       "summary": "DEBUG初始数据预览最多读可证明的16字节；复用surface布局，紧凑范围保留原诊断，padding/NV11仅首行，未知/opaque不读但保留描述。真实1字节R8保护页红版复现，开关/布局矩阵专项与主线25+10全流程、对抗复审通过；关闭debug早退，哈希/初始化/创建行为及const find_ptr不改。",
       "evidence": "validation/F-177.json",
       "commitLookup": "git log --fixed-strings --grep=F-177"
+    },
+    {
+      "id": "F-186",
+      "status": "validated-in-simulator",
+      "summary": "ShaderRegex节名/raw_line按完整wchar字节哈希，缓存reader/writer版本同升2，拒绝旧配置与v1缓存，不清整个目录。真实尾部变化哈希红例、PCRE/程序集/磁盘缓存/原生WARP alpha128→191、PATCH/NO_MATCH/旧版本/截断专项及主线25+10全流程、对抗审查通过。",
+      "evidence": "validation/F-186.json",
+      "commitLookup": "git log --fixed-strings --grep=F-186"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

@@ -1,6 +1,7 @@
 #include "slot_range_test_support.h"
 #include "FrameAnalysis.h"
 #include "IniHandler.h"
+#include "ShaderRegex.h"
 #include "Input.h"
 #include "Override.h"
 #include "vkeys.h"
@@ -537,6 +538,85 @@ void test_f169()
     analysis.context->UpdateSubresource1(target.Get(),0,nullptr,values.data(),0,0,0); verify_upload(); verify_dump();
 }
 
+void test_f186()
+{
+    AuditConfigScope config;
+    const auto cache=config.config.parent_path()/L"regex-cache-audit";
+    require_batch(std::filesystem::create_directory(cache),"F186: exclusive on-disk cache fixture");
+    const auto settings=[](const char* alpha) {
+        return std::string("[Rendering]\ncache_shaders=1\ncache_directory=regex-cache-audit\nshader_hash=fnv\n")+
+            "[ShaderRegexAuditTail]\nshader_model=ps_5_0\nfilter_index=7.25\n"
+            "[ShaderRegexAuditTail.Pattern]\nmov\\s+o0\\.xyzw,\\s*l\\(0\\.250000,\\s*0\\.500000,\\s*0\\.750000,\\s*1\\.000000\\)\n"
+            "[ShaderRegexAuditTail.Pattern.Replace]\nmov o0.xyzw, l(0.250000, 0.500000, 0.750000, "+alpha+")\n";
+    };
+    config.load(settings("0.500000").c_str(),0,true);
+    require_batch(shader_regex_groups.size()==1,"F186: production parser accepts the real regex group");
+    const uint32_t first_hash=shader_regex_hash;
+    config.load(settings("0.750000").c_str(),0,true);
+    std::fputs("F186: changing only a replacement line's UTF-16 tail must invalidate its cache key\n",stderr); std::fflush(stderr);
+    require_batch(shader_regex_hash!=first_hash,"F186: complete INI text contributes to the real configuration hash");
+
+    BatchDevice device; ComPtr<ID3DBlob> code,errors;
+    const char source[]="float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}";
+    require_batch(SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),"F186: real original shader");
+    const auto* data=static_cast<const unsigned char*>(code->GetBufferPointer());
+    const std::vector<unsigned char> original(data,data+code->GetBufferSize());
+    const UINT64 shader_hash=fnv_64_buf(original.data(),original.size());
+    wchar_t stem[64]{}; swprintf_s(stem,L"%016llx-ps_regex",shader_hash);
+    const auto meta=cache/(std::wstring(stem)+L".dat");
+    const auto create_patch=[&](const char* alpha,unsigned char expected_alpha) {
+        config.load(settings(alpha).c_str(),0,true);
+        auto binary=original; std::vector<unsigned char> assembly;
+        require_batch(SUCCEEDED(disassembler(&binary,&assembly,nullptr)),"F186: production disassembly input");
+        std::string text(assembly.begin(),assembly.end()),model="ps_5_0"; std::wstring tagline;
+        const bool changed=apply_shader_regex_groups(&text,L"ps",&model,shader_hash,&tagline);
+        if(!changed) {std::fprintf(stderr,"F186 native assembly:\n%s\n",text.c_str()); std::fflush(stderr);}
+        require_batch(changed,"F186: real PCRE group patches the expected native instruction");
+        std::vector<char> input(text.begin(),text.end());
+        auto patched=assembler(&input,original);
+        save_shader_regex_cache_bin(shader_hash,L"ps",&patched);
+        ComPtr<ID3D11PixelShader> shader;
+        require_batch(SUCCEEDED(device.native->CreatePixelShader(patched.data(),patched.size(),nullptr,&shader)),"F186: native WARP accepts the real regex output");
+        require_batch(render_dx11_audit_constant_pixel(device,shader.Get())==std::array<unsigned char,4>{64,128,191,expected_alpha},
+            "F186: real GPU output distinguishes the replacement tail");
+        std::vector<unsigned char> cached; std::wstring cached_tagline;
+        require_batch(load_shader_regex_cache(shader_hash,L"ps",&cached,&cached_tagline)==ShaderRegexCache::PATCH && cached==patched,
+            "F186: current-version cache hit returns exact patched bytes");
+        uint32_t version=0; std::ifstream file(meta,std::ios::binary); file.read(reinterpret_cast<char*>(&version),sizeof(version));
+        require_batch(file.good() && version==2,"F186: writer persists the explicit new cache version");
+        return patched;
+    };
+    const auto patched_a=create_patch("0.500000",128);
+    config.load(settings("0.750000").c_str(),0,true);
+    auto unchanged=original; std::wstring tagline=L"unchanged";
+    require_batch(load_shader_regex_cache(shader_hash,L"ps",&unchanged,&tagline)==ShaderRegexCache::NO_CACHE && unchanged==original && tagline==L"unchanged",
+        "F186: reload rejects stale configuration cache without altering output");
+    require_batch(!G->mShaderOverrideMap.count(shader_hash),"F186: stale cache rejection links no old group/filter");
+    {
+        const uint32_t legacy[]={1,shader_regex_hash,0,0};
+        std::ofstream file(meta,std::ios::binary|std::ios::trunc); file.write(reinterpret_cast<const char*>(legacy),sizeof(legacy)); file.close();
+        require_batch(file.good(),"F186: isolated legacy-version metadata fixture");
+    }
+    require_batch(load_shader_regex_cache(shader_hash,L"ps",&unchanged,&tagline)==ShaderRegexCache::NO_CACHE && unchanged==original && tagline==L"unchanged",
+        "F186: version 1 is rejected even when its hash field matches the current configuration");
+    const auto patched_b=create_patch("0.750000",191);
+    require_batch(patched_a!=patched_b,"F186: changed replacement produces distinct real bytecode");
+    const char no_match_source[]="float4 main():SV_Target{return float4(0.125,0.25,0.5,1);}";
+    code.Reset();
+    require_batch(SUCCEEDED(D3DCompile(no_match_source,sizeof(no_match_source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),"F186: genuine nonmatching original shader");
+    data=static_cast<const unsigned char*>(code->GetBufferPointer());
+    std::vector<unsigned char> no_match(data,data+code->GetBufferSize()),assembly;
+    const UINT64 no_match_hash=fnv_64_buf(no_match.data(),no_match.size());
+    require_batch(SUCCEEDED(disassembler(&no_match,&assembly,nullptr)),"F186: real nonmatching disassembly");
+    std::string text(assembly.begin(),assembly.end()),model="ps_5_0"; tagline.clear();
+    require_batch(!apply_shader_regex_groups(&text,L"ps",&model,no_match_hash,&tagline),"F186: nonmatching shader is not patched");
+    require_batch(load_shader_regex_cache(no_match_hash,L"ps",&unchanged,&tagline)==ShaderRegexCache::NO_MATCH,"F186: new-version negative cache remains usable");
+    wchar_t no_match_stem[64]{}; swprintf_s(no_match_stem,L"%016llx-ps_regex.dat",no_match_hash);
+    {std::ofstream file(cache/no_match_stem,std::ios::binary|std::ios::trunc); const uint32_t truncated=2; file.write(reinterpret_cast<const char*>(&truncated),sizeof(truncated)); file.close(); require_batch(file.good(),"F186: owned truncated metadata fixture");}
+    require_batch(load_shader_regex_cache(no_match_hash,L"ps",&unchanged,&tagline)==ShaderRegexCache::NO_CACHE,"F186: incomplete metadata remains a cache miss");
+    config.load("",0,true);
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-005", test_dx11_device_initialization_regression},
@@ -560,6 +640,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-170", test_dx11_shader_hash_miss_regression},
     {"F-171", test_dx11_shader_header_file_regression},
     {"F-175", test_dx11_resource_override_validation_regression},
+    {"F-186", test_f186},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-135", test_f135},

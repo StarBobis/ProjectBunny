@@ -2823,11 +2823,11 @@ static uint32_t hash_ini_section(uint32_t hash, const wstring *sname)
 	IniSectionVector *svec = NULL;
 	IniSectionVector::iterator entry;
 
-	hash = crc32c_hw(hash, sname->c_str(), sname->size());
+	hash = crc32c_hw(hash, sname->c_str(), sname->size() * sizeof(wchar_t));
 
 	GetIniSection(&svec, sname->c_str());
 	for (entry = svec->begin(); entry < svec->end(); entry++) {
-		hash = crc32c_hw(hash, entry->raw_line.c_str(), entry->raw_line.size());
+		hash = crc32c_hw(hash, entry->raw_line.c_str(), entry->raw_line.size() * sizeof(wchar_t));
 	}
 
 	return hash;

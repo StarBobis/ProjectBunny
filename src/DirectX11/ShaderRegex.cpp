@@ -466,7 +466,7 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 	return ret;
 }
 
-#define SHADER_REGEX_CACHE_VERSION 1
+#define SHADER_REGEX_CACHE_VERSION 2
 struct ShaderRegexCacheHeader {
 	uint32_t version;
 	uint32_t shader_regex_hash;
