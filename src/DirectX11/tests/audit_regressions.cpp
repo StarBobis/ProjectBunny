@@ -241,12 +241,12 @@ public:
         wcscpy_s(G->SHADER_PATH, MAX_PATH, old_shader_path.c_str()); wcscpy_s(G->SHADER_CACHE_PATH, MAX_PATH, old_shader_cache.c_str());
         DeleteFileW(config.c_str()); DeleteFileW(settings.c_str());
     }
-    void load(const char* constants, int hunting = 0, bool eager = false)
+    void load(const char* constants, int hunting = 0, bool eager = false, const char* include_lines = "")
     {
         std::ofstream output(config, std::ios::binary | std::ios::trunc);
         output << "[Logging]\ncalls=0\nshow_warnings=0\n[System]\nskip_early_includes_load=0\n";
         if (eager) output << "config_initialization_delay=-1\n";
-        output << "[Hunting]\nhunting=" << hunting << "\n[Include]\nuser_config=" << settings.filename().string() << "\n[Constants]\n" << constants;
+        output << "[Hunting]\nhunting=" << hunting << "\n[Include]\nuser_config=" << settings.filename().string() << "\n" << include_lines << "[Constants]\n" << constants;
         output.close(); require_batch(output.good(), "audit config: write complete production INI");
         WritePrivateProfileStringW(nullptr, nullptr, nullptr, config.c_str());
         ClearKeyBindings(); LoadConfigFile();
@@ -285,6 +285,7 @@ void test_f135()
 }
 
 #include "ini_parameter_audit.inl"
+#include "key_cycle_audit.inl"
 
 void test_f137()
 {
@@ -652,6 +653,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-167", test_dx11_finish_failure_regression},
     {"F-172", test_dx11_shader_diagnostic_failure_regression},
     {"F-177", test_dx11_texture_initial_debug_regression},
+    {"F-193", test_f193},
     {"F-179", test_dx11_empty_hunting_present_regression},
     {"F-184", test_dx11_reload_shader_filename_regression},
     {"F-187", test_dx11_masked_flags_regression},

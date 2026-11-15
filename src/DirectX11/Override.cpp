@@ -247,7 +247,6 @@ void KeyOverrideCycle::ParseIniSection(LPCWSTR section)
 	OverrideVars vars;
 	bool is_conditional;
 	CommandListExpression condition_expression;
-	CommandList activate_command_list, deactivate_command_list;
 	IniSectionVector *section_vec = NULL;
 	IniSectionVector::iterator entry;
 	CommandListVariable *var = NULL;
@@ -306,6 +305,7 @@ void KeyOverrideCycle::ParseIniSection(LPCWSTR section)
 		if (!not_done)
 			break;
 
+		CommandList activate_command_list, deactivate_command_list;
 		LogInfoNoNL("  Cycle %i:", i);
 		params.clear();
 		for (j = param_bufs.begin(); j != param_bufs.end(); j++) {
