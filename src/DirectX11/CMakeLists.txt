@@ -177,6 +177,8 @@ if(BUILD_TESTING)
         tests/audit_regressions.cpp
         tests/audit_dx9_regression.cpp
         tests/shader_ownership_audit.cpp
+        tests/finish_command_audit.cpp
+        tests/d3d11_vtable_layout.c
         tests/persistence_regression.cpp
         tests/input_layout_regression.cpp
         tests/ini_expression_regression.cpp

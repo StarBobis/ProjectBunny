@@ -4504,11 +4504,12 @@ STDMETHODIMP FrameAnalysisContext::FinishCommandList(THIS_
 		__out_opt  ID3D11CommandList **ppCommandList)
 {
 	HRESULT ret = HackerContext::FinishCommandList(RestoreDeferredContextState, ppCommandList);
+	ID3D11CommandList *command_list = SUCCEEDED(ret) && ppCommandList ? *ppCommandList : nullptr;
 
-	FrameAnalysisLog("FinishCommandList(ppCommandList:0x%p -> 0x%p) = %u\n", ppCommandList, ppCommandList ? *ppCommandList : NULL, ret);
+	FrameAnalysisLog("FinishCommandList(ppCommandList:0x%p -> 0x%p) = %u\n", ppCommandList, command_list, ret);
 
-	if (ppCommandList)
-		finish_deferred_resources(*ppCommandList);
+	if (command_list)
+		finish_deferred_resources(command_list);
 
 	return ret;
 }

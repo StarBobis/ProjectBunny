@@ -85,6 +85,13 @@
       "summary": "两处new[]缓冲按数组释放：DX11替换字节码和编译器替换源码；两站点均有ASan失配反例，实际渲染/编译成功失败及借用数据回退通过，完整业务与26项集成/组件用例通过。",
       "evidence": "validation/F-153.json",
       "commitLookup": "git log --fixed-strings --grep=F-153"
+    },
+    {
+      "id": "F-167",
+      "status": "validated-in-simulator",
+      "summary": "Finish失败时日志和延迟转储均不读取旧输出；真实deferred context注入保持录制状态的OOM，验证无错误发布及后续成功执行的转储字节，整套26项集成/组件与业务回归通过。",
+      "evidence": "validation/F-167.json",
+      "commitLookup": "git log --fixed-strings --grep=F-167"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

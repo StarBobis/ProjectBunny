@@ -14,6 +14,7 @@ void test_dx11_assembler_interpolation_regression();
 void test_dx11_signature_register_eof_regression();
 void test_dx11_signature_feature_comment_regression();
 void test_dx11_shader_replacement_ownership_regression();
+void test_dx11_finish_failure_regression();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -240,6 +241,7 @@ const AuditCase audit_cases[] = {{"F-001", test_f001}, {"F-106", test_f106}, {"F
     {"F-150", test_dx11_signature_register_eof_regression},
     {"F-151", test_dx11_signature_feature_comment_regression},
     {"F-153", test_dx11_shader_replacement_ownership_regression},
+    {"F-167", test_dx11_finish_failure_regression},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
 #endif
