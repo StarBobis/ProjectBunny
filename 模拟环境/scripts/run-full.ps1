@@ -21,6 +21,7 @@ if($label -notmatch '^(baseline|F-\d{3}|P-\d{2})$'){throw 'Invalid item id.'}
 $runRoot=Join-Path $buildRoot ('f\'+[guid]::NewGuid().ToString('N').Substring(0,12))
 New-Item -ItemType Directory -Path $runRoot | Out-Null
 $checks=[Collections.Generic.List[object]]::new()
+$specialComponentReport=$null
 $dll=Join-Path $candidateBuild 'src\DirectX11\d3d11.dll'
 $regression=Join-Path $candidateBuild 'src\DirectX11\dx11_upstream_regression.exe'
 foreach($mode in @('special','business')) {
@@ -33,7 +34,15 @@ foreach($mode in @('special','business')) {
     }
     $exe=Join-Path $caseRoot 'dx11_upstream_regression.exe'
     $arguments=if($mode -eq 'special'){@('--audit-item',$Item)}else{@('--full')}
+    if($mode -eq 'special' -and $Item -eq 'F-152') {
+        $exe=(Get-Process -Id $PID).Path
+        $specialComponentPointer=Join-Path $caseRoot 'component-report-path.txt'
+        $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-Item',$Item,'-SpecialOnly','-ReportPointer',$specialComponentPointer)
+    }
     $result=Invoke-IsolatedSimulationProcess -Executable $exe -Arguments $arguments -WorkingDirectory $caseRoot -LogPrefix (Join-Path $caseRoot 'host') -TimeoutMs $TimeoutMs
+    if($mode -eq 'special' -and $Item -eq 'F-152' -and (Test-Path -LiteralPath $specialComponentPointer)) {
+        $specialComponentReport=Get-Content -LiteralPath ([IO.File]::ReadAllText($specialComponentPointer)) -Raw | ConvertFrom-Json
+    }
     if($mode -eq 'special' -and $result.status -eq 'PASS') {
         $outputLines=Get-Content -LiteralPath (Join-Path $caseRoot 'host.stdout.txt')
         if("PASS audit item: $Item" -notin $outputLines) {
@@ -45,8 +54,8 @@ foreach($mode in @('special','business')) {
 }
 if($SpecialOnly) {
     $status=if(@($checks | Where-Object status -ne 'PASS').Count){'FAIL'}else{'PASS'}
-    @{item=$label;status=$status;validationLevel='special-only';buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll).Hash;checks=$checks.ToArray()} |
-        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runRoot 'results.json') -Encoding utf8
+    @{item=$label;status=$status;validationLevel='special-only';buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll).Hash;checks=$checks.ToArray();proxyComponentSpecial=$specialComponentReport} |
+        ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $runRoot 'results.json') -Encoding utf8
     Write-Host "Special report: $(Join-Path $runRoot 'results.json')"
     if($status -ne 'PASS'){exit 1}
     exit 0
@@ -82,6 +91,14 @@ $env:Path=(Split-Path -Parent $info.toolchain.cmake)+';'+$env:Path
 $versionResult=Invoke-IsolatedSimulationProcess -Executable $info.python -Arguments @((Join-Path $repositoryRoot 'scripts\test-dx11-version.py'),'--source-root',$versionRoot,'--work-dir',(Join-Path $versionRoot 'build')) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'version-generator') -TimeoutMs $TimeoutMs
 $checks.Add([pscustomobject]@{name='version-generator';status=$versionResult.status;detail=$versionResult})
 Write-Host "[$($versionResult.status)] $label version-generator"
+$shell=(Get-Process -Id $PID).Path
+$componentPointer=Join-Path $runRoot 'component-report-path.txt'
+$componentResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-ReportPointer',$componentPointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'components') -TimeoutMs $TimeoutMs
+$componentReport=$null
+if(Test-Path -LiteralPath $componentPointer){$componentReport=Get-Content -LiteralPath ([IO.File]::ReadAllText($componentPointer)) -Raw | ConvertFrom-Json}
+if($componentResult.status -eq 'PASS' -and (-not $componentReport -or $componentReport.status -ne 'PASS')){$componentResult.status='FAIL';$componentResult.message='Component report is incomplete.'}
+$checks.Add([pscustomobject]@{name='proxy-components';status=$componentResult.status;detail=$componentResult})
+Write-Host "[$($componentResult.status)] $label proxy-components"
 $pointer=Join-Path $runRoot 'integration-report-path.txt'
 $shell=(Get-Process -Id $PID).Path
 $integrationResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-ReportPointer',$pointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'integration') -TimeoutMs $TimeoutMs
@@ -93,7 +110,7 @@ if(Test-Path -LiteralPath $pointer) {
     $integration=Get-Content -LiteralPath $integrationPath -Raw | ConvertFrom-Json
 }
 $status=if(@($checks | Where-Object status -ne 'PASS').Count -eq 0 -and $integration -and @($integration.cases | Where-Object status -ne 'PASS').Count -eq 0){'PASS'}else{'FAIL'}
-$report=[ordered]@{item=$label;status=$status;utc=[DateTime]::UtcNow.ToString('o');buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash;checks=$checks.ToArray();actualDllIntegration=$integration;businessSurface='Entire production-source DX11 business suite with real WARP resources; lock.cpp additionally ASan-instrumented in this host, while the actual DLL remains regular Release';lockCleanupAddressSanitizer=$info.lockCleanupAddressSanitizer;dx12CompatibilityBuildOnly=$info.dx12CompatibilityBuilt;targetGameValidated=$false}
+$report=[ordered]@{item=$label;status=$status;utc=[DateTime]::UtcNow.ToString('o');buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash;checks=$checks.ToArray();actualDllIntegration=$integration;proxyComponents=$componentReport;businessSurface='Entire production-source DX11 business suite with real WARP resources; lock.cpp additionally ASan-instrumented in this host, while the actual DLL remains regular Release';lockCleanupAddressSanitizer=$info.lockCleanupAddressSanitizer;dx12CompatibilityBuildOnly=$info.dx12CompatibilityBuilt;targetGameValidated=$false}
 $reportPath=Join-Path $runRoot 'results.json'
 $report | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $reportPath -Encoding utf8
 Write-Host "Full report: $reportPath"

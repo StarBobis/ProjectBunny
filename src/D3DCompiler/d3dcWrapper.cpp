@@ -39,7 +39,7 @@ void InitializeDLL()
 		// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy
 		// to open active files.
 		int unbuffered = -1;
-		if (GetPrivateProfileInt(L"Logging", L"unbuffered", 0, dir))
+		if (LogFile && GetPrivateProfileInt(L"Logging", L"unbuffered", 0, dir))
 		{
 			unbuffered = setvbuf(LogFile, NULL, _IONBF, 0);
 			LogInfo("  unbuffered=1  return: %d\n", unbuffered);
