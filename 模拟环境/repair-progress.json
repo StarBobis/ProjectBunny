@@ -395,6 +395,13 @@
       "summary": "DX9 Registers行缓冲改为数组RAII，成功/continue/异常均自动释放，解析及SM3导出行为不变。64次真实成功解析旧增长5568字节、新增长0，拒绝/空表/CRLF/分配计数校准与原生兼容专项、主线25+10全流程和独立候选/合并审查通过。",
       "evidence": "validation/F-276.json",
       "commitLookup": "git log --fixed-strings --grep=F-276"
+    },
+    {
+      "id": "F-279",
+      "status": "validated-in-simulator",
+      "summary": "GetSuffix检查实际swizzle长度、标量广播和空操作数，保留typed member及abs文本，不从短mask读旧字节生成错误表达式。实际UBFE/BFI/SWAPC共24组原始DXBC与重编译HLSL像素对照、专项边界、主线25+10全流程与独立候选/合并审查通过；相邻旧移位等问题未混修。",
+      "evidence": "validation/F-279.json",
+      "commitLookup": "git log --fixed-strings --grep=F-279"
     }
   ],
   "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",

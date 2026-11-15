@@ -2526,17 +2526,27 @@ public:
 
 	string GetSuffix(char *s, int index)
 	{
-		if (s[strlen(s) - 1] == ',') s[strlen(s) - 1] = 0;
+		size_t length = strlen(s);
+		if (length && s[length - 1] == ',') s[--length] = 0;
+		if (!length || index < 0 || index >= 4) {
+			logDecompileError("Invalid component selection: " + string(s));
+			return s;
+		}
 		char *dotPos = strrchr(s, '.');
-		// Single byte?
+		// applySwizzle retains scalar selections for broadcasting. A dot in
+		// a typed member or array index is not necessarily a component suffix.
 		if (dotPos && dotPos[1] >= 'w' && dotPos[1] <= 'z')
 		{
+			const size_t count = strspn(dotPos + 1, "xyzw");
+			const char *end = dotPos + 1 + count;
+			if (*end && strcmp(end, ")")) return s;
+			if (count > 4 || (count > 1 && static_cast<size_t>(index) >= count)) {
+				logDecompileError("Unavailable swizzle component: " + string(s));
+				return s;
+			}
+			if (count == 1) return s;
 			string buffer = s;
-			size_t targetPos = buffer.find_last_of('.');
-			buffer[targetPos + 1] = dotPos[1 + index];
-			buffer.resize(targetPos + 2);
-			if (!buffer.substr(0, 4).compare("abs("))
-				buffer.push_back(')');
+			buffer.replace(dotPos - s + 1, count, 1, dotPos[1 + index]);
 			return buffer;
 		}
 		// Single literal?

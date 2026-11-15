@@ -44,6 +44,7 @@ void test_dx11_decompiler_special_output_regression();
 void check_dx11_special_output_rows(const std::string&, const std::vector<std::string>&);
 void check_dx11_special_output_failure(const std::string&);
 void test_dx11_dx9_binding_lifetime_regression();
+void test_dx11_decompiler_suffix_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
@@ -670,6 +671,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-274", test_dx11_decompiler_output_signature_regression},
     {"F-275", test_dx11_decompiler_special_output_regression},
     {"F-276", test_dx11_dx9_binding_lifetime_regression},
+    {"F-279", test_dx11_decompiler_suffix_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -1056,4 +1058,58 @@ void test_dx11_decompiler_public_dx9_binding_regression()
     const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
     require_batch(!failed && !patched && model == "ps_3_0" && hlsl.find("tint") != std::string::npos,
         "F276: public production decoder retains SM3 register naming and source shader model");
+}
+
+void test_dx11_decompiler_public_suffix_regression()
+{
+    using namespace dx11_slot_test;
+    const char seed[] = "float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}";
+    ComPtr<ID3DBlob> seed_code, errors;
+    require_batch(SUCCEEDED(D3DCompile(seed,sizeof(seed)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&seed_code,&errors)),
+        "F279: native compiler supplies the actual DXBC container and output signature");
+    const auto* data = static_cast<const unsigned char*>(seed_code->GetBufferPointer());
+    const std::vector<unsigned char> original(data, data + seed_code->GetBufferSize());
+    BatchDevice device;
+    for (const auto* opcode : {"ubfe", "bfi", "swapc"}) {
+        for (const auto* mask : {"x", "xy", "xyz", "xyzw"}) {
+            for (const auto* suffix : {"x", "wzyx"}) {
+                std::string text = "ps_5_0\ndcl_output o0.xyzw\ndcl_temps 5\n"
+                    "mov r0.xyzw, l(4,4,4,4)\nmov r1.xyzw, l(0,0,0,0)\n"
+                    "mov r2.xyzw, l(10,11,12,13)\nmov r3.xyzw, l(3,5,7,9)\nmov r4.xyzw, l(0,0,0,0)\n";
+                text += std::string(opcode) + " r4." + mask + ", ";
+                if (!std::strcmp(opcode,"swapc")) text += std::string("r3.") + mask + ", ";
+                // Literal bit widths/offsets avoid the separate float-register
+                // shift-count code path. SWAPC selects its condition through
+                // its own loop; its two value operands exercise GetSuffix.
+                if (!std::strcmp(opcode,"swapc")) text += std::string("r0.xyzw, r1.") + suffix + ", r2." + suffix;
+                else text += std::string("l(4,4,4,4), l(0,0,0,0), r2.") + suffix;
+                if (!std::strcmp(opcode,"bfi")) text += std::string(", r3.") + suffix;
+                text += "\nutof r4.xyzw, r4.xyzw\nmul o0.xyzw, r4.xyzw, l(0.0625,0.0625,0.0625,0.0625)\nret\n";
+                std::vector<char> assembly(text.begin(),text.end());
+                const auto binary = assembler(&assembly,original);
+                ComPtr<ID3D11PixelShader> native, replacement;
+                require_batch(SUCCEEDED(device.native->CreatePixelShader(binary.data(),binary.size(),nullptr,&native)),
+                    "F279: native WARP validates each actual scalar/vector UBFE, BFI and SWAPC fixture");
+                std::vector<unsigned char> disassembly;
+                auto bytecode = binary;
+                require_batch(SUCCEEDED(disassembler(&bytecode,&disassembly,nullptr)), "F279: real production disassembly");
+                const std::string native_text(disassembly.begin(),disassembly.end());
+                DecompilerSettings settings;
+                ParseParameters params{}; params.bytecode = bytecode.data(); params.decompiled = native_text.c_str();
+                params.decompiledSize = native_text.size(); params.G = &settings;
+                bool patched = false, failed = false; std::string model;
+                const auto hlsl = DecompileBinaryHLSL(params,patched,model,failed);
+                require_batch(!failed && !hlsl.empty(), "F279: all supported consumer fixtures retain public decompilation");
+                ComPtr<ID3DBlob> rebuilt;
+                const auto compiled = D3DCompile(hlsl.data(),hlsl.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors);
+                if (FAILED(compiled)) std::fprintf(stderr,"F279 %s .%s source .%s:\n%s\n%s\n",opcode,mask,suffix,hlsl.c_str(),
+                    errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no compiler diagnostic");
+                require_batch(SUCCEEDED(compiled), "F279: actual public decompiler output recompiles for every consumer and mask");
+                require_batch(SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),nullptr,&replacement)),
+                    "F279: native WARP accepts the regenerated consumer shader");
+                require_batch(render_dx11_audit_constant_pixel(device,native.Get()) == render_dx11_audit_constant_pixel(device,replacement.Get()),
+                    "F279: each consumer preserves the rendered scalar/vector component values");
+            }
+        }
+    }
 }

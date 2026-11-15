@@ -13,6 +13,7 @@ void test_dx11_decompiler_public_ibfe_regression();
 void test_dx11_decompiler_public_signature_regression();
 std::string dx11_audit_dx9_binding_disassembly();
 void test_dx11_decompiler_public_dx9_binding_regression();
+void test_dx11_decompiler_public_suffix_regression();
 
 namespace {
 void check_literal_audit(bool condition, const char* message)
@@ -237,4 +238,78 @@ void check_dx11_special_output_failure(const std::string& text)
     const std::string assignments(zero.mOutput.begin(), zero.mOutput.end());
     check_literal_audit(zero.mErrorOccurred && assignments == "  o0 = 0;\n",
         "F275: incomplete special row fails before publishing it or consuming the next valid row");
+}
+
+void test_dx11_decompiler_suffix_regression()
+{
+    Decompiler reused; reused.mErrorOccurred = false;
+    // ReadStatement only resets the first byte of each fixed-size operand array.
+    // Reuse it exactly as ParseCode does; this is a logical-tail read, not a heap overread.
+    reused.ReadStatement("mov r0.xyzw, r1.wwww, r2.xyzw");
+    reused.ReadStatement("ubfe r0.xyzw, r1.x, r2.x, r3.x");
+    reused.applySwizzle("r0.xyzw", reused.op2);
+    const auto second = reused.GetSuffix(reused.op2, 1);
+    const auto fourth = reused.GetSuffix(reused.op2, 3);
+    std::fprintf(stderr, "F279: reused operand '%s', second size=%zu byte=%u, fourth='%s'\n",
+        reused.op2, second.size(), second.size() > 3 ? static_cast<unsigned char>(second[3]) : 0, fourth.c_str());
+    test_dx11_decompiler_public_suffix_regression();
+    check_literal_audit(second == "r1.x" && fourth == "r1.x" && !reused.mErrorOccurred,
+        "F279: selected scalar broadcasts without reading the NUL or old bytes in the operand array");
+
+    for (const auto* operand : {"r1.x", "-r1.x", "abs(r1.x)", "-abs(r1.x)",
+            "Width", "Globals.Value", "Globals.xyzValue", "Globals[r0.x]", "9", "1.25"}) {
+        for (int index = 0; index < 4; ++index) {
+            Decompiler decoder; decoder.mErrorOccurred = false;
+            char input[opcodeSize]; strcpy_s(input, operand);
+            check_literal_audit(decoder.GetSuffix(input, index) == operand && !decoder.mErrorOccurred,
+                "F279: scalar selection and already typed operands retain their modifiers and no-swizzle policy");
+        }
+    }
+    for (const auto* suffix : {"yw", "zxy", "wzyx"}) {
+        for (const auto* prefix : {"", "-", "abs(", "-abs("}) {
+            const bool absolute = std::strchr(prefix, '(') != nullptr;
+            const std::string input = std::string(prefix) + "r1." + suffix + (absolute ? ")" : "");
+            for (int index = 0; index < static_cast<int>(std::strlen(suffix)); ++index) {
+                Decompiler decoder; decoder.mErrorOccurred = false;
+                char operand[opcodeSize]; strcpy_s(operand, input.c_str());
+                const auto expected = std::string(prefix) + "r1." + suffix[index] + (absolute ? ")" : "");
+                check_literal_audit(decoder.GetSuffix(operand, index) == expected && !decoder.mErrorOccurred,
+                    "F279: two/three/four-component permutations keep all source modifiers");
+            }
+        }
+    }
+    for (const auto type : {DT_float, DT_uint, DT_int, DT_bool}) {
+        Decompiler decoder; decoder.mErrorOccurred = false;
+        decoder.mCBufferData[0] = BufferEntry{type, 0, false, "Width"};
+        char scalar[opcodeSize] = "cb0[0].x";
+        decoder.applySwizzle("r0.xyzw", scalar);
+        check_literal_audit(std::string(scalar) == "Width" && decoder.GetSuffix(scalar, 3) == "Width" && !decoder.mErrorOccurred,
+            "F279: applySwizzle owns the typed constant-buffer scalar decision");
+    }
+    Decompiler vector; vector.mErrorOccurred = false;
+    vector.mCBufferData[0] = BufferEntry{DT_float4, 0, false, "Values"};
+    char values[opcodeSize] = "cb0[0].wzyx";
+    vector.applySwizzle("r0.xyz", values);
+    check_literal_audit(std::string(values) == "Values.wzy" && vector.GetSuffix(values, 2) == "Values.y" && !vector.mErrorOccurred,
+        "F279: typed vectors keep the existing selected component mapping");
+    Decompiler comma; comma.mErrorOccurred = false;
+    char comma_input[opcodeSize] = "r1.yw,";
+    check_literal_audit(comma.GetSuffix(comma_input, 1) == "r1.w" && !comma.mErrorOccurred,
+        "F279: trailing operand punctuation remains supported");
+    for (const auto* operand : {"r1.xy", "r1.xyz", "r1.xyzwx"}) {
+        Decompiler decoder; decoder.mErrorOccurred = false;
+        char input[opcodeSize]; strcpy_s(input, operand);
+        check_literal_audit(decoder.GetSuffix(input, 3) == operand && decoder.mErrorOccurred,
+            "F279: unavailable or oversized swizzles report failure without publishing a fabricated component");
+    }
+    for (const int index : {-1, 4}) {
+        Decompiler decoder; decoder.mErrorOccurred = false;
+        char input[opcodeSize] = "r1.xyzw";
+        check_literal_audit(decoder.GetSuffix(input, index) == input && decoder.mErrorOccurred,
+            "F279: component index is bounded before selecting a source byte");
+    }
+    Decompiler empty; empty.mErrorOccurred = false;
+    char input[opcodeSize] = {};
+    check_literal_audit(empty.GetSuffix(input, 0).empty() && empty.mErrorOccurred,
+        "F279: an absent operand reports the existing error state before testing its last character");
 }
