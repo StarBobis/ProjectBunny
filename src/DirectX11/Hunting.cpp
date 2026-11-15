@@ -571,6 +571,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 		{
 			LPVOID errMsg = pErrorMsgs->GetBufferPointer();
 			SIZE_T errSize = pErrorMsgs->GetBufferSize();
+			const SIZE_T textSize = errSize ? errSize - 1 : 0;
 			LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
 			if (FAILED(ret))
 			{
@@ -582,11 +583,11 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 				// If there are only warnings they go to the
 				// log file, because it's too noisy to send all
 				// these to the overlay.
-				fwrite(errMsg, 1, errSize - 1, LogFile);
+				if (textSize) fwrite(errMsg, 1, textSize, LogFile);
 			}
 			LogInfo("---------------------------------------------- END ----------------------------------------------\n");
 			if (errText)
-				*errText = string((char*)pErrorMsgs->GetBufferPointer(), pErrorMsgs->GetBufferSize() - 1);
+				*errText = textSize ? string((char*)errMsg, textSize) : string();
 			pErrorMsgs->Release();
 		}
 

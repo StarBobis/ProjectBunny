@@ -757,8 +757,9 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 			{
 				LPVOID errMsg = errorMsgs->GetBufferPointer();
 				SIZE_T errSize = errorMsgs->GetBufferSize();
+				const SIZE_T textSize = errSize ? errSize - 1 : 0;
 				LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
-				fwrite(errMsg, 1, errSize - 1, LogFile);
+				if (textSize) fwrite(errMsg, 1, textSize, LogFile);
 				LogInfo("---------------------------------------------- END ----------------------------------------------\n");
 			}
 
