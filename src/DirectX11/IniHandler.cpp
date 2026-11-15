@@ -1262,11 +1262,13 @@ T GetIniValue(
 	bool* found,
 	bool warn,
 	Parser&& parser,
-	Logger&& logger)
+	Logger&& logger,
+	const wstring* known_value = nullptr)
 {
 	SetFound(found, false);
 
-	const wstring* val = GetIniWstring(section, key);
+	// Borrow only within this parse; no value is retained across config loads.
+	const wstring* val = known_value ? known_value : GetIniWstring(section, key);
 	if (!val)
 		return def;
 
@@ -1594,9 +1596,10 @@ template MarkingMode GetIniEnumClass<const wchar_t *, MarkingMode>(const wchar_t
 
 // Keep named boolean aliases while preserving integer option modes such as 2.
 // Generic expression-aware GetIniBool would coerce every nonzero mode to one.
-static int GetIniBoolOrInt(const wchar_t *section, const wchar_t *key, int def, bool *found)
+static int GetIniBoolOrInt(const wchar_t *section, const wchar_t *key, int def, bool *found,
+        const wstring* known_value = nullptr)
 {
-    const auto* value = GetIniWstring(section, key);
+    const auto* value = known_value ? known_value : GetIniWstring(section, key);
     if (!value) {
         SetFound(found, false);
         return def;
@@ -1604,8 +1607,8 @@ static int GetIniBoolOrInt(const wchar_t *section, const wchar_t *key, int def, 
     const auto normalized = NormalizeString(*value);
     if (normalized == L"true" || normalized == L"yes" || normalized == L"on" ||
         normalized == L"false" || normalized == L"no" || normalized == L"off")
-        return GetIniBool(section, key, !!def, found, false);
-    return GetIniInt(section, key, def, found, false);
+        return GetIniValue<bool>(section, key, !!def, found, false, ParseBoolValue, LogIniBool, value);
+    return GetIniValue<int>(section, key, def, found, false, ParseIntValue, LogIniInt, value);
 }
 
 // For options that used to be booleans or integers and are now enums. Boolean
@@ -1627,7 +1630,7 @@ static int GetIniBoolIntOrEnum(const wchar_t *section, const wchar_t *key, int d
         result = ParseEnum(value->c_str(), prefix, names, names_len, first);
     } catch (EnumParseError&) {
         bool numeric_found = false;
-        result = GetIniBoolOrInt(section, key, def, &numeric_found);
+        result = GetIniBoolOrInt(section, key, def, &numeric_found, value);
         if (!numeric_found) {
             IniWarningW(L"Unrecognised Enum: %ls=%ls\n - [%ls]\n", key, value->c_str(), section);
             return def;

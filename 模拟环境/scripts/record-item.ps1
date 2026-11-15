@@ -5,7 +5,7 @@ $ErrorActionPreference='Stop'
 $simulationRoot=Split-Path -Parent $PSScriptRoot
 $repositoryRoot=Split-Path -Parent $simulationRoot
 $plan=Get-Content -LiteralPath (Join-Path $simulationRoot 'repair-plan.json') -Raw | ConvertFrom-Json
-$entry=@($plan.rows | Where-Object id -eq $Item)
+$entry=@(@($plan.rows)+@($plan.performanceRows) | Where-Object id -eq $Item)
 if($entry.Count -ne 1){throw 'Unknown item.'}
 if($Disposition -eq 'repaired' -and $entry[0].group -notin @('A','B','C')){throw 'Item is frozen or out of repair scope.'}
 if($Disposition -eq 'no-active-defect' -and ($entry[0].group -ne 'N' -or $entry[0].implementationStatus -ne 'not-applicable-current-build')){throw 'A no-active-defect disposition requires an explicit current-build plan correction.'}

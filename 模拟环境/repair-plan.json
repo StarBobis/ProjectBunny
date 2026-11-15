@@ -1861,5 +1861,62 @@
       "reason": "实际x64导出绑定到GDI32，报告中的C++桩未生效",
       "detail": "执行复查修正报告.md"
     }
+  ],
+  "performanceRows": [
+    {
+      "id": "P-01",
+      "group": "A",
+      "implementationStatus": "validated-local-performance",
+      "summary": "同次INI解析复用已取值；先测量，保留所有解析/告警/found语义",
+      "evidence": "validation/P-01.json"
+    },
+    {
+      "id": "P-02",
+      "group": "B",
+      "implementationStatus": "pending-measurement",
+      "summary": "Tokenise后缀复制"
+    },
+    {
+      "id": "P-03",
+      "group": "B",
+      "implementationStatus": "pending-measurement",
+      "summary": "编译代理无用hash/格式化"
+    },
+    {
+      "id": "P-04",
+      "group": "B",
+      "implementationStatus": "pending-measurement",
+      "summary": "draw info约束掩码；无收益不新增字段"
+    },
+    {
+      "id": "P-05",
+      "group": "R",
+      "implementationStatus": "frozen",
+      "summary": "TLS/epoch去锁，需寿命协议及目标负载"
+    },
+    {
+      "id": "P-06",
+      "group": "R",
+      "implementationStatus": "frozen",
+      "summary": "Unmap延后hash，需自持内容及GPU证据"
+    },
+    {
+      "id": "P-07",
+      "group": "R",
+      "implementationStatus": "frozen",
+      "summary": "按区域读回，需覆盖/失效/实际GPU证据"
+    },
+    {
+      "id": "P-08",
+      "group": "R",
+      "implementationStatus": "frozen",
+      "summary": "条件OM保存，需完整8/64槽协议"
+    },
+    {
+      "id": "P-09",
+      "group": "R",
+      "implementationStatus": "pending-site-evidence",
+      "summary": "日志/文件索引等按实际站点先测量，未放行实现"
+    }
   ]
 }

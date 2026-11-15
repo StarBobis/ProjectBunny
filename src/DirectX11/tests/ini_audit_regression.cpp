@@ -190,3 +190,5 @@ void test_dx11_stencil_diagnostic_regression()
     check_ini_audit(SUCCEEDED(device.native->CreateDepthStencilState(&desc, &state)) && state,
         "F295: native WARP accepts the actual parsed descriptor");
 }
+
+#include "ini_lookup_performance.inl"
