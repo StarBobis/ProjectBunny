@@ -85,6 +85,36 @@ void test_dx11_customdata_length_regression()
         "F124: 1024-vec4 immediate constant buffer remains valid");
 }
 
+void test_dx11_dx9_register_bounds_regression()
+{
+    struct RegisterCase { uint32_t token; const char *name; };
+    const RegisterCase invalid[] = {
+        {0x00e40000u | 32u,  "r32"},
+        {0x10e40000u | 16u,  "v16"},
+        {0xa0e40000u | 256u, "c256"},
+        {0x70e40000u | 16u,  "i16"},
+    };
+    for (const auto &item : invalid) {
+        std::vector<uint32_t> tokens{0xfffe0300, 0x02000001, 0x800f0000, item.token, 0x0000ffff};
+        bool rejected = false;
+        try {
+            std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(tokens.data()));
+            rejected = !shader;
+        } catch (...) {
+            rejected = true;
+        }
+        std::fprintf(stderr, "F125: invalid %s rejected=%d\n", item.name, rejected ? 1 : 0);
+        std::fflush(stderr);
+        check(rejected, "F125: out-of-range DX9 register is rejected instead of decoded");
+    }
+
+    // Boundary that must stay legal: c255 is the last constant register.
+    std::vector<uint32_t> legal{0xfffe0300, 0x02000001, 0x800f0000, 0xa0e40000u | 255u, 0x0000ffff};
+    std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(legal.data()));
+    std::fprintf(stderr, "F125: legal c255 decoded=%d\n", shader ? 1 : 0);
+    check(shader && shader->dx9Shader, "F125: c255 remains a legal DX9 constant register");
+}
+
 void check_dx11_dx9_sampler_dimension(const void* bytecode, unsigned expected_dimension)
 {
     std::unique_ptr<Shader,ShaderDeleter> shader(DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode))));

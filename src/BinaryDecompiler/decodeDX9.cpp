@@ -33,6 +33,42 @@ uint32_t DX9_DECODE_OPERAND_IS_BCONST = 0x20;
 static DECLUSAGE_DX9 aeInputUsage[MAX_INPUTS];
 static uint32_t aui32InputUsageIndex[MAX_INPUTS];
 
+// DX9 register numbers are encoded in an 11-bit field, but each register file
+// is smaller. ASSERT is compiled out in release builds, so every static array
+// indexed by a register number needs an explicit range check. These are the
+// largest capacities of any DX9 shader model; the decoder handles SM1-3, so
+// narrowing them to a single model's register count would reject valid shaders.
+static bool IsRegisterNumberValidDX9(const uint32_t ui32RegType, const uint32_t ui32RegNum)
+{
+    switch(ui32RegType)
+    {
+        case OPERAND_TYPE_DX9_TEMP:      return ui32RegNum < 32;  // r0-r31
+        case OPERAND_TYPE_DX9_INPUT:     return ui32RegNum < 16;  // v0-v15
+        case OPERAND_TYPE_DX9_CONST:     return ui32RegNum < 256; // c0-c255
+        case OPERAND_TYPE_DX9_ADDR:      return ui32RegNum < 8;   // VS a0, PS t0-t7
+        case OPERAND_TYPE_DX9_RASTOUT:   return ui32RegNum < 3;   // oPos, oFog, oPts
+        case OPERAND_TYPE_DX9_ATTROUT:   return ui32RegNum < 2;   // oD0, oD1
+        case OPERAND_TYPE_DX9_OUTPUT:    return ui32RegNum < 12;  // o0-o11
+        case OPERAND_TYPE_DX9_CONSTINT:  return ui32RegNum < 16;  // i0-i15
+        case OPERAND_TYPE_DX9_COLOROUT:  return ui32RegNum < 4;   // oC0-oC3
+        case OPERAND_TYPE_DX9_SAMPLER:   return ui32RegNum < 16;  // s0-s15
+        case OPERAND_TYPE_DX9_CONSTBOOL: return ui32RegNum < 16;  // b0-b15
+        case OPERAND_TYPE_DX9_LOOP:      return ui32RegNum < 1;   // aL
+        case OPERAND_TYPE_DX9_MISCTYPE:  return ui32RegNum < 2;   // vPos, vFace
+        default:                         return true;             // unsupported types throw in the switch below
+    }
+}
+
+static void ValidateRegisterNumberDX9(const uint32_t ui32RegType, const uint32_t ui32RegNum)
+{
+    if(!IsRegisterNumberValidDX9(ui32RegType, ui32RegNum))
+    {
+        LogInfo("    error parsing shader> register %u out of range for operand type %u\n",
+                ui32RegNum, ui32RegType);
+        throw decompileErrorDX9;
+    }
+}
+
 static void DecodeOperandDX9(const Shader* psShader,
                              const uint32_t ui32Token,
 							 const uint32_t ui32Token1,
@@ -45,6 +81,9 @@ static void DecodeOperandDX9(const Shader* psShader,
 
     const uint32_t ui32WriteMask = DecodeDestWriteMaskDX9(ui32Token);
     const uint32_t ui32Swizzle = DecodeOperandSwizzleDX9(ui32Token);
+
+    // Reject before touching psOperand or any register-number-indexed array.
+    ValidateRegisterNumberDX9(ui32RegType, ui32RegNum);
 
 	SHADER_VARIABLE_TYPE ConstType;
 
@@ -416,6 +455,9 @@ static void SetupRegisterUsage(const Shader* psShader,
 
 	if(ui32RegType == OPERAND_TYPE_DX9_INPUT)
 	{
+		// Pixel shader input decls are skipped by DecodeOperandDX9, so the
+		// usage arrays must be guarded before every write.
+		ValidateRegisterNumberDX9(ui32RegType, ui32RegNum);
 		ASSERT(ui32RegNum < MAX_INPUTS);
 		aeInputUsage[ui32RegNum] = eUsage;
 		aui32InputUsageIndex[ui32RegNum] = ui32UsageIndex;
@@ -529,6 +571,14 @@ static void DefineDX9(Shader* psShader,
                       const uint32_t c3,
                       Declaration* psDecl)
 {
+    // DEF/DEFI/DEFB share aui32ImmediateConst[256], but the register file
+    // they target has its own capacity.
+    const OPERAND_TYPE_DX9 eRegType =
+        (ui32Flags & DX9_DECODE_OPERAND_IS_ICONST) ? OPERAND_TYPE_DX9_CONSTINT :
+        (ui32Flags & DX9_DECODE_OPERAND_IS_BCONST) ? OPERAND_TYPE_DX9_CONSTBOOL :
+                                                     OPERAND_TYPE_DX9_CONST;
+    ValidateRegisterNumberDX9(eRegType, ui32RegNum);
+
     psDecl->eOpcode = OPCODE_SPECIAL_DCL_IMMCONST;
     psDecl->ui32NumOperands = 2;
 
