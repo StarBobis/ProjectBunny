@@ -7,10 +7,12 @@
 #include "vkeys.h"
 #include "HLSLDecompiler/DecompileHLSL.h"
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <thread>
 #include <d3d11shader.h>
 #include "D3D_Shaders/stdafx.h"
 #include "bounded_path_format.h"
@@ -499,6 +501,7 @@ void test_f176()
 
 #include "ini_parameter_audit.inl"
 #include "key_cycle_audit.inl"
+#include "preset_trigger_state_audit.inl"
 
 void test_f137()
 {
@@ -1299,6 +1302,9 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-182", test_dx11_hook_install_regression},
     {"F-109", test_dx11_initial_data_ownership_regression},
     {"F-193", test_f193},
+    {"F-195", test_f195},
+    {"F-195-EXCLUDE", test_f195_exclude_lost_window},
+    {"F-195-CONCURRENCY", test_f195_concurrent_guard},
     {"F-272", test_dx11_decompiler_swizzle_count_regression},
     {"F-179", test_dx11_empty_hunting_present_regression},
     {"F-113", test_dx11_f113_swap_chain_fallback_regression},

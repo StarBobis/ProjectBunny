@@ -545,6 +545,7 @@ void KeyOverride::UpEvent(HackerDevice *device)
 
 void PresetOverride::Trigger(CommandListCommand *triggered_from)
 {
+	std::lock_guard<std::mutex> lock(trigger_state_mutex);
 	if (unique_triggers_required) {
 		triggers_this_frame.insert(triggered_from);
 		if (triggers_this_frame.size() >= unique_triggers_required)
@@ -556,6 +557,7 @@ void PresetOverride::Trigger(CommandListCommand *triggered_from)
 
 void PresetOverride::Exclude()
 {
+	std::lock_guard<std::mutex> lock(trigger_state_mutex);
 	excluded = true;
 }
 
@@ -563,15 +565,27 @@ void PresetOverride::Exclude()
 // triggered this frame it will remain active, otherwise it will deactivate.
 void PresetOverride::Update(HackerDevice *wrapper)
 {
-	if (!active && triggered && !excluded)
-		Override::Activate(wrapper, true);
-	else if (active && (!triggered || excluded))
-		Override::Deactivate(wrapper);
+	bool activate = false, deactivate = false;
 
-	if (unique_triggers_required)
-		triggers_this_frame.clear();
-	triggered = false;
-	excluded = false;
+	// Consume the complete trigger state before acting on it. Activate and
+	// Deactivate run command lists, which can trigger or exclude this same
+	// preset; those writes must land after the consumption point and belong
+	// to the next frame. Holding the lock across them would self-deadlock.
+	{
+		std::lock_guard<std::mutex> lock(trigger_state_mutex);
+		activate = !active && triggered && !excluded;
+		deactivate = active && (!triggered || excluded);
+
+		if (unique_triggers_required)
+			triggers_this_frame.clear();
+		triggered = false;
+		excluded = false;
+	}
+
+	if (activate)
+		Override::Activate(wrapper, true);
+	else if (deactivate)
+		Override::Deactivate(wrapper);
 }
 
 static void _ScheduleTransition(struct OverrideTransitionParam *transition,
