@@ -47,6 +47,44 @@ void test_dx11_dx9_constant_reset_regression()
     }
 }
 
+const uint32_t *DecodeDeclaration(Shader *, const uint32_t *, Declaration *);
+
+void test_dx11_customdata_length_regression()
+{
+    Shader shader{};
+
+    // COMMENT is CUSTOMDATA class 0. Five DWORDs total means a three-DWORD
+    // payload, which is not a whole number of vec4s; it must still decode.
+    uint32_t comment[] = {
+        static_cast<uint32_t>(OPCODE_CUSTOMDATA), 5, 0x11223344, 0x55667788, 0x99aabbcc
+    };
+    Declaration comment_decl{};
+    const uint32_t *after_comment = DecodeDeclaration(&shader, comment, &comment_decl);
+    std::fprintf(stderr, "F124: odd-length COMMENT returned offset=%td\n", after_comment - comment);
+    check(after_comment == comment + 5, "F124: non-vec4-aligned COMMENT payload decodes with the full length");
+
+    // The same length on an immediate constant buffer is invalid.
+    uint32_t bad_icb[] = {
+        static_cast<uint32_t>(OPCODE_CUSTOMDATA) | (CUSTOMDATA_DCL_IMMEDIATE_CONSTANT_BUFFER << 11),
+        5, 0, 0, 0
+    };
+    bool rejected = false;
+    try { Declaration decl{}; DecodeDeclaration(&shader, bad_icb, &decl); } catch (...) { rejected = true; }
+    std::fprintf(stderr, "F124: misaligned ICB rejected=%d\n", rejected ? 1 : 0);
+    check(rejected, "F124: misaligned immediate constant buffer length is rejected");
+
+    // 1024 vec4s (4098 DWORDs) remains the valid upper bound.
+    std::vector<uint32_t> big(4098, 0);
+    big[0] = static_cast<uint32_t>(OPCODE_CUSTOMDATA) | (CUSTOMDATA_DCL_IMMEDIATE_CONSTANT_BUFFER << 11);
+    big[1] = 4098;
+    Declaration big_decl{};
+    const uint32_t *after_big = DecodeDeclaration(&shader, big.data(), &big_decl);
+    std::fprintf(stderr, "F124: 1024-vec4 ICB returned offset=%td operands=%u\n",
+        after_big - big.data(), big_decl.ui32NumOperands);
+    check(after_big == big.data() + 4098 && big_decl.ui32NumOperands == 1024,
+        "F124: 1024-vec4 immediate constant buffer remains valid");
+}
+
 void check_dx11_dx9_sampler_dimension(const void* bytecode, unsigned expected_dimension)
 {
     std::unique_ptr<Shader,ShaderDeleter> shader(DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode))));

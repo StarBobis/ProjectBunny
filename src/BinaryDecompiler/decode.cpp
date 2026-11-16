@@ -612,16 +612,45 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
 				//const uint32_t ui32TupleCount = (ui32ConstCount / 4);
 				CUSTOMDATA_CLASS eClass = DecodeCustomDataClass(pui32Token[0]);
 
-				const uint32_t ui32NumVec4 = (ui32TokenLength - 2) / 4;
+				//The length includes this token and the length token, so the
+				//payload is (ui32TokenLength - 2) DWORDs. Reject a length that
+				//cannot describe a payload before subtracting, otherwise the
+				//unsigned subtraction wraps around.
+				if (ui32TokenLength < 2)
+				{
+					LogInfo("    error parsing shader> invalid CUSTOMDATA length %u\n", ui32TokenLength);
+					throw decompileError;
+				}
+
+				const uint32_t ui32PayloadDwords = ui32TokenLength - 2;
+				uint32_t ui32NumVec4 = ui32PayloadDwords / 4;
+
+				if (eClass == CUSTOMDATA_DCL_IMMEDIATE_CONSTANT_BUFFER)
+				{
+					//An immediate constant buffer is a vec4 array: it must be
+					//a whole number of vec4s and fit the fixed size array.
+					//1024 vec4s (ui32TokenLength == 4098) is valid.
+					if ((ui32PayloadDwords % 4) != 0 ||
+						ui32NumVec4 > MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE)
+					{
+						LogInfo("    error parsing shader> invalid immediate constant buffer length %u\n", ui32TokenLength);
+						throw decompileError;
+					}
+				}
+				else if (ui32NumVec4 > MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE)
+				{
+					//The other CUSTOMDATA classes (COMMENT/DEBUGINFO/OPAQUE/
+					//SHADER_MESSAGE) carry opaque payloads, not a vec4 array,
+					//so their length need not be a multiple of four vec4s.
+					//Keep the legacy vec4 copy below, but clamp it to the
+					//fixed size destination instead of overflowing it.
+					ui32NumVec4 = MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE;
+				}
+
 				uint32_t uIdx = 0;
 
 				ICBVec4 const *pVec4Array = (ICBVec4 const *) (pui32Token + 2);
-
-				//The buffer will contain at least one value, but not more than 4096 scalars/1024 vec4's.
-				ASSERT(ui32NumVec4 < MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE);
 		
-				/* must be a multiple of 4 */
-				ASSERT(((ui32TokenLength - 2) % 4) == 0);
 
 				for (uIdx = 0; uIdx < ui32NumVec4; uIdx++)
 				{

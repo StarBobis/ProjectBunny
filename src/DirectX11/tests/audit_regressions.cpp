@@ -18,6 +18,7 @@ extern std::vector<CommandList*> pending_post_command_lists;
 std::array<unsigned char,4> render_dx11_audit_constant_pixel(dx11_slot_test::BatchDevice&, ID3D11PixelShader*);
 
 void test_dx11_dx9_constant_reset_regression();
+void test_dx11_customdata_length_regression();
 void test_dx11_tokenizer_regression();
 void check_dx11_dx9_sampler_dimension(const void*,unsigned);
 void test_dx11_dx9_sampler_dimension_regression();
@@ -732,6 +733,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-196", test_dx11_legacy_profiling_regression},
     {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
+    {"F-124", test_dx11_customdata_length_regression},
     {"F-135", test_f135},
     {"F-140", test_dx11_assembler_double_index_regression},
     {"F-144", test_dx11_assembler_interpolation_regression},
@@ -1320,4 +1322,5 @@ void test_dx11_decompiler_lifetime_regression()
         "F283: native WARP accepts original and retained/recompiled output shaders");
     test_dx11_decompiler_public_signature_regression();
 }
+
 
