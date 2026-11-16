@@ -90,6 +90,7 @@ void test_dx11_version_regression();
 void test_dx11_decompiler_swizzle_count_regression();
 void test_dx11_debug_layer_interfaces_regression();
 void test_dx11_hook_lookup_regression();
+void test_dx11_hook_release_regression();
 void test_dx11_loader_file_bounds_regression();
 void test_dx11_legacy_profiling_regression();
 void test_f200();
@@ -1107,6 +1108,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-172", test_dx11_shader_diagnostic_failure_regression},
     {"F-177", test_dx11_texture_initial_debug_regression},
     {"F-181", test_dx11_hook_lookup_regression},
+    {"F-002", test_dx11_hook_release_regression},
     {"F-193", test_f193},
     {"F-272", test_dx11_decompiler_swizzle_count_regression},
     {"F-179", test_dx11_empty_hunting_present_regression},

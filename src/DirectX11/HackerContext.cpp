@@ -12,7 +12,7 @@
 
 #include "Hunting.h"
 
-//#include "HookedContext.h"
+#include "HookedContext.h"
 
 #include "log.h"
 #include "Globals.h"
@@ -1140,6 +1140,10 @@ STDMETHODIMP_(ULONG) HackerContext::Release(THIS)
 	if (ulRef <= 0)
 	{
 		LogInfo("  deleting self\n");
+
+		// The map entry is owned by this wrapper. Drop it after the original
+		// context is known dead and before the wrapper address can be reused.
+		unregister_hooked_context(mRealOrigContext1, this);
 
 		if (mHackerDevice != nullptr) {
 			if (mHackerDevice->GetHackerContext() == this) {

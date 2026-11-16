@@ -89,6 +89,27 @@ ID3D11DeviceContext1* lookup_hooked_context(ID3D11DeviceContext1 *orig_context)
 }
 
 
+// Called by HackerContext::Release() once the original context's reference
+// count has reached zero, before the wrapper is deleted. The entry belongs to
+// the wrapper, not to this lookup: HookedContext::Release() must never erase
+// it, because a non-final Release still has a live wrapper behind the entry.
+// The value comparison keeps a reused original-context address safe: when a
+// new context is registered under the same key, an older wrapper's teardown
+// must not remove the new registration.
+void unregister_hooked_context(ID3D11DeviceContext1 *orig_context,
+		ID3D11DeviceContext1 *hacker_context)
+{
+	if (!hooks_installed)
+		return;
+
+	EnterCriticalSectionPretty(&context_map_lock);
+	auto i = context_map.find(orig_context);
+	if (i != context_map.end() && i->second == hacker_context)
+		context_map.erase(i);
+	LeaveCriticalSection(&context_map_lock);
+}
+
+
 // IUnknown
 static HRESULT STDMETHODCALLTYPE QueryInterface(ID3D11DeviceContext1 *This, REFIID riid, void **ppvObject)
 {
@@ -121,15 +142,15 @@ static ULONG STDMETHODCALLTYPE Release(ID3D11DeviceContext1 *This)
 
 	HookDebug("HookedContext::Release()\n");
 
+	// Only forward the reference. The registry entry is owned by the wrapper
+	// and is removed by HackerContext::Release() when the wrapper dies; a
+	// non-final Release must leave the entry in place.
 	EnterCriticalSectionPretty(&context_map_lock);
 	i = context_map.find(This);
-	if (i != context_map.end()) {
+	if (i != context_map.end())
 		ref = ID3D11DeviceContext1_Release(i->second);
-		if (!ref)
-			context_map.erase(i);
-	} else
+	else
 		ref = orig_vtable.Release(This);
-
 	LeaveCriticalSection(&context_map_lock);
 
 	return ref;
