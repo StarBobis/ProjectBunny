@@ -34,6 +34,7 @@ void test_dx11_shader_replacement_ownership_regression();
 void test_dx11_finish_failure_regression();
 void test_dx11_shader_diagnostic_failure_regression();
 void test_dx11_texture_initial_debug_regression();
+void test_dx11_texture_hash_layout_regression();
 void test_dx11_empty_hunting_present_regression();
 void test_dx11_f113_swap_chain_fallback_regression();
 void test_dx11_f113_rc_regression();
@@ -1128,6 +1129,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-167", test_dx11_finish_failure_regression},
     {"F-172", test_dx11_shader_diagnostic_failure_regression},
     {"F-177", test_dx11_texture_initial_debug_regression},
+    {"F-136", test_dx11_texture_hash_layout_regression},
     {"F-181", test_dx11_hook_lookup_regression},
     {"F-002", test_dx11_hook_release_regression},
     {"F-182", test_dx11_hook_install_regression},

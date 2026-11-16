@@ -76,11 +76,13 @@ extern CRITICAL_SECTION resource_creation_mode_lock;
 
 // -----------------------------------------------------------------------------------------------
 
-// Create hash code for textures or buffers.  
+// Create hash code for textures or buffers.
 
-// Wrapped in try/catch because it can crash in Dirt Rally,
-// because of noncontiguous or non-mapped memory for the texture.  Not sure this
-// is the best strategy.
+// The caller must guarantee that [buffer, buffer + length) is readable for the
+// duration of this call. This function is not an SEH/access-violation barrier:
+// this DLL is built with /EHsc, so catch(...) can only see C++ exceptions, and
+// crc32c_append neither allocates nor throws. Do not add __try/__except or
+// return 0 here to hide a bad caller - validate the length where it is derived.
 
 // Now switching to use crc32_append instead of fnv_64_buf for performance. This
 // implementation of crc32c uses the SSE 4.2 instructions in the CPU to calculate,
@@ -89,20 +91,9 @@ extern CRITICAL_SECTION resource_creation_mode_lock;
 // Not changing shader hash calculation as there are thousands of shaders already
 // in the field, and there is no known bottleneck for that calculation.
 
-static uint32_t crc32c_hw(uint32_t seed, const void *buffer, size_t length)
+static uint32_t crc32c_hw(uint32_t seed, const void *buffer, size_t length) noexcept
 {
-	try
-	{
-		const uint8_t *cast_buffer = static_cast<const uint8_t*>(buffer);
-
-		return crc32c_append(seed, cast_buffer, length);
-	}
-	catch (...)
-	{
-		// Fatal error, but catch it and return null for hash.
-		LogInfo("   ******* Exception caught while calculating crc32c_hw hash ******\n");
-		return 0;
-	}
+	return crc32c_append(seed, static_cast<const uint8_t*>(buffer), length);
 }
 
 

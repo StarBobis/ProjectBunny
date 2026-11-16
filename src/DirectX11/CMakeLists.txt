@@ -324,6 +324,7 @@ if(BUILD_TESTING)
         tests/shader_dump_filter_regression.cpp
         tests/stream_output_append_regression.cpp
         tests/texture_upload_state_regression.cpp
+        tests/texture_hash_layout_regression.cpp
         tests/original_resource_metadata_regression.cpp
         tests/dhash_gpu_regression.cpp
         tests/member_argument_regression.cpp
