@@ -39,6 +39,9 @@
 #undef D3D11_NO_HELPERS
 #undef CINTERFACE
 
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <unordered_map>
 
 #include "HookedContext.h"
@@ -67,14 +70,32 @@ static CRITICAL_SECTION context_map_lock;
 // context:
 static struct ID3D11DeviceContext1Vtbl orig_vtable;
 
-static bool hooks_installed = false;
+// Installation state machine, one instance per translation unit. Ready is
+// published only after orig_vtable is complete, context_map_lock is
+// initialised and every hook has been enabled.
+enum class HookState {
+	NotStarted,
+	Installing,
+	Ready,
+	Failed,
+};
+
+static std::atomic<HookState> hook_state{ HookState::NotStarted };
+static std::mutex hook_state_mutex;
+static std::condition_variable hook_state_cv;
+static thread_local bool installing_hooks_here = false;
+
+static bool hooks_ready()
+{
+	return hook_state.load(std::memory_order_acquire) == HookState::Ready;
+}
 
 
 ID3D11DeviceContext1* lookup_hooked_context(ID3D11DeviceContext1 *orig_context)
 {
 	ID3D11DeviceContext1 *context = NULL;
 
-	if (!hooks_installed)
+	if (!hooks_ready())
 		return NULL;
 
 	EnterCriticalSectionPretty(&context_map_lock);
@@ -99,7 +120,7 @@ ID3D11DeviceContext1* lookup_hooked_context(ID3D11DeviceContext1 *orig_context)
 void unregister_hooked_context(ID3D11DeviceContext1 *orig_context,
 		ID3D11DeviceContext1 *hacker_context)
 {
-	if (!hooks_installed)
+	if (!hooks_ready())
 		return;
 
 	EnterCriticalSectionPretty(&context_map_lock);
@@ -2505,15 +2526,212 @@ static void STDMETHODCALLTYPE DiscardView1(ID3D11DeviceContext1 *This,
 	return orig_vtable.DiscardView1(This, pResourceView, pRects, NumRects);
 }
 
-static void install_hooks(ID3D11DeviceContext1 *context)
-{
-	SIZE_T hook_id;
+// Hook ids of one installation attempt; fixed size so recording cannot throw
+// while hooks are already live (115 base hooks + 19 context1 hooks).
+struct HookBatch {
+	SIZE_T ids[160];
+	size_t count = 0;
+};
 
-	// Hooks should only be installed once as they will affect all contexts
-	if (hooks_installed)
-		return;
+// Create one hook but leave it disabled. The trampoline lands in orig_vtable
+// immediately while the patched entry stays dormant until enable_hooks(), so a
+// reader can never reach a stub before orig_vtable is complete.
+static bool hook_one(HookBatch &batch, void **original, void *target, void *detour)
+{
+	SIZE_T hook_id = 0;
+	const DWORD error = cHookMgr.Hook(&hook_id, original, target, detour,
+		NKTHOOKLIB_DontEnableHooks);
+	if (error != ERROR_SUCCESS) {
+		LogInfo("  *** Failed to create context hook at %p (error %lu)\n",
+			target, (unsigned long)error);
+		return false;
+	}
+	if (batch.count >= sizeof(batch.ids) / sizeof(batch.ids[0])) {
+		cHookMgr.Unhook(hook_id);
+		return false;
+	}
+	batch.ids[batch.count++] = hook_id;
+	return true;
+}
+
+// Undo every hook created so far, newest first. Do not delete the map critical
+// section: a concurrent Release stub may already own it (F-182).
+static void rollback_hooks(HookBatch &batch)
+{
+	while (batch.count) {
+		const SIZE_T hook_id = batch.ids[--batch.count];
+		const DWORD error = cHookMgr.Unhook(hook_id);
+		if (error != ERROR_SUCCESS)
+			LogInfo("  *** Failed to unhook context hook %llu (error %lu)\n",
+				(unsigned long long)hook_id, (unsigned long)error);
+	}
+}
+
+static bool enable_hooks(HookBatch &batch)
+{
+	for (size_t i = 0; i < batch.count; i++) {
+		const DWORD error = cHookMgr.EnableHook(batch.ids[i], TRUE);
+		if (error != ERROR_SUCCESS) {
+			LogInfo("  *** Failed to enable context hook %llu (error %lu)\n",
+				(unsigned long long)batch.ids[i], (unsigned long)error);
+			return false;
+		}
+	}
+	return true;
+}
+
+// Expands to one checked batch insert. The trailing semicolon in the caller
+// becomes an empty statement.
+#define batch_hook(...) \
+	if (!hook_one(batch, __VA_ARGS__)) return false
+
+static bool install_context_hooks(ID3D11DeviceContext1 *context,
+	ID3D11DeviceContext1 *context1, bool supports_context1, HookBatch &batch)
+{
+	batch_hook((void**)&orig_vtable.QueryInterface,                            context->lpVtbl->QueryInterface,                            QueryInterface);
+	batch_hook((void**)&orig_vtable.AddRef,                                    context->lpVtbl->AddRef,                                    AddRef);
+	batch_hook((void**)&orig_vtable.Release,                                   context->lpVtbl->Release,                                   Release);
+	batch_hook((void**)&orig_vtable.GetDevice,                                 context->lpVtbl->GetDevice,                                 GetDevice);
+	batch_hook((void**)&orig_vtable.GetPrivateData,                            context->lpVtbl->GetPrivateData,                            GetPrivateData);
+	batch_hook((void**)&orig_vtable.SetPrivateData,                            context->lpVtbl->SetPrivateData,                            SetPrivateData);
+	batch_hook((void**)&orig_vtable.SetPrivateDataInterface,                   context->lpVtbl->SetPrivateDataInterface,                   SetPrivateDataInterface);
+	batch_hook((void**)&orig_vtable.VSSetConstantBuffers,                      context->lpVtbl->VSSetConstantBuffers,                      VSSetConstantBuffers);
+	batch_hook((void**)&orig_vtable.PSSetShaderResources,                      context->lpVtbl->PSSetShaderResources,                      PSSetShaderResources);
+	batch_hook((void**)&orig_vtable.PSSetShader,                               context->lpVtbl->PSSetShader,                               PSSetShader);
+	batch_hook((void**)&orig_vtable.PSSetSamplers,                             context->lpVtbl->PSSetSamplers,                             PSSetSamplers);
+	batch_hook((void**)&orig_vtable.VSSetShader,                               context->lpVtbl->VSSetShader,                               VSSetShader);
+	batch_hook((void**)&orig_vtable.DrawIndexed,                               context->lpVtbl->DrawIndexed,                               DrawIndexed);
+	batch_hook((void**)&orig_vtable.Draw,                                      context->lpVtbl->Draw,                                      Draw);
+	batch_hook((void**)&orig_vtable.Map,                                       context->lpVtbl->Map,                                       Map);
+	batch_hook((void**)&orig_vtable.Unmap,                                     context->lpVtbl->Unmap,                                     Unmap);
+	batch_hook((void**)&orig_vtable.PSSetConstantBuffers,                      context->lpVtbl->PSSetConstantBuffers,                      PSSetConstantBuffers);
+	batch_hook((void**)&orig_vtable.IASetInputLayout,                          context->lpVtbl->IASetInputLayout,                          IASetInputLayout);
+	batch_hook((void**)&orig_vtable.IASetVertexBuffers,                        context->lpVtbl->IASetVertexBuffers,                        IASetVertexBuffers);
+	batch_hook((void**)&orig_vtable.IASetIndexBuffer,                          context->lpVtbl->IASetIndexBuffer,                          IASetIndexBuffer);
+	batch_hook((void**)&orig_vtable.DrawIndexedInstanced,                      context->lpVtbl->DrawIndexedInstanced,                      DrawIndexedInstanced);
+	batch_hook((void**)&orig_vtable.DrawInstanced,                             context->lpVtbl->DrawInstanced,                             DrawInstanced);
+	batch_hook((void**)&orig_vtable.GSSetConstantBuffers,                      context->lpVtbl->GSSetConstantBuffers,                      GSSetConstantBuffers);
+	batch_hook((void**)&orig_vtable.GSSetShader,                               context->lpVtbl->GSSetShader,                               GSSetShader);
+	batch_hook((void**)&orig_vtable.IASetPrimitiveTopology,                    context->lpVtbl->IASetPrimitiveTopology,                    IASetPrimitiveTopology);
+	batch_hook((void**)&orig_vtable.VSSetShaderResources,                      context->lpVtbl->VSSetShaderResources,                      VSSetShaderResources);
+	batch_hook((void**)&orig_vtable.VSSetSamplers,                             context->lpVtbl->VSSetSamplers,                             VSSetSamplers);
+	batch_hook((void**)&orig_vtable.Begin,                                     context->lpVtbl->Begin,                                     Begin);
+	batch_hook((void**)&orig_vtable.End,                                       context->lpVtbl->End,                                       End);
+	batch_hook((void**)&orig_vtable.GetData,                                   context->lpVtbl->GetData,                                   GetData);
+	batch_hook((void**)&orig_vtable.SetPredication,                            context->lpVtbl->SetPredication,                            SetPredication);
+	batch_hook((void**)&orig_vtable.GSSetShaderResources,                      context->lpVtbl->GSSetShaderResources,                      GSSetShaderResources);
+	batch_hook((void**)&orig_vtable.GSSetSamplers,                             context->lpVtbl->GSSetSamplers,                             GSSetSamplers);
+	batch_hook((void**)&orig_vtable.OMSetRenderTargets,                        context->lpVtbl->OMSetRenderTargets,                        OMSetRenderTargets);
+	batch_hook((void**)&orig_vtable.OMSetRenderTargetsAndUnorderedAccessViews, context->lpVtbl->OMSetRenderTargetsAndUnorderedAccessViews, OMSetRenderTargetsAndUnorderedAccessViews);
+	batch_hook((void**)&orig_vtable.OMSetBlendState,                           context->lpVtbl->OMSetBlendState,                           OMSetBlendState);
+	batch_hook((void**)&orig_vtable.OMSetDepthStencilState,                    context->lpVtbl->OMSetDepthStencilState,                    OMSetDepthStencilState);
+	batch_hook((void**)&orig_vtable.SOSetTargets,                              context->lpVtbl->SOSetTargets,                              SOSetTargets);
+	batch_hook((void**)&orig_vtable.DrawAuto,                                  context->lpVtbl->DrawAuto,                                  DrawAuto);
+	batch_hook((void**)&orig_vtable.DrawIndexedInstancedIndirect,              context->lpVtbl->DrawIndexedInstancedIndirect,              DrawIndexedInstancedIndirect);
+	batch_hook((void**)&orig_vtable.DrawInstancedIndirect,                     context->lpVtbl->DrawInstancedIndirect,                     DrawInstancedIndirect);
+	batch_hook((void**)&orig_vtable.Dispatch,                                  context->lpVtbl->Dispatch,                                  Dispatch);
+	batch_hook((void**)&orig_vtable.DispatchIndirect,                          context->lpVtbl->DispatchIndirect,                          DispatchIndirect);
+	batch_hook((void**)&orig_vtable.RSSetState,                                context->lpVtbl->RSSetState,                                RSSetState);
+	batch_hook((void**)&orig_vtable.RSSetViewports,                            context->lpVtbl->RSSetViewports,                            RSSetViewports);
+	batch_hook((void**)&orig_vtable.RSSetScissorRects,                         context->lpVtbl->RSSetScissorRects,                         RSSetScissorRects);
+	batch_hook((void**)&orig_vtable.CopySubresourceRegion,                     context->lpVtbl->CopySubresourceRegion,                     CopySubresourceRegion);
+	batch_hook((void**)&orig_vtable.CopyResource,                              context->lpVtbl->CopyResource,                              CopyResource);
+	batch_hook((void**)&orig_vtable.UpdateSubresource,                         context->lpVtbl->UpdateSubresource,                         UpdateSubresource);
+	batch_hook((void**)&orig_vtable.CopyStructureCount,                        context->lpVtbl->CopyStructureCount,                        CopyStructureCount);
+	batch_hook((void**)&orig_vtable.ClearRenderTargetView,                     context->lpVtbl->ClearRenderTargetView,                     ClearRenderTargetView);
+	batch_hook((void**)&orig_vtable.ClearUnorderedAccessViewUint,              context->lpVtbl->ClearUnorderedAccessViewUint,              ClearUnorderedAccessViewUint);
+	batch_hook((void**)&orig_vtable.ClearUnorderedAccessViewFloat,             context->lpVtbl->ClearUnorderedAccessViewFloat,             ClearUnorderedAccessViewFloat);
+	batch_hook((void**)&orig_vtable.ClearDepthStencilView,                     context->lpVtbl->ClearDepthStencilView,                     ClearDepthStencilView);
+	batch_hook((void**)&orig_vtable.GenerateMips,                              context->lpVtbl->GenerateMips,                              GenerateMips);
+	batch_hook((void**)&orig_vtable.SetResourceMinLOD,                         context->lpVtbl->SetResourceMinLOD,                         SetResourceMinLOD);
+	batch_hook((void**)&orig_vtable.GetResourceMinLOD,                         context->lpVtbl->GetResourceMinLOD,                         GetResourceMinLOD);
+	batch_hook((void**)&orig_vtable.ResolveSubresource,                        context->lpVtbl->ResolveSubresource,                        ResolveSubresource);
+	batch_hook((void**)&orig_vtable.ExecuteCommandList,                        context->lpVtbl->ExecuteCommandList,                        ExecuteCommandList);
+	batch_hook((void**)&orig_vtable.HSSetShaderResources,                      context->lpVtbl->HSSetShaderResources,                      HSSetShaderResources);
+	batch_hook((void**)&orig_vtable.HSSetShader,                               context->lpVtbl->HSSetShader,                               HSSetShader);
+	batch_hook((void**)&orig_vtable.HSSetSamplers,                             context->lpVtbl->HSSetSamplers,                             HSSetSamplers);
+	batch_hook((void**)&orig_vtable.HSSetConstantBuffers,                      context->lpVtbl->HSSetConstantBuffers,                      HSSetConstantBuffers);
+	batch_hook((void**)&orig_vtable.DSSetShaderResources,                      context->lpVtbl->DSSetShaderResources,                      DSSetShaderResources);
+	batch_hook((void**)&orig_vtable.DSSetShader,                               context->lpVtbl->DSSetShader,                               DSSetShader);
+	batch_hook((void**)&orig_vtable.DSSetSamplers,                             context->lpVtbl->DSSetSamplers,                             DSSetSamplers);
+	batch_hook((void**)&orig_vtable.DSSetConstantBuffers,                      context->lpVtbl->DSSetConstantBuffers,                      DSSetConstantBuffers);
+	batch_hook((void**)&orig_vtable.CSSetShaderResources,                      context->lpVtbl->CSSetShaderResources,                      CSSetShaderResources);
+	batch_hook((void**)&orig_vtable.CSSetUnorderedAccessViews,                 context->lpVtbl->CSSetUnorderedAccessViews,                 CSSetUnorderedAccessViews);
+	batch_hook((void**)&orig_vtable.CSSetShader,                               context->lpVtbl->CSSetShader,                               CSSetShader);
+	batch_hook((void**)&orig_vtable.CSSetSamplers,                             context->lpVtbl->CSSetSamplers,                             CSSetSamplers);
+	batch_hook((void**)&orig_vtable.CSSetConstantBuffers,                      context->lpVtbl->CSSetConstantBuffers,                      CSSetConstantBuffers);
+	batch_hook((void**)&orig_vtable.VSGetConstantBuffers,                      context->lpVtbl->VSGetConstantBuffers,                      VSGetConstantBuffers);
+	batch_hook((void**)&orig_vtable.PSGetShaderResources,                      context->lpVtbl->PSGetShaderResources,                      PSGetShaderResources);
+	batch_hook((void**)&orig_vtable.PSGetShader,                               context->lpVtbl->PSGetShader,                               PSGetShader);
+	batch_hook((void**)&orig_vtable.PSGetSamplers,                             context->lpVtbl->PSGetSamplers,                             PSGetSamplers);
+	batch_hook((void**)&orig_vtable.VSGetShader,                               context->lpVtbl->VSGetShader,                               VSGetShader);
+	batch_hook((void**)&orig_vtable.PSGetConstantBuffers,                      context->lpVtbl->PSGetConstantBuffers,                      PSGetConstantBuffers);
+	batch_hook((void**)&orig_vtable.IAGetInputLayout,                          context->lpVtbl->IAGetInputLayout,                          IAGetInputLayout);
+	batch_hook((void**)&orig_vtable.IAGetVertexBuffers,                        context->lpVtbl->IAGetVertexBuffers,                        IAGetVertexBuffers);
+	batch_hook((void**)&orig_vtable.IAGetIndexBuffer,                          context->lpVtbl->IAGetIndexBuffer,                          IAGetIndexBuffer);
+	batch_hook((void**)&orig_vtable.GSGetConstantBuffers,                      context->lpVtbl->GSGetConstantBuffers,                      GSGetConstantBuffers);
+	batch_hook((void**)&orig_vtable.GSGetShader,                               context->lpVtbl->GSGetShader,                               GSGetShader);
+	batch_hook((void**)&orig_vtable.IAGetPrimitiveTopology,                    context->lpVtbl->IAGetPrimitiveTopology,                    IAGetPrimitiveTopology);
+	batch_hook((void**)&orig_vtable.VSGetShaderResources,                      context->lpVtbl->VSGetShaderResources,                      VSGetShaderResources);
+	batch_hook((void**)&orig_vtable.VSGetSamplers,                             context->lpVtbl->VSGetSamplers,                             VSGetSamplers);
+	batch_hook((void**)&orig_vtable.GetPredication,                            context->lpVtbl->GetPredication,                            GetPredication);
+	batch_hook((void**)&orig_vtable.GSGetShaderResources,                      context->lpVtbl->GSGetShaderResources,                      GSGetShaderResources);
+	batch_hook((void**)&orig_vtable.GSGetSamplers,                             context->lpVtbl->GSGetSamplers,                             GSGetSamplers);
+	batch_hook((void**)&orig_vtable.OMGetRenderTargets,                        context->lpVtbl->OMGetRenderTargets,                        OMGetRenderTargets);
+	batch_hook((void**)&orig_vtable.OMGetRenderTargetsAndUnorderedAccessViews, context->lpVtbl->OMGetRenderTargetsAndUnorderedAccessViews, OMGetRenderTargetsAndUnorderedAccessViews);
+	batch_hook((void**)&orig_vtable.OMGetBlendState,                           context->lpVtbl->OMGetBlendState,                           OMGetBlendState);
+	batch_hook((void**)&orig_vtable.OMGetDepthStencilState,                    context->lpVtbl->OMGetDepthStencilState,                    OMGetDepthStencilState);
+	batch_hook((void**)&orig_vtable.SOGetTargets,                              context->lpVtbl->SOGetTargets,                              SOGetTargets);
+	batch_hook((void**)&orig_vtable.RSGetState,                                context->lpVtbl->RSGetState,                                RSGetState);
+	batch_hook((void**)&orig_vtable.RSGetViewports,                            context->lpVtbl->RSGetViewports,                            RSGetViewports);
+	batch_hook((void**)&orig_vtable.RSGetScissorRects,                         context->lpVtbl->RSGetScissorRects,                         RSGetScissorRects);
+	batch_hook((void**)&orig_vtable.HSGetShaderResources,                      context->lpVtbl->HSGetShaderResources,                      HSGetShaderResources);
+	batch_hook((void**)&orig_vtable.HSGetShader,                               context->lpVtbl->HSGetShader,                               HSGetShader);
+	batch_hook((void**)&orig_vtable.HSGetSamplers,                             context->lpVtbl->HSGetSamplers,                             HSGetSamplers);
+	batch_hook((void**)&orig_vtable.HSGetConstantBuffers,                      context->lpVtbl->HSGetConstantBuffers,                      HSGetConstantBuffers);
+	batch_hook((void**)&orig_vtable.DSGetShaderResources,                      context->lpVtbl->DSGetShaderResources,                      DSGetShaderResources);
+	batch_hook((void**)&orig_vtable.DSGetShader,                               context->lpVtbl->DSGetShader,                               DSGetShader);
+	batch_hook((void**)&orig_vtable.DSGetSamplers,                             context->lpVtbl->DSGetSamplers,                             DSGetSamplers);
+	batch_hook((void**)&orig_vtable.DSGetConstantBuffers,                      context->lpVtbl->DSGetConstantBuffers,                      DSGetConstantBuffers);
+	batch_hook((void**)&orig_vtable.CSGetShaderResources,                      context->lpVtbl->CSGetShaderResources,                      CSGetShaderResources);
+	batch_hook((void**)&orig_vtable.CSGetUnorderedAccessViews,                 context->lpVtbl->CSGetUnorderedAccessViews,                 CSGetUnorderedAccessViews);
+	batch_hook((void**)&orig_vtable.CSGetShader,                               context->lpVtbl->CSGetShader,                               CSGetShader);
+	batch_hook((void**)&orig_vtable.CSGetSamplers,                             context->lpVtbl->CSGetSamplers,                             CSGetSamplers);
+	batch_hook((void**)&orig_vtable.CSGetConstantBuffers,                      context->lpVtbl->CSGetConstantBuffers,                      CSGetConstantBuffers);
+	batch_hook((void**)&orig_vtable.ClearState,                                context->lpVtbl->ClearState,                                ClearState);
+	batch_hook((void**)&orig_vtable.Flush,                                     context->lpVtbl->Flush,                                     Flush);
+	batch_hook((void**)&orig_vtable.GetType,                                   context->lpVtbl->GetType,                                   GetType);
+	batch_hook((void**)&orig_vtable.GetContextFlags,                           context->lpVtbl->GetContextFlags,                           GetContextFlags);
+	batch_hook((void**)&orig_vtable.FinishCommandList,                         context->lpVtbl->FinishCommandList,                         FinishCommandList);
+	if (supports_context1) {
+		batch_hook((void**)&orig_vtable.CopySubresourceRegion1, context1->lpVtbl->CopySubresourceRegion1, CopySubresourceRegion1);
+		batch_hook((void**)&orig_vtable.UpdateSubresource1, context1->lpVtbl->UpdateSubresource1, UpdateSubresource1);
+		batch_hook((void**)&orig_vtable.DiscardResource, context1->lpVtbl->DiscardResource, DiscardResource);
+		batch_hook((void**)&orig_vtable.DiscardView, context1->lpVtbl->DiscardView, DiscardView);
+		batch_hook((void**)&orig_vtable.VSSetConstantBuffers1, context1->lpVtbl->VSSetConstantBuffers1, VSSetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.HSSetConstantBuffers1, context1->lpVtbl->HSSetConstantBuffers1, HSSetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.DSSetConstantBuffers1, context1->lpVtbl->DSSetConstantBuffers1, DSSetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.GSSetConstantBuffers1, context1->lpVtbl->GSSetConstantBuffers1, GSSetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.PSSetConstantBuffers1, context1->lpVtbl->PSSetConstantBuffers1, PSSetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.CSSetConstantBuffers1, context1->lpVtbl->CSSetConstantBuffers1, CSSetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.VSGetConstantBuffers1, context1->lpVtbl->VSGetConstantBuffers1, VSGetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.HSGetConstantBuffers1, context1->lpVtbl->HSGetConstantBuffers1, HSGetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.DSGetConstantBuffers1, context1->lpVtbl->DSGetConstantBuffers1, DSGetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.GSGetConstantBuffers1, context1->lpVtbl->GSGetConstantBuffers1, GSGetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.PSGetConstantBuffers1, context1->lpVtbl->PSGetConstantBuffers1, PSGetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.CSGetConstantBuffers1, context1->lpVtbl->CSGetConstantBuffers1, CSGetConstantBuffers1);
+		batch_hook((void**)&orig_vtable.SwapDeviceContextState, context1->lpVtbl->SwapDeviceContextState, SwapDeviceContextState);
+		batch_hook((void**)&orig_vtable.ClearView, context1->lpVtbl->ClearView, ClearView);
+		batch_hook((void**)&orig_vtable.DiscardView1, context1->lpVtbl->DiscardView1, DiscardView1);
+	}
+	return true;
+}
+
+#undef batch_hook
+
+static bool install_hooks_once(ID3D11DeviceContext1 *context)
+{
 	InitializeCriticalSectionPretty(&context_map_lock);
-	hooks_installed = true;
 
 	// Make sure that everything in the orig_vtable is filled in just in
 	// case we miss one of the hooks below:
@@ -2525,146 +2743,64 @@ static void install_hooks(ID3D11DeviceContext1 *context)
 		memcpy(&orig_vtable, context1->lpVtbl, sizeof(orig_vtable));
 	}
 
-	// At the moment we are just throwing away the hook IDs - we should
-	// probably hold on to them incase we need to remove the hooks later:
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.QueryInterface,                            context->lpVtbl->QueryInterface,                            QueryInterface);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.AddRef,                                    context->lpVtbl->AddRef,                                    AddRef);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Release,                                   context->lpVtbl->Release,                                   Release);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetDevice,                                 context->lpVtbl->GetDevice,                                 GetDevice);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetPrivateData,                            context->lpVtbl->GetPrivateData,                            GetPrivateData);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetPrivateData,                            context->lpVtbl->SetPrivateData,                            SetPrivateData);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetPrivateDataInterface,                   context->lpVtbl->SetPrivateDataInterface,                   SetPrivateDataInterface);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSSetConstantBuffers,                      context->lpVtbl->VSSetConstantBuffers,                      VSSetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSSetShaderResources,                      context->lpVtbl->PSSetShaderResources,                      PSSetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSSetShader,                               context->lpVtbl->PSSetShader,                               PSSetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSSetSamplers,                             context->lpVtbl->PSSetSamplers,                             PSSetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSSetShader,                               context->lpVtbl->VSSetShader,                               VSSetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DrawIndexed,                               context->lpVtbl->DrawIndexed,                               DrawIndexed);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Draw,                                      context->lpVtbl->Draw,                                      Draw);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Map,                                       context->lpVtbl->Map,                                       Map);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Unmap,                                     context->lpVtbl->Unmap,                                     Unmap);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSSetConstantBuffers,                      context->lpVtbl->PSSetConstantBuffers,                      PSSetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IASetInputLayout,                          context->lpVtbl->IASetInputLayout,                          IASetInputLayout);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IASetVertexBuffers,                        context->lpVtbl->IASetVertexBuffers,                        IASetVertexBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IASetIndexBuffer,                          context->lpVtbl->IASetIndexBuffer,                          IASetIndexBuffer);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DrawIndexedInstanced,                      context->lpVtbl->DrawIndexedInstanced,                      DrawIndexedInstanced);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DrawInstanced,                             context->lpVtbl->DrawInstanced,                             DrawInstanced);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSSetConstantBuffers,                      context->lpVtbl->GSSetConstantBuffers,                      GSSetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSSetShader,                               context->lpVtbl->GSSetShader,                               GSSetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IASetPrimitiveTopology,                    context->lpVtbl->IASetPrimitiveTopology,                    IASetPrimitiveTopology);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSSetShaderResources,                      context->lpVtbl->VSSetShaderResources,                      VSSetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSSetSamplers,                             context->lpVtbl->VSSetSamplers,                             VSSetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Begin,                                     context->lpVtbl->Begin,                                     Begin);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.End,                                       context->lpVtbl->End,                                       End);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetData,                                   context->lpVtbl->GetData,                                   GetData);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetPredication,                            context->lpVtbl->SetPredication,                            SetPredication);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSSetShaderResources,                      context->lpVtbl->GSSetShaderResources,                      GSSetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSSetSamplers,                             context->lpVtbl->GSSetSamplers,                             GSSetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMSetRenderTargets,                        context->lpVtbl->OMSetRenderTargets,                        OMSetRenderTargets);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMSetRenderTargetsAndUnorderedAccessViews, context->lpVtbl->OMSetRenderTargetsAndUnorderedAccessViews, OMSetRenderTargetsAndUnorderedAccessViews);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMSetBlendState,                           context->lpVtbl->OMSetBlendState,                           OMSetBlendState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMSetDepthStencilState,                    context->lpVtbl->OMSetDepthStencilState,                    OMSetDepthStencilState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SOSetTargets,                              context->lpVtbl->SOSetTargets,                              SOSetTargets);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DrawAuto,                                  context->lpVtbl->DrawAuto,                                  DrawAuto);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DrawIndexedInstancedIndirect,              context->lpVtbl->DrawIndexedInstancedIndirect,              DrawIndexedInstancedIndirect);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DrawInstancedIndirect,                     context->lpVtbl->DrawInstancedIndirect,                     DrawInstancedIndirect);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Dispatch,                                  context->lpVtbl->Dispatch,                                  Dispatch);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DispatchIndirect,                          context->lpVtbl->DispatchIndirect,                          DispatchIndirect);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.RSSetState,                                context->lpVtbl->RSSetState,                                RSSetState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.RSSetViewports,                            context->lpVtbl->RSSetViewports,                            RSSetViewports);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.RSSetScissorRects,                         context->lpVtbl->RSSetScissorRects,                         RSSetScissorRects);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CopySubresourceRegion,                     context->lpVtbl->CopySubresourceRegion,                     CopySubresourceRegion);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CopyResource,                              context->lpVtbl->CopyResource,                              CopyResource);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.UpdateSubresource,                         context->lpVtbl->UpdateSubresource,                         UpdateSubresource);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CopyStructureCount,                        context->lpVtbl->CopyStructureCount,                        CopyStructureCount);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ClearRenderTargetView,                     context->lpVtbl->ClearRenderTargetView,                     ClearRenderTargetView);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ClearUnorderedAccessViewUint,              context->lpVtbl->ClearUnorderedAccessViewUint,              ClearUnorderedAccessViewUint);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ClearUnorderedAccessViewFloat,             context->lpVtbl->ClearUnorderedAccessViewFloat,             ClearUnorderedAccessViewFloat);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ClearDepthStencilView,                     context->lpVtbl->ClearDepthStencilView,                     ClearDepthStencilView);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GenerateMips,                              context->lpVtbl->GenerateMips,                              GenerateMips);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetResourceMinLOD,                         context->lpVtbl->SetResourceMinLOD,                         SetResourceMinLOD);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetResourceMinLOD,                         context->lpVtbl->GetResourceMinLOD,                         GetResourceMinLOD);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ResolveSubresource,                        context->lpVtbl->ResolveSubresource,                        ResolveSubresource);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ExecuteCommandList,                        context->lpVtbl->ExecuteCommandList,                        ExecuteCommandList);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSSetShaderResources,                      context->lpVtbl->HSSetShaderResources,                      HSSetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSSetShader,                               context->lpVtbl->HSSetShader,                               HSSetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSSetSamplers,                             context->lpVtbl->HSSetSamplers,                             HSSetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSSetConstantBuffers,                      context->lpVtbl->HSSetConstantBuffers,                      HSSetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSSetShaderResources,                      context->lpVtbl->DSSetShaderResources,                      DSSetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSSetShader,                               context->lpVtbl->DSSetShader,                               DSSetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSSetSamplers,                             context->lpVtbl->DSSetSamplers,                             DSSetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSSetConstantBuffers,                      context->lpVtbl->DSSetConstantBuffers,                      DSSetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSSetShaderResources,                      context->lpVtbl->CSSetShaderResources,                      CSSetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSSetUnorderedAccessViews,                 context->lpVtbl->CSSetUnorderedAccessViews,                 CSSetUnorderedAccessViews);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSSetShader,                               context->lpVtbl->CSSetShader,                               CSSetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSSetSamplers,                             context->lpVtbl->CSSetSamplers,                             CSSetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSSetConstantBuffers,                      context->lpVtbl->CSSetConstantBuffers,                      CSSetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSGetConstantBuffers,                      context->lpVtbl->VSGetConstantBuffers,                      VSGetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSGetShaderResources,                      context->lpVtbl->PSGetShaderResources,                      PSGetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSGetShader,                               context->lpVtbl->PSGetShader,                               PSGetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSGetSamplers,                             context->lpVtbl->PSGetSamplers,                             PSGetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSGetShader,                               context->lpVtbl->VSGetShader,                               VSGetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSGetConstantBuffers,                      context->lpVtbl->PSGetConstantBuffers,                      PSGetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IAGetInputLayout,                          context->lpVtbl->IAGetInputLayout,                          IAGetInputLayout);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IAGetVertexBuffers,                        context->lpVtbl->IAGetVertexBuffers,                        IAGetVertexBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IAGetIndexBuffer,                          context->lpVtbl->IAGetIndexBuffer,                          IAGetIndexBuffer);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSGetConstantBuffers,                      context->lpVtbl->GSGetConstantBuffers,                      GSGetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSGetShader,                               context->lpVtbl->GSGetShader,                               GSGetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.IAGetPrimitiveTopology,                    context->lpVtbl->IAGetPrimitiveTopology,                    IAGetPrimitiveTopology);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSGetShaderResources,                      context->lpVtbl->VSGetShaderResources,                      VSGetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSGetSamplers,                             context->lpVtbl->VSGetSamplers,                             VSGetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetPredication,                            context->lpVtbl->GetPredication,                            GetPredication);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSGetShaderResources,                      context->lpVtbl->GSGetShaderResources,                      GSGetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSGetSamplers,                             context->lpVtbl->GSGetSamplers,                             GSGetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMGetRenderTargets,                        context->lpVtbl->OMGetRenderTargets,                        OMGetRenderTargets);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMGetRenderTargetsAndUnorderedAccessViews, context->lpVtbl->OMGetRenderTargetsAndUnorderedAccessViews, OMGetRenderTargetsAndUnorderedAccessViews);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMGetBlendState,                           context->lpVtbl->OMGetBlendState,                           OMGetBlendState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OMGetDepthStencilState,                    context->lpVtbl->OMGetDepthStencilState,                    OMGetDepthStencilState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SOGetTargets,                              context->lpVtbl->SOGetTargets,                              SOGetTargets);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.RSGetState,                                context->lpVtbl->RSGetState,                                RSGetState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.RSGetViewports,                            context->lpVtbl->RSGetViewports,                            RSGetViewports);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.RSGetScissorRects,                         context->lpVtbl->RSGetScissorRects,                         RSGetScissorRects);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSGetShaderResources,                      context->lpVtbl->HSGetShaderResources,                      HSGetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSGetShader,                               context->lpVtbl->HSGetShader,                               HSGetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSGetSamplers,                             context->lpVtbl->HSGetSamplers,                             HSGetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSGetConstantBuffers,                      context->lpVtbl->HSGetConstantBuffers,                      HSGetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSGetShaderResources,                      context->lpVtbl->DSGetShaderResources,                      DSGetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSGetShader,                               context->lpVtbl->DSGetShader,                               DSGetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSGetSamplers,                             context->lpVtbl->DSGetSamplers,                             DSGetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSGetConstantBuffers,                      context->lpVtbl->DSGetConstantBuffers,                      DSGetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSGetShaderResources,                      context->lpVtbl->CSGetShaderResources,                      CSGetShaderResources);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSGetUnorderedAccessViews,                 context->lpVtbl->CSGetUnorderedAccessViews,                 CSGetUnorderedAccessViews);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSGetShader,                               context->lpVtbl->CSGetShader,                               CSGetShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSGetSamplers,                             context->lpVtbl->CSGetSamplers,                             CSGetSamplers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSGetConstantBuffers,                      context->lpVtbl->CSGetConstantBuffers,                      CSGetConstantBuffers);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ClearState,                                context->lpVtbl->ClearState,                                ClearState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Flush,                                     context->lpVtbl->Flush,                                     Flush);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetType,                                   context->lpVtbl->GetType,                                   GetType);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetContextFlags,                           context->lpVtbl->GetContextFlags,                           GetContextFlags);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.FinishCommandList,                         context->lpVtbl->FinishCommandList,                         FinishCommandList);
-	if (supports_context1) {
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CopySubresourceRegion1, context1->lpVtbl->CopySubresourceRegion1, CopySubresourceRegion1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.UpdateSubresource1, context1->lpVtbl->UpdateSubresource1, UpdateSubresource1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DiscardResource, context1->lpVtbl->DiscardResource, DiscardResource);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DiscardView, context1->lpVtbl->DiscardView, DiscardView);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSSetConstantBuffers1, context1->lpVtbl->VSSetConstantBuffers1, VSSetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSSetConstantBuffers1, context1->lpVtbl->HSSetConstantBuffers1, HSSetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSSetConstantBuffers1, context1->lpVtbl->DSSetConstantBuffers1, DSSetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSSetConstantBuffers1, context1->lpVtbl->GSSetConstantBuffers1, GSSetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSSetConstantBuffers1, context1->lpVtbl->PSSetConstantBuffers1, PSSetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSSetConstantBuffers1, context1->lpVtbl->CSSetConstantBuffers1, CSSetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.VSGetConstantBuffers1, context1->lpVtbl->VSGetConstantBuffers1, VSGetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.HSGetConstantBuffers1, context1->lpVtbl->HSGetConstantBuffers1, HSGetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DSGetConstantBuffers1, context1->lpVtbl->DSGetConstantBuffers1, DSGetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GSGetConstantBuffers1, context1->lpVtbl->GSGetConstantBuffers1, GSGetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.PSGetConstantBuffers1, context1->lpVtbl->PSGetConstantBuffers1, PSGetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CSGetConstantBuffers1, context1->lpVtbl->CSGetConstantBuffers1, CSGetConstantBuffers1);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SwapDeviceContextState, context1->lpVtbl->SwapDeviceContextState, SwapDeviceContextState);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.ClearView, context1->lpVtbl->ClearView, ClearView);
-		cHookMgr.Hook(&hook_id, (void**)&orig_vtable.DiscardView1, context1->lpVtbl->DiscardView1, DiscardView1);
-		// Use the original entry point now that IUnknown has been hooked.
-		orig_vtable.Release(context1);
+	HookBatch batch{};
+	if (!install_context_hooks(context, context1, supports_context1, batch) ||
+			!enable_hooks(batch)) {
+		rollback_hooks(batch);
+		// The hooks are gone again, so release the QueryInterface reference
+		// through the restored original entry point.
+		if (context1) context1->lpVtbl->Release(context1);
+		return false;
 	}
+
+	// Use the original entry point now that IUnknown has been hooked.
+	if (supports_context1)
+		orig_vtable.Release(context1);
+	return true;
+}
+
+// Only one thread may run the installation body. Ready is published with
+// release semantics after orig_vtable, the map lock and every hook are ready;
+// Failed is terminal and readers return false without touching the map lock.
+static bool install_hooks(ID3D11DeviceContext1 *context)
+{
+	if (hooks_ready())
+		return true;
+	// A hook detour on this thread re-entering would otherwise wait for its
+	// own installation to finish.
+	if (installing_hooks_here)
+		return false;
+
+	std::unique_lock<std::mutex> lock(hook_state_mutex);
+	for (;;) {
+		const HookState state = hook_state.load(std::memory_order_acquire);
+		if (state == HookState::Ready)
+			return true;
+		if (state == HookState::Failed)
+			return false;
+		if (state == HookState::Installing) {
+			hook_state_cv.wait(lock);
+			continue;
+		}
+		hook_state.store(HookState::Installing, std::memory_order_relaxed);
+		break;
+	}
+	lock.unlock();
+
+	installing_hooks_here = true;
+	const bool installed = install_hooks_once(context);
+	installing_hooks_here = false;
+
+	{
+		std::lock_guard<std::mutex> publish(hook_state_mutex);
+		hook_state.store(installed ? HookState::Ready : HookState::Failed,
+			std::memory_order_release);
+	}
+	hook_state_cv.notify_all();
+
+	if (!installed)
+		LogInfo("F-182: context hook installation failed; hooks rolled back\n");
+	return installed;
 }
 
 
@@ -4294,11 +4430,15 @@ static CONST_VTBL struct ID3D11DeviceContext1Vtbl trampoline_vtable = {
 
 ID3D11DeviceContext1* hook_context(ID3D11DeviceContext1 *orig_context, ID3D11DeviceContext1 *hacker_context)
 {
+	// Install before allocating the trampoline so a rolled back installation
+	// neither leaks the trampoline nor leaves a half-hooked context in the map.
+	if (!install_hooks(orig_context))
+		return orig_context;
+
 	ID3D11DeviceContext1Trampoline *trampoline_context = new ID3D11DeviceContext1Trampoline();
 	trampoline_context->lpVtbl = &trampoline_vtable;
 	trampoline_context->orig_this = orig_context;
 
-	install_hooks(orig_context);
 	EnterCriticalSectionPretty(&context_map_lock);
 	context_map[orig_context] = hacker_context;
 	LeaveCriticalSection(&context_map_lock);

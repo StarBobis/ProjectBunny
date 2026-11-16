@@ -6,6 +6,8 @@ void audit_dx11_context_release(ID3D11DeviceContext1*, ID3D11DeviceContext1*,
     ID3D11DeviceContext1*, ID3D11DeviceContext1*, ID3D11DeviceContext1*,
     ID3D11DeviceContext1*, ID3D11DeviceContext1*);
 void audit_dx11_device_lookup(ID3D11Device1*, ID3D11Device1*, ID3D11Device1*, ID3D11Device1*);
+void audit_dx11_device_hook_install();
+void audit_dx11_context_hook_install();
 
 namespace {
 ULONG native_references(IUnknown* object)
@@ -38,8 +40,7 @@ void test_dx11_hook_lookup_regression()
 }
 
 void test_dx11_hook_release_regression()
-{
-    using namespace dx11_slot_test;
+{    using namespace dx11_slot_test;
     // Deferred contexts keep the reference counts under this test's control;
     // an immediate context is also owned by the device.
     BatchDevice device;
@@ -86,3 +87,14 @@ void test_dx11_hook_release_regression()
     // production Release path performs after the native count reaches zero.
     delete guard_kept;
 }
+
+// F-182: the installation state machine and its failure rollback are tested
+// against the production HookedDevice.cpp / HookedContext.cpp bodies with a
+// cHookMgr test double. No real detour is installed and no real device vtable
+// is modified.
+void test_dx11_hook_install_regression()
+{
+    audit_dx11_device_hook_install();
+    audit_dx11_context_hook_install();
+}
+
