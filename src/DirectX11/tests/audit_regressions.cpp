@@ -74,6 +74,7 @@ void check_dx11_special_output_rows(const std::string&, const std::vector<std::s
 void check_dx11_special_output_failure(const std::string&);
 void test_dx11_dx9_binding_lifetime_regression();
 void test_dx11_decompiler_suffix_regression();
+void test_dx11_decompiler_swizzle_slot_bound_regression();
 void test_dx11_decompiler_texture_literal_regression();
 void test_dx11_shader_regex_declaration_regression();
 void test_dx11_shader_regex_temp_count_regression();
@@ -1489,6 +1490,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-275", test_dx11_decompiler_special_output_regression},
     {"F-276", test_dx11_dx9_binding_lifetime_regression},
     {"F-279", test_dx11_decompiler_suffix_regression},
+    {"F-326", test_dx11_decompiler_swizzle_slot_bound_regression},
     {"F-280", test_dx11_decompiler_texture_literal_regression},
     {"F-282", test_dx11_decompiler_immediate_regression},
     {"F-103-RED-R4", test_dx11_decompiler_f103_red_r4},

@@ -2115,7 +2115,7 @@ public:
 				strcpy(right2, right);
 			else
 			{
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i)
+				for (int i = 0; i < 4 && idx[i] >= 0; ++i)
 					right2[pos++] = strPos[idx[i]];
 				right2[pos] = 0;
 			}
@@ -2160,7 +2160,7 @@ public:
 				sprintf_s(buff, opcodeSize, "%s", right2);
 
 
-				for (int i = 0; idx1[i] >= 0 && i < 4; ++i)
+				for (int i = 0; i < 4 && idx1[i] >= 0; ++i)
 				{
 					if (idx1[i] == 0)
 					{
@@ -2221,7 +2221,7 @@ public:
 				strcpy(right2, right);
 			else
 			{
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i)
+				for (int i = 0; i < 4 && idx[i] >= 0; ++i)
 					right2[pos++] = strPos[idx[i]];
 				right2[pos] = 0;
 			}

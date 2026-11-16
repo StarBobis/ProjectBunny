@@ -868,6 +868,53 @@ void test_dx11_decompiler_suffix_regression()
         "F279: an absent operand reports the existing error state before testing its last character");
 }
 
+// F-326: applySwizzle fills idx/idx1 (both char[4]) with up to four components
+// and leaves no -1 sentinel for a four-component swizzle. The pre-fix loop
+// condition read idx[i]/idx1[i] before testing i < 4, so the terminating
+// iteration read one byte past the array. The loop body never ran at i == 4,
+// so legal output must stay byte-for-byte identical.
+static void check_f326_swizzle(const char* left, const char* operand, const char* expected)
+{
+    Decompiler decoder;
+    decoder.mErrorOccurred = false;
+    char right[opcodeSize];
+    strcpy_s(right, operand);
+    decoder.applySwizzle(left, right);
+    std::fprintf(stderr, "F326 swizzle '%s' <- '%s': '%s'\n", operand, left, right);
+    check_literal_audit(!decoder.mErrorOccurred && std::strcmp(right, expected) == 0,
+        "F326: every legal component count stays inside idx[4] and keeps its existing output");
+}
+
+void test_dx11_decompiler_swizzle_slot_bound_regression()
+{
+    // Four components fill all of idx[0..3]; three/two/one stop on the -1
+    // sentinel. The first case reaches the pre-fix idx[4] read in the generic
+    // branch, so ASan aborts here before any later assertion runs.
+    check_f326_swizzle("r0.xyzw", "r1", "r1.xyzw");
+    check_f326_swizzle("r0.wzyx", "r1.xyzw", "r1.wzyx");
+    check_f326_swizzle("r0.xyzw", "r1.wzyx", "r1.wzyx");
+    check_f326_swizzle("r0.xyz", "r1", "r1.xyz");
+    check_f326_swizzle("r0.w", "r1", "r1.w");
+    check_f326_swizzle("r0", "r1", "r1.x");
+
+    // dx9 constant-register branch: the first loop rewrites c0 with idx while
+    // the second formats the constant through idx1. Both are char[4] too.
+    for (const bool permuted : {false, true}) {
+        Decompiler decoder;
+        decoder.mErrorOccurred = false;
+        decoder.mConstantValues[0] = ConstantValue{"c0", 1.0f, 2.0f, 3.0f, 4.0f};
+        char right[opcodeSize];
+        if (permuted) strcpy_s(right, "c0.xyzw"); else strcpy_s(right, "c0");
+        decoder.applySwizzle(permuted ? "r0.wzyx" : "r0.xyzw", right);
+        std::fprintf(stderr, "F326 dx9 constant %s: '%s'\n", permuted ? "permuted" : "four", right);
+        const char* expected = permuted
+            ? "c0.wzyx 4.000000 3.000000 2.000000 1.000000"
+            : "c0.xyzw 1.000000 2.000000 3.000000 4.000000";
+        check_literal_audit(!decoder.mErrorOccurred && std::strcmp(right, expected) == 0,
+            "F326: dx9 constant registers exercise the same four-slot bound without reordering constants");
+    }
+}
+
 void test_dx11_decompiler_texture_literal_regression()
 {
     std::fputs("F280: complete texture-coordinate constructors through the production truncator\n", stderr);
