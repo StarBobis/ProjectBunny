@@ -3,10 +3,21 @@
 #include "BinaryDecompiler/internal_includes/tokens.h"
 #include "BinaryDecompiler/internal_includes/decode.h"
 #include "BinaryDecompiler/internal_includes/reflect.h"
+#include "HLSLDecompiler/DecompileHLSL.h"
+#include "log.h"
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <typeinfo>
 #include <vector>
+
+#ifndef F126_FIXTURE_FILE
+#error "F126_FIXTURE_FILE must be provided by dx11_upstream_regression"
+#endif
 
 namespace {
 void check(bool condition, const char* message)
@@ -150,4 +161,128 @@ void check_dx11_dx9_sampler_dimension(const void* bytecode, size_t byteSize, uns
         }
         check(found,"F285: native bytecode exposes the real sampler resource declaration");
     }
+}
+
+namespace {
+std::vector<uint32_t> read_f126_tokens()
+{
+    std::ifstream input(std::filesystem::u8path(F126_FIXTURE_FILE));
+    check(input.good(), "F126: open the reviewed five-DWORD DX9 token file");
+    std::vector<uint32_t> tokens;
+    std::string word;
+    while (input >> word) {
+        char* end = nullptr;
+        const unsigned long value = std::strtoul(word.c_str(), &end, 16);
+        check(end != word.c_str() && *end == '\0' && word.size() <= 8 && value <= 0xfffffffful,
+            "F126: the token file contains hexadecimal DWORDs only");
+        tokens.push_back(static_cast<uint32_t>(value));
+    }
+    check(tokens.size() == 5, "F126: the reviewed input has exactly five DWORDs");
+    return tokens;
+}
+
+class F126LogCapture
+{
+public:
+    F126LogCapture() : mSavedLog(LogFile), mSavedVerbosity(gLogVerbosity), mFile(std::tmpfile())
+    {
+        check(mFile != nullptr, "F126: create the diagnostic log capture");
+        LogFile = mFile;
+        gLogVerbosity = LogVerbosity::INFO;
+    }
+
+    ~F126LogCapture()
+    {
+        restore();
+    }
+
+    void restore()
+    {
+        if (!mFile) return;
+        LogFile = mSavedLog;
+        gLogVerbosity = mSavedVerbosity;
+        std::fclose(mFile);
+        mFile = nullptr;
+    }
+
+    std::string read()
+    {
+        check(mFile != nullptr, "F126: the diagnostic log capture is still open");
+        check(std::fflush(mFile) == 0 && std::fseek(mFile, 0, SEEK_SET) == 0, "F126: rewind the diagnostic log capture");
+        std::string text;
+        char buffer[512];
+        size_t count;
+        while ((count = std::fread(buffer, 1, sizeof(buffer), mFile)) != 0)
+            text.append(buffer, count);
+        check(std::fseek(mFile, 0, SEEK_END) == 0, "F126: restore the diagnostic log capture append position");
+        return text;
+    }
+
+private:
+    FILE* mSavedLog;
+    LogVerbosity mSavedVerbosity;
+    FILE* mFile;
+};
+}
+
+void check_dx11_dx9_dcl_const_without_ctab_lifetime(const uint32_t* tokens, size_t tokenCount);
+
+void test_dx11_dx9_dcl_const_without_ctab_regression()
+{
+    const auto tokens = read_f126_tokens();
+    F126LogCapture capture;
+
+    bool threw = false;
+    std::string exception_type;
+    try {
+        std::unique_ptr<Shader, ShaderDeleter> shader(
+            DecodeDX9BC(tokens.data(), tokens.size() * sizeof(uint32_t)));
+        if (shader)
+            std::fprintf(stderr, "F126: decode unexpectedly returned a shader\n");
+    } catch (const std::exception& e) {
+        threw = true;
+        exception_type = typeid(e).name();
+        std::fprintf(stderr, "F126: direct decode exception=%s what=%s\n", typeid(e).name(), e.what());
+    } catch (...) {
+        threw = true;
+        exception_type = "non-std::exception";
+        std::fprintf(stderr, "F126: direct decode threw a non-std::exception\n");
+    }
+
+    const std::string direct_log = capture.read();
+    std::fprintf(stderr, "F126: direct decode log: %s", direct_log.c_str());
+    check(threw, "F126: DCL constant buffer without CTAB must throw instead of dereferencing psConstantBuffers[0]");
+    check(exception_type.find("DecompileErrorDX9") != std::string::npos,
+        "F126: the malformed stream is rejected with decompileErrorDX9");
+    check(direct_log.find("error parsing shader> DCL constant buffer without CTAB (c0)\n") != std::string::npos,
+        "F126: the exact no-CTAB diagnostic from the decodeDX9 branch is logged");
+    check(direct_log.find("out of range") == std::string::npos,
+        "F126: the fixture must reach the no-CTAB branch, not an earlier register-range diagnostic");
+
+    DecompilerSettings settings;
+    ParseParameters params{};
+    params.bytecode = tokens.data();
+    params.bytecodeSize = tokens.size() * sizeof(uint32_t);
+    params.decompiled = "";
+    params.decompiledSize = 0;
+    params.ZeroOutput = false;
+    params.G = &settings;
+    bool patched = false, failed = false;
+    std::string model;
+    const std::string hlsl = DecompileBinaryHLSL(params, patched, model, failed);
+    const std::string wrapper_log = capture.read();
+    std::fprintf(stderr, "F126: production wrapper failed=%d hlsl=%zu model=%s patched=%d\n",
+        failed ? 1 : 0, hlsl.size(), model.c_str(), patched ? 1 : 0);
+    std::fprintf(stderr, "F126: production wrapper log: %s", wrapper_log.c_str());
+    check(hlsl.empty() && failed,
+        "F126: DecompileBinaryHLSL returns no HLSL and marks the malformed DX9 shader as failed");
+    check(wrapper_log.find("error parsing shader> DCL constant buffer without CTAB (c0)\n") != std::string::npos,
+        "F126: the production wrapper sees the exact no-CTAB diagnostic from the decode branch");
+    check(wrapper_log.find("out of range") == std::string::npos,
+        "F126: the production wrapper must not report an earlier register-range failure");
+    check(wrapper_log.find("Exception caught while decompiling shader") != std::string::npos,
+        "F126: the decompileErrorDX9 reaches the DecompileBinaryHLSL catch");
+
+    capture.restore();
+    check_dx11_dx9_dcl_const_without_ctab_lifetime(tokens.data(), tokens.size());
 }

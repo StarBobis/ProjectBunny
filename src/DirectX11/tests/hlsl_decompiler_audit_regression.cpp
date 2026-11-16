@@ -904,3 +904,29 @@ void test_dx11_decompiler_negative_literal_regression()
     }
 }
 
+void check_dx11_dx9_dcl_const_without_ctab_lifetime(const uint32_t* tokens, size_t tokenCount)
+{
+    const auto decode = [&]() {
+        try {
+            Shader* shader = DecodeDX9BC(tokens, tokenCount * sizeof(uint32_t));
+            if (!shader) return false;
+            FreeShaderInfo(shader->sInfo);
+            delete shader;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    check_literal_audit(!decode(), "F126: the reviewed malformed stream is rejected before the lifetime loop");
+    const auto before = decompiler_live_bytes();
+    bool unexpectedly_decoded = false;
+    for (unsigned iteration = 0; iteration < 64; ++iteration)
+        unexpectedly_decoded = unexpectedly_decoded || decode();
+    const auto after = decompiler_live_bytes();
+    std::fprintf(stderr, "F126: live allocation bytes %zu -> %zu (64 rejected decodes)\n", before, after);
+    check_literal_audit(!unexpectedly_decoded,
+        "F126: every repeated decode of the malformed stream is rejected");
+    check_literal_audit(before == after,
+        "F126: rejected decodes release the Shader and ShaderInfo");
+}

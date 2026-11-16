@@ -350,7 +350,8 @@ if(BUILD_TESTING)
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,INCLUDE_DIRECTORIES>>)
     target_compile_definitions(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,COMPILE_DEFINITIONS>>
-        F281_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/f281")
+        F281_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/f281"
+        F126_FIXTURE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/f126/F-126-vs3-dcl-c0.txt")
     target_link_libraries(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,LINK_LIBRARIES>>)
     target_compile_features(dx11_upstream_regression PRIVATE cxx_std_17)

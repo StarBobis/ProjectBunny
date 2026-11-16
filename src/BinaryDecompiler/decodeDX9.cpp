@@ -7,6 +7,7 @@
 #include "internal_includes/reflect.h"
 #include "internal_includes/debug.h"
 #include "log.h"
+#include <memory>
 class DecompileErrorDX9 : public std::exception {} decompileErrorDX9; // 3DMigoto specific
 
 #define FOURCC(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24 ))
@@ -32,6 +33,21 @@ uint32_t DX9_DECODE_OPERAND_IS_BCONST = 0x20;
 
 static DECLUSAGE_DX9 aeInputUsage[MAX_INPUTS];
 static uint32_t aui32InputUsageIndex[MAX_INPUTS];
+
+namespace {
+// DecodeDX9BC hands the shader to the caller on success, but several decode
+// failures throw. Own the partially built shader so none of those paths leak
+// the Shader or its ShaderInfo.
+struct ShaderDeleterDX9
+{
+    void operator()(Shader* psShader) const noexcept
+    {
+        if (!psShader) return;
+        if (psShader->sInfo) FreeShaderInfo(psShader->sInfo);
+        delete psShader;
+    }
+};
+}
 
 // DX9 register numbers are encoded in an 11-bit field, but each register file
 // is smaller. ASSERT is compiled out in release builds, so every static array
@@ -555,7 +571,16 @@ static void DecodeDeclarationDX9(const Shader* psShader,
     {
         psDecl->eOpcode = OPCODE_DCL_CONSTANT_BUFFER;
 
-        ASSERT(psShader->sInfo->ui32NumConstantBuffers);
+        // A DCL constant buffer is only meaningful when the CTAB comment
+        // supplied one. Malformed token streams have neither a count nor an
+        // array, and dereferencing psConstantBuffers[0] here used to crash.
+        if (psShader->sInfo->psConstantBuffers == nullptr ||
+            psShader->sInfo->ui32NumConstantBuffers == 0)
+        {
+            LogInfo("    error parsing shader> DCL constant buffer without CTAB (c%u)\n",
+                    psDecl->asOperands[0].ui32RegisterNumber);
+            throw decompileErrorDX9;
+        }
 
         psDecl->asOperands[0].aui32ArraySizes[0] = 0;//Const buffer index
         psDecl->asOperands[0].aui32ArraySizes[1] = psShader->sInfo->psConstantBuffers[0].ui32TotalSizeInBytes / 16;//Number of vec4 constants.
@@ -685,8 +710,8 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens, size_t byteSize)
     Declaration* psDecl;
     uint32_t decl, inst;
     uint32_t bDeclareConstantTable = 0;
-    ShaderPtr shader(new Shader());
-    Shader* psShader = shader.get();
+    std::unique_ptr<Shader, ShaderDeleterDX9> shaderOwner(new Shader());
+    Shader* psShader = shaderOwner.get();
 
     memset(aui32ImmediateConst, 0, sizeof(aui32ImmediateConst));
 
@@ -1271,5 +1296,5 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens, size_t byteSize)
 		DeclareConstantBuffer(psShader, &psDecl[decl]);
     }
 
-    return shader.release();
+    return shaderOwner.release();
 }
