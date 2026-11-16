@@ -100,6 +100,43 @@ void exercise_context1(ID3D11Device1* device, ID3D11DeviceContext1* context)
         unavailable == nullptr,"Device1 invalid shared-name failure forwarding");
 }
 
+class ProxyOverlayWindow {
+public:
+    HWND handle = nullptr;
+    ProxyOverlayWindow()
+    {
+        WNDCLASSW wc = {};
+        wc.lpfnWndProc = DefWindowProcW; wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"BunnyProxyOverlayTest";
+        check(RegisterClassW(&wc) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS, "proxy overlay window class");
+        handle = CreateWindowW(wc.lpszClassName, L"Proxy overlay test", WS_OVERLAPPEDWINDOW,
+            0, 0, 640, 360, nullptr, nullptr, wc.hInstance, nullptr);
+        check(handle != nullptr, "proxy overlay hidden window");
+    }
+    ~ProxyOverlayWindow() { if (handle) DestroyWindow(handle); }
+};
+void exercise_overlay(HMODULE proxy)
+{
+    ProxyOverlayWindow window;
+    auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>(GetProcAddress(proxy, "D3D11CreateDeviceAndSwapChain"));
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    desc.BufferDesc.Width = 640; desc.BufferDesc.Height = 360;
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; desc.SampleDesc.Count = 1;
+    desc.BufferCount = 1; desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.OutputWindow = window.handle; desc.Windowed = TRUE;
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGISwapChain> chain;
+    check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+        D3D11_SDK_VERSION, &desc, &chain, &device, nullptr, &context)), "proxy: actual wrapped swap chain and overlay construction");
+    for (unsigned i = 0; i < 3; ++i) check(SUCCEEDED(chain->Present(0, 0)), "proxy: actual Present and hunting overlay");
+    context->ClearState(); context->Flush();
+    check(SUCCEEDED(chain->ResizeBuffers(1, 800, 450, DXGI_FORMAT_R8G8B8A8_UNORM, 0)), "proxy: actual resize releases backbuffer");
+    check(SUCCEEDED(chain->Present(0, 0)), "proxy: actual Present after resize");
+    context->ClearState(); context->Flush();
+    check(!GetModuleHandleW(L"DWrite.dll") && !GetModuleHandleW(L"d2d1.dll"), "proxy: overlay rendering adds no DirectWrite/Direct2D modules");
+}
+
 int run_child(const wchar_t* library, bool native_control, bool denied_interfaces, bool native_routing)
 {
     if (native_control) {
@@ -139,9 +176,8 @@ int run_child(const wchar_t* library, bool native_control, bool denied_interface
         check(GetProcAddress(proxy, name) != nullptr, "resolve actual proxy export");
     for (const WORD ordinal : {17, 18})
         check(GetProcAddress(proxy, MAKEINTRESOURCEA(ordinal)) != nullptr, "resolve creation export ordinal");
-    for (const WORD font : {IDR_COURIERBOLD, IDR_COURIERSMALL, IDR_ARIAL})
-        check(FindResourceW(proxy, MAKEINTRESOURCEW(font), MAKEINTRESOURCEW(SPRITEFONT)) != nullptr,
-            "actual built DLL contains required overlay font resource");
+    check(!GetModuleHandleW(L"DWrite.dll") && !GetModuleHandleW(L"d2d1.dll"),
+        "proxy loading does not initialize DirectWrite or Direct2D");
     const auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(GetProcAddress(proxy, "D3D11CreateDevice"));
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -151,6 +187,14 @@ int run_child(const wchar_t* library, bool native_control, bool denied_interface
     if (FAILED(created)) std::fprintf(stderr, "proxy CreateDevice HRESULT=%08lx\n", created);
     check(SUCCEEDED(created), "create WARP through loaded proxy export");
     check(device && context, "proxy returns actual device and immediate context");
+    const auto beforeGetDevice = references(device.Get());
+    {
+        ComPtr<ID3D11Device> reported;
+        context->GetDevice(&reported);
+        check(reported.Get() == device.Get(), "public GetDevice preserves wrapper/native routing identity");
+    }
+    check(references(device.Get()) == beforeGetDevice, "public GetDevice transfers one balanced reference");
+
     auto** device_table = *reinterpret_cast<void***>(device.Get());
     auto** context_table = *reinterpret_cast<void***>(context.Get());
     check(belongs_to_proxy(device_table[3], proxy) != native_routing &&
@@ -245,8 +289,9 @@ int run_child(const wchar_t* library, bool native_control, bool denied_interface
     check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
         D3D11_SDK_VERSION, nullptr, nullptr, nullptr)),
         "proxy preserves native validation-only creation without outputs");
+    exercise_overlay(proxy);
     // Keep the proxy loaded until process termination, as in its intended host.
-    std::fputs("PASS: loaded proxy exports, resources, wrapped WARP device/context and buffer readback\n", stderr);
+    std::fputs("PASS: loaded proxy exports, overlay Present/resize, wrapped WARP device/context and buffer readback\n", stderr);
     return 0;
 }
 
@@ -264,7 +309,7 @@ int run_parent(const wchar_t* library, const wchar_t* root)
     std::filesystem::copy_file(library, copied);
     {
         std::ofstream ini(fixture / L"d3dx.ini", std::ios::binary);
-        ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=1\n[Hunting]\nhunting=0\n[Constants]\nx=1\n";
+        ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=1\n[Hunting]\nhunting=1\n[Constants]\nx=1\n";
         check(ini.good(), "write owned isolated proxy configuration");
     }
     wchar_t executable[MAX_PATH]{};
@@ -273,13 +318,13 @@ int run_parent(const wchar_t* library, const wchar_t* root)
     for (const auto* mode : {L"--child", L"--child-native-control", L"--child-hook-all", L"--child-denied-qi"}) {
         if (std::wstring(mode) == L"--child-hook-all") {
             std::ofstream ini(fixture / L"d3dx.ini",std::ios::binary | std::ios::trunc);
-            ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=1\nhook=all\n[Hunting]\nhunting=0\n[Constants]\nx=1\n";
+            ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=1\nhook=all\n[Hunting]\nhunting=1\n[Constants]\nx=1\n";
             ini.close();
             check(!ini.fail(),"write owned native-routing configuration");
         }
         if (std::wstring(mode) == L"--child-denied-qi") {
             std::ofstream ini(fixture / L"d3dx.ini",std::ios::binary | std::ios::trunc);
-            ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=0\n[Hunting]\nhunting=0\n[Constants]\nx=1\n";
+            ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=0\n[Hunting]\nhunting=1\n[Constants]\nx=1\n";
             ini.close();
             check(!ini.fail(),"write owned disabled-platform configuration");
         }

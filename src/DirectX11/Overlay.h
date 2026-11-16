@@ -5,7 +5,7 @@
 #include <dxgi1_2.h>
 #include <wrl.h>
 
-#include "SpriteFont.h"
+#include "OverlayText.h"
 #include "SpriteBatch.h"
 #include "PrimitiveBatch.h"
 #include "CommonStates.h"
@@ -38,6 +38,7 @@ public:
 class Overlay
 {
 private:
+    std::mutex drawMutex;
 	IDXGISwapChain* mOrigSwapChain;
 	ID3D11Device* mOrigDevice;
 	ID3D11DeviceContext* mOrigContext;
@@ -104,12 +105,12 @@ private:
 	void DrawNotices(float *y);
 	void DrawProfiling(float *y);
 	void DrawRectangle(float x, float y, float w, float h, float r, float g, float b, float opacity);
-	void DrawOutlinedString(DirectX::SpriteFont *font, wchar_t const *text, DirectX::XMFLOAT2 const &position, DirectX::FXMVECTOR color);
+	void DrawOutlinedString(OverlayTextFont *font, wchar_t const *text, DirectX::XMFLOAT2 const &position, DirectX::FXMVECTOR color);
 
 public:
-	std::unique_ptr<DirectX::SpriteFont> mFont;
-	std::unique_ptr<DirectX::SpriteFont> mFontNotifications;
-	std::unique_ptr<DirectX::SpriteFont> mFontProfiling;
+	std::unique_ptr<OverlayTextFont> mFont;
+	std::unique_ptr<OverlayTextFont> mFontNotifications;
+	std::unique_ptr<OverlayTextFont> mFontProfiling;
 
 	Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain *pSwapChain);
 	~Overlay();

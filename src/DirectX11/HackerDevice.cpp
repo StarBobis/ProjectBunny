@@ -28,7 +28,6 @@
 #include "HackerDXGI.h"
 
 #include "D3D11Wrapper.h"
-#include "SpriteFont.h"
 #include "D3D_Shaders\stdafx.h"
 #include "ResourceHash.h"
 #include "ShaderRegex.h"
@@ -411,6 +410,13 @@ ID3D11Device1* HackerDevice::GetPossiblyHookedOrigDevice1()
 // Use this one when you specifically don't want calls through this object to
 // ever go back into 3DMigoto. If hooking is disabled this is identical to the
 // above, but when hooking this will be the trampoline object instead:
+ID3D11Device* get_passthrough_device_view(ID3D11Device* original)
+{
+    auto* wrapper = lookup_hooked_device(reinterpret_cast<ID3D11Device1*>(original));
+    if (!wrapper) return original;
+    return static_cast<HackerDevice*>(wrapper)->GetPassThroughOrigDevice1();
+}
+
 ID3D11Device1* HackerDevice::GetPassThroughOrigDevice1()
 {
 	return mOrigDevice1;

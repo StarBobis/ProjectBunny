@@ -19,10 +19,11 @@
 #include "HackerContext.h"
 
 #include <stdexcept>
+#include <atomic>
 
 #define MAX_SIMULTANEOUS_NOTICES 10
 
-static bool has_notice = false;
+static std::atomic_bool has_notice{false};
 static unsigned notice_cleared_frame = 0;
 
 static class Notices
@@ -46,7 +47,7 @@ struct LogLevelParams {
 	DirectX::XMVECTORF32 colour;
 	DWORD duration;
 	bool hide_in_release;
-	std::unique_ptr<DirectX::SpriteFont> Overlay::*font;
+	std::unique_ptr<OverlayTextFont> Overlay::*font;
 };
 
 struct LogLevelParams log_levels[] = {
@@ -112,49 +113,10 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 	// now, so this is technically unecessary, but since the overlay code
 	// still accesses these it is more safer to leave this in place (more
 	// resistant to code changes in the swap chain breaking this).
-	mHackerDevice->AddRef();
-	mHackerContext->AddRef();
 
-	// The courierbold.spritefont is now included as binary resource data attached
-	// to the d3d11.dll.  We can fetch that resource and pass it to new SpriteFont
-	// to avoid having to drag around the font file. We get the module
-	// handle by address to ensure we don't get some other d3d11.dll, which
-	// is of particular importance when we are injected into a Windows
-	// Store app and may not even be called that ourselves.
-	HMODULE handle = NULL;
-	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
-			| GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-			(LPCWSTR)LogOverlay, &handle);
-	HRSRC rc = FindResource(handle, MAKEINTRESOURCE(IDR_COURIERBOLD), MAKEINTRESOURCE(SPRITEFONT));
-	HGLOBAL rcData = LoadResource(handle, rc);
-	DWORD fontSize = SizeofResource(handle, rc);
-	uint8_t const* fontBlob = static_cast<const uint8_t*>(LockResource(rcData));
-
-	// We want to use the original device and original context here, because
-	// these will be used by DirectXTK to generate VertexShaders and PixelShaders
-	// to draw the text, and we don't want to intercept those.
-	mFont.reset(new DirectX::SpriteFont(mOrigDevice, fontBlob, fontSize));
-	mFont->SetDefaultCharacter(L'?');
-
-	// Courier is a nice choice for hunting status lines, and showing the
-	// shader hashes since it is monospace, but for arbitrary notifications
-	// we want something a little smaller, and variable width. Liberation
-	// Sans has essentially the same metrics as Arial,
-	// but is not encumbered.
-	rc = FindResource(handle, MAKEINTRESOURCE(IDR_ARIAL), MAKEINTRESOURCE(SPRITEFONT));
-	rcData = LoadResource(handle, rc);
-	fontSize = SizeofResource(handle, rc);
-	fontBlob = static_cast<const uint8_t*>(LockResource(rcData));
-	mFontNotifications.reset(new DirectX::SpriteFont(mOrigDevice, fontBlob, fontSize));
-	mFontNotifications->SetDefaultCharacter(L'?');
-
-	// Smaller monospaced font for profiling text
-	rc = FindResource(handle, MAKEINTRESOURCE(IDR_COURIERSMALL), MAKEINTRESOURCE(SPRITEFONT));
-	rcData = LoadResource(handle, rc);
-	fontSize = SizeofResource(handle, rc);
-	fontBlob = static_cast<const uint8_t*>(LockResource(rcData));
-	mFontProfiling.reset(new DirectX::SpriteFont(mOrigDevice, fontBlob, fontSize));
-	mFontProfiling->SetDefaultCharacter(L'?');
+	mFont = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 20.0f, true);
+	mFontNotifications = std::make_unique<OverlayTextFont>(mOrigDevice, L"Microsoft YaHei UI", 18.0f);
+	mFontProfiling = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 14.0f);
 
 	mSpriteBatch.reset(new DirectX::SpriteBatch(mOrigContext));
 
@@ -177,6 +139,8 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 		throw std::runtime_error("CreateInputLayout failed");
 
 	mPrimitiveBatch.reset(new DirectX::PrimitiveBatch<DirectX::VertexPositionColor>(mOrigContext));
+	mHackerDevice->AddRef();
+	mHackerContext->AddRef();
 }
 
 Overlay::~Overlay()
@@ -185,6 +149,9 @@ Overlay::~Overlay()
 	// We Release the same interface we called AddRef on, and we use the
 	// Hacker interfaces to make sure that our cleanup code is run if this
 	// is the last reference.
+	mFont.reset(); mFontNotifications.reset(); mFontProfiling.reset();
+	mPrimitiveBatch.reset(); mEffect.reset(); mStates.reset(); mSpriteBatch.reset();
+	mInputLayout.Reset();
 	mHackerContext->Release();
 	mHackerDevice->Release();
 }
@@ -525,7 +492,7 @@ void Overlay::DrawRectangle(float x, float y, float w, float h, float r, float g
 	mPrimitiveBatch->End();
 }
 
-void Overlay::DrawOutlinedString(DirectX::SpriteFont *font, wchar_t const *text, DirectX::XMFLOAT2 const &position, DirectX::FXMVECTOR color)
+void Overlay::DrawOutlinedString(OverlayTextFont *font, wchar_t const *text, DirectX::XMFLOAT2 const &position, DirectX::FXMVECTOR color)
 {
 	font->DrawString(mSpriteBatch.get(), text, position + Vector2(-1, 0), DirectX::Colors::Black);
 	font->DrawString(mSpriteBatch.get(), text, position + Vector2( 1, 0), DirectX::Colors::Black);
@@ -725,7 +692,9 @@ void Overlay::DrawNotices(float *y)
 	Vector2 strSize;
 	int level, displayed = 0;
 
-	EnterCriticalSectionPretty(&notices.lock);
+	std::vector<std::pair<int, std::wstring>> visible;
+    {
+	CriticalSectionLockGuard notice_lock(&notices.lock, __FUNCTION__, __LINE__);
 
 	has_notice = false;
 	for (level = 0; level < NUM_LOG_LEVELS; level++) {
@@ -748,12 +717,7 @@ void Overlay::DrawNotices(float *y)
 				continue;
 			}
 
-			strSize = (this->*log_levels[level].font)->MeasureString(notice->message.c_str());
-
-			DrawRectangle(0, *y, strSize.x + 3, strSize.y, 0, 0, 0, 0.75);
-
-			(this->*log_levels[level].font)->DrawString(mSpriteBatch.get(), notice->message.c_str(), Vector2(0, *y), log_levels[level].colour);
-			*y += strSize.y + 5;
+			visible.emplace_back(level, notice->message);
 
 			has_notice = true;
 			notice++;
@@ -761,7 +725,16 @@ void Overlay::DrawNotices(float *y)
 		}
 	}
 
-	LeaveCriticalSection(&notices.lock);
+
+    }
+    for (const auto& item : visible) {
+        auto* font = (this->*log_levels[item.first].font).get();
+        strSize = font->MeasureString(item.second.c_str());
+        DrawRectangle(0, *y, strSize.x + 3, strSize.y, 0, 0, 0, 0.75);
+        font->DrawString(mSpriteBatch.get(), item.second.c_str(), Vector2(0, *y), log_levels[item.first].colour);
+        *y += strSize.y + 5;
+    }
+
 }
 
 void Overlay::DrawProfiling(float *y)
@@ -786,6 +759,7 @@ static void CreateInfoString(wchar_t* info)
 
 void Overlay::DrawOverlay(void)
 {
+    std::lock_guard<std::mutex> drawGuard(drawMutex);
 	Profiling::State profiling_state;
 	HRESULT hr;
 
@@ -799,11 +773,14 @@ void Overlay::DrawOverlay(void)
 	// SpriteBatch, we now save and restore all state information for the GPU
 	// around our drawing.  
 	SaveState();
-	{
+	try {
 		hr = InitDrawState();
 		if (FAILED(hr))
 			goto fail_restore;
 
+		mFont->SetViewport(mResolution.x, mResolution.y);
+		mFontNotifications->SetViewport(mResolution.x, mResolution.y);
+		mFontProfiling->SetViewport(mResolution.x, mResolution.y);
 		mSpriteBatch->Begin();
 		{
 			wchar_t osdString[maxstring];
@@ -836,6 +813,11 @@ void Overlay::DrawOverlay(void)
 		}
 		mSpriteBatch->End();
 	}
+    catch (const std::exception& error) {
+        LogInfo("Overlay rendering failed: %s\n", error.what());
+        // SpriteBatch has no cancel API. End any active batch before the next frame.
+        try { mSpriteBatch->End(); } catch (...) {}
+    }
 fail_restore:
 	RestoreState();
 
@@ -887,7 +869,7 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
     if (!show_overlay_message && (!LogFile || gLogVerbosity < LogVerbosity::WARNING))
         return;
 
-	wchar_t msg[maxstring];
+	std::wstring msg;
 	va_list ap;
 
 	va_start(ap, fmt);
@@ -897,11 +879,8 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
     va_end(file_args);
     if (!show_overlay_message) { va_end(ap); return; }
 
-	// Using _vsnwprintf_s so we don't crash if the message is too long for
-	// the buffer, and truncate it instead - unless we can automatically
-	// wrap the message, which DirectXTK doesn't appear to support, who
-	// cares if it gets cut off somewhere off screen anyway?
-	_vsnwprintf_s(msg, maxstring, _TRUNCATE, fmt, ap);
+	// Preserve the bounded printf interface; GDI handles visual wrapping.
+	msg = FormatOverlayText(fmt, ap);
 
 	EnterCriticalSectionPretty(&notices.lock);
 
@@ -913,7 +892,7 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 	va_end(ap);
 }
 
-// ASCII version of the above. DirectXTK only understands wide strings, so we
+// UTF-8 version of the above. The renderer uses UTF-16 strings, so we
 // need to convert it to that, but we can't just convert the format and hand it
 // to LogOverlayW, because that would reverse the meaning of %s and %S in the
 // format string. Instead we do our own vLogInfo and _vsnprintf_s to handle the
@@ -924,8 +903,7 @@ void LogOverlay(LogLevel level, char *fmt, ...)
     if (!show_overlay_message && (!LogFile || gLogVerbosity < LogVerbosity::WARNING))
         return;
 
-	char amsg[maxstring];
-	wchar_t wmsg[maxstring];
+	std::wstring wmsg;
 	va_list ap;
 
 	va_start(ap, fmt);
@@ -936,12 +914,8 @@ void LogOverlay(LogLevel level, char *fmt, ...)
     if (!show_overlay_message) { va_end(ap); return; }
 
 	if (!log_levels[level].hide_in_release || G->hunting) {
-		// Using _vsnprintf_s so we don't crash if the message is too long for
-		// the buffer, and truncate it instead - unless we can automatically
-		// wrap the message, which DirectXTK doesn't appear to support, who
-		// cares if it gets cut off somewhere off screen anyway?
-		_vsnprintf_s(amsg, maxstring, _TRUNCATE, fmt, ap);
-		mbstowcs(wmsg, amsg, maxstring);
+		// Format under a private UTF-8 locale, independent of game thread locale.
+		wmsg = FormatOverlayText(fmt, ap);
 
 		EnterCriticalSectionPretty(&notices.lock);
 

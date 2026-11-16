@@ -53,6 +53,8 @@ add_library(DirectX11 SHARED
     Logging.cpp
     Logging.h
     Overlay.cpp
+    OverlayText.cpp
+    OverlayText.h
     Override.cpp
     profiling.cpp
     ResourceHash.cpp
@@ -83,7 +85,7 @@ target_include_directories(DirectX11 PRIVATE
     ${CMAKE_SOURCE_DIR}/src/BinaryDecompiler
     ${CMAKE_SOURCE_DIR}/src/BinaryDecompiler/include
     ${CMAKE_SOURCE_DIR}/3rdparty                           # Nektra/NktHookLib.h
-    ${CMAKE_SOURCE_DIR}/3rdparty/DirectXTK/Inc             # SpriteFont.h, DDSTextureLoader.h, etc.
+    ${CMAKE_SOURCE_DIR}/3rdparty/DirectXTK/Inc             # SpriteBatch.h, DDSTextureLoader.h, etc.
     ${CMAKE_SOURCE_DIR}/3rdparty/crc32c-hw-1.0.5/include   # crc32c.h
     ${CMAKE_SOURCE_DIR}/3rdparty/pcre2                      # pcre2.h (预编译 lib)
 )
@@ -178,6 +180,7 @@ if(BUILD_TESTING)
         tests/legacy_source_regression.cpp
         tests/shader_bindings_regression.cpp
         tests/frame_timing_regression.cpp
+        tests/overlay_text_regression.cpp
         tests/callback_namespace_regression.cpp
         tests/png_color_space_regression.cpp
         tests/texture_properties_regression.cpp
@@ -271,6 +274,7 @@ if(BUILD_TESTING)
                 --work-dir "${CMAKE_SOURCE_DIR}/build/version-generator-regression")
     endif()
     add_test(NAME dx11_upstream_regression COMMAND dx11_upstream_regression)
+    add_test(NAME dx11_overlay_text_regression COMMAND dx11_upstream_regression --overlay-text)
     add_executable(dx11_proxy_smoke tests/proxy_smoke.cpp)
     target_include_directories(dx11_proxy_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_features(dx11_proxy_smoke PRIVATE cxx_std_17)

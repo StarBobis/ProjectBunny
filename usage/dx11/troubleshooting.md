@@ -31,3 +31,13 @@
 ```powershell
 Get-Content .\d3d11_log.txt -Tail 200
 ```
+
+## 屏幕通知中的中文
+
+DX11 的错误、警告、通知、Hunting 和性能统计文字使用 Windows GDI Unicode 字体绘制，不再依赖内嵌 SpriteFont 字库。中文通知使用 Microsoft YaHei UI，等宽统计使用 Consolas 和系统字体链接。英文错误提示不会自动翻译。
+
+窄字符屏幕日志接口使用 UTF-8，宽字符接口使用 UTF-16，格式化不依赖系统当前区域设置。非法 UTF-8 会使用替代字符；上游已经变成 `?` 的文本无法通过字体恢复。系统须安装覆盖所需文字的字体。
+
+文字遮罩在内容变化时生成并上传，重复消息复用缓存；窗口尺寸变化会清空对应缓存。每种字体缓存最多 64 条、16 MiB。通知按视口宽度自动换行，单块文字纹理最多 4096×1024 像素，超出部分裁切。保留 SpriteBatch 合成，不要求游戏以 BGRA 标志创建设备。中文渲染不使用 DirectWrite、Direct2D、WIC 或 COM；仅使用原有的 GDI32/USER32 和 D3D11。字体和位图在首次可见文字时创建，不在 DLL 加载时初始化。
+
+开发回归运行 `ctest --test-dir build/dx11-dump-validation --output-on-failure`。Overlay 专项生成 `overlay-chinese.png`，覆盖 Unicode、并发缓存、GDI 句柄释放、COM 状态不变、实际 WARP 合成及交换链缩放；代理加载测试验证导出和 Hook 路由。这不替代目标游戏全屏、HDR、内核驱动和其他 Hook 的兼容性验收。

@@ -20,6 +20,7 @@ void test_dx11_store_structured_regression();
 void test_dx11_legacy_source_regression();
 void test_dx11_shader_bindings_regression();
 void test_dx11_frame_timing_regression();
+void test_dx11_overlay_text_regression();
 void test_dx11_callback_namespace_regression();
 void test_dx11_png_color_space_regression();
 void test_dx11_texture_properties_regression();
@@ -951,6 +952,10 @@ int main(int argc, char** argv)
     InitializeCriticalSection(&resource_creation_mode_lock);
     test_dx11_version_regression();
     try {
+        if (argc == 2 && std::string(argv[1]) == "--overlay-text") {
+            test_dx11_overlay_text_regression();
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--shader-regex-exclusions") {
             test_dx11_round5_config_regression();
             std::puts("PASS: ShaderRegex exclusion INI, matching, cache and reload regression");
@@ -974,6 +979,7 @@ int main(int argc, char** argv)
         test_dx11_stream_output_regression();
         test_dx11_shader_summary_regression();
         test_dx11_shader_dump_filter_regression();
+        test_dx11_overlay_text_regression();
         test_dx11_stream_output_append_regression();
         test_dx11_original_resource_metadata_regression();
         test_dx11_dhash_gpu_regression();
