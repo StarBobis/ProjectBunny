@@ -55,6 +55,7 @@ void test_dx11_zbuffer_view_ownership_regression();
 void test_dx11_hunting_shader_selection_regression();
 void test_dx11_ini_lookup_performance();
 void test_dx11_file_publication_regression();
+void test_persist_write_failure_regression();
 void test_dx11_device_initialization_regression();
 void test_dx11_vertex_dump_bounds_regression();
 void test_dx11_appended_vertex_layout_regression();
@@ -1472,6 +1473,7 @@ void test_f199_review()
 
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
+    {"F-003b", test_persist_write_failure_regression},
     {"F-163", test_dx11_loader_file_bounds_regression},
     {"F-005", test_dx11_device_initialization_regression},
     {"F-007", test_f007},

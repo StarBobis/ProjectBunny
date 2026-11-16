@@ -304,6 +304,7 @@ if(BUILD_TESTING)
         tests/resource_metadata_v2_regression.cpp
         tests/ini_parser_v2_regression.cpp
         tests/persist_settings_v2_regression.cpp
+        tests/persist_write_failure_regression.cpp
         tests/slot_batch_regression.cpp
         tests/pool_range_flags_regression.cpp
         tests/texture_override_cache_regression.cpp
