@@ -2,7 +2,7 @@
 param([string]$Item='',[switch]$SpecialOnly,[string]$ReportPointer='')
 $ErrorActionPreference='Stop'
 if(-not [Environment]::Is64BitProcess -or $PSVersionTable.PSVersion.Major -lt 7){throw 'Use x64 PowerShell 7.'}
-if($Item -and $Item -notin @('F-152','F-153','F-200b')){throw 'Unknown component specialization.'}
+if($Item -and $Item -notin @('F-152','F-153','F-200b','F-107')){throw 'Unknown component specialization.'}
 . (Join-Path $PSScriptRoot 'process.ps1')
 $simulationRoot=Split-Path -Parent $PSScriptRoot
 $buildRoot=Join-Path $simulationRoot 'build'
@@ -83,6 +83,103 @@ if($export.status -eq 'PASS') {
 }else{$replacement=[pscustomobject]@{status='NOT_RUN';exitCode=$null;message='Export prerequisite failed.'}}
 $results.Add([pscustomobject]@{id='compiler-asan-replacement';status=$replacement.status;input=$asanDll;sha256=(Get-FileHash -LiteralPath $asanDll).Hash;detail=$replacement})
 Write-Host "[$($replacement.status)] compiler-asan-replacement"
+if($Item -eq 'F-107') {
+    $wrapper=Join-Path $candidateBuild 'src\D3DCompiler_46\d3dcompiler_47.dll'
+    $partialProvider=Join-Path $buildRoot 'tools\dx11_compiler_partial_provider.dll'
+    if(-not (Test-Path -LiteralPath $wrapper)){throw "F-107 wrapper was not built: $wrapper"}
+    if(-not (Test-Path -LiteralPath $partialProvider)){throw "F-107 partial provider was not built: $partialProvider"}
+    foreach($mode in @('compiler-exports','compiler-no-provider','compiler-partial-provider','compiler-late-provider')) {
+        $id="F-107-$mode"
+        $caseRoot=Join-Path $runRoot $id
+        New-Item -ItemType Directory -Path $caseRoot | Out-Null
+        Copy-Item -LiteralPath $componentHost -Destination (Join-Path $caseRoot 'component-host.exe')
+        $copiedDll=Join-Path $caseRoot 'd3dcompiler_47.dll'
+        Copy-Item -LiteralPath $wrapper -Destination $copiedDll
+        if($mode -eq 'compiler-partial-provider') {
+            Copy-Item -LiteralPath $partialProvider -Destination (Join-Path $caseRoot 'D3DCompiler_46_org.dll')
+        }
+        if($mode -eq 'compiler-late-provider') {
+            Copy-Item -LiteralPath $partialProvider -Destination (Join-Path $caseRoot 'late-provider.dll')
+        }
+        "[Logging]`ncalls=1`nunbuffered=1`ndebug=0`nforce_cpu_affinity=0`n" |
+            Set-Content -LiteralPath (Join-Path $caseRoot 'd3dx.ini') -Encoding utf8
+        $result=Invoke-IsolatedSimulationProcess -Executable (Join-Path $caseRoot 'component-host.exe') -Arguments @($copiedDll,$mode) -WorkingDirectory $caseRoot -LogPrefix (Join-Path $caseRoot 'host')
+        if($mode -eq 'compiler-late-provider' -and $result.status -eq 'PASS') {
+            $logPath=Join-Path $caseRoot 'D3DCompiler_46_log.txt'
+            $latched=@(Select-String -LiteralPath $logPath -Pattern 'initialization is latched for this process' -SimpleMatch -ErrorAction SilentlyContinue).Count
+            $moduleMissing=@(Select-String -LiteralPath $logPath -Pattern 'GetLastError=126' -SimpleMatch -ErrorAction SilentlyContinue).Count
+            $buildMarker=@(Select-String -LiteralPath $logPath -Pattern 'f107-latch-v2' -SimpleMatch -ErrorAction SilentlyContinue).Count
+            $pathChars=@(Select-String -LiteralPath $logPath -Pattern 'path_chars=' -SimpleMatch -ErrorAction SilentlyContinue).Count
+            if($latched -ne 1){$result.status='FAIL';$result.message="Expected exactly one latched diagnostic, found $latched."}
+            elseif($moduleMissing -lt 1){$result.status='FAIL';$result.message='Latched diagnostic does not contain GetLastError=126.'}
+            $result | Add-Member -NotePropertyName latchedMarker -NotePropertyValue $buildMarker -Force
+            $result | Add-Member -NotePropertyName pathChars -NotePropertyValue $pathChars -Force
+        }
+        $results.Add([pscustomobject]@{id=$id;status=$result.status;input=$copiedDll;sha256=(Get-FileHash -LiteralPath $copiedDll).Hash;detail=$result})
+        Write-Host "[$($result.status)] $id"
+    }
+
+    # Independent export-table record: dumpbin prints ordinal, hint, RVA and
+    # name. Cross-check the DebugSetMute RVA against the address the loader
+    # actually resolves for ordinal 2 so a wrong @2 target cannot pass.
+    $dumpbin=Get-Command dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+    if(-not $dumpbin) {
+        $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if(Test-Path -LiteralPath $vswhere) {
+            $vsPath=& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if($LASTEXITCODE -eq 0 -and $vsPath) {
+                $dumpbin=Get-ChildItem -LiteralPath (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -match '\\Hostx64\\x64\\dumpbin\.exe$' } |
+                    Select-Object -First 1 -ExpandProperty FullName
+            }
+        }
+    }
+    $exportCase=Join-Path $runRoot 'F-107-dumpbin-exports'
+    New-Item -ItemType Directory -Path $exportCase | Out-Null
+    $dumpbinLog=Join-Path $exportCase 'dumpbin-exports.txt'
+    $dumpbinStatus='NOT_RUN'; $dumpbinMessage='dumpbin.exe was not found'
+    $exports=$null
+    if($dumpbin) {
+        & $dumpbin /nologo /exports $wrapper 2>&1 | Set-Content -LiteralPath $dumpbinLog -Encoding utf8
+        if($LASTEXITCODE -eq 0) {
+            $exports=@()
+            foreach($line in (Get-Content -LiteralPath $dumpbinLog)) {
+                if($line -match '^\s+(\d+)\s+[0-9A-Fa-f]+\s+([0-9A-Fa-f]{8,16})\s+(\S+)(?:\s+=.*)?\s*$') {
+                    $exports += [pscustomobject]@{ordinal=[int]$Matches[1];rva=[Convert]::ToInt64($Matches[2],16);name=$Matches[3]}
+                }
+            }
+            $expected=@('D3DAssemble','DebugSetMute','D3DCompile2','D3DCompile','D3DCompileFromFile','D3DCompressShaders','D3DCreateBlob','D3DDecompressShaders','D3DDisassemble10Effect','D3DDisassemble11Trace','D3DDisassemble','D3DDisassembleRegion','D3DGetBlobPart','D3DGetDebugInfo','D3DGetInputAndOutputSignatureBlob','D3DGetInputSignatureBlob','D3DGetOutputSignatureBlob','D3DGetTraceInstructionOffsets','D3DPreprocess','D3DReadFileToBlob','D3DReflect','D3DReturnFailure1','D3DSetBlobPart','D3DStripShader','D3DWriteBlobToFile')
+            $dumpbinStatus='PASS'; $dumpbinMessage=''
+            if($exports.Count -ne 25){$dumpbinStatus='FAIL';$dumpbinMessage="Expected 25 exports, found $($exports.Count)."}
+            elseif(@($exports | Group-Object ordinal | Where-Object Count -ne 1).Count){$dumpbinStatus='FAIL';$dumpbinMessage='Duplicate export ordinal.'}
+            elseif((@($exports | ForEach-Object ordinal | Sort-Object) -join ',') -ne ((1..25) -join ',')){$dumpbinStatus='FAIL';$dumpbinMessage='Export ordinals are not exactly 1..25.'}
+            else {
+                foreach($ordinal in 1..25) {
+                    $entry=$exports | Where-Object ordinal -eq $ordinal
+                    if($entry.name -ne $expected[$ordinal-1]){$dumpbinStatus='FAIL';$dumpbinMessage="Ordinal $ordinal is $($entry.name), expected $($expected[$ordinal-1]).";break}
+                }
+            }
+            if($dumpbinStatus -eq 'PASS') {
+                $debugEntry=$exports | Where-Object ordinal -eq 2
+                $module=[IntPtr]::Zero
+                try {
+                    $module=[System.Runtime.InteropServices.NativeLibrary]::Load($wrapper)
+                    $address=[System.Runtime.InteropServices.NativeLibrary]::GetExport($module,'DebugSetMute')
+                    $loadedRva=$address.ToInt64()-$module.ToInt64()
+                    if($loadedRva -ne $debugEntry.rva){$dumpbinStatus='FAIL';$dumpbinMessage="DebugSetMute RVA mismatch: dumpbin=$($debugEntry.rva), loaded=$loadedRva"}
+                } catch {
+                    $dumpbinStatus='FAIL'; $dumpbinMessage="DebugSetMute RVA cross-check failed: $($_.Exception.Message)"
+                } finally {
+                    if($module -ne [IntPtr]::Zero){[System.Runtime.InteropServices.NativeLibrary]::Free($module)}
+                }
+            }
+        } else { $dumpbinStatus='FAIL'; $dumpbinMessage="dumpbin failed with exit code $LASTEXITCODE" }
+    }
+    $scriptPath=if($PSCommandPath){$PSCommandPath}else{$MyInvocation.MyCommand.Path}
+    $scriptHash=if($scriptPath -and (Test-Path -LiteralPath $scriptPath)){(Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash}else{''}
+    $results.Add([pscustomobject]@{id='F-107-dumpbin-exports';status=$dumpbinStatus;input=$wrapper;sha256=(Get-FileHash -LiteralPath $wrapper).Hash;detail=[pscustomobject]@{message=$dumpbinMessage;log=$dumpbinLog;count=@($exports).Count;parser='suffix-aware';script=$scriptPath;scriptSha256=$scriptHash}})
+    Write-Host "[$($dumpbinStatus)] F-107-dumpbin-exports"
+}
 if($Item -eq 'F-200b') {
     $pathRoot=Join-Path $asanRoot 'path-reject'
     New-Item -ItemType Directory -Path $pathRoot -Force | Out-Null

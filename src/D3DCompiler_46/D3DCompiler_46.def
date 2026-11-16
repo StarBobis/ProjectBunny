@@ -4,6 +4,7 @@ HEAPSIZE 4096
 
 EXPORTS
 	D3DAssemble							@1 
+	DebugSetMute			            @2
 	D3DCompile							@4
 	D3DCompile2							@3
 	D3DCompileFromFile					@5

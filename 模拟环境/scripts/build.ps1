@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 $toolchain = Initialize-SimulationToolchain
 $toolchain | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $buildRoot 'toolchain.json') -Encoding utf8
 $hostBuild = Join-Path $buildRoot 'tools'
-$hostSources = @('模拟环境\CMakeLists.txt','模拟环境\src\dx11_sim_host.cpp','模拟环境\src\proxy_component_host.cpp','模拟环境\src\dxgi_proxy_fault_host.cpp','模拟环境\src\dx11_fault_provider.cpp','模拟环境\src\dx11_fault_provider.def','src\DirectX11\tests\proxy_smoke.cpp','src\DirectX11\DX11Version.h')
+$hostSources = @('模拟环境\CMakeLists.txt','模拟环境\src\dx11_sim_host.cpp','模拟环境\src\proxy_component_host.cpp','模拟环境\src\dxgi_proxy_fault_host.cpp','模拟环境\src\dx11_fault_provider.cpp','模拟环境\src\dx11_fault_provider.def','模拟环境\src\dx11_compiler_partial_provider.cpp','模拟环境\src\dx11_compiler_partial_provider.def','src\DirectX11\tests\proxy_smoke.cpp','src\DirectX11\DX11Version.h')
 $hostSourceHashes = @($hostSources | ForEach-Object {
     [pscustomobject]@{path=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $repositoryRoot $_) -Algorithm SHA256).Hash}
 })
@@ -24,7 +24,7 @@ foreach ($source in $hostSourceHashes) {
         throw "Source changed during build; rebuild the test host: $($source.path)"
     }
 }
-$hosts = @('dx11_sim_host.exe','dx11_existing_smoke.exe','dx11_fault_provider.dll','dx11_proxy_component_host.exe','dx11_proxy_component_asan_host.exe','dxgi_proxy_fault_host.exe') | ForEach-Object {
+$hosts = @('dx11_sim_host.exe','dx11_existing_smoke.exe','dx11_fault_provider.dll','dx11_compiler_partial_provider.dll','dx11_proxy_component_host.exe','dx11_proxy_component_asan_host.exe','dxgi_proxy_fault_host.exe') | ForEach-Object {
     [pscustomobject]@{name=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $hostBuild $_) -Algorithm SHA256).Hash}
 }
 @{utc=[DateTime]::UtcNow.ToString('o');configuration='Release';standard='C++17';toolchain=$toolchain;sources=$hostSourceHashes;hosts=@($hosts)} |

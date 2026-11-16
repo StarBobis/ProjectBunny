@@ -1,0 +1,4 @@
+LIBRARY D3DCompiler_46_org.dll
+
+EXPORTS
+    D3DCompile @1
