@@ -2422,7 +2422,7 @@ public:
 		// the automatic CRT_SECURE macros to find the sizes.
 		//  CollectBrackets(op1, op2, op3, op4, op5, op6, op7, op8, op9, op10, op11, op12, op13, op14, op15);
 		{
-			if (!strncmp(op1, "l(", 2) && op1[strlen(op1) - 1] != ')' && op1[strlen(op1) - 2] != ')')
+			if ((!strncmp(op1, "l(", 2) || !strncmp(op1, "-l(", 3)) && op1[strlen(op1) - 1] != ')' && op1[strlen(op1) - 2] != ')')
 			{
 				strcat(op1, " "); strcat(op1, op2);
 				strcat(op1, " "); strcat(op1, op3);
@@ -2430,7 +2430,7 @@ public:
 				strcpy(op2, op5); strcpy(op3, op6); strcpy(op4, op7); strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12); strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op2, "l(", 2) && op2[strlen(op2) - 1] != ')' && op2[strlen(op2) - 2] != ')')
+			if ((!strncmp(op2, "l(", 2) || !strncmp(op2, "-l(", 3)) && op2[strlen(op2) - 1] != ')' && op2[strlen(op2) - 2] != ')')
 			{
 				strcat(op2, " "); strcat(op2, op3);
 				strcat(op2, " "); strcat(op2, op4);
@@ -2438,7 +2438,7 @@ public:
 				strcpy(op3, op6); strcpy(op4, op7); strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op3, "l(", 2) && op3[strlen(op3) - 1] != ')' && op3[strlen(op3) - 2] != ')')
+			if ((!strncmp(op3, "l(", 2) || !strncmp(op3, "-l(", 3)) && op3[strlen(op3) - 1] != ')' && op3[strlen(op3) - 2] != ')')
 			{
 				strcat(op3, " "); strcat(op3, op4);
 				strcat(op3, " "); strcat(op3, op5);
@@ -2446,7 +2446,7 @@ public:
 				strcpy(op4, op7); strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op4, "l(", 2) && op4[strlen(op4) - 1] != ')' && op4[strlen(op4) - 2] != ')')
+			if ((!strncmp(op4, "l(", 2) || !strncmp(op4, "-l(", 3)) && op4[strlen(op4) - 1] != ')' && op4[strlen(op4) - 2] != ')')
 			{
 				strcat(op4, " "); strcat(op4, op5);
 				strcat(op4, " "); strcat(op4, op6);
@@ -2454,7 +2454,7 @@ public:
 				strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op5, "l(", 2) && op5[strlen(op5) - 1] != ')' && op5[strlen(op5) - 2] != ')')
+			if ((!strncmp(op5, "l(", 2) || !strncmp(op5, "-l(", 3)) && op5[strlen(op5) - 1] != ')' && op5[strlen(op5) - 2] != ')')
 			{
 				strcat(op5, " "); strcat(op5, op6);
 				strcat(op5, " "); strcat(op5, op7);
@@ -2462,7 +2462,7 @@ public:
 				strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op6, "l(", 2) && op6[strlen(op6) - 1] != ')' && op6[strlen(op6) - 2] != ')')
+			if ((!strncmp(op6, "l(", 2) || !strncmp(op6, "-l(", 3)) && op6[strlen(op6) - 1] != ')' && op6[strlen(op6) - 2] != ')')
 			{
 				strcat(op6, " "); strcat(op6, op7);
 				strcat(op6, " "); strcat(op6, op8);
@@ -2470,7 +2470,7 @@ public:
 				strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op7, "l(", 2) && op7[strlen(op7) - 1] != ')' && op7[strlen(op7) - 2] != ')')
+			if ((!strncmp(op7, "l(", 2) || !strncmp(op7, "-l(", 3)) && op7[strlen(op7) - 1] != ')' && op7[strlen(op7) - 2] != ')')
 			{
 				strcat(op7, " "); strcat(op7, op8);
 				strcat(op7, " "); strcat(op7, op9);
@@ -2807,27 +2807,72 @@ public:
 		}
 	}
 
+	static bool isFloatConstructor(const char *operand)
+	{
+		if (strncmp(operand, "float", 5)) return false;
+		const char *suffix = operand + 5;
+		while (isdigit(static_cast<unsigned char>(*suffix))) ++suffix;
+		return *suffix == '(' || (!*suffix && (suffix == operand + 5 ||
+			(suffix == operand + 6 && operand[5] >= '1' && operand[5] <= '4')));
+	}
+
+	char *convertFloatVectorToInteger(char *target, const char *type, int isMinus)
+	{
+		const char *literal = target + isMinus;
+		int size = 0, count = 0, consumed = 0;
+		float values[4]{};
+		if (literal[5] >= '2' && literal[5] <= '4' && literal[6] == '(') {
+			switch (literal[5]) {
+			case '2': count = sscanf_s(literal, "float%1d( %f , %f ) %n", &size, &values[0], &values[1], &consumed); break;
+			case '3': count = sscanf_s(literal, "float%1d( %f , %f , %f ) %n", &size, &values[0], &values[1], &values[2], &consumed); break;
+			case '4': count = sscanf_s(literal, "float%1d( %f , %f , %f , %f ) %n", &size, &values[0], &values[1], &values[2], &values[3], &consumed); break;
+			}
+		}
+		if (!consumed || count != size + 1 || literal[consumed]) {
+			logDecompileError("Invalid float vector conversion: " + string(target));
+			return target;
+		}
+
+		bool fold = true;
+		for (int i = 0; i < size; ++i)
+			fold = fold && std::isfinite(values[i]) && static_cast<double>(values[i]) >= INT_MIN &&
+				static_cast<double>(values[i]) <= INT_MAX;
+		// Let HLSL perform conversions that cannot be folded through a host int.
+		// Normalize components instead of wrapping the potentially long input.
+		char buffer[opcodeSize];
+		int printed = fold ? _snprintf_s(buffer, opcodeSize, _TRUNCATE, "%s%s%d(", isMinus ? "-" : "", type, size) :
+			_snprintf_s(buffer, opcodeSize, _TRUNCATE, "%s(%s%d)float%d(", isMinus ? "-" : "", type, size, size);
+		for (int i = 0; printed >= 0 && i < size; ++i) {
+			int written;
+			if (fold)
+				written = _snprintf_s(buffer + printed, opcodeSize - printed, _TRUNCATE, "%d,", static_cast<int>(values[i]));
+			else if (std::isfinite(values[i]))
+				written = _snprintf_s(buffer + printed, opcodeSize - printed, _TRUNCATE, "%.9g,", values[i]);
+			else {
+				unsigned bits;
+				static_assert(sizeof(bits) == sizeof(values[i]), "float bit width");
+				memcpy(&bits, &values[i], sizeof(bits));
+				written = _snprintf_s(buffer + printed, opcodeSize - printed, _TRUNCATE, "asfloat(0x%08x),", bits);
+			}
+			printed = written < 0 ? -1 : printed + written;
+		}
+		if (printed <= 0) {
+			logDecompileError("Float vector conversion exceeds operand buffer: " + string(target));
+			return target;
+		}
+		buffer[printed - 1] = ')';
+		strcpy_s(target, opcodeSize, buffer);
+		return target;
+	}
+
 	char *_convertToInt(char *target, bool fixupCBs)
 	{
 		char buffer[opcodeSize];
 
 		int isMinus = target[0] == '-' ? 1 : 0;
 		if (!strncmp(target + isMinus, "int", 3) || !strncmp(target + isMinus, "uint", 4)) return target;
-		if (!strncmp(target + isMinus, "float", 5))
-		{
-			int size = 0; float f0, f1, f2, f3;
-			sscanf_s(target + isMinus, "float%d(%f,%f,%f,%f)", &size, &f0, &f1, &f2, &f3);
-
-			buffer[0] = 0;
-			if (isMinus) strcpy(buffer, "-");
-
-			if (size == 2) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "int2(%d,%d)", (int)f0, (int)f1);
-			else if (size == 3) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "int3(%d,%d,%d)", (int)f0, (int)f1, (int)f2);
-			else if (size == 4) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "int4(%d,%d,%d,%d)", (int)f0, (int)f1, (int)f2, (int)f3);
-
-			strcpy_s(target, opcodeSize, buffer);
-			return target;
-		}
+		if (isFloatConstructor(target + isMinus))
+			return convertFloatVectorToInteger(target, "int", isMinus);
 		// Fixup for constant buffer reads where the type may not be known due to missing headers:
 		if (fixupCBs && !strncmp(target + isMinus, "cb", 2))
 		{
@@ -2854,23 +2899,8 @@ public:
 
 		int isMinus = target[0] == '-' ? 1 : 0;
 		if (!strncmp(target + isMinus, "int", 3) || !strncmp(target + isMinus, "uint", 4)) return target;
-		if (!strncmp(target + isMinus, "float", 5))
-		{
-			int size = 0;
-			float f0, f1, f2, f3;
-
-			sscanf_s(target + isMinus, "float%d(%f,%f,%f,%f)", &size, &f0, &f1, &f2, &f3);
-
-			buffer[0] = 0;
-			if (isMinus) strcpy(buffer, "-");
-
-			if (size == 2) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "uint2(%d,%d)", (int)f0, (int)f1);
-			else if (size == 3) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "uint3(%d,%d,%d)", (int)f0, (int)f1, (int)f2);
-			else if (size == 4) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "uint4(%d,%d,%d,%d)", (int)f0, (int)f1, (int)f2, (int)f3);
-
-			strcpy_s(target, opcodeSize, buffer);
-			return target;
-		}
+		if (isFloatConstructor(target + isMinus))
+			return convertFloatVectorToInteger(target, "uint", isMinus);
 		// Fixup for constant buffer reads where the type may not be known due to missing headers:
 		if (fixupCBs && !strncmp(target + isMinus, "cb", 2))
 		{
@@ -3000,9 +3030,11 @@ public:
 		// Check old value.
 		if (o.eType == OPERAND_TYPE_IMMEDIATE32)
 		{
+			const bool negative = op[0] == '-';
+			const char *lit = op + (negative ? 1 : 0);
 			float oldValue = 0;
-			const bool legacyInf = !strncmp(op, "l(1.#INF00", strlen("l(1.#INF00"));
-			string literal(op);
+			const bool legacyInf = !strncmp(lit, "l(1.#INF00", strlen("l(1.#INF00"));
+			string literal(lit);
 			while (!literal.empty() && isspace(static_cast<unsigned char>(literal.back()))) literal.pop_back();
 			if (!literal.empty() && literal.back() == ',') literal.pop_back();
 			while (!literal.empty() && isspace(static_cast<unsigned char>(literal.back()))) literal.pop_back();
@@ -3010,7 +3042,7 @@ public:
 			// Validate every component before replacing rounded disassembly text.
 			char checked[opcodeSize];
 			const char components[4] = { 0, 1, 2, 3 };
-			if ((!legacyInf && sscanf_s(op, "l(%e", &oldValue) != 1) ||
+			if ((!legacyInf && sscanf_s(lit, "l(%e", &oldValue) != 1) ||
 				!applySwizzleLiteral(literal.c_str(), checked, false, o.iNumComponents, components))
 			{
 				logDecompileError("Invalid immediate32 operand: " + string(op));
@@ -3019,13 +3051,13 @@ public:
 			if (legacyInf || abs(oldValue - o.afImmediates[0]) < 0.1)
 			{
 				if (o.iNumComponents == 4)
-					sprintf_s(op, opcodeSize, "l(%.9g,%.9g,%.9g,%.9g)", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2], o.afImmediates[3]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g,%.9g,%.9g,%.9g)", negative ? "-" : "", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2], o.afImmediates[3]);
 				else if (o.iNumComponents == 3)
-					sprintf_s(op, opcodeSize, "l(%.9g,%.9g,%.9g)", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g,%.9g,%.9g)", negative ? "-" : "", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2]);
 				else if (o.iNumComponents == 2)
-					sprintf_s(op, opcodeSize, "l(%.9g,%.9g)", o.afImmediates[0], o.afImmediates[1]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g,%.9g)", negative ? "-" : "", o.afImmediates[0], o.afImmediates[1]);
 				else if (o.iNumComponents == 1)
-					sprintf_s(op, opcodeSize, "l(%.9g)", o.afImmediates[0]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g)", negative ? "-" : "", o.afImmediates[0]);
 			}
 		}
 		return op;

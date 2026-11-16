@@ -1,8 +1,15 @@
+// This TU includes DecompileHLSL.cpp, which does "using namespace std".
+// Newer MSVC introduces std::byte via <cstddef>, which clashes with the
+// Windows SDK's global "byte" typedef (C2872) when <windows.h> follows.
+#define _HAS_STD_BYTE 0
 // Keep BinaryDecompiler's private token definitions separate from the SDK
 // headers in the WARP fixtures. This TU compiles the production decompiler once.
 #include "BinaryDecompiler/internal_includes/decode.h"
 #include "BinaryDecompiler/internal_includes/reflect.h"
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include "log.h"
 namespace {
 Shader* decode_lifetime_audit(uint32_t*);
@@ -19,6 +26,14 @@ std::string header_time_lifetime_audit();
 #include <cstring>
 #include <stdexcept>
 #include <malloc.h>
+#include <windows.h>
+#include <d3dcompiler.h>
+#include <fstream>
+#include <iterator>
+#include <wrl/client.h>
+#ifndef F281_FIXTURE_DIR
+#error "F281_FIXTURE_DIR must be provided by dx11_upstream_regression"
+#endif
 #ifdef DX11_AUDIT_ASAN_LOCKS
 #include <sanitizer/allocator_interface.h>
 #endif
@@ -600,4 +615,77 @@ void check_dx11_decompiler_lifetime(const void* bytecode,const char* assembly,si
     check_literal_audit(end!=std::string::npos,"F283: native output row has its terminator");
     invalid.replace(row,end-row,"// unrecognized output");
     check_decompiler_lifetime(bytecode,invalid,false,true);
+}
+
+void test_dx11_decompiler_negative_literal_regression()
+{
+    if (const char *corpus = std::getenv("BUNNY_F281_CORPUS_DIR")) {
+        const char *output = std::getenv("BUNNY_F281_CORPUS_OUT");
+        check_literal_audit(output && *output, "F281: corpus output directory is set");
+        std::filesystem::create_directories(output);
+        size_t count = 0;
+        for (const auto &entry : std::filesystem::directory_iterator(corpus)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".dxbc") continue;
+            std::ifstream binary(entry.path(), std::ios::binary);
+            const std::string bytecode((std::istreambuf_iterator<char>(binary)), std::istreambuf_iterator<char>());
+            if (bytecode.empty()) continue;
+            Microsoft::WRL::ComPtr<ID3DBlob> assembly;
+            std::string text;
+            if (SUCCEEDED(D3DDisassemble(bytecode.data(), bytecode.size(), 0, nullptr, assembly.GetAddressOf())))
+                text.assign(static_cast<const char *>(assembly->GetBufferPointer()));
+            DecompilerSettings settings;
+            ParseParameters params{};
+            params.bytecode = bytecode.data();
+            params.decompiled = text.c_str();
+            params.decompiledSize = text.size();
+            params.G = &settings;
+            bool patched = false, failed = false;
+            std::string model;
+            const auto hlsl = text.empty() ? std::string() : DecompileBinaryHLSL(params, patched, model, failed);
+            std::ofstream result(std::filesystem::path(output) / (entry.path().stem().string() + ".hlsl"), std::ios::binary);
+            result << "// failed=" << (failed ? 1 : 0) << " hlsl_bytes=" << hlsl.size() << "\n" << hlsl;
+            ++count;
+        }
+        std::fprintf(stderr, "F281 corpus: %zu shader(s) dumped to %s\n", count, output);
+        return;
+    }
+    const auto read_fixture = [](const std::string& name) {
+        std::ifstream input(std::string(F281_FIXTURE_DIR) + "/" + name, std::ios::binary);
+        check_literal_audit(input.good(), "F281: open the checked-in native fixture");
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    for (const char* stem : {"negate-positive", "negate-negative"}) {
+        const auto bytecode = read_fixture(std::string(stem) + ".dxbc");
+        const auto assembly = read_fixture(std::string(stem) + ".asm");
+        check_literal_audit(!bytecode.empty() && !assembly.empty(), "F281: fixture bytecode and assembly are complete");
+        std::fprintf(stderr, "F281 %s: dxbc=%zuB asm=%zuB\n", stem, bytecode.size(), assembly.size());
+
+        DecompilerSettings settings;
+        ParseParameters params{};
+        params.bytecode = bytecode.data();
+        params.decompiled = assembly.c_str();
+        params.decompiledSize = assembly.size();
+        params.G = &settings;
+        bool patched = false, failed = false;
+        std::string model;
+        const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
+        std::fprintf(stderr, "F281 %s: model=%s failed=%d hlsl=%zuB\n", stem, model.c_str(), failed ? 1 : 0, hlsl.size());
+        if (failed || hlsl.empty())
+            std::fprintf(stderr, "F281 %s failed HLSL:\n%s\n", stem, hlsl.c_str());
+        check_literal_audit(!failed && !hlsl.empty(),
+            "F281: the native negated literal decompiles without the fallback error flag");
+        check_literal_audit(hlsl.find("(uint6)") == std::string::npos,
+            "F281: the -l( operand is not split into a bogus (uint6) cast");
+
+        Microsoft::WRL::ComPtr<ID3DBlob> rebuilt, compile_errors;
+        const HRESULT compiled = D3DCompile(hlsl.data(), hlsl.size(), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0,
+            rebuilt.GetAddressOf(), compile_errors.GetAddressOf());
+        if (FAILED(compiled)) {
+            if (compile_errors)
+                std::fprintf(stderr, "F281 %s compiler:\n%s\n", stem, static_cast<const char*>(compile_errors->GetBufferPointer()));
+            std::fprintf(stderr, "F281 %s HLSL:\n%s\n", stem, hlsl.c_str());
+        }
+        check_literal_audit(SUCCEEDED(compiled),
+            "F281: regenerated negated-literal HLSL compiles natively for ps_5_0");
+    }
 }
