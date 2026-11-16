@@ -87,6 +87,7 @@ void test_dx11_debug_layer_interfaces_regression();
 void test_dx11_hook_lookup_regression();
 void test_dx11_loader_file_bounds_regression();
 void test_dx11_legacy_profiling_regression();
+void test_f200();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
@@ -806,6 +807,207 @@ void test_f186()
     config.load("",0,true);
 }
 
+std::filesystem::path f200_repository_root()
+{
+    wchar_t executable[MAX_PATH]{};
+    require_batch(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "F200: locate regression host");
+    std::filesystem::path candidate, build;
+    for (const auto& component : std::filesystem::path(executable).parent_path()) {
+        candidate /= component;
+        if (!_wcsicmp(component.c_str(), L"build"))
+            build = candidate;
+    }
+    require_batch(!build.empty(), "F200: regression host remains under build");
+    return build.parent_path();
+}
+
+class F200SentinelScope {
+public:
+    std::filesystem::path path;
+    F200SentinelScope()
+    {
+        const auto parent = f200_repository_root() / L"_tmp";
+        std::filesystem::create_directories(parent);
+        path = parent / L"sr-sentinel";
+        if (std::filesystem::exists(path)) {
+            require_batch(path.filename() == L"sr-sentinel" && path.parent_path().filename() == L"_tmp",
+                "F200: only clear the dedicated sentinel directory");
+            std::filesystem::remove_all(path);
+        }
+        require_batch(std::filesystem::create_directory(path), "F200: reserve isolated _tmp/sr-sentinel");
+    }
+    ~F200SentinelScope()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+};
+
+class F200WorkingDirectoryScope {
+    wchar_t old_path[MAX_PATH]{};
+public:
+    explicit F200WorkingDirectoryScope(const std::filesystem::path& path)
+    {
+        const DWORD length = GetCurrentDirectoryW(MAX_PATH, old_path);
+        require_batch(length > 0 && length < MAX_PATH, "F200: capture complete working directory");
+        require_batch(SetCurrentDirectoryW(path.c_str()) != 0, "F200: enter isolated working directory");
+    }
+    ~F200WorkingDirectoryScope() { SetCurrentDirectoryW(old_path); }
+};
+
+class F200FlagScope {
+    bool old_cache = G->CACHE_SHADERS, old_export = G->EXPORT_FIXED;
+public:
+    ~F200FlagScope() { G->CACHE_SHADERS = old_cache; G->EXPORT_FIXED = old_export; }
+};
+
+class F200LogScope {
+    FILE *old_file = LogFile;
+    LogVerbosity old_level = gLogVerbosity;
+public:
+    F200LogScope() { LogFile = stderr; gLogVerbosity = LogVerbosity::INFO; }
+    ~F200LogScope() { LogFile = old_file; gLogVerbosity = old_level; }
+};
+
+std::map<std::wstring,std::string> f200_directory_files(const std::filesystem::path& path)
+{
+    std::map<std::wstring,std::string> files;
+    for (const auto& entry : std::filesystem::directory_iterator(path))
+        if (entry.is_regular_file())
+            files.emplace(entry.path().filename().wstring(), read_file(entry.path()));
+    return files;
+}
+
+std::map<std::wstring,std::string> f200_write_sentinels(const std::filesystem::path& path,const std::string& at_payload)
+{
+    const std::pair<const wchar_t*,std::string> values[] = {
+        {L"in", "F200 in sentinel"}, {L"at", at_payload}, {L"xt", "F200 xt sentinel"}};
+    std::map<std::wstring,std::string> expected;
+    for (const auto& value : values) {
+        std::ofstream file(path / std::filesystem::path(value.first), std::ios::binary | std::ios::trunc);
+        file.write(value.second.data(), static_cast<std::streamsize>(value.second.size()));
+        file.close();
+        require_batch(file.good(), "F200: write isolated in/at/xt sentinel");
+        expected.emplace(value.first, value.second);
+    }
+    return expected;
+}
+
+std::wstring f200_cache_path(const std::filesystem::path& base, size_t length)
+{
+    std::wstring path = base.wstring();
+    require_batch(path.size() + 1 < length && length - path.size() - 1 <= 255,
+        "F200: fixture can hold the exact boundary cache path");
+    path.push_back(L'\\');
+    path.append(length - path.size(), L'c');
+    require_batch(path.size() == length, "F200: boundary cache path has the exact requested length");
+    return path;
+}
+
+void test_f200()
+{
+    AuditConfigScope config;
+    config.load("[ShaderRegexAuditTail]\nshader_model=ps_5_0\nfilter_index=7.25\n"
+        "[ShaderRegexAuditTail.Pattern]\nmov\\s+o0\\.xyzw,\\s*l\\(0\\.250000,\\s*0\\.500000,\\s*0\\.750000,\\s*1\\.000000\\)\n"
+        "[ShaderRegexAuditTail.Pattern.Replace]\nmov o0.xyzw, l(0.250000, 0.500000, 0.750000, 0.500000)\n",0,true);
+    require_batch(shader_regex_groups.size()==1,"F200: production parser loads the real regex group");
+    F200FlagScope flags;
+    F200LogScope log;
+
+    const char source[]="float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}";
+    ComPtr<ID3DBlob> code,errors;
+    require_batch(SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&code,&errors)),
+        "F200: real original shader");
+    const auto* data=static_cast<const unsigned char*>(code->GetBufferPointer());
+    const std::vector<unsigned char> original(data,data+code->GetBufferSize());
+    const UINT64 shader_hash=fnv_64_buf(original.data(),original.size());
+    std::vector<unsigned char> assembly;
+    {
+        auto binary=original;
+        require_batch(SUCCEEDED(disassembler(&binary,&assembly,nullptr)),"F200: production disassembly input");
+    }
+    const auto patch_once=[&] {
+        std::string text(assembly.begin(),assembly.end()),model="ps_5_0"; std::wstring tagline;
+        require_batch(apply_shader_regex_groups(&text,L"ps",&model,shader_hash,&tagline),
+            "F200: production ShaderRegex path reaches the cache writer");
+    };
+
+    wchar_t stem[64]{}; swprintf_s(stem,L"%016llx-ps_regex",shader_hash);
+    const std::wstring file_stem(stem);
+    F200SentinelScope sentinels;
+
+    const auto green=sentinels.path/L"green-229";
+    require_batch(std::filesystem::create_directory(green),"F200: reserve green fixture directory");
+    const std::wstring green_cache=f200_cache_path(green,229);
+    const std::filesystem::path green_cache_dir(green_cache);
+    require_batch(std::filesystem::create_directories(green_cache_dir),"F200: create the exact 229-character cache directory");
+    {
+        F200WorkingDirectoryScope cwd(green);
+        wcscpy_s(G->SHADER_CACHE_PATH, green_cache.c_str());
+        G->CACHE_SHADERS=true; G->EXPORT_FIXED=false;
+        std::vector<unsigned char> bytecode=original; std::wstring tagline=L"unchanged";
+        require_batch(load_shader_regex_cache(shader_hash,L"ps",&bytecode,&tagline)==ShaderRegexCache::NO_CACHE &&
+            bytecode==original && tagline==L"unchanged","F200: 229-character cache path is a miss before writing");
+        patch_once();
+        std::vector<unsigned char> bin=original;
+        save_shader_regex_cache_bin(shader_hash,L"ps",&bin);
+        std::vector<unsigned char> cached; std::wstring cached_tagline;
+        require_batch(load_shader_regex_cache(shader_hash,L"ps",&cached,&cached_tagline)==ShaderRegexCache::PATCH &&
+            cached==original,"F200: 229-character cache path writes and reads the exact bytecode");
+        require_batch(std::filesystem::exists(green_cache_dir/(file_stem+L".dat")) &&
+            std::filesystem::exists(green_cache_dir/(file_stem+L".bin")),
+            "F200: 229-character cache path persists metadata and bytecode");
+        require_batch(f200_directory_files(green).empty(),"F200: green path writes only inside the configured cache directory");
+    }
+    {
+        F200WorkingDirectoryScope cwd(green);
+        wcscpy_s(G->SHADER_CACHE_PATH, green_cache.c_str());
+        G->CACHE_SHADERS=true; G->EXPORT_FIXED=true;
+        patch_once();
+        require_batch(std::filesystem::exists(green_cache_dir/(file_stem+L".txt")),
+            "F200: 229-character cache path persists fixed assembly");
+        require_batch(read_file(green_cache_dir/(file_stem+L".txt")).find("[ShaderRegexAuditTail]")!=std::string::npos,
+            "F200: fixed assembly contains the matched section tagline");
+    }
+
+    const auto run_rejected=[&](unsigned length,bool with_sentinels,const char *rejection) {
+        const auto dir=sentinels.path/(std::wstring(L"red-")+std::to_wstring(length)+(with_sentinels?L"-sentinels":L"-empty"));
+        require_batch(std::filesystem::create_directory(dir),"F200: reserve red fixture directory");
+        std::map<std::wstring,std::string> expected;
+        if (with_sentinels) {
+            // A valid version-2/zero-match header in CWD "at" would be returned
+            // as NO_MATCH by the old path-1 corruption. NO_CACHE proves the
+            // rejected load never opened it.
+            const uint32_t valid_at[]={2,shader_regex_hash,0,0};
+            expected=f200_write_sentinels(dir,std::string(reinterpret_cast<const char*>(valid_at),sizeof(valid_at)));
+        }
+        {
+            F200WorkingDirectoryScope cwd(dir);
+            const std::wstring cache(length,L'c');
+            wcscpy_s(G->SHADER_CACHE_PATH, cache.c_str());
+            G->CACHE_SHADERS=true; G->EXPORT_FIXED=false;
+            std::vector<unsigned char> bytecode=original; std::wstring tagline=L"unchanged";
+            require_batch(load_shader_regex_cache(shader_hash,L"ps",&bytecode,&tagline)==ShaderRegexCache::NO_CACHE &&
+                bytecode==original && tagline==L"unchanged",
+                (std::string("F200: ")+rejection+" rejects load as NO_CACHE without touching the working directory").c_str());
+            patch_once();
+            std::vector<unsigned char> bin=original;
+            save_shader_regex_cache_bin(shader_hash,L"ps",&bin);
+            G->EXPORT_FIXED=true;
+            patch_once();
+        }
+        require_batch(f200_directory_files(dir)==expected,with_sentinels ?
+            (std::string("F200: ")+rejection+" leaves in/at/xt sentinels byte-for-byte unchanged").c_str() :
+            (std::string("F200: ")+rejection+" creates no in/at/xt names").c_str());
+    };
+    run_rejected(230u,true,"no-suffix-space path (n=257, max_prefix=256)");
+    run_rejected(230u,false,"no-suffix-space path (n=257, max_prefix=256)");
+    run_rejected(232u,true,"no-suffix-space path (n=259, max_prefix=256)");
+    run_rejected(232u,false,"no-suffix-space path (n=259, max_prefix=256)");
+    run_rejected(233u,true,"truncated path (n=-1)");
+    run_rejected(233u,false,"truncated path (n=-1)");
+}
+
 void test_f199_review()
 {
     AuditConfigScope config;
@@ -875,6 +1077,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-175", test_dx11_resource_override_validation_regression},
     {"F-176", test_f176},
     {"F-186", test_f186},
+    {"F-200", test_f200},
     {"F-194", test_dx11_ini_upload_failure_regression},
     {"F-199", test_f199_review},
     {"F-201", test_dx11_shader_model_bounds_regression},

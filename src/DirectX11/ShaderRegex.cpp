@@ -545,6 +545,23 @@ struct ShaderRegexCacheHeader {
 	uint32_t num_matches;
 };
 
+static bool shader_regex_cache_path_prefix_ok(const wchar_t *path, int n, const char *operation)
+{
+	if (n < 0) {
+		const size_t path_len = wcslen(path);
+		const wchar_t *tail = path_len > 16 ? path + path_len - 16 : path;
+		LogInfo("ShaderRegexCache: %s rejected truncated cache path (path_len=%Iu, tail='...%S')\n",
+			operation, path_len, tail);
+		return false;
+	}
+	if (n > MAX_PATH - 4) {
+		LogInfo("ShaderRegexCache: %s rejected cache path without suffix space (n=%d, max_prefix=%d)\n",
+			operation, n, MAX_PATH - 4);
+		return false;
+	}
+	return true;
+}
+
 ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline)
 {
 	ShaderRegexCache ret = ShaderRegexCache::NO_CACHE;
@@ -557,9 +574,13 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 	DWORD size, size2;
 	byte *buf = NULL;
 	size_t suffix;
+	int n;
 	uint32_t i;
 
-	suffix = swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	n = _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	if (!shader_regex_cache_path_prefix_ok(path, n, "load"))
+		return ret;
+	suffix = (size_t)n;
 	wcscpy_s(path+suffix, MAX_PATH-suffix, L"dat");
 	meta_f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (meta_f == INVALID_HANDLE_VALUE)
@@ -641,11 +662,15 @@ static void save_shader_regex_cache_meta(UINT64 hash, const wchar_t *shader_type
 	wchar_t path[MAX_PATH];
 	FILE *f = NULL;
 	size_t suffix;
+	int n;
 
 	if (!G->SHADER_CACHE_PATH[0] || (!G->CACHE_SHADERS && !G->EXPORT_FIXED))
 		return;
 
-	suffix = swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	n = _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	if (!shader_regex_cache_path_prefix_ok(path, n, "save"))
+		return;
+	suffix = (size_t)n;
 
 	if (G->CACHE_SHADERS) {
 		// TODO: When we have a condition field in ShaderRegex: The evaluations
@@ -701,11 +726,16 @@ void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector
 {
 	wchar_t path[MAX_PATH];
 	FILE *f = NULL;
+	int n;
 
 	if (!G->CACHE_SHADERS || !G->SHADER_CACHE_PATH[0])
 		return;
 
-	swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.bin", G->SHADER_CACHE_PATH, hash, shader_type);
+	n = _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\%016llx-%ls_regex.bin", G->SHADER_CACHE_PATH, hash, shader_type);
+	if (n < 0) {
+		LogInfo("ShaderRegexCache: save bin rejected truncated cache path (path_len=%Iu)\n", wcslen(path));
+		return;
+	}
 
 	wfopen_ensuring_access(&f, path, L"wb");
 	if (!f)
