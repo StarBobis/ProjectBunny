@@ -8,6 +8,7 @@
 #include "HLSLDecompiler/DecompileHLSL.h"
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -1189,6 +1190,253 @@ void test_f200c()
         "F200c: rejected join leaves the previous path byte-for-byte intact");
 }
 
+ComPtr<ID3D11Texture2D> f168_rt_texture(BatchDevice& device, UINT width = 4, UINT height = 3)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> result;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&desc, nullptr, &result)),
+        "F-168: create real WARP render-target texture");
+    return result;
+}
+
+// Read the real GPU result back through a staging copy. The view is unbound
+// first so this helper can run while the fixture is still an active RT.
+void f168_require_uniform_colour(BatchDevice& device, ID3D11Texture2D* texture, UINT expected, const char* message)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    texture->GetDesc(&desc);
+    device.context->OMSetRenderTargets(0, nullptr, nullptr);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = desc.MiscFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> staging;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&desc, nullptr, &staging)),
+        "F-168: create real staging readback");
+    device.context->CopyResource(staging.Get(), texture);
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    require_batch(SUCCEEDED(device.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)),
+        "F-168: map real staging readback");
+    bool uniform = true;
+    for (UINT y = 0; y < desc.Height; ++y) {
+        const auto* row = reinterpret_cast<const UINT*>(static_cast<const unsigned char*>(mapped.pData) + mapped.RowPitch * y);
+        for (UINT x = 0; x < desc.Width; ++x)
+            uniform &= row[x] == expected;
+    }
+    device.context->Unmap(staging.Get(), 0);
+    require_batch(uniform, message);
+}
+
+// R1: a destroyed resource's address stays in frame_analysis_seen_rts for the
+// rest of the session. This is the deterministic B1 evidence and fences the
+// still-open P1 address-reuse decision; flip the final assertion only when a
+// P1 release-erase policy actually lands.
+void test_dx11_f168_r1_stale_key()
+{
+    AuditDumpScope output;
+    BatchDevice device;
+    AuditAnalysisDeviceScope analysis(device);
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = 4; desc.Height = 3;
+    desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ComPtr<ID3D11Texture2D> texture;
+    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &texture)),
+        "F-168 R1: create a tracked WARP resource through the wrapper device");
+    ComPtr<ID3D11RenderTargetView> view;
+    require_batch(SUCCEEDED(device.native->CreateRenderTargetView(texture.Get(), nullptr, &view)),
+        "F-168 R1: create the real render-target view");
+
+    ComPtr<ID3D11Resource> resource;
+    view->GetResource(&resource);
+    void* key = resource.Get();
+    resource.Reset();
+
+    G->analyse_frame = true;
+    G->cur_analyse_options = FrameAnalysisOptions::CLEAR_RT;
+    {
+        CriticalSectionGuard(&G->mCriticalSection);
+        G->frame_analysis_seen_rts.clear();
+    }
+
+    ID3D11RenderTargetView* raw = view.Get();
+    analysis.context->OMSetRenderTargets(1, &raw, nullptr);
+    {
+        CriticalSectionGuard(&G->mCriticalSection);
+        require_batch(G->frame_analysis_seen_rts.count(key) == 1,
+            "F-168 R1: the production bind path records the resource address");
+    }
+
+    // The immediate context keeps a bound view alive; unbind before dropping
+    // our references so the resource really reaches its final Release.
+    device.context->OMSetRenderTargets(0, nullptr, nullptr);
+    view.Reset();
+    texture.Reset();
+    {
+        CriticalSectionGuard(&G->mCriticalSection);
+        require_batch(G->frame_analysis_seen_rts.count(key) == 1,
+            "F-168 R1: a destroyed resource address remains a seen key (P1 open, no erase path)");
+        G->frame_analysis_seen_rts.clear();
+    }
+}
+
+// R2: CLEAR_RT currently means once per session, not once per frame. The
+// first bind of a hold session clears; the second frame's first bind does
+// not. Deterministic single-thread evidence for the B3 semantics question.
+void test_dx11_f168_r2_hold_second_frame()
+{
+    AuditDumpScope output;
+    BatchDevice device;
+    AuditAnalysisDeviceScope analysis(device);
+    auto texture = f168_rt_texture(device);
+    ComPtr<ID3D11RenderTargetView> view;
+    require_batch(SUCCEEDED(device.native->CreateRenderTargetView(texture.Get(), nullptr, &view)),
+        "F-168 R2: create the real render-target view");
+
+    G->analyse_frame = true;
+    G->cur_analyse_options = FrameAnalysisOptions::CLEAR_RT;
+    {
+        CriticalSectionGuard(&G->mCriticalSection);
+        G->frame_analysis_seen_rts.clear();
+    }
+
+    const FLOAT nonzero[4] = {1, 1, 1, 1};
+    ID3D11RenderTargetView* raw = view.Get();
+    device.context->ClearRenderTargetView(raw, nonzero);
+    f168_require_uniform_colour(device, texture.Get(), 0xffffffffu,
+        "F-168 R2: fixture starts at a non-zero colour");
+
+    analysis.context->OMSetRenderTargets(1, &raw, nullptr);
+    f168_require_uniform_colour(device, texture.Get(), 0u,
+        "F-168 R2: the first bind of the session clears the target");
+
+    device.context->ClearRenderTargetView(raw, nonzero);
+    f168_require_uniform_colour(device, texture.Get(), 0xffffffffu,
+        "F-168 R2: the second frame fixture is non-zero again");
+
+    analysis.context->OMSetRenderTargets(1, &raw, nullptr);
+    f168_require_uniform_colour(device, texture.Get(), 0xffffffffu,
+        "F-168 R2: hold mode does not clear the same resource on its second frame");
+
+    {
+        CriticalSectionGuard(&G->mCriticalSection);
+        G->frame_analysis_seen_rts.clear();
+    }
+}
+
+struct F168StressWorker {
+    ComPtr<ID3D11DeviceContext1> native_context;
+    std::unique_ptr<FrameAnalysisContext> analysis;
+    std::vector<ComPtr<ID3D11Texture2D>> textures;
+    std::vector<ComPtr<ID3D11RenderTargetView>> views;
+};
+
+void f168_prepare_stress_worker(BatchDevice& device, F168StressWorker& worker, UINT count)
+{
+    ComPtr<ID3D11DeviceContext> deferred;
+    require_batch(SUCCEEDED(device.native->CreateDeferredContext(0, &deferred)),
+        "F-168 S1: create a real WARP deferred context");
+    require_batch(SUCCEEDED(deferred.As(&worker.native_context)),
+        "F-168 S1: query ID3D11DeviceContext1 on the deferred context");
+    worker.analysis = std::make_unique<FrameAnalysisContext>(device.native.Get(), worker.native_context.Get());
+    worker.analysis->SetHackerDevice(device.device);
+    for (UINT i = 0; i < count; ++i) {
+        auto texture = f168_rt_texture(device);
+        ComPtr<ID3D11RenderTargetView> view;
+        require_batch(SUCCEEDED(device.native->CreateRenderTargetView(texture.Get(), nullptr, &view)),
+            "F-168 S1: create a real per-thread render-target view");
+        worker.textures.push_back(std::move(texture));
+        worker.views.push_back(std::move(view));
+    }
+}
+
+void f168_stress_bind(F168StressWorker& worker, std::atomic<int>& ready, std::atomic<bool>& go)
+{
+    ready.fetch_add(1, std::memory_order_release);
+    while (!go.load(std::memory_order_acquire))
+        std::this_thread::yield();
+    for (auto& view : worker.views) {
+        ID3D11RenderTargetView* raw = view.Get();
+        worker.analysis->OMSetRenderTargets(1, &raw, nullptr);
+    }
+}
+
+// S1: two real deferred FrameAnalysisContexts bind distinct RTs concurrently
+// through the production OMSetRenderTargets path. This is a probabilistic
+// stress for the insert/insert race (pre-P0: lost keys or a crash; post-P0:
+// exact set size every round). The synthetic 4096-key prefill only widens the
+// rehash window; those sentinel values are never dereferenced.
+void test_dx11_f168_s1_seen_rts_stress()
+{
+    constexpr UINT kRounds = 8;
+    constexpr UINT kPerWorker = 64;
+    constexpr UINT kPrefill = 4096;
+
+    AuditDumpScope output;
+    BatchDevice device;
+    const int previous_hunting = G->hunting;
+    G->hunting = HUNTING_MODE_ENABLED;
+    try {
+        F168StressWorker workers[2];
+        for (auto& worker : workers)
+            f168_prepare_stress_worker(device, worker, kPerWorker);
+
+        G->analyse_frame = true;
+        G->cur_analyse_options = FrameAnalysisOptions::CLEAR_RT;
+        for (UINT round = 0; round < kRounds; ++round) {
+            {
+                CriticalSectionGuard(&G->mCriticalSection);
+                G->frame_analysis_seen_rts.clear();
+                for (UINT i = 0; i < kPrefill; ++i)
+                    G->frame_analysis_seen_rts.insert(reinterpret_cast<void*>(
+                        static_cast<std::uintptr_t>(i) + 1));
+            }
+
+            std::atomic<int> ready{0};
+            std::atomic<bool> go{false};
+            std::thread first([&] { f168_stress_bind(workers[0], ready, go); });
+            std::thread second([&] { f168_stress_bind(workers[1], ready, go); });
+            while (ready.load(std::memory_order_acquire) != 2)
+                std::this_thread::yield();
+            go.store(true, std::memory_order_release);
+            first.join();
+            second.join();
+
+            size_t observed = 0;
+            {
+                CriticalSectionGuard(&G->mCriticalSection);
+                observed = G->frame_analysis_seen_rts.size();
+            }
+            require_batch(observed == kPrefill + 2 * kPerWorker,
+                "F-168 S1: concurrent production binds lose no key (set size is exact)");
+        }
+
+        {
+            CriticalSectionGuard(&G->mCriticalSection);
+            G->frame_analysis_seen_rts.clear();
+        }
+        G->hunting = previous_hunting;
+    } catch (...) {
+        G->hunting = previous_hunting;
+        throw;
+    }
+}
+
+void test_dx11_f168_seen_rts_regression()
+{
+    test_dx11_f168_r1_stale_key();
+    test_dx11_f168_r2_hold_second_frame();
+}
+
 void test_f199_review()
 {
     AuditConfigScope config;
@@ -1273,6 +1521,9 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-175", test_dx11_resource_override_validation_regression},
     {"F-176", test_f176},
     {"F-186", test_f186},
+    {"F-168", test_dx11_f168_seen_rts_regression},
+    {"F-168-R1", test_dx11_f168_r1_stale_key},
+    {"F-168-R2", test_dx11_f168_r2_hold_second_frame},
     {"F-200", test_f200},
     {"F-200b", test_f200b},
     {"F-200c", test_f200c},
@@ -1344,6 +1595,9 @@ void with_dx11_audit_hunting_configuration(void (*scenario)())
 
 bool test_dx11_audit_item(const char* id)
 {
+    // F-168 S1 is a probabilistic stress (pre-fix it may deliberately crash);
+    // keep it out of --full and require an explicit --audit-item F-168-S1.
+    if (!std::strcmp(id, "F-168-S1")) { test_dx11_f168_s1_seen_rts_stress(); return true; }
     for (const auto& test : audit_cases) {
         if (!std::strcmp(test.id, id)) { test.run(); return true; }
     }

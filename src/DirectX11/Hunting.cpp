@@ -1275,7 +1275,12 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 	wcscpy(G->ANALYSIS_PATH, path);
 
 	G->cur_analyse_options = G->def_analyse_options;
-	G->frame_analysis_seen_rts.clear();
+	{
+		// FrameAnalysisClearRT/ClearUAV run on render threads. Publishing a new
+		// session must not clear the shared set while one of them inserts.
+		CriticalSectionGuard(&G->mCriticalSection);
+		G->frame_analysis_seen_rts.clear();
+	}
 	G->analyse_frame_no = 1;
 	G->analyse_frame = true;
 }

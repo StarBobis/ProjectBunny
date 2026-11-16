@@ -2831,9 +2831,14 @@ void FrameAnalysisContext::FrameAnalysisClearRT(ID3D11RenderTargetView *target)
 		return;
 	resource->Release(); // Don't need the object, only the address
 
-	if (G->frame_analysis_seen_rts.count(resource))
-		return;
-	G->frame_analysis_seen_rts.insert(resource);
+	{
+		// count() + insert() is one atomic check-and-insert. The set is shared
+		// by every render thread's FrameAnalysisContext, so guard it with the
+		// same leaf lock the hunting paths use. Do not call D3D while holding it.
+		CriticalSectionGuard(&G->mCriticalSection);
+		if (!G->frame_analysis_seen_rts.insert(resource).second)
+			return;
+	}
 
 	GetPassThroughOrigContext1()->ClearRenderTargetView(target, colour);
 }
@@ -2858,9 +2863,12 @@ void FrameAnalysisContext::FrameAnalysisClearUAV(ID3D11UnorderedAccessView *uav)
 		return;
 	resource->Release(); // Don't need the object, only the address
 
-	if (G->frame_analysis_seen_rts.count(resource))
-		return;
-	G->frame_analysis_seen_rts.insert(resource);
+	{
+		// See FrameAnalysisClearRT: same set, same leaf lock, no D3D inside.
+		CriticalSectionGuard(&G->mCriticalSection);
+		if (!G->frame_analysis_seen_rts.insert(resource).second)
+			return;
+	}
 
 	GetPassThroughOrigContext1()->ClearUnorderedAccessViewUint(uav, values);
 }
