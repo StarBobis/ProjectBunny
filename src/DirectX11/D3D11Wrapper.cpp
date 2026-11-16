@@ -7,6 +7,7 @@
 #include "Globals.h"
 #include "IniHandler.h"
 #include "HookedDXGI.h"
+#include "bounded_path_format.h"
 
 #include <locale>
 #include <chrono>
@@ -415,19 +416,30 @@ static bool InitializeD3D11Proxy()
 		G->load_library_redirect = 0;
 
 		wchar_t sysDir[MAX_PATH] = {0};
-		if (!GetModuleFileName(migoto_handle, sysDir, MAX_PATH)) {
-			LogInfo("GetModuleFileName failed\n");
+		DWORD moduleLength = GetModuleFileName(migoto_handle, sysDir, MAX_PATH);
+		wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(sysDir, L'\\') : NULL;
+		if (!moduleBase) {
+			LogInfo("GetModuleFileName failed or module path too long\n");
 			DoubleBeepExit();
 		}
-		wcsrchr(sysDir, L'\\')[1] = 0;
-		wcscat(sysDir, G->CHAIN_DLL_PATH);
-		if (LogFile)
+		moduleBase[1] = 0;
+		const bool prefixReady = AppendPathBounded(sysDir, _countof(sysDir), G->CHAIN_DLL_PATH);
+		if (!prefixReady) {
+			// Reject the prefixed candidate rather than loading a truncated
+			// path that may name a different DLL. The existing raw
+			// chain_dll_path fallback below still applies.
+			LogInfo("Proxy path rejected: module directory + chain_dll_path exceeds MAX_PATH\n");
+		}
+		else if (LogFile)
 		{
 			char path[MAX_PATH];
 			wcstombs(path, sysDir, MAX_PATH);
 			LogInfo("trying to chain load %s\n", path);
 		}
-		candidate = LoadLibrary(sysDir);
+		if (prefixReady)
+		{
+			candidate = LoadLibrary(sysDir);
+		}
 		if (!candidate)
 		{
 			if (LogFile)

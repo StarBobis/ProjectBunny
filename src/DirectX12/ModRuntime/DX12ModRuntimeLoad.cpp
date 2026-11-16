@@ -1,6 +1,7 @@
 // DX12ModRuntimeLoad.cpp: mod runtime ini load/reload, config-driven index builders and runtime snapshots.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
+#include "bounded_path_format.h"
 
 DXGI_FORMAT ParseDx12ResourceFormat(const std::wstring &format)
 {
@@ -1676,13 +1677,29 @@ std::wstring ResolveResourcePath(
 	if (config.filename.empty())
 		return L"";
 
+	// F-200 #7: filename resolution is all-or-nothing. A truncated filename or
+	// a failed PathAppendW would address a different file, so the whole resolve
+	// is rejected and the caller must fail the load (never fall back to inline
+	// data). MAX_PATH is the file API contract for the rest of this loader.
 	wchar_t path[MAX_PATH];
-	wcsncpy_s(path, config.filename.c_str(), _TRUNCATE);
+	if (!CopyPathBounded(path, _countof(path), config.filename.c_str())) {
+		DX12_LOG("DX12ResourcePathRejected",
+			"\"kind\":\"filename_too_long\",\"api\":\"ResolveResourcePath\","
+			"\"section\":\"%S\",\"filename_len\":%zu,\"max_path\":%d",
+			config.section.c_str(), config.filename.size(), MAX_PATH);
+		return L"";
+	}
 	if (PathIsRelativeW(path)) {
 		wchar_t combined[MAX_PATH];
 		const std::wstring &base = rootFallback || config.sourceDir.empty() ? baseDir : config.sourceDir;
-		wcsncpy_s(combined, base.c_str(), _TRUNCATE);
-		PathAppendW(combined, config.filename.c_str());
+		if (!CopyPathBounded(combined, _countof(combined), base.c_str()) ||
+			!PathAppendBounded(combined, _countof(combined), config.filename.c_str())) {
+			DX12_LOG("DX12ResourcePathRejected",
+				"\"kind\":\"combined_path_too_long\",\"api\":\"ResolveResourcePath\","
+				"\"section\":\"%S\",\"base_len\":%zu,\"filename_len\":%zu,\"max_path\":%d",
+				config.section.c_str(), base.size(), config.filename.size(), MAX_PATH);
+			return L"";
+		}
 		return combined;
 	}
 	return path;
@@ -1721,6 +1738,17 @@ bool LoadResourceBytes(
 	bytes->clear();
 
 	std::wstring resolvedPath = ResolveResourcePath(config, baseDir, false);
+	if (resolvedPath.empty() && !config.filename.empty()) {
+		// F-200 #7 reject: the configured filename could not be resolved into a
+		// complete path. Fail the load instead of silently using config.data or
+		// a truncated path; the reason was already logged with the section.
+		if (path)
+			*path = config.filename.substr(0, MAX_PATH - 1);
+		DX12_LOG("DX12ResourceLoad",
+			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"path_rejected\"",
+			config.section.c_str());
+		return false;
+	}
 	if (!resolvedPath.empty()) {
 		if (path)
 			*path = resolvedPath;

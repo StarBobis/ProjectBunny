@@ -30,9 +30,20 @@ void InitializeDLL()
 	{
 		gInitialized = true;
 		wchar_t dir[MAX_PATH];
-		GetModuleFileName(0, dir, MAX_PATH);
-		wcsrchr(dir, L'\\')[1] = 0;
-		wcscat(dir, L"d3dx.ini");
+		DWORD moduleLength = GetModuleFileName(0, dir, MAX_PATH);
+		wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(dir, L'\\') : NULL;
+		if (!moduleBase) {
+			OutputDebugStringW(L"[Bunny] D3DCompiler: d3dx.ini path rejected (module path missing or too long)\n");
+			dir[0] = 0;
+		}
+		else
+		{
+			moduleBase[1] = 0;
+			if (!AppendPathBounded(dir, _countof(dir), L"d3dx.ini")) {
+				OutputDebugStringW(L"[Bunny] D3DCompiler: d3dx.ini path rejected (too long)\n");
+				dir[0] = 0;
+			}
+		}
 		LogFile = GetPrivateProfileInt(L"Logging", L"calls", 0, dir) ? (FILE *)-1 : 0;
 		if (LogFile) fopen_s(&LogFile, "D3DCompiler_" COMPILER_DLL_VERSION "_log.txt", "w");
 
@@ -59,12 +70,28 @@ void InitializeDLL()
 		GetPrivateProfileString(L"Rendering", L"storage_directory", 0, SHADER_PATH, MAX_PATH, dir);
 		if (SHADER_PATH[0])
 		{
-			GetModuleFileName(0, val, MAX_PATH);
-			wcsrchr(val, L'\\')[1] = 0;
-			wcscat(val, SHADER_PATH);
-			wcscpy(SHADER_PATH, val);
-			// Create directory?
-			CreateDirectory(SHADER_PATH, 0);
+			DWORD storageModuleLength = GetModuleFileName(0, val, MAX_PATH);
+			wchar_t *storageBase = storageModuleLength && storageModuleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(val, L'\\') : NULL;
+			if (!storageBase) {
+				LogInfo("D3DCompiler: storage_directory rejected (module path missing or too long)\n");
+				SHADER_PATH[0] = 0;
+			}
+			else
+			{
+				storageBase[1] = 0;
+				// F-200 #10/#11: the composed storage path is all-or-nothing;
+				// a truncated one would export into a different directory.
+				if (!AppendPathBounded(val, _countof(val), SHADER_PATH) ||
+					!CopyPathBounded(SHADER_PATH, _countof(SHADER_PATH), val)) {
+					LogInfo("D3DCompiler: storage_directory rejected (path too long)\n");
+					SHADER_PATH[0] = 0;
+				}
+				else
+				{
+					// Create directory?
+					CreateDirectory(SHADER_PATH, 0);
+				}
+			}
 		}
 		EXPORT_SHADERS = GetPrivateProfileInt(L"Rendering", L"export_shaders", 0, dir) == 1;
 	}

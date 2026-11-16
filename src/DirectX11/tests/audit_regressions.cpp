@@ -1099,6 +1099,90 @@ void test_f200b()
         "F200b: legal DX12 TIMING log name is unchanged");
 }
 
+void test_f200c()
+{
+    // F-200c: the concatenation helpers behind #1/#2/#3/#9/#10/#11 and the
+    // checked PathAppendW behind #5/#7/#8. Same contract as FormatPathBounded:
+    // a complete result is byte-for-byte what wcscpy/wcscat/PathAppendW
+    // produced; an overlong one is rejected before the CRT _s handler can fire,
+    // and leaves the destination untouched.
+    wchar_t concat[MAX_PATH];
+    require_batch(CopyPathBounded(concat, std::size(concat), L"C:\\game\\"),
+        "F200c: legal copy fits");
+    require_batch(!wcscmp(concat, L"C:\\game\\"), "F200c: legal copy is byte-for-byte unchanged");
+    require_batch(AppendPathBounded(concat, std::size(concat), L"d3dx.ini"),
+        "F200c: legal append fits");
+    {
+        wchar_t legacy[MAX_PATH];
+        wcscpy_s(legacy, L"C:\\game\\");
+        wcscat_s(legacy, L"d3dx.ini");
+        require_batch(!wcscmp(concat, legacy), "F200c: legal append is byte-for-byte unchanged");
+    }
+
+    // The exact limit is 259 characters + NUL; one more character is rejected
+    // and the existing 259-character path is left intact.
+    {
+        wchar_t exact[MAX_PATH];
+        wmemset(exact, L'p', MAX_PATH - 1);
+        exact[MAX_PATH - 1] = 0;
+        require_batch(CopyPathBounded(concat, std::size(concat), exact),
+            "F200c: 259-character copy is the exact limit");
+        require_batch(!AppendPathBounded(concat, std::size(concat), L"x"),
+            "F200c: append past MAX_PATH is rejected, not truncated");
+        require_batch(wcslen(concat) == MAX_PATH - 1 && concat[MAX_PATH - 2] == L'p',
+            "F200c: rejected append leaves the 259-character path byte-for-byte intact");
+    }
+
+    // _s failure injection: the old wcscpy/wcscat template overloads would
+    // reach the invalid parameter handler here. The helpers must return false
+    // and touch nothing, including the guard bytes around the destination.
+    {
+        std::array<wchar_t, MAX_PATH + 16> guarded;
+        guarded.fill(L'Z');
+        wchar_t *const out = guarded.data() + 8;
+        const std::wstring tooLong(300, L'a');
+        require_batch(!CopyPathBounded(out, MAX_PATH, tooLong.c_str()),
+            "F200c: 300-character _s copy failure is rejected, not truncated");
+        bool untouched = true;
+        for (size_t i = 0; i < MAX_PATH; ++i)
+            untouched = untouched && out[i] == L'Z';
+        require_batch(untouched, "F200c: rejected _s copy leaves the destination untouched");
+        for (size_t i = 8 + MAX_PATH; i < guarded.size(); ++i)
+            require_batch(guarded[i] == L'Z', "F200c: rejected _s copy leaves the trailing guard intact");
+    }
+
+    // #5/#7/#8/configPath use PathAppendW; a failed append must not leave a
+    // half-built path behind for the next file API.
+    wchar_t joined[MAX_PATH];
+    require_batch(CopyPathBounded(joined, std::size(joined), L"C:\\game"),
+        "F200c: legal join base fits");
+    require_batch(PathAppendBounded(joined, std::size(joined), L"d3dx.ini"),
+        "F200c: legal PathAppendW join fits");
+    {
+        wchar_t legacy[MAX_PATH];
+        wcscpy_s(legacy, L"C:\\game");
+        PathAppendW(legacy, L"d3dx.ini");
+        require_batch(!wcscmp(joined, legacy), "F200c: legal join is byte-for-byte unchanged");
+    }
+    {
+        const std::wstring longBase(250, L'b');
+        wchar_t longJoined[MAX_PATH];
+        require_batch(CopyPathBounded(longJoined, std::size(longJoined), longBase.c_str()),
+            "F200c: 250-character base copy fits");
+        require_batch(PathAppendBounded(longJoined, std::size(longJoined), L"x.ini"),
+            "F200c: legal long join fits");
+        wchar_t legacyLong[MAX_PATH];
+        wcscpy_s(legacyLong, longBase.c_str());
+        PathAppendW(legacyLong, L"x.ini");
+        require_batch(!wcscmp(longJoined, legacyLong),
+            "F200c: legal long join is byte-for-byte unchanged");
+    }
+    require_batch(!PathAppendBounded(joined, std::size(joined), std::wstring(300, L'a').c_str()),
+        "F200c: PathAppendW failure is rejected, not truncated");
+    require_batch(!wcscmp(joined, L"C:\\game\\d3dx.ini"),
+        "F200c: rejected join leaves the previous path byte-for-byte intact");
+}
+
 void test_f199_review()
 {
     AuditConfigScope config;
@@ -1184,6 +1268,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-186", test_f186},
     {"F-200", test_f200},
     {"F-200b", test_f200b},
+    {"F-200c", test_f200c},
     {"F-194", test_dx11_ini_upload_failure_regression},
     {"F-199", test_f199_review},
     {"F-201", test_dx11_shader_model_bounds_regression},

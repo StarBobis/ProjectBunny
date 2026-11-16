@@ -26,6 +26,7 @@
 #include "profiling.h"
 #include "Hunting.h"
 #include "cursor.h"
+#include "bounded_path_format.h"
 
 #include <D3DCompiler.h>
 
@@ -2213,20 +2214,33 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 	// first, then try relative to the 3DMigoto directory:
 	found = false;
 	if (!namespace_path->empty()) {
-		GetModuleFileName(migoto_handle, wpath, MAX_PATH);
-		wcsrchr(wpath, L'\\')[1] = 0;
-		wcscat(wpath, namespace_path->c_str());
-		wcscat(wpath, filename);
+		DWORD moduleLength = GetModuleFileName(migoto_handle, wpath, MAX_PATH);
+		wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(wpath, L'\\') : NULL;
+		if (!moduleBase) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: module path missing or too long\n");
+			goto err;
+		}
+		moduleBase[1] = 0;
+		if (!AppendPathBounded(wpath, _countof(wpath), namespace_path->c_str()) ||
+			!AppendPathBounded(wpath, _countof(wpath), filename)) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: namespaced shader path too long, rejected\n");
+			goto err;
+		}
 		if (GetFileAttributes(wpath) != INVALID_FILE_ATTRIBUTES)
 			found = true;
 	}
 	if (!found) {
-		if (!GetModuleFileName(migoto_handle, wpath, MAX_PATH)) {
-			LogOverlay(LOG_DIRE, "CustomShader::compile: GetModuleFileName failed\n");
+		DWORD moduleLength = GetModuleFileName(migoto_handle, wpath, MAX_PATH);
+		wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(wpath, L'\\') : NULL;
+		if (!moduleBase) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: GetModuleFileName failed or path too long\n");
 			goto err;
 		}
-		wcsrchr(wpath, L'\\')[1] = 0;
-		wcscat(wpath, filename);
+		moduleBase[1] = 0;
+		if (!AppendPathBounded(wpath, _countof(wpath), filename)) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: shader path too long, rejected\n");
+			goto err;
+		}
 	}
 
 	f = CreateFile(wpath, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);

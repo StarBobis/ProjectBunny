@@ -19,6 +19,7 @@
 #include "Hunting.h"
 #include "ShaderRegex.h"
 #include "cursor.h"
+#include "bounded_path_format.h"
 #include <chrono>
 
 #include "vector"
@@ -2357,17 +2358,33 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		bool found = false;
 		wchar_t path[MAX_PATH];
 		if (!namespace_path.empty()) {
-			GetModuleFileName(migoto_handle, path, MAX_PATH);
-			wcsrchr(path, L'\\')[1] = 0;
-			wcscat(path, namespace_path.c_str());
-			wcscat(path, setting);
+			DWORD moduleLength = GetModuleFileName(migoto_handle, path, MAX_PATH);
+			wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(path, L'\\') : NULL;
+			if (!moduleBase) {
+				IniWarningW(L"Resource filename rejected: module path missing or too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
+			moduleBase[1] = 0;
+			if (!AppendPathBounded(path, _countof(path), namespace_path.c_str()) ||
+				!AppendPathBounded(path, _countof(path), setting)) {
+				IniWarningW(L"Resource filename rejected: path too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
 			if (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES)
 				found = true;
 		}
 		if (!found) {
-			GetModuleFileName(migoto_handle, path, MAX_PATH);
-			wcsrchr(path, L'\\')[1] = 0;
-			wcscat(path, setting);
+			DWORD moduleLength = GetModuleFileName(migoto_handle, path, MAX_PATH);
+			wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(path, L'\\') : NULL;
+			if (!moduleBase) {
+				IniWarningW(L"Resource filename rejected: module path missing or too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
+			moduleBase[1] = 0;
+			if (!AppendPathBounded(path, _countof(path), setting)) {
+				IniWarningW(L"Resource filename rejected: path too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
 		}
 		custom_resource->filename = path;
 	}
@@ -2460,7 +2477,13 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 	pool->spatial_radius = spatial_radius;
 
 	pool->resource_template = ParseResourceSection(section_name, L"template");
-
+	if (!pool->resource_template) {
+		// F-200 #2: the template's filename path was rejected. Drop the pool
+		// instead of dereferencing a null template.
+		IniWarningW(L"Resource pool rejected: template filename path too long\n - [%ls]\n", section_name);
+		customResourcePools.erase(pool_id);
+		return nullptr;
+	}
 	pool->resource_template->pool = pool;
 	pool->resource_template->pool_index = -1;
 
@@ -4799,12 +4822,19 @@ void LoadConfigFile()
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
-	if (!GetModuleFileName(migoto_handle, iniFile, MAX_PATH))
+	DWORD moduleLength = GetModuleFileName(migoto_handle, iniFile, MAX_PATH);
+	wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(iniFile, L'\\') : NULL;
+	if (!moduleBase) {
+		OutputDebugStringW(L"[Bunny] LoadConfigFile rejected: module path missing or too long\n");
 		DoubleBeepExit();
-	wcsrchr(iniFile, L'\\')[1] = 0;
-	wcscpy(logFilename, iniFile);
-	wcscat(iniFile, INI_FILENAME);
-	wcscat(logFilename, L"d3d11_log.txt");
+	}
+	moduleBase[1] = 0;
+	if (!CopyPathBounded(logFilename, _countof(logFilename), iniFile) ||
+		!AppendPathBounded(iniFile, _countof(iniFile), INI_FILENAME) ||
+		!AppendPathBounded(logFilename, _countof(logFilename), L"d3d11_log.txt")) {
+		OutputDebugStringW(L"[Bunny] LoadConfigFile rejected: config/log path too long\n");
+		DoubleBeepExit();
+	}
 	warn_of_conflicting_d3dx(iniFile);
 
 	// Log all settings that are _enabled_, in order, 

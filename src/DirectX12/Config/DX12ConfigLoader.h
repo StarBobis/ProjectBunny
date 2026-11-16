@@ -2,6 +2,7 @@
 
 #include "DX12Config.h"
 #include "MigotoCommandVmUtils.hpp"
+#include "bounded_path_format.h"
 
 #include <set>
 
@@ -68,9 +69,14 @@ static std::wstring JoinPath(const std::wstring &base, const std::wstring &path)
 	if (IsAbsolutePath(path))
 		return path;
 
+	// F-200 #5: a truncated base or a failed append would point the caller at
+	// a different file. Return an empty path and let the call site reject the
+	// include/directory instead.
 	wchar_t buffer[MAX_PATH];
-	wcsncpy_s(buffer, base.c_str(), _TRUNCATE);
-	PathAppendW(buffer, path.c_str());
+	if (!CopyPathBounded(buffer, _countof(buffer), base.c_str()))
+		return L"";
+	if (!PathAppendBounded(buffer, _countof(buffer), path.c_str()))
+		return L"";
 	return buffer;
 }
 
@@ -219,8 +225,16 @@ static void LoadDirectoryRecursive(
 {
 	if (!state)
 		return;
+	if (dir.empty()) {
+		state->warnings.push_back(L"include_recursive path rejected: path too long");
+		return;
+	}
 
 	std::wstring search = MigotoIniLoaderPath::JoinPath(dir, L"*");
+	if (search.empty()) {
+		state->warnings.push_back(L"include_recursive path rejected: path too long: " + dir);
+		return;
+	}
 	WIN32_FIND_DATAW findData = {};
 	HANDLE find = FindFirstFileW(search.c_str(), &findData);
 	if (find == INVALID_HANDLE_VALUE) {
@@ -251,10 +265,20 @@ static void LoadDirectoryRecursive(
 	for (const std::wstring &file : iniFiles)
 	{
 		std::wstring filePath = MigotoIniLoaderPath::JoinPath(dir, file);
+		if (filePath.empty()) {
+			state->warnings.push_back(L"include path rejected: path too long: " + file);
+			continue;
+		}
 		MigotoIniLoaderPath::LoadFileRecursive(filePath, MigotoIniLoaderPath::MakeRelativeNamespace(state->rootDir, filePath), state);
 	}
-	for (const std::wstring &child : directories)
-		MigotoIniLoaderPath::LoadDirectoryRecursive(MigotoIniLoaderPath::JoinPath(dir, child), excludeRecursive, state);
+	for (const std::wstring &child : directories) {
+		std::wstring childPath = MigotoIniLoaderPath::JoinPath(dir, child);
+		if (childPath.empty()) {
+			state->warnings.push_back(L"include_recursive path rejected: path too long: " + child);
+			continue;
+		}
+		MigotoIniLoaderPath::LoadDirectoryRecursive(childPath, excludeRecursive, state);
+	}
 }
 
 static void LoadFileRecursive(
@@ -262,6 +286,10 @@ static void LoadFileRecursive(
 {
 	if (!state)
 		return;
+	if (path.empty()) {
+		state->errors.push_back(L"include path rejected: path too long");
+		return;
+	}
 
 	std::wstring canonical = MigotoIniLoaderPath::CanonicalPath(path);
 	if (!state->seenFiles.insert(canonical).second) {
@@ -294,10 +322,20 @@ static void LoadFileRecursive(
 	for (const std::wstring &include : includes)
 	{
 		std::wstring includePath = MigotoIniLoaderPath::JoinPath(includeBase, include);
+		if (includePath.empty()) {
+			state->warnings.push_back(L"include path rejected: path too long: " + include);
+			continue;
+		}
 		MigotoIniLoaderPath::LoadFileRecursive(includePath, MigotoIniLoaderPath::MakeRelativeNamespace(state->rootDir, includePath), state);
 	}
-	for (const std::wstring &recursive : recursiveIncludes)
-		MigotoIniLoaderPath::LoadDirectoryRecursive(MigotoIniLoaderPath::JoinPath(includeBase, recursive), excludeRecursive, state);
+	for (const std::wstring &recursive : recursiveIncludes) {
+		std::wstring recursivePath = MigotoIniLoaderPath::JoinPath(includeBase, recursive);
+		if (recursivePath.empty()) {
+			state->warnings.push_back(L"include_recursive path rejected: path too long: " + recursive);
+			continue;
+		}
+		MigotoIniLoaderPath::LoadDirectoryRecursive(recursivePath, excludeRecursive, state);
+	}
 }
 
 // Loads the persist file (d3dx_user.ini) as the final ini document. A missing
@@ -371,6 +409,13 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 		return false;
 
 	*result = MigotoIniLoadResult();
+	if (wcslen(rootPath) >= static_cast<size_t>(MAX_PATH)) {
+		// F-200 #5: DirectoryOf/JoinPath are MAX_PATH APIs; a longer root path
+		// would be truncated into a different directory before the first
+		// include is resolved. Reject it and report through the error list.
+		result->errors.push_back(L"config path rejected: path too long");
+		return true;
+	}
 	MigotoIniLoaderPath::LoaderState state;
 	state.rootDir = MigotoIniLoaderPath::DirectoryOf(rootPath);
 	MigotoIniLoaderPath::LoadFileRecursive(rootPath, L"", &state);
@@ -380,8 +425,14 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 	// loads G->user_config after the include loop). It is resolved from the
 	// root file even when the file itself is missing - the save path needs the
 	// path to create it, and a missing file must not be an error.
-	MigotoCommandVmUtils::userConfigPath = MigotoUserConfigPath::Resolve(
-		state.rootDir, MigotoUserConfigPath::FindConfiguredName(state.document));
+	const std::wstring configuredUserConfig = MigotoUserConfigPath::FindConfiguredName(state.document);
+	MigotoCommandVmUtils::userConfigPath = MigotoUserConfigPath::Resolve(state.rootDir, configuredUserConfig);
+	if (MigotoCommandVmUtils::userConfigPath.empty()) {
+		// F-200 #5: the persist file path could not be built completely.
+		// Reject it instead of letting the save path write to a truncated name.
+		state.warnings.push_back(L"user_config path rejected: path too long: " +
+			(configuredUserConfig.empty() ? std::wstring(MigotoUserConfigPath::kDefaultFileName) : configuredUserConfig));
+	}
 	MigotoIniLoaderPath::LoadUserConfigFile(
 		MigotoCommandVmUtils::userConfigPath, &state);
 
