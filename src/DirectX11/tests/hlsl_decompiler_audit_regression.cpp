@@ -113,6 +113,39 @@ public:
     ~GuardedLineEnd() { if (allocation) VirtualFree(allocation, 0, MEM_RELEASE); }
 };
 
+// F-273: text + readable NUL sentinel + a small slack for the parser's bounded
+// lookahead, placed immediately before an inaccessible page. The removed fixed
+// 200-byte SkipPacking scan runs past the sentinel and the slack into the guard.
+class GuardedSignatureText {
+    void* allocation = nullptr;
+public:
+    char* data = nullptr;
+    size_t size = 0;
+    explicit GuardedSignatureText(const std::string& text, size_t slack = 32)
+    {
+        SYSTEM_INFO system{};
+        GetSystemInfo(&system);
+        size = text.size();
+        const size_t bytes = size + 1 + slack;
+        check_literal_audit(bytes > 0 && bytes <= system.dwPageSize,
+            "F273: guarded signature text fits before the inaccessible page");
+        allocation = VirtualAlloc(nullptr, system.dwPageSize * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        check_literal_audit(allocation != nullptr, "F273: allocate guarded signature text");
+        DWORD previous = 0;
+        if (!VirtualProtect(static_cast<char*>(allocation) + system.dwPageSize,
+                system.dwPageSize, PAGE_NOACCESS, &previous)) {
+            VirtualFree(allocation, 0, MEM_RELEASE);
+            allocation = nullptr;
+            throw std::runtime_error("F273: protect the page after the signature text");
+        }
+        data = static_cast<char*>(allocation) + system.dwPageSize - bytes;
+        std::memcpy(data, text.data(), size);
+        data[size] = '\0';
+        std::memset(data + size + 1, 'x', slack);
+    }
+    ~GuardedSignatureText() { if (allocation) VirtualFree(allocation, 0, MEM_RELEASE); }
+};
+
 // F-278b: drive the real ParseCode/DecompileBinaryHLSL path with an assembled
 // multi-line ICB followed by a mov. The ICB branch must leave the newline for
 // ParseCode's unconditional NextLine; otherwise the next physical line is lost.
@@ -431,8 +464,9 @@ void test_dx11_decompiler_next_line_bounded_regression()
     // F-278b: every former open-coded scan now calls one helper. Each case starts
     // on the last byte (which is not a newline) of a line ending at a guard page;
     // reading c[size] would fault, so returning exactly size is required.
+    // F-273 removed the former SkipPacking fixed-200 site; its bounded
+    // replacement is covered by test_dx11_decompiler_skip_packing_regression below.
     const std::pair<const char*, size_t> sites[] = {
-        {"DecompileHLSL.cpp:349 SkipPacking (bound 200)", 200},
         {"DecompileHLSL.cpp:4377 dcl_immediateConstantBuffer", 64},
         {"DecompileHLSL.cpp:4717 immediate constant body", 96},
         {"DecompileHLSL.cpp:5270 LOG lookahead", 128},
@@ -493,6 +527,90 @@ void test_dx11_decompiler_next_line_bounded_regression()
         "mov r0.y, l(321.0)\n"
         "mov o0.xyzw, r0.xxxx\n"
         "ret\n", false);
+}
+
+void test_dx11_decompiler_skip_packing_regression()
+{
+    // F-273: a signature table can legitimately end with a TEXCOORD row without
+    // a trailing newline (truncated/synthesised decompiled text). The old
+    // SkipPacking scanned a fixed 200 bytes from the row start; the real tail is
+    // only ~70 bytes, so it crossed the NUL and the slack into the guard page.
+    const std::string outputText =
+        "// Output signature:\n"
+        "//\n"
+        "// Name                 Index   Mask Register SysValue  Format   Used\n"
+        "// -------------------- ----- ------ -------- -------- ------- ------\n"
+        "// TEXCOORD                 0   xy          0     NONE   float   xy";
+    const std::string inputText =
+        "// Input signature:\n"
+        "//\n"
+        "// Name                 Index   Mask Register SysValue  Format   Used\n"
+        "// -------------------- ----- ------ -------- -------- ------- ------\n"
+        "// TEXCOORD                 0   xy          0     NONE   float   xy";
+
+    {
+        GuardedSignatureText guarded(outputText);
+        Decompiler decoder;
+        decoder.mErrorOccurred = false;
+        const bool parsed = decoder.ParseOutputSignature(guarded.data, guarded.size, false);
+        const std::string out(decoder.mOutput.begin(), decoder.mOutput.end());
+        std::fprintf(stderr, "F273 output truncated: parsed=%d error=%d bytes=%zu\n",
+            parsed ? 1 : 0, decoder.mErrorOccurred ? 1 : 0, out.size());
+        check_literal_audit(parsed && !decoder.mErrorOccurred,
+            "F273: truncated output signature tail is rejected without crossing the real end");
+        check_literal_audit(out.find("out float2 o0 : TEXCOORD0") != std::string::npos,
+            "F273: the single TEXCOORD row still decompiles with its real mask");
+    }
+
+    {
+        GuardedSignatureText guarded(inputText);
+        Shader shader{};
+        Decompiler decoder;
+        decoder.mErrorOccurred = false;
+        decoder.ParseInputSignature(&shader, guarded.data, guarded.size);
+        const std::string out(decoder.mOutput.begin(), decoder.mOutput.end());
+        std::fprintf(stderr, "F273 input truncated: error=%d bytes=%zu\n",
+            decoder.mErrorOccurred ? 1 : 0, out.size());
+        check_literal_audit(!decoder.mErrorOccurred,
+            "F273: truncated input signature tail does not fault");
+        check_literal_audit(out.find("float2 v0 : TEXCOORD0") != std::string::npos,
+            "F273: the input row survives with its real mask");
+    }
+
+    // The two-row packing pattern must still be recognised: the first row looks
+    // ahead to a TEXCOORD with a different register and is forced to float4; the
+    // last row has no third line and keeps its own mask.
+    const std::string pairText =
+        "// Output signature:\n//\n"
+        "// Name                 Index   Mask Register SysValue  Format   Used\n"
+        "// -------------------- ----- ------ -------- -------- ------- ------\n"
+        "// TEXCOORD                 0   xy          0     NONE   float   xy\n"
+        "// TEXCOORD                 1   xy          1     NONE   float   xy\n";
+    {
+        Decompiler decoder;
+        decoder.mErrorOccurred = false;
+        const bool parsed = decoder.ParseOutputSignature(pairText.data(), pairText.size(), false);
+        const std::string out(decoder.mOutput.begin(), decoder.mOutput.end());
+        check_literal_audit(parsed && !decoder.mErrorOccurred,
+            "F273: the two-row TEXCOORD packing pattern is still recognized");
+        check_literal_audit(out.find("out float4 o0 : TEXCOORD0") != std::string::npos,
+            "F273: the first row is forced to float4 when the next TEXCOORD uses a different register");
+        check_literal_audit(out.find("out float2 o1 : TEXCOORD1") != std::string::npos,
+            "F273: the second row keeps its real float2");
+    }
+
+    const char pair[] =
+        "// TEXCOORD 0 xy 0 NONE float xy\n"
+        "// TEXCOORD 1 xy 1 NONE float xy";
+    const char single[] = "// TEXCOORD 0 xy 0 NONE float xy";
+    Decompiler direct;
+    std::map<std::string, DataType> inUse;
+    check_literal_audit(direct.SkipPacking(pair, sizeof(pair) - 1, inUse),
+        "F273: a legal second TEXCOORD row still returns true");
+    check_literal_audit(!direct.SkipPacking(single, sizeof(single) - 1, inUse),
+        "F273: a row without a following newline returns false");
+    check_literal_audit(!direct.SkipPacking(single, 0, inUse),
+        "F273: an empty remaining range is rejected without reading");
 }
 
 void test_dx11_decompiler_output_signature_regression()

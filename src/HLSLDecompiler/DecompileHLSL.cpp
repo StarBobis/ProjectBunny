@@ -339,11 +339,18 @@ public:
 	// This does also unfortunately create warnings for the TEXCOORD outputs, but
 	// I was unable to find any other way to avoid the fxc packing optimization.
 
-	bool SkipPacking(const char *c, map<string, DataType> inUse)
+	// F-273: max is the real remaining length from this line to the terminator
+	// of params.decompiled (callers pass size - pos). Scans read only
+	// c[0 .. max - 1]; c[max] is the NUL sentinel. The old fixed 200 was
+	// unrelated to the buffer end and ran past it on truncated signature text.
+	bool SkipPacking(const char *c, size_t max, map<string, DataType> inUse)
 	{
 		char name[256], mask[16], sysvalue[16], format[16];
 		int index, reg1, reg2; format[0] = 0; mask[0] = 0;
 		size_t pos = 0;
+
+		if (!c || max == 0)
+			return false;
 
 		int numRead = sscanf_s(c + pos, "// %s %d %s %d %s %s",
 			name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), &reg1, sysvalue, UCOUNTOF(sysvalue), format, UCOUNTOF(format));
@@ -361,7 +368,13 @@ public:
 			return false;
 
 		// skip pointer in order to parse next line
-		pos = next_line_bounded(c, pos, 200);
+		// F-273: a line without a newline (or a newline at max - 1) has no
+		// second row; reject it instead of scanning past the real end.
+		size_t next = pos;
+		NextLine(c, next, max);
+		if (next <= pos || next >= max || c[next - 1] != 0x0a)
+			return false;
+		pos = next;
 
 		numRead = sscanf_s(c + pos, "// %s %d %s %d %s %s",
 			name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), &reg2, sysvalue, UCOUNTOF(sysvalue), format, UCOUNTOF(format));
@@ -503,7 +516,7 @@ public:
 				return;
 			}
 			// finish type.
-			if (SkipPacking(c + pos, usedInputRegisters))
+			if (SkipPacking(c + pos, size - pos, usedInputRegisters))
 				sprintf(format2, "%s%d", format, 4);				// force to float4
 			else
 				if (strlen(mask) > 1)
@@ -615,7 +628,7 @@ public:
 			if (numRead == 6)
 			{
 				// finish type.
-				if (SkipPacking(c + pos, mOutputRegisterType))
+				if (SkipPacking(c + pos, size - pos, mOutputRegisterType))
 					sprintf(format2, "%s%d", format, 4);				// force to float4
 				else
 					if (strlen(mask) > 1)
