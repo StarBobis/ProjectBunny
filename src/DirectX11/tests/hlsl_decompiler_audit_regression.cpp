@@ -60,6 +60,7 @@ std::string header_time_lifetime_audit();
 #include <fstream>
 #include <iterator>
 #include <wrl/client.h>
+#include "../../D3D_Shaders/stdafx.h"
 #ifndef F281_FIXTURE_DIR
 #error "F281_FIXTURE_DIR must be provided by dx11_upstream_regression"
 #endif
@@ -80,6 +81,78 @@ namespace {
 void check_literal_audit(bool condition, const char* message)
 {
     if (!condition) throw std::runtime_error(message);
+}
+
+// F-278b: place the line immediately before an inaccessible page, so a scan that
+// reads the byte at `size` faults instead of silently reading a spare NUL.
+class GuardedLineEnd {
+    void* allocation = nullptr;
+public:
+    char* data = nullptr;
+    explicit GuardedLineEnd(size_t bytes)
+    {
+        SYSTEM_INFO system{};
+        GetSystemInfo(&system);
+        check_literal_audit(bytes > 0 && bytes <= system.dwPageSize,
+            "F278B: guarded line fits before the inaccessible page");
+        allocation = VirtualAlloc(nullptr, system.dwPageSize * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        check_literal_audit(allocation != nullptr, "F278B: allocate guarded line");
+        DWORD previous = 0;
+        if (!VirtualProtect(static_cast<char*>(allocation) + system.dwPageSize,
+                system.dwPageSize, PAGE_NOACCESS, &previous)) {
+            VirtualFree(allocation, 0, MEM_RELEASE);
+            allocation = nullptr;
+            throw std::runtime_error("F278B: protect the page after the line");
+        }
+        data = static_cast<char*>(allocation) + system.dwPageSize - bytes;
+        std::memset(data, 'x', bytes);
+    }
+    ~GuardedLineEnd() { if (allocation) VirtualFree(allocation, 0, MEM_RELEASE); }
+};
+
+// F-278b: drive the real ParseCode/DecompileBinaryHLSL path with an assembled
+// multi-line ICB followed by a mov. The ICB branch must leave the newline for
+// ParseCode's unconditional NextLine; otherwise the next physical line is lost.
+void check_f278b_icb_progress(const std::string& text, bool expect_continuation)
+{
+    const char seed_source[] = "float4 main():SV_Target{return float4(0,0,0,1);}";
+    Microsoft::WRL::ComPtr<ID3DBlob> seed, compile_errors;
+    const HRESULT seed_hr = D3DCompile(seed_source, sizeof(seed_source) - 1, nullptr, nullptr, nullptr,
+        "main", "ps_5_0", 0, 0, seed.GetAddressOf(), compile_errors.GetAddressOf());
+    if (FAILED(seed_hr) && compile_errors)
+        std::fprintf(stderr, "F278B seed compile: %s\n", static_cast<const char*>(compile_errors->GetBufferPointer()));
+    check_literal_audit(SUCCEEDED(seed_hr), "F278B: compile the ps_5_0 container seed");
+
+    const auto* seed_bytes = static_cast<const unsigned char*>(seed->GetBufferPointer());
+    std::vector<unsigned char> container(seed_bytes, seed_bytes + seed->GetBufferSize());
+    std::vector<char> assembly(text.begin(), text.end());
+    const auto bytecode = assembler(&assembly, container);
+    check_literal_audit(!bytecode.empty(), "F278B: assemble the ICB fixture");
+
+    DecompilerSettings settings;
+    ParseParameters params{};
+    params.bytecode = bytecode.data();
+    params.bytecodeSize = bytecode.size();
+    params.decompiled = text.c_str();
+    params.decompiledSize = text.size();
+    params.G = &settings;
+    bool patched = false, failed = false;
+    std::string model;
+    const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
+    if (failed || hlsl.empty())
+        std::fprintf(stderr, "F278B ICB integration HLSL:\n%s\n", hlsl.c_str());
+    check_literal_audit(!failed && !hlsl.empty(),
+        "F278B: the multi-line ICB fixture decompiles without the error flag");
+    check_literal_audit(hlsl.find("const float4 icb[] =") != std::string::npos,
+        "F278B: the ICB declaration is emitted");
+    check_literal_audit(hlsl.find("r0.y") != std::string::npos && hlsl.find("321") != std::string::npos,
+        "F278B: the mov after the ICB is decompiled and not swallowed by the line scan");
+    if (expect_continuation) {
+        check_literal_audit(hlsl.find("{ 1.0, 2.0, 3.0, 4.0}") != std::string::npos,
+            "F278B: the first ICB row is emitted");
+        check_literal_audit(hlsl.find("{ 5.0, 6.0, 7.0, 8.0}") != std::string::npos,
+            "F278B: the first continuation row of a multi-line ICB is not skipped");
+    }
 }
 }
 
@@ -348,6 +421,75 @@ void test_dx11_decompiler_next_line_regression()
     Decompiler::NextLine(trailing_newline, pos, sizeof(trailing_newline) - 1);
     check_literal_audit(pos == sizeof(trailing_newline) - 1,
         "F278: a trailing newline still lands exactly at max");
+}
+
+void test_dx11_decompiler_next_line_bounded_regression()
+{
+    // F-278b: every former open-coded scan now calls one helper. Each case starts
+    // on the last byte (which is not a newline) of a line ending at a guard page;
+    // reading c[size] would fault, so returning exactly size is required.
+    const std::pair<const char*, size_t> sites[] = {
+        {"DecompileHLSL.cpp:349 SkipPacking (bound 200)", 200},
+        {"DecompileHLSL.cpp:4377 dcl_immediateConstantBuffer", 64},
+        {"DecompileHLSL.cpp:4717 immediate constant body", 96},
+        {"DecompileHLSL.cpp:5270 LOG lookahead", 128},
+        {"DecompileHLSL.cpp:5293 LOG lookahead tail", 160},
+        {"DecompileHLSL.cpp:5576 MAX lookahead", 192},
+        {"DecompileHLSL.cpp:5591 MAX lookahead tail", 224},
+        {"DecompileHLSL.cpp:5704 DP3 lookahead", 256},
+        {"DecompileHLSL.cpp:5723 DP3 lookahead tail", 320},
+    };
+    for (const auto& site : sites) {
+        GuardedLineEnd line(site.second);
+        const size_t pos = site.second - 1;
+        const size_t next = next_line_bounded(line.data, pos, site.second);
+        std::fprintf(stderr, "F278B %s: pos=%zu size=%zu next=%zu\n",
+            site.first, pos, site.second, next);
+        check_literal_audit(next == site.second,
+            "F278B: a non-newline byte at size-1 stops at size without reading the guard page");
+    }
+
+    // :1675 compares "// }" at c[pos] after NextLine, where pos can equal size.
+    // All real callers pass std::string::c_str(), so c[size] is a readable NUL
+    // sentinel; IsBufferClose must compare it and report "not the marker".
+    const std::string sentinel = "// }";
+    const size_t sentinel_pos = sentinel.size();
+    std::fprintf(stderr, "F278B DecompileHLSL.cpp:1693 buffer close: pos=%zu size=%zu\n",
+        sentinel_pos, sentinel.size());
+    check_literal_audit(sentinel.c_str()[sentinel_pos] == '\0',
+        "F278B: std::string::c_str exposes c[size] as the readable NUL sentinel");
+    check_literal_audit(!Decompiler::IsBufferClose(sentinel.c_str(), sentinel_pos),
+        "F278B: :1675 at pos==size reads the sentinel and leaves the do/while");
+    check_literal_audit(Decompiler::IsBufferClose(sentinel.c_str(), 0),
+        "F278B: :1675 still recognises the close marker at a legal position");
+
+    // Integration: a real multi-line ICB followed by mov. The ICB branch must
+    // leave the newline for ParseCode's NextLine; the single-line control catches
+    // the case where that NextLine eats the following instruction instead.
+    const std::string signature =
+        "// Output signature:\n"
+        "//\n"
+        "// Name                 Index   Mask Register SysValue  Format   Used\n"
+        "// -------------------- ----- ------ -------- -------- ------- ------\n"
+        "// SV_Target                0   xyzw        0   TARGET   float   xyzw\n"
+        "//\n";
+    check_f278b_icb_progress(signature +
+        "ps_5_0\n"
+        "dcl_output o0.xyzw\n"
+        "dcl_temps 1\n"
+        "dcl_immediateConstantBuffer { { 1.0, 2.0, 3.0, 4.0},\n"
+        "                              { 5.0, 6.0, 7.0, 8.0} }\n"
+        "mov r0.y, l(321.0)\n"
+        "mov o0.xyzw, r0.xxxx\n"
+        "ret\n", true);
+    check_f278b_icb_progress(signature +
+        "ps_5_0\n"
+        "dcl_output o0.xyzw\n"
+        "dcl_temps 1\n"
+        "dcl_immediateConstantBuffer {  { 1.0, 2.0, 3.0, 4.0}  }\n"
+        "mov r0.y, l(321.0)\n"
+        "mov o0.xyzw, r0.xxxx\n"
+        "ret\n", false);
 }
 
 void test_dx11_decompiler_output_signature_regression()

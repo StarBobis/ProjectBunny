@@ -53,6 +53,7 @@ void test_dx11_appended_vertex_layout_regression();
 void test_dx11_decompiler_literal_regression();
 void test_dx11_decompiler_negative_literal_regression();
 void test_dx11_decompiler_next_line_regression();
+void test_dx11_decompiler_next_line_bounded_regression();
 void test_dx11_decompiler_output_signature_regression();
 void test_dx11_decompiler_special_output_regression();
 void test_dx11_decompiler_immediate_regression();
@@ -1063,6 +1064,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-100", test_dx11_decompiler_literal_regression},
     {"F-281", test_dx11_decompiler_negative_literal_regression},
     {"F-278", test_dx11_decompiler_next_line_regression},
+    {"F-278B", test_dx11_decompiler_next_line_bounded_regression},
     {"F-274", test_dx11_decompiler_output_signature_regression},
     {"F-275", test_dx11_decompiler_special_output_regression},
     {"F-276", test_dx11_dx9_binding_lifetime_regression},

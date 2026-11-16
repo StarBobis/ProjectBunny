@@ -150,6 +150,18 @@ static string swizCount(const char *operand)
 	return (count == 1) ? "" : to_string(count);
 }
 
+// F-278b: the single bounded newline scan used by NextLine and every former
+// open-coded "while (c[pos] != 0x0a && pos < size)" site. The bound is tested
+// before c[pos] is read, and a line without a newline returns size, never size + 1.
+static inline size_t next_line_bounded(const char *c, size_t pos, size_t size)
+{
+	if (pos >= size)
+		return size;
+	while (pos < size && c[pos] != 0x0a)
+		pos++;
+	return pos < size ? pos + 1 : size;
+}
+
 class Decompiler
 {
 public:
@@ -275,10 +287,16 @@ public:
 	// Make this bump to new line slightly more clear by making it a convenience routine.
 	static void NextLine(const char *c, size_t &pos, size_t max)
 	{
-		while (pos < max && c[pos] != 0x0a)
-			pos++;
-		if (pos < max)
-			pos++;
+		pos = next_line_bounded(c, pos, max);
+	}
+
+	// F-278b: :1675 compares at c[pos] after NextLine, and pos can equal size.
+	// Every caller of DecompileBinaryHLSL in this tree passes std::string::c_str()
+	// (HackerDevice.cpp:962-963, Hunting.cpp:345-346 and the audit tests), so c[size]
+	// is the readable NUL sentinel that terminates this comparison.
+	static bool IsBufferClose(const char *c, size_t pos)
+	{
+		return !strncmp(c + pos, "// }", 4);
 	}
 
 	// Just take the current input line, and copy it to the output.
@@ -343,7 +361,7 @@ public:
 			return false;
 
 		// skip pointer in order to parse next line
-		while (c[pos] != 0x0a && pos < 200) pos++; pos++;
+		pos = next_line_bounded(c, pos, 200);
 
 		numRead = sscanf_s(c + pos, "// %s %d %s %d %s %s",
 			name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), &reg2, sysvalue, UCOUNTOF(sysvalue), format, UCOUNTOF(format));
@@ -1715,7 +1733,7 @@ public:
 						sprintf(buffer, "  %s%s%s %s;\n", structSpacing.c_str(), modifier.c_str(), type, name);
 					mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 				}
-			} while (strncmp(c + pos, "// }", 4));
+			} while (!IsBufferClose(c, pos));
 			
 			// Write closing declaration.
 			const char *endBuffer = "}\n";
@@ -4434,9 +4452,17 @@ public:
 				sprintf(buffer, "  const float4 icb[] =");
 				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 				pos += strlen(statement);
-				while (c[pos] != 0x0a && pos < size)
-					mOutput.insert(mOutput.end(), c[pos++]);
+				const size_t lineEnd = next_line_bounded(c, pos, size);
+				size_t contentEnd = lineEnd;
+				if (lineEnd > pos)
+				{
+					contentEnd = (c[lineEnd - 1] == 0x0a) ? lineEnd - 1 : lineEnd;
+					mOutput.insert(mOutput.end(), c + pos, c + contentEnd);
+				}
 				mOutput.insert(mOutput.end(), '\n');
+				// Leave the newline for ParseCode's unconditional NextLine, matching
+				// the old loop which stopped on '\n' (or at size when truncated).
+				pos = contentEnd;
 			}
 			else if (!strcmp(statement, "dcl_constantbuffer"))
 			{
@@ -4766,11 +4792,17 @@ public:
 				//                      { 0, 1.000000, 0, 0},
 				//                      { 0, 0, 1.000000, 0},
 				//                      { 0, 0, 0, 1.000000} }
-				while (c[pos] != 0x0a && pos < size)
-					mOutput.insert(mOutput.end(), c[pos++]);
-				if (c[pos - 1] == '}')
-					mOutput.insert(mOutput.end(), ';');
-				mOutput.insert(mOutput.end(), c[pos++]);
+				const size_t lineEnd = next_line_bounded(c, pos, size);
+				if (lineEnd > pos)
+				{
+					const size_t contentEnd = (c[lineEnd - 1] == 0x0a) ? lineEnd - 1 : lineEnd;
+					mOutput.insert(mOutput.end(), c + pos, c + contentEnd);
+					if (contentEnd > pos && c[contentEnd - 1] == '}')
+						mOutput.insert(mOutput.end(), ';');
+					if (lineEnd > contentEnd)
+						mOutput.insert(mOutput.end(), c[contentEnd]);
+				}
+				pos = lineEnd;
 				continue;
 			}
 			else if (!strcmp(statement, "dcl_indexrange"))
@@ -5313,7 +5345,7 @@ public:
 								//read next instruction
 								for (int i = 0; i < lookahead; i++)
 								{
-									while (c[pos] != 0x0a && pos < size) pos++; pos++;
+									pos = next_line_bounded(c, pos, size);
 
 									if (ReadStatement(c + pos) < 1)
 									{
@@ -5336,7 +5368,7 @@ public:
 
 								appendOutput(buffer);
 
-								while (c[pos] != 0x0a && pos < size) pos++; pos++;
+								pos = next_line_bounded(c, pos, size);
 								mLastStatement = nextIns[5];
 								iNr += lookahead + 1;
 								continue;
@@ -5619,7 +5651,7 @@ public:
 								//read next instruction
 								for (int i = 0; i < lookahead; i++)
 								{
-									while (c[pos] != 0x0a && pos < size) pos++; pos++;
+									pos = next_line_bounded(c, pos, size);
 
 									if (ReadStatement(c + pos) < 1)
 									{
@@ -5634,7 +5666,7 @@ public:
 								sprintf_s(buffer, opcodeSize, "  %s = lerp(%s, %s, %s);\n", op1, op4, y, op2);
 								appendOutput(buffer);
 
-								while (c[pos] != 0x0a && pos < size) pos++; pos++;
+								pos = next_line_bounded(c, pos, size);
 								mLastStatement = nextIns;
 								iNr += lookahead + 1;
 								continue;
@@ -5747,7 +5779,7 @@ public:
 								//read next instruction
 								for (int i = 0; i < lookahead; i++)
 								{
-									while (c[pos] != 0x0a && pos < size) pos++; pos++;
+									pos = next_line_bounded(c, pos, size);
 
 									if (ReadStatement(c + pos) < 1)
 									{
@@ -5766,7 +5798,7 @@ public:
 
 								appendOutput(buffer);
 
-								while (c[pos] != 0x0a && pos < size) pos++; pos++;
+								pos = next_line_bounded(c, pos, size);
 								mLastStatement = nextIns[1];
 								iNr += lookahead + 1;
 								continue;
