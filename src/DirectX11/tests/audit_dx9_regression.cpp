@@ -28,7 +28,7 @@ OPERAND_TYPE constant_kind(unsigned reg, bool define)
     if (define) tokens.insert(tokens.end(), {0x05000051, 0xa00f0000 | reg,
         0x3f800000, 0x40000000, 0x40400000, 0x40800000});
     tokens.insert(tokens.end(), {0x02000001, 0x800f0000, 0xa0e40000 | reg, 0x0000ffff});
-    std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(tokens.data()));
+    std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(tokens.data(), tokens.size() * sizeof(uint32_t)));
     check(shader && shader->dx9Shader && shader->ui32MajorVersion == 3, "F127: decode real DX9 shader stream");
     const auto& instructions = shader->asPhase[MAIN_PHASE].ppsInst[0];
     check(!instructions.empty() && instructions[0].eOpcode == OPCODE_MOV && instructions[0].ui32NumOperands == 2,
@@ -98,7 +98,7 @@ void test_dx11_dx9_register_bounds_regression()
         std::vector<uint32_t> tokens{0xfffe0300, 0x02000001, 0x800f0000, item.token, 0x0000ffff};
         bool rejected = false;
         try {
-            std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(tokens.data()));
+            std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(tokens.data(), tokens.size() * sizeof(uint32_t)));
             rejected = !shader;
         } catch (...) {
             rejected = true;
@@ -110,14 +110,14 @@ void test_dx11_dx9_register_bounds_regression()
 
     // Boundary that must stay legal: c255 is the last constant register.
     std::vector<uint32_t> legal{0xfffe0300, 0x02000001, 0x800f0000, 0xa0e40000u | 255u, 0x0000ffff};
-    std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(legal.data()));
+    std::unique_ptr<Shader, ShaderDeleter> shader(DecodeDX9BC(legal.data(), legal.size() * sizeof(uint32_t)));
     std::fprintf(stderr, "F125: legal c255 decoded=%d\n", shader ? 1 : 0);
     check(shader && shader->dx9Shader, "F125: c255 remains a legal DX9 constant register");
 }
 
-void check_dx11_dx9_sampler_dimension(const void* bytecode, unsigned expected_dimension)
+void check_dx11_dx9_sampler_dimension(const void* bytecode, size_t byteSize, unsigned expected_dimension)
 {
-    std::unique_ptr<Shader,ShaderDeleter> shader(DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode))));
+    std::unique_ptr<Shader,ShaderDeleter> shader(DecodeDXBC(bytecode, byteSize));
     check(shader && shader->dx9Shader && shader->ui32MajorVersion==3 && shader->eShaderType==PIXEL_SHADER,
         "F285: production public decoder recognizes the native DX9 pixel shader");
     const auto* info=shader->sInfo;

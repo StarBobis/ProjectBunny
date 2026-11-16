@@ -342,6 +342,7 @@ static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 
 	ParseParameters p;
 	p.bytecode = pShaderByteCode->GetBufferPointer();
+	p.bytecodeSize = pShaderByteCode->GetBufferSize();
 	p.decompiled = asmText->c_str();
 	p.decompiledSize = asmText->size();
 	p.ZeroOutput = false;

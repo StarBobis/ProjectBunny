@@ -45,6 +45,7 @@ struct DecompilerSettings
 struct ParseParameters
 {
 	const void *bytecode;
+	size_t bytecodeSize = 0;
 	const char *decompiled;
 	size_t decompiledSize;
 	bool ZeroOutput;

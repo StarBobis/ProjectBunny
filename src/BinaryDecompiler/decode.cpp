@@ -7,6 +7,8 @@
 #include "internal_includes/debug.h"
 #include "log.h"
 
+#include <cstring>
+
 #define FOURCC(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24 ))
 enum {FOURCC_DXBC = FOURCC('D', 'X', 'B', 'C')}; //DirectX byte code
 enum {FOURCC_SHDR = FOURCC('S', 'H', 'D', 'R')}; //Shader model 4 code
@@ -35,6 +37,95 @@ typedef struct DXBCChunkHeaderTAG
 	unsigned fourcc;
 	unsigned size;
 } DXBCChunkHeader;
+
+namespace {
+
+constexpr size_t kDxbcHeaderBytes = 32;
+constexpr size_t kDxbcChunkHeaderBytes = 8;
+constexpr uint32_t kMaxDxbcChunks = 256;
+
+static_assert(sizeof(DXBCContainerHeader) == kDxbcHeaderBytes, "DXBC container header layout");
+static_assert(sizeof(DXBCChunkHeader) == kDxbcChunkHeaderBytes, "DXBC chunk header layout");
+
+//Fixed prefix the reflection reader dereferences before it can trust any
+//count or offset inside the chunk. Inner counts remain F-128's responsibility.
+size_t ReflectionChunkPrefixBytes(uint32_t fourcc)
+{
+	switch (fourcc)
+	{
+	case FOURCC_ISGN:
+	case FOURCC_ISG1:
+	case FOURCC_OSGN:
+	case FOURCC_OSG1:
+	case FOURCC_OSG5:
+	case FOURCC_PSGN:
+		return 2 * sizeof(uint32_t);		// element count + key
+	case FOURCC_RDEF:
+		return 6 * sizeof(uint32_t);		// buffers, offsets, bindings, model, flags
+	case FOURCC_IFCE:
+		return 7 * sizeof(uint32_t);		// instance/type/slot counts and offsets
+	default:
+		return 0;
+	}
+}
+
+size_t SignatureChunkEntryBytes(uint32_t fourcc)
+{
+	switch (fourcc)
+	{
+	case FOURCC_ISGN:
+	case FOURCC_OSGN:
+	case FOURCC_PSGN:
+		return 6 * sizeof(uint32_t);		// six DWORDs per element
+	case FOURCC_ISG1:
+	case FOURCC_OSG1:
+		return 8 * sizeof(uint32_t);		// stream + min-precision DWORDs
+	case FOURCC_OSG5:
+		return 7 * sizeof(uint32_t);		// stream DWORD, no min precision
+	default:
+		return 0;
+	}
+}
+
+//F-104: reject absurd element counts before LoadShaderInfo allocates arrays
+//from them. This is deliberately a count/payload check, not the complete
+//chunk-internal offset validation that belongs to F-128.
+bool ValidateReflectionCounts(uint32_t fourcc, const uint32_t* payload, size_t payloadBytes)
+{
+	const size_t entryBytes = SignatureChunkEntryBytes(fourcc);
+	if (entryBytes)
+	{
+		const uint32_t elementCount = payload[0];
+		return elementCount <= (payloadBytes - 2 * sizeof(uint32_t)) / entryBytes;
+	}
+
+	switch (fourcc)
+	{
+	case FOURCC_RDEF:
+		//ReadResources reads buffers/offsets/bindings/offset/model/flags.
+		return payload[0] <= payloadBytes / sizeof(uint32_t) &&
+			payload[2] <= payloadBytes / sizeof(uint32_t);
+	case FOURCC_IFCE:
+		//ReadInterfaces reads class-instance/type/slot-record/slot counts.
+		return payload[0] <= payloadBytes / sizeof(uint32_t) &&
+			payload[1] <= payloadBytes / sizeof(uint32_t) &&
+			payload[2] <= payloadBytes / sizeof(uint32_t) &&
+			payload[3] <= payloadBytes / sizeof(uint32_t);
+	default:
+		return true;
+	}
+}
+
+}
+
+void ShaderOwnerDeleter::operator()(Shader* shader) const noexcept
+{
+	if (!shader)
+		return;
+	if (shader->sInfo)
+		FreeShaderInfo(shader->sInfo);
+	delete shader;
+}
 
 #ifdef _DEBUG
 static uint64_t operandID = 0;
@@ -1378,10 +1469,18 @@ const uint32_t* DecodeHullShader(const uint32_t* pui32Tokens, Shader* psShader)
 	return pui32CurrentToken;
 }
 
-void Decode(const uint32_t* pui32Tokens, Shader* psShader)
+void Decode(const uint32_t* pui32Tokens, uint32_t ui32TokenCount, Shader* psShader)
 {
+	if (!pui32Tokens || ui32TokenCount < 2)
+		throw decompileError;
+
 	const uint32_t* pui32CurrentToken = pui32Tokens;
     const uint32_t ui32ShaderLength = pui32Tokens[1];
+
+	//F-104: the length token is attacker controlled. Keep it inside the chunk
+	//payload that was already validated by DecodeDXBC.
+	if (ui32ShaderLength < 2 || ui32ShaderLength > ui32TokenCount)
+		throw decompileError;
 
 	psShader->ui32MajorVersion = DecodeProgramMajorVersion(*pui32CurrentToken);
 	psShader->ui32MinorVersion = DecodeProgramMinorVersion(*pui32CurrentToken);
@@ -1404,123 +1503,163 @@ void Decode(const uint32_t* pui32Tokens, Shader* psShader)
 	DecodeShaderPhase(pui32CurrentToken, psShader, MAIN_PHASE);
 }
 
-Shader* DecodeDXBC(uint32_t* data)
+Shader* DecodeDXBC(const void* data, size_t byteSize)
 {
-    Shader* psShader;
-	DXBCContainerHeader* header = (DXBCContainerHeader*)data;
-	uint32_t i;
-	uint32_t chunkCount;
-	uint32_t* chunkOffsets;
-    ReflectionChunks refChunks;
-    uint32_t* shaderChunk = 0;
+	if (!data)
+		return nullptr;
 
-	if(header->fourcc != FOURCC_DXBC)
+	const uint8_t* base = static_cast<const uint8_t*>(data);
+
+	uint32_t fourcc = 0;
+	if (byteSize < sizeof(fourcc))
+		return nullptr;
+	memcpy(&fourcc, base, sizeof(fourcc));
+
+	//The payload and reflection chunks are read as DWORDs.
+	if ((reinterpret_cast<uintptr_t>(data) % sizeof(uint32_t)) != 0)
+		return nullptr;
+
+	if (fourcc != FOURCC_DXBC)
 	{
-        //Could be SM1/2/3. If the shader type token
-        //looks valid then we continue
-        uint32_t type = DecodeShaderTypeDX9(data[0]);
+		//Could be SM1/2/3. If the shader type token
+		//looks valid then we continue
+		if (byteSize < 2 * sizeof(uint32_t) || (byteSize % sizeof(uint32_t)) != 0 ||
+			(reinterpret_cast<uintptr_t>(data) % sizeof(uint32_t)) != 0)
+			return nullptr;
 
-        if(type != INVALID_SHADER)
-        {
-            return DecodeDX9BC(data);
-        }
-		return 0;
+		const uint32_t* tokens = static_cast<const uint32_t*>(data);
+		if (DecodeShaderTypeDX9(tokens[0]) == INVALID_SHADER)
+			return nullptr;
+
+		return DecodeDX9BC(tokens, byteSize);
 	}
 
-    refChunks.pui32Inputs = NULL;
-    refChunks.pui32Interfaces = NULL;
-    refChunks.pui32Outputs = NULL;
-    refChunks.pui32Resources = NULL;
-	refChunks.pui32Inputs11 = NULL;
-	refChunks.pui32Outputs11 = NULL;
-	refChunks.pui32OutputsWithStreams = NULL;
-	refChunks.pui32PatchConstants = NULL;
+	if (byteSize < kDxbcHeaderBytes)
+		return nullptr;
 
-	chunkOffsets = (uint32_t*)(header + 1);
+	DXBCContainerHeader header;
+	memcpy(&header, base, sizeof(header));
+	if (header.fourcc != FOURCC_DXBC)
+		return nullptr;
+	if (header.totalSize < kDxbcHeaderBytes || header.totalSize > byteSize)
+		return nullptr;
+	if (header.chunkCount > kMaxDxbcChunks)
+		return nullptr;
 
-	chunkCount = header->chunkCount;
+	const size_t limit = header.totalSize;
+	if (size_t(header.chunkCount) * sizeof(uint32_t) > limit - kDxbcHeaderBytes)
+		return nullptr;
+	const size_t tableEnd = kDxbcHeaderBytes + size_t(header.chunkCount) * sizeof(uint32_t);
 
-	for(i = 0; i < chunkCount; ++i)
+	ReflectionChunks refChunks = {};
+	const uint32_t* shaderChunk = nullptr;
+	size_t shaderChunkBytes = 0;
+
+	for (uint32_t i = 0; i < header.chunkCount; ++i)
 	{
-		uint32_t offset = chunkOffsets[i];
+		uint32_t offset = 0;
+		memcpy(&offset, base + kDxbcHeaderBytes + size_t(i) * sizeof(uint32_t), sizeof(offset));
 
-		DXBCChunkHeader* chunk = (DXBCChunkHeader*)((char*)data + offset);
+		if (offset < tableEnd)
+			return nullptr;				// cannot point into the header or the offset table
+		if ((offset & 3) != 0)
+			return nullptr;				// payload is read as DWORDs
+		if (size_t(offset) > limit - kDxbcChunkHeaderBytes)
+			return nullptr;
 
-        switch(chunk->fourcc)
-        {
-            case FOURCC_ISGN:
-            {
-                refChunks.pui32Inputs = (uint32_t*)(chunk + 1);
-                break;
-            }
+		DXBCChunkHeader chunk;
+		memcpy(&chunk, base + size_t(offset), sizeof(chunk));
+
+		const size_t payloadBytes = chunk.size;
+		if (payloadBytes > limit - size_t(offset) - kDxbcChunkHeaderBytes)
+			return nullptr;
+
+		const uint32_t* payload = reinterpret_cast<const uint32_t*>(base + size_t(offset) + kDxbcChunkHeaderBytes);
+
+		const size_t reflectionPrefix = ReflectionChunkPrefixBytes(chunk.fourcc);
+		if (reflectionPrefix && (payloadBytes < reflectionPrefix || (payloadBytes % sizeof(uint32_t)) != 0))
+			return nullptr;
+		if (reflectionPrefix && !ValidateReflectionCounts(chunk.fourcc, payload, payloadBytes))
+			return nullptr;
+
+		switch(chunk.fourcc)
+		{
+			case FOURCC_ISGN:
+			{
+				refChunks.pui32Inputs = const_cast<uint32_t*>(payload);
+				break;
+			}
 			case FOURCC_ISG1:
 			{
-                refChunks.pui32Inputs11 = (uint32_t*)(chunk + 1);
-                break;
+				refChunks.pui32Inputs11 = const_cast<uint32_t*>(payload);
+				break;
 			}
-            case FOURCC_RDEF:
-            {
-                refChunks.pui32Resources = (uint32_t*)(chunk + 1);
-                break;
-            }
-            case FOURCC_IFCE:
-            {
-                refChunks.pui32Interfaces = (uint32_t*)(chunk + 1);
-                break;
-            }
-            case FOURCC_OSGN:
-            {
-                refChunks.pui32Outputs = (uint32_t*)(chunk + 1);
-                break;
-            }
+			case FOURCC_RDEF:
+			{
+				refChunks.pui32Resources = const_cast<uint32_t*>(payload);
+				break;
+			}
+			case FOURCC_IFCE:
+			{
+				refChunks.pui32Interfaces = const_cast<uint32_t*>(payload);
+				break;
+			}
+			case FOURCC_OSGN:
+			{
+				refChunks.pui32Outputs = const_cast<uint32_t*>(payload);
+				break;
+			}
 			case FOURCC_OSG1:
-            {
-                refChunks.pui32Outputs11 = (uint32_t*)(chunk + 1);
-                break;
-            }
+			{
+				refChunks.pui32Outputs11 = const_cast<uint32_t*>(payload);
+				break;
+			}
 			case FOURCC_OSG5:
 			{
-                refChunks.pui32OutputsWithStreams = (uint32_t*)(chunk + 1);
+				refChunks.pui32OutputsWithStreams = const_cast<uint32_t*>(payload);
 				break;
 			}
-            case FOURCC_SHDR:
-            case FOURCC_SHEX:
-            {
-                shaderChunk = (uint32_t*)(chunk + 1);
-                break;
-            }
+			case FOURCC_SHDR:
+			case FOURCC_SHEX:
+			{
+				if ((payloadBytes % sizeof(uint32_t)) != 0 || payloadBytes < 2 * sizeof(uint32_t))
+					return nullptr;		// needs version + length, read as DWORDs
+				shaderChunk = payload;
+				shaderChunkBytes = payloadBytes;
+				break;
+			}
 			case FOURCC_PSGN:
 			{
-				refChunks.pui32PatchConstants = (uint32_t*)(chunk + 1);
+				refChunks.pui32PatchConstants = const_cast<uint32_t*>(payload);
 				break;
 			}
-            default:
-            {
-                break;
-            }
-        }
+			default:
+			{
+				break;
+			}
+		}
 	}
 
-    if(shaderChunk)
-    {
-        uint32_t ui32MajorVersion;
-        uint32_t ui32MinorVersion;
+	if (!shaderChunk)
+		return nullptr;
 
-	psShader = new Shader();
+	const uint32_t shaderWords = static_cast<uint32_t>(shaderChunkBytes / sizeof(uint32_t));
+	const uint32_t shaderLength = shaderChunk[1];
+	if (shaderLength < 2 || shaderLength > shaderWords)
+		return nullptr;
 
-        ui32MajorVersion = DecodeProgramMajorVersion(*shaderChunk);
-        ui32MinorVersion = DecodeProgramMinorVersion(*shaderChunk);
+	const uint32_t ui32MajorVersion = DecodeProgramMajorVersion(shaderChunk[0]);
+	const uint32_t ui32MinorVersion = DecodeProgramMinorVersion(shaderChunk[0]);
 
-        LoadShaderInfo(ui32MajorVersion,
-            ui32MinorVersion,
-            &refChunks,
-            psShader->sInfo);
+	ShaderPtr shader(new Shader());
 
-        Decode(shaderChunk, psShader);
+	LoadShaderInfo(ui32MajorVersion,
+		ui32MinorVersion,
+		&refChunks,
+		shader->sInfo);
 
-        return psShader;
-    }
+	Decode(shaderChunk, shaderWords, shader.get());
 
-    return 0;
+	return shader.release();
 }
 

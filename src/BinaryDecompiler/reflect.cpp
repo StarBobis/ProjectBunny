@@ -450,6 +450,10 @@ static void ReadInterfaces(const uint32_t* pui32Tokens,
     ClassInstance* psClassInstances;
 
     psClassTypes = new ClassType[ui32ClassTypeCount];
+    //F-104: publish before filling so FreeShaderInfo can release a partially
+    //constructed array when a string allocation below throws.
+    psShaderInfo->ui32NumClassTypes = ui32ClassTypeCount;
+    psShaderInfo->psClassTypes = psClassTypes;
     for(i=0; i<ui32ClassTypeCount; ++i)
     {
         pui16ClassTypes = ReadClassType(pui32FirstInterfaceToken, pui16ClassTypes, psClassTypes+i);
@@ -457,6 +461,8 @@ static void ReadInterfaces(const uint32_t* pui32Tokens,
     }
 
     psClassInstances = new ClassInstance[ui32ClassInstanceCount];
+    psShaderInfo->ui32NumClassInstances = ui32ClassInstanceCount;
+    psShaderInfo->psClassInstances = psClassInstances;
     for(i=0; i<ui32ClassInstanceCount; ++i)
     {
         pui16ClassInstances = ReadClassInstance(pui32FirstInterfaceToken, pui16ClassInstances, psClassInstances+i);
@@ -483,12 +489,6 @@ static void ReadInterfaces(const uint32_t* pui32Tokens,
 
         ui32StartSlot += ui32SlotSpan;
     }
-
-    psShaderInfo->ui32NumClassInstances = ui32ClassInstanceCount;
-    psShaderInfo->psClassInstances = psClassInstances;
-
-    psShaderInfo->ui32NumClassTypes = ui32ClassTypeCount;
-    psShaderInfo->psClassTypes = psClassTypes;
 }
 
 void GetConstantBufferFromBindingPoint(const ResourceGroup eGroup, const uint32_t ui32BindPoint, const ShaderInfo* psShaderInfo, ConstantBuffer** ppsConstBuf)

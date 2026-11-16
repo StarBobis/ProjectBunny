@@ -959,6 +959,7 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 
 	ParseParameters p;
 	p.bytecode = pShaderBytecode;
+	p.bytecodeSize = BytecodeLength;
 	p.decompiled = asmText.c_str();
 	p.decompiledSize = asmText.size();
 	p.ZeroOutput = false;

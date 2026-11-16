@@ -29,7 +29,7 @@ void test_dx11_decompiler_public_ibfe_regression()
         const std::string native_assembly(text.begin(),text.end());
         require_batch(native_assembly.find("ibfe ")!=std::string::npos,"F272: native instruction stream retains the tested bitfield operation");
         DecompilerSettings settings;
-        ParseParameters params{}; params.bytecode=code.data(); params.decompiled=native_assembly.c_str();
+        ParseParameters params{}; params.bytecode=code.data(); params.bytecodeSize=code.size(); params.decompiled=native_assembly.c_str();
         params.decompiledSize=native_assembly.size(); params.G=&settings;
         bool patched=false,failed=false; std::string model;
         const auto hlsl=DecompileBinaryHLSL(params,patched,model,failed);

@@ -7000,6 +7000,14 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 	d.mPatched = false;
 	d.G = params.G;
 
+	//F-104: a missing or impossibly short bytecode buffer is a rejected input,
+	//not something the decoder may probe.
+	if (!params.bytecode || params.bytecodeSize < 4)
+	{
+		errorOccurred = true;
+		return string();
+	}
+
 	// Decompile binary.
 
 	// This can crash, because of unknown or unseen syntax, so we wrap it in try/catch
@@ -7012,8 +7020,12 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 	// The termination handler approach does not catch those errors either.
 	try
 	{
-		Shader *shader = DecodeDXBC((uint32_t*)params.bytecode);
-		if (!shader) return string();
+		Shader *shader = DecodeDXBC(params.bytecode, params.bytecodeSize);
+		if (!shader)
+		{
+			errorOccurred = true;
+			return string();
+		}
 		std::unique_ptr<Shader, DecompiledShaderDeleter> shaderOwner(shader);
 
 		if (shader->dx9Shader)

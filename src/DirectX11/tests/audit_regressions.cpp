@@ -23,7 +23,7 @@ void test_dx11_dx9_constant_reset_regression();
 void test_dx11_customdata_length_regression();
 void test_dx11_dx9_register_bounds_regression();
 void test_dx11_tokenizer_regression();
-void check_dx11_dx9_sampler_dimension(const void*,unsigned);
+void check_dx11_dx9_sampler_dimension(const void*,size_t,unsigned);
 void test_dx11_dx9_sampler_dimension_regression();
 void test_dx11_assembler_double_index_regression();
 void test_dx11_assembler_interpolation_regression();
@@ -55,8 +55,8 @@ void test_dx11_decompiler_next_line_regression();
 void test_dx11_decompiler_output_signature_regression();
 void test_dx11_decompiler_special_output_regression();
 void test_dx11_decompiler_immediate_regression();
-void check_dx11_immediate_bytecode_precision(const void*, const void*);
-bool dx11_immediate_bytecode_precision_matches(const void*, const void*);
+void check_dx11_immediate_bytecode_precision(const void*, size_t, const void*, size_t);
+bool dx11_immediate_bytecode_precision_matches(const void*, size_t, const void*, size_t);
 void check_dx11_special_output_rows(const std::string&, const std::vector<std::string>&);
 void check_dx11_special_output_failure(const std::string&);
 void test_dx11_dx9_binding_lifetime_regression();
@@ -64,8 +64,9 @@ void test_dx11_decompiler_suffix_regression();
 void test_dx11_decompiler_texture_literal_regression();
 void test_dx11_shader_regex_declaration_regression();
 void test_dx11_shader_regex_temp_count_regression();
-void check_dx11_decompiler_lifetime(const void*,const char*,size_t);
+void check_dx11_decompiler_lifetime(const void*,size_t,const char*,size_t);
 void test_dx11_decompiler_lifetime_regression();
+void test_dx11_decode_dxbc_bounds_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_decompile_file_diagnostic_regression();
@@ -1062,6 +1063,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-297", test_dx11_shader_regex_temp_count_regression},
     {"P-02", test_dx11_tokenizer_regression},
     {"F-283", test_dx11_decompiler_lifetime_regression},
+    {"F-104", test_dx11_decode_dxbc_bounds_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
@@ -1201,7 +1203,7 @@ void test_dx11_decompiler_public_literal_regression()
         "F100: actual native assembly input");
     std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
     DecompilerSettings settings;
-    ParseParameters params{}; params.bytecode = code->GetBufferPointer(); params.decompiled = text.c_str();
+    ParseParameters params{}; params.bytecode = code->GetBufferPointer(); params.bytecodeSize = code->GetBufferSize(); params.decompiled = text.c_str();
     params.decompiledSize = text.size(); params.G = &settings;
     bool patched = false, failed = false; std::string model;
     const auto hlsl = DecompileBinaryHLSL(params,patched,model,failed);
@@ -1251,7 +1253,7 @@ void test_dx11_decompiler_public_signature_regression()
             "F274: real native disassembly feeds the public decompiler");
         std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
         DecompilerSettings settings;
-        ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.decompiled=text.c_str();
+        ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.bytecodeSize=code->GetBufferSize(); params.decompiled=text.c_str();
         params.decompiledSize=text.size(); params.G=&settings;
         bool patched=false, failed=false; std::string model;
         const auto hlsl=DecompileBinaryHLSL(params,patched,model,failed);
@@ -1307,7 +1309,7 @@ void test_dx11_decompiler_public_signature_regression()
     require_batch(legacy_text.find("// Output signature:")==std::string::npos,
         "F274: real native SM3 metadata has no DXBC output signature table");
     DecompilerSettings legacy_settings;
-    ParseParameters legacy_params{}; legacy_params.bytecode=legacy_code->GetBufferPointer(); legacy_params.decompiled=legacy_text.c_str();
+    ParseParameters legacy_params{}; legacy_params.bytecode=legacy_code->GetBufferPointer(); legacy_params.bytecodeSize=legacy_code->GetBufferSize(); legacy_params.decompiled=legacy_text.c_str();
     legacy_params.decompiledSize=legacy_text.size(); legacy_params.G=&legacy_settings;
     bool legacy_patched=false,legacy_failed=false; std::string legacy_model;
     const auto legacy_hlsl=DecompileBinaryHLSL(legacy_params,legacy_patched,legacy_model,legacy_failed);
@@ -1388,7 +1390,7 @@ void test_dx11_decompiler_special_output_regression()
     for (const auto& fixture : fixtures) {
         check_dx11_special_output_rows(fixture.text,fixture.registers);
         DecompilerSettings settings;
-        ParseParameters params{}; params.bytecode=fixture.code->GetBufferPointer(); params.G=&settings;
+        ParseParameters params{}; params.bytecode=fixture.code->GetBufferPointer(); params.bytecodeSize=fixture.code->GetBufferSize(); params.G=&settings;
         params.decompiled=fixture.text.c_str(); params.decompiledSize=fixture.text.size();
         for (bool zero : {false,true}) {
             params.ZeroOutput=zero;
@@ -1416,7 +1418,7 @@ void test_dx11_decompiler_special_output_regression()
         text.replace(row,row_end-row,incomplete);
         check_dx11_special_output_failure(text);
         DecompilerSettings settings;
-        ParseParameters params{}; params.bytecode=mixed.code->GetBufferPointer(); params.G=&settings;
+        ParseParameters params{}; params.bytecode=mixed.code->GetBufferPointer(); params.bytecodeSize=mixed.code->GetBufferSize(); params.G=&settings;
         params.decompiled=text.c_str(); params.decompiledSize=text.size();
         for (bool zero : {false,true}) {
             params.ZeroOutput=zero;
@@ -1455,7 +1457,7 @@ void test_dx11_decompiler_public_dx9_binding_regression()
     const std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
     DecompilerSettings settings;
     ParseParameters params{};
-    params.bytecode = code->GetBufferPointer(); params.decompiled = text.c_str();
+    params.bytecode = code->GetBufferPointer(); params.bytecodeSize = code->GetBufferSize(); params.decompiled = text.c_str();
     params.decompiledSize = text.size(); params.G = &settings;
     bool patched = false, failed = false; std::string model;
     const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
@@ -1498,7 +1500,7 @@ void test_dx11_decompiler_public_suffix_regression()
                 require_batch(SUCCEEDED(disassembler(&bytecode,&disassembly,nullptr)), "F279: real production disassembly");
                 const std::string native_text(disassembly.begin(),disassembly.end());
                 DecompilerSettings settings;
-                ParseParameters params{}; params.bytecode = bytecode.data(); params.decompiled = native_text.c_str();
+                ParseParameters params{}; params.bytecode = bytecode.data(); params.bytecodeSize = bytecode.size(); params.decompiled = native_text.c_str();
                 params.decompiledSize = native_text.size(); params.G = &settings;
                 bool patched = false, failed = false; std::string model;
                 const auto hlsl = DecompileBinaryHLSL(params,patched,model,failed);
@@ -1551,7 +1553,7 @@ void test_dx11_decompiler_public_texture_literal_regression()
             "F280: real disassembly contains the expected immediate or named-cbuffer sampling coordinates");
         DecompilerSettings settings;
         ParseParameters params{};
-        params.bytecode = code->GetBufferPointer(); params.decompiled = text.c_str();
+        params.bytecode = code->GetBufferPointer(); params.bytecodeSize = code->GetBufferSize(); params.decompiled = text.c_str();
         params.decompiledSize = text.size(); params.G = &settings;
         bool patched = false, failed = false; std::string model;
         const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
@@ -1580,7 +1582,7 @@ void test_dx11_decompiler_public_immediate_regression()
         0,nullptr,&special_assembly)),"F282: native exceptional-value compatibility probe");
     const std::string special_text=static_cast<const char*>(special_assembly->GetBufferPointer());
     DecompilerSettings special_settings;
-    ParseParameters special_params{}; special_params.bytecode=special_code->GetBufferPointer(); special_params.G=&special_settings;
+    ParseParameters special_params{}; special_params.bytecode=special_code->GetBufferPointer(); special_params.bytecodeSize=special_code->GetBufferSize(); special_params.G=&special_settings;
     special_params.decompiled=special_text.c_str(); special_params.decompiledSize=special_text.size();
     bool special_patched=false,special_failed=false; std::string special_model;
     const auto special_hlsl=DecompileBinaryHLSL(special_params,special_patched,special_model,special_failed);
@@ -1588,7 +1590,8 @@ void test_dx11_decompiler_public_immediate_regression()
     const auto special_hr=D3DCompile(special_hlsl.data(),special_hlsl.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,
         &special_rebuilt,&special_errors);
     const bool special_bits=SUCCEEDED(special_hr) &&
-        dx11_immediate_bytecode_precision_matches(special_code->GetBufferPointer(),special_rebuilt->GetBufferPointer());
+        dx11_immediate_bytecode_precision_matches(special_code->GetBufferPointer(),special_code->GetBufferSize(),
+            special_rebuilt->GetBufferPointer(),special_rebuilt->GetBufferSize());
     std::fprintf(stderr,"F282 exceptional probe (observed compatibility, not a claimed supported round-trip): error=%d recompile=0x%08x bits_preserved=%d\n%s\n%s\n",
         special_failed,static_cast<unsigned>(special_hr),special_bits,special_text.c_str(),special_hlsl.c_str());
     const char* sources[]={
@@ -1607,7 +1610,7 @@ void test_dx11_decompiler_public_immediate_regression()
         require_batch(literal!=std::string::npos,"F282: native shader contains an immediate operand");
         std::fprintf(stderr,"F282 native literal: %s\n",text.substr(literal,text.find('\n',literal)-literal).c_str());
         DecompilerSettings settings;
-        ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.G=&settings;
+        ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.bytecodeSize=code->GetBufferSize(); params.G=&settings;
         params.decompiled=text.c_str(); params.decompiledSize=text.size();
         bool patched=false,failed=false; std::string model;
         const auto hlsl=DecompileBinaryHLSL(params,patched,model,failed);
@@ -1617,7 +1620,8 @@ void test_dx11_decompiler_public_immediate_regression()
         if (FAILED(hr)) std::fprintf(stderr,"F282 generated HLSL:\n%s\n%s\n",hlsl.c_str(),
             errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no compiler diagnostic");
         require_batch(SUCCEEDED(hr),"F282: generated precision HLSL recompiles natively");
-        check_dx11_immediate_bytecode_precision(code->GetBufferPointer(),rebuilt->GetBufferPointer());
+        check_dx11_immediate_bytecode_precision(code->GetBufferPointer(),code->GetBufferSize(),
+            rebuilt->GetBufferPointer(),rebuilt->GetBufferSize());
         ComPtr<ID3D11PixelShader> shader;
         require_batch(SUCCEEDED(device.native->CreatePixelShader(rebuilt->GetBufferPointer(),rebuilt->GetBufferSize(),nullptr,&shader)),
             "F282: WARP accepts precision-preserving regenerated shader");
@@ -1650,7 +1654,7 @@ void test_dx11_dx9_sampler_dimension_regression()
         dx11_slot_test::require_batch(SUCCEEDED(hr),"F285: native compiler generates valid unmodified DX9 sampler bytecode with CTAB");
         dx11_slot_test::require_batch(SUCCEEDED(D3DDisassemble(code->GetBufferPointer(),code->GetBufferSize(),0,nullptr,&assembly)),
             "F285: native disassembler accepts every compiled DX9 sampler fixture");
-        check_dx11_dx9_sampler_dimension(code->GetBufferPointer(),static_cast<unsigned>(fixture.second));
+        check_dx11_dx9_sampler_dimension(code->GetBufferPointer(),code->GetBufferSize(),static_cast<unsigned>(fixture.second));
     }
     test_dx11_decompiler_public_literal_regression();
 }
@@ -1666,7 +1670,7 @@ void test_dx11_decompiler_lifetime_regression()
         "F283: native compiler/disassembler generate genuine nested-structure reflection input");
     const std::string text(static_cast<const char*>(assembly->GetBufferPointer()));
     DecompilerSettings settings;
-    ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.decompiled=text.c_str(); params.decompiledSize=text.size(); params.G=&settings;
+    ParseParameters params{}; params.bytecode=code->GetBufferPointer(); params.bytecodeSize=code->GetBufferSize(); params.decompiled=text.c_str(); params.decompiledSize=text.size(); params.G=&settings;
     bool patched=false,failed=false; std::string model;
     const auto retained=DecompileBinaryHLSL(params,patched,model,failed);
     require_batch(!failed && !retained.empty() && model=="ps_5_0","F283: normal native fixture decompiles before lifetime probes");
@@ -1674,7 +1678,7 @@ void test_dx11_decompiler_lifetime_regression()
     auto compiled=D3DCompile(retained.data(),retained.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors);
     if (FAILED(compiled)) std::fprintf(stderr,"F283 regenerated HLSL:\n%s\n%s\n",retained.c_str(),errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no diagnostic");
     require_batch(SUCCEEDED(compiled),"F283: nested fixture's existing normal output is valid native HLSL");
-    check_dx11_decompiler_lifetime(code->GetBufferPointer(),text.data(),text.size());
+    check_dx11_decompiler_lifetime(code->GetBufferPointer(),code->GetBufferSize(),text.data(),text.size());
     rebuilt.Reset(); errors.Reset();
     require_batch(SUCCEEDED(D3DCompile(retained.data(),retained.size(),nullptr,nullptr,nullptr,"main","ps_5_0",0,0,&rebuilt,&errors)),
         "F283: returned HLSL remains independently usable after repeated real Decode and destruction");

@@ -820,7 +820,7 @@ static string BinaryToAsmText(const void *pShaderBytecode, size_t BytecodeLength
 
 //static string GetShaderModel(const void *pShaderBytecode)
 //{
-//	Shader *shader = DecodeDXBC((uint32_t*)pShaderBytecode);
+//	Shader *shader = DecodeDXBC(pShaderBytecode, bytecodeSize);
 //	if (shader == nullptr)
 //		return "";
 //

@@ -6,13 +6,15 @@
 // headers in the WARP fixtures. This TU compiles the production decompiler once.
 #include "BinaryDecompiler/internal_includes/decode.h"
 #include "BinaryDecompiler/internal_includes/reflect.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 #include "log.h"
 namespace {
-Shader* decode_lifetime_audit(uint32_t*);
+Shader* decode_lifetime_audit(const void*, size_t);
 void free_lifetime_audit(ShaderInfo*);
 std::string header_time_lifetime_audit();
 }
@@ -144,9 +146,9 @@ unsigned member_array_count(const ShaderVarType& type) noexcept
     return count;
 }
 
-Shader* decode_lifetime_audit(uint32_t* data)
+Shader* decode_lifetime_audit(const void* data, size_t byteSize)
 {
-    Shader* shader=::DecodeDXBC(data);
+    Shader* shader=::DecodeDXBC(data, byteSize);
     if (lifetime_state.enabled && shader) {
         ++lifetime_state.decoded;
         lifetime_state.current_info=shader->sInfo;
@@ -203,10 +205,10 @@ public:
     ~DecompilerLifetimeScope() { lifetime_state.enabled=false; }
 };
 
-void check_decompiler_lifetime(const void* bytecode,const std::string& assembly,bool throw_at_header,bool reject_signature)
+void check_decompiler_lifetime(const void* bytecode,size_t bytecodeSize,const std::string& assembly,bool throw_at_header,bool reject_signature)
 {
     DecompilerSettings settings;
-    ParseParameters params{}; params.bytecode=bytecode; params.decompiled=assembly.c_str(); params.decompiledSize=assembly.size(); params.G=&settings;
+    ParseParameters params{}; params.bytecode=bytecode; params.bytecodeSize=bytecodeSize; params.decompiled=assembly.c_str(); params.decompiledSize=assembly.size(); params.G=&settings;
     DecompilerLifetimeScope scope(throw_at_header);
     auto decompile=[&] {
         bool patched=false,failed=false; std::string model;
@@ -538,16 +540,18 @@ void test_dx11_decompiler_texture_literal_regression()
     test_dx11_decompiler_public_texture_literal_regression();
 }
 
-bool dx11_immediate_bytecode_precision_matches(const void* original, const void* rebuilt)
+bool dx11_immediate_bytecode_precision_matches(const void* original, size_t originalSize, const void* rebuilt, size_t rebuiltSize)
 {
     std::vector<std::vector<unsigned>> constants;
-    for (const auto* bytecode : {original,rebuilt}) {
-        Shader* shader=DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode)));
+    const void* bytecodes[] = {original, rebuilt};
+    const size_t sizes[] = {originalSize, rebuiltSize};
+    for (int i = 0; i < 2; ++i) {
+        Shader* shader=DecodeDXBC(bytecodes[i], sizes[i]);
         check_literal_audit(shader!=nullptr,"F282: decode actual native shader immediates");
         std::vector<unsigned> values;
         for (const auto& instruction : shader->asPhase[MAIN_PHASE].ppsInst[0])
-            for (unsigned i=0;i<instruction.ui32NumOperands;++i) {
-                const auto& operand=instruction.asOperands[i];
+            for (unsigned operandIndex=0;operandIndex<instruction.ui32NumOperands;++operandIndex) {
+                const auto& operand=instruction.asOperands[operandIndex];
                 if (operand.eType!=OPERAND_TYPE_IMMEDIATE32) continue;
                 for (int j=0;j<operand.iNumComponents;++j) {
                     unsigned bits;
@@ -561,9 +565,9 @@ bool dx11_immediate_bytecode_precision_matches(const void* original, const void*
     return !constants[0].empty() && constants[0]==constants[1];
 }
 
-void check_dx11_immediate_bytecode_precision(const void* original, const void* rebuilt)
+void check_dx11_immediate_bytecode_precision(const void* original, size_t originalSize, const void* rebuilt, size_t rebuiltSize)
 {
-    check_literal_audit(dx11_immediate_bytecode_precision_matches(original,rebuilt),
+    check_literal_audit(dx11_immediate_bytecode_precision_matches(original,originalSize,rebuilt,rebuiltSize),
         "F282: public decompile/native recompile preserves the exact binary32 literal bits");
 }
 
@@ -620,9 +624,9 @@ void test_dx11_decompiler_immediate_regression()
     }
 }
 
-void check_dx11_decompiler_lifetime(const void* bytecode,const char* assembly,size_t size)
+void check_dx11_decompiler_lifetime(const void* bytecode,size_t bytecodeSize,const char* assembly,size_t size)
 {
-    auto decode=[&] { return ::DecodeDXBC(static_cast<uint32_t*>(const_cast<void*>(bytecode))); };
+    auto decode=[&] { return ::DecodeDXBC(bytecode, bytecodeSize); };
     auto destroy=[](Shader* shader) { ::FreeShaderInfo(shader->sInfo); delete shader; };
     destroy(decode());
     const auto before=decompiler_live_bytes();
@@ -636,15 +640,193 @@ void check_dx11_decompiler_lifetime(const void* bytecode,const char* assembly,si
     check_literal_audit(nested>=2 && during>before+sizeof(Shader)+sizeof(ShaderInfo) && after==before,
         "F283: allocation observation sees real Shader, ShaderInfo and nested native reflection allocations and release");
     const std::string text(assembly,size);
-    check_decompiler_lifetime(bytecode,text,false,false);
-    check_decompiler_lifetime(bytecode,text,true,false);
+    check_decompiler_lifetime(bytecode,bytecodeSize,text,false,false);
+    check_decompiler_lifetime(bytecode,bytecodeSize,text,true,false);
     auto invalid=text;
     const auto row=invalid.find("// SV_Target");
     check_literal_audit(row!=std::string::npos,"F283: real native output row is available for early-return injection");
     const auto end=invalid.find('\n',row);
     check_literal_audit(end!=std::string::npos,"F283: native output row has its terminator");
     invalid.replace(row,end-row,"// unrecognized output");
-    check_decompiler_lifetime(bytecode,invalid,false,true);
+    check_decompiler_lifetime(bytecode,bytecodeSize,invalid,false,true);
+}
+
+namespace {
+std::string read_f104_fixture(const char* name)
+{
+    std::ifstream input(std::string(F281_FIXTURE_DIR) + "/" + name, std::ios::binary);
+    check_literal_audit(input.good(), "F104: open the checked-in native fixture");
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+uint32_t read_f104_u32(const std::string& bytes, size_t offset)
+{
+    uint32_t value = 0;
+    check_literal_audit(offset + sizeof(value) <= bytes.size(), "F104: fixture field is inside the container");
+    std::memcpy(&value, bytes.data() + offset, sizeof(value));
+    return value;
+}
+
+void write_f104_u32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value)
+{
+    check_literal_audit(offset + sizeof(value) <= bytes.size(), "F104: patched field is inside the container");
+    std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+uint32_t find_f104_chunk(const std::string& bytes, uint32_t fourcc)
+{
+    const uint32_t chunkCount = read_f104_u32(bytes, 28);
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        const uint32_t offset = read_f104_u32(bytes, 32 + size_t(i) * 4);
+        if (read_f104_u32(bytes, offset) == fourcc) return offset;
+    }
+    return 0;
+}
+
+// Rebuild the container with chunkCount+1 offset slots and a four-byte hole
+// after the table. The extra slot is zero, so old code would read the DXBC
+// header as a chunk and still find the real SHDR payload.
+std::vector<uint8_t> add_f104_extra_chunk_slot(const std::string& original)
+{
+    check_literal_audit(original.size() >= 32, "F104: fixture has a full DXBC header");
+    const uint32_t totalSize = read_f104_u32(original, 24);
+    const uint32_t chunkCount = read_f104_u32(original, 28);
+    check_literal_audit(totalSize <= original.size(), "F104: fixture totalSize matches its bytes");
+
+    std::vector<std::vector<uint8_t>> chunks;
+    size_t chunkBytes = 0;
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        const uint32_t offset = read_f104_u32(original, 32 + size_t(i) * 4);
+        check_literal_audit(size_t(offset) + 8 <= totalSize, "F104: fixture chunk header is inside totalSize");
+        const uint32_t payload = read_f104_u32(original, size_t(offset) + 4);
+        check_literal_audit(size_t(offset) + 8 + payload <= totalSize, "F104: fixture chunk payload is inside totalSize");
+        chunks.emplace_back(original.begin() + size_t(offset), original.begin() + size_t(offset) + 8 + payload);
+        chunkBytes += chunks.back().size();
+    }
+
+    const size_t tableBytes = (size_t(chunkCount) + 1) * sizeof(uint32_t);
+    const size_t holeBytes = sizeof(uint32_t);
+    std::vector<uint8_t> rebuilt(32 + tableBytes + holeBytes + chunkBytes, 0);
+    std::copy(original.begin(), original.begin() + 32, rebuilt.begin());
+    write_f104_u32(rebuilt, 24, static_cast<uint32_t>(rebuilt.size()));
+    write_f104_u32(rebuilt, 28, chunkCount + 1);
+
+    size_t offset = 32 + tableBytes + holeBytes;
+    write_f104_u32(rebuilt, 32 + size_t(chunkCount) * sizeof(uint32_t), 0);
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        write_f104_u32(rebuilt, 32 + size_t(i) * sizeof(uint32_t), static_cast<uint32_t>(offset));
+        std::copy(chunks[i].begin(), chunks[i].end(), rebuilt.begin() + offset);
+        offset += chunks[i].size();
+    }
+    return rebuilt;
+}
+}
+
+void test_dx11_decode_dxbc_bounds_regression()
+{
+    const std::string bytecode = read_f104_fixture("negate-positive.dxbc");
+    const std::string assembly = read_f104_fixture("negate-positive.asm");
+    check_literal_audit(bytecode.size() >= 32 && !assembly.empty(), "F104: native fixture is complete");
+
+    std::fprintf(stderr,"F104 section G1\n"); std::fflush(stderr);
+    // G1: the full, legal container must keep decoding exactly as before.
+    Shader* shader = ::DecodeDXBC(bytecode.data(), bytecode.size());
+    check_literal_audit(shader && shader->ui32MajorVersion == 5 && shader->eShaderType == PIXEL_SHADER &&
+        shader->ui32ShaderLength >= 2 && !shader->asPhase[MAIN_PHASE].ppsInst[0].empty(),
+        "F104: legal DXBC fixture still decodes to a ps_5_0 instruction stream");
+    ::FreeShaderInfo(shader->sInfo);
+    delete shader;
+
+    DecompilerSettings settings;
+    ParseParameters params{};
+    params.bytecode = bytecode.data();
+    params.bytecodeSize = bytecode.size();
+    params.decompiled = assembly.c_str();
+    params.decompiledSize = assembly.size();
+    params.G = &settings;
+    bool patched = false, failed = false;
+    std::string model;
+    const auto hlsl = DecompileBinaryHLSL(params, patched, model, failed);
+    check_literal_audit(!failed && !hlsl.empty() && model == "ps_5_0",
+        "F104: legal fixture keeps its previous public decompiler output");
+
+    std::fprintf(stderr,"F104 section T1\n"); std::fflush(stderr);
+    // T1: one DWORD shorter than the declared totalSize must be rejected.
+    const uint32_t declaredSize = read_f104_u32(bytecode, 24);
+    check_literal_audit(declaredSize >= 32 && declaredSize <= bytecode.size(), "F104: fixture totalSize is usable");
+    check_literal_audit(::DecodeDXBC(bytecode.data(), declaredSize - sizeof(uint32_t)) == nullptr,
+        "F104: truncated buffer is rejected instead of reading the missing tail");
+    check_literal_audit(::DecodeDXBC(nullptr, 0) == nullptr, "F104: null bytecode is rejected");
+
+    std::fprintf(stderr,"F104 section T2\n"); std::fflush(stderr);
+    // T2: an extra chunk-count entry with a hole after the table must be rejected.
+    const auto extraSlot = add_f104_extra_chunk_slot(bytecode);
+    check_literal_audit(::DecodeDXBC(extraSlot.data(), extraSlot.size()) == nullptr,
+        "F104: chunk offset outside the table is rejected");
+
+    std::fprintf(stderr,"F104 section T6\n"); std::fflush(stderr);
+    // T6: an absurd reflection count must be rejected from the chunk size
+    // before LoadShaderInfo allocates any array. A returned Shader is owned by
+    // ShaderPtr, so the test never frees sInfo by hand.
+    std::fprintf(stderr,"F104 T6: before damaging signature count\n"); std::fflush(stderr);
+    std::string damaged = bytecode;
+    uint32_t isgn = find_f104_chunk(damaged, 0x4e475349u); // 'ISGN'
+    if (!isgn) isgn = find_f104_chunk(damaged, 0x31475349u); // 'ISG1'
+    if (!isgn) isgn = find_f104_chunk(damaged, 0x4e47534fu); // 'OSGN'
+    if (!isgn) isgn = find_f104_chunk(damaged, 0x3147534fu); // 'OSG1'
+    check_literal_audit(isgn != 0 && size_t(isgn) + 12 <= damaged.size(),
+        "F104: signature count is inside the fixture");
+    const uint32_t bogusCount = 0xFFFFFFFFu;
+    std::memcpy(&damaged[isgn + 8], &bogusCount, sizeof(bogusCount));
+    std::fprintf(stderr,"F104 T6: damaged count at chunk offset %u\n",isgn); std::fflush(stderr);
+    auto decode_damaged = [&]() -> bool {
+        std::fprintf(stderr,"F104 T6: before DecodeDXBC size=%zu\n",damaged.size()); std::fflush(stderr);
+        try {
+            ShaderPtr owner(::DecodeDXBC(damaged.data(), damaged.size()));
+            std::fprintf(stderr,"F104 T6: after DecodeDXBC returned %s\n",owner ? "shader" : "nullptr"); std::fflush(stderr);
+            if (owner) std::fprintf(stderr,"F104 T6: before ShaderPtr/FreeShaderInfo destruction\n");
+            std::fflush(stderr);
+            return !owner;
+        } catch (...) {
+            std::fprintf(stderr,"F104 T6: DecodeDXBC threw; production owner already cleaned up\n"); std::fflush(stderr);
+            return true;
+        }
+    };
+    check_literal_audit(decode_damaged(), "F104: absurd reflection element count is rejected before allocation");
+    const auto beforeDamaged = decompiler_live_bytes();
+    for (unsigned i = 0; i < 64; ++i) (void)decode_damaged();
+    const auto afterDamaged = decompiler_live_bytes();
+    check_literal_audit(beforeDamaged == afterDamaged,
+        "F104: rejected reflection counts leave no Shader or reflection storage behind");
+
+    std::fprintf(stderr,"F104 section G5\n"); std::fflush(stderr);
+    // G5/T8: the DX9 scan keeps a legal token stream and rejects one that ends
+    // before END instead of reading the next free DWORD.
+    std::vector<uint32_t> dx9Tokens{0xfffe0300, 0x02000001, 0x800f0000, 0xa0e40000, 0x0000ffff};
+    Shader* dx9 = nullptr;
+    try {
+        dx9 = ::DecodeDX9BC(dx9Tokens.data(), dx9Tokens.size() * sizeof(uint32_t));
+    } catch (...) {
+    }
+    check_literal_audit(dx9 && dx9->dx9Shader && dx9->ui32MajorVersion == 3,
+        "F104: legal DX9 token stream still decodes");
+    if (dx9) {
+        ::FreeShaderInfo(dx9->sInfo);
+        delete dx9;
+    }
+
+    bool dx9Rejected = false;
+    try {
+        Shader* truncated = ::DecodeDX9BC(dx9Tokens.data(), (dx9Tokens.size() - 1) * sizeof(uint32_t));
+        dx9Rejected = (truncated == nullptr);
+        if (truncated) {
+            ::FreeShaderInfo(truncated->sInfo);
+            delete truncated;
+        }
+    } catch (...) {
+        dx9Rejected = true;
+    }
+    check_literal_audit(dx9Rejected, "F104: DX9 stream truncated before END is rejected");
 }
 
 void test_dx11_decompiler_negative_literal_regression()
@@ -666,6 +848,7 @@ void test_dx11_decompiler_negative_literal_regression()
             DecompilerSettings settings;
             ParseParameters params{};
             params.bytecode = bytecode.data();
+            params.bytecodeSize = bytecode.size();
             params.decompiled = text.c_str();
             params.decompiledSize = text.size();
             params.G = &settings;
@@ -693,6 +876,7 @@ void test_dx11_decompiler_negative_literal_regression()
         DecompilerSettings settings;
         ParseParameters params{};
         params.bytecode = bytecode.data();
+        params.bytecodeSize = bytecode.size();
         params.decompiled = assembly.c_str();
         params.decompiledSize = assembly.size();
         params.G = &settings;
@@ -719,3 +903,4 @@ void test_dx11_decompiler_negative_literal_regression()
             "F281: regenerated negated-literal HLSL compiles natively for ps_5_0");
     }
 }
+
