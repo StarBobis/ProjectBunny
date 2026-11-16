@@ -228,6 +228,30 @@ void test_resource_and_namespace_tokens(TokenizerFixture& fixture)
         "pool token scanner preserves arithmetic spaces inside index");
 }
 
+void test_tokenizer_view_lifetime()
+{
+    const std::wstring ini_namespace;
+    std::wstring text = L"1+2*3+(4+5)*6";
+    CommandListScope scope;
+    CommandListExpression expression;
+    check(expression.parse(&text, &ini_namespace, &scope), "parse view-lifetime fixture");
+    CommandListState first_state;
+    const float expected = expression.evaluate(&first_state);
+
+    // tokenise() holds a wstring_view over the caller's expression only while
+    // it runs; every token in the syntax tree owns a copy. Mutating (and
+    // reallocating) the source after parse must not change the result.
+    text.assign(8192, L'9');
+    CommandListState second_state;
+    check(expression.evaluate(&second_state) == expected,
+        "tokens own their text; replacing the source after parse cannot change evaluation");
+    text.clear();
+    text.shrink_to_fit();
+    CommandListState third_state;
+    check(expression.evaluate(&third_state) == expected,
+        "tokens remain valid after the source string is cleared and reallocated");
+}
+
 void run_tokenizer_regression()
 {
     TokenizerFixture fixture;
@@ -236,6 +260,7 @@ void run_tokenizer_regression()
     test_binary_scanner();
     test_binary_expressions_and_config(empty_namespace);
     test_resource_and_namespace_tokens(fixture);
+    test_tokenizer_view_lifetime();
     check(evaluate(L".5+.25", empty_namespace) == .75f && evaluate(L"1e-2+1", empty_namespace) == 1.01f,
         "leading-dot decimal and signed exponent literal tokenize correctly");
     check(std::isinf(evaluate(L"inf", empty_namespace)) &&
