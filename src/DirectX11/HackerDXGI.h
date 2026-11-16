@@ -200,14 +200,20 @@ private:
 	UINT mHeight;
 
 public:
-	HackerUpscalingSwapChain::HackerUpscalingSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pHackerDevice, HackerContext *pHackerContext,
-		DXGI_SWAP_CHAIN_DESC* pFakeSwapChainDesc, UINT newWidth, UINT newHeight);
+	HackerUpscalingSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pHackerDevice, HackerContext *pHackerContext,
+		IDXGISwapChain1 *pFakeSwapChain1, ID3D11Texture2D *pFakeBackBuffer,
+		UINT newWidth, UINT newHeight);
 	~HackerUpscalingSwapChain();
 
-private:
-	void CreateRenderTarget(DXGI_SWAP_CHAIN_DESC* pFakeSwapChainDesc);
-
-public:
+	// Creates the fake backing resource before the upscaling wrapper exists.
+	// On success exactly one of *ppFakeSwapChain1 / *ppFakeBackBuffer is
+	// non-null (mode 1 / mode 0 respectively).  On failure both are null and
+	// the caller must fall back to a plain HackerSwapChain instead of handing
+	// a half-initialised upscaling object to the game.  Public because
+	// wrap_swap_chain() is a free function.
+	static HRESULT CreateFakeSwapChain(IDXGISwapChain1 *pOrigSwapChain,
+		HackerDevice *pHackerDevice, DXGI_SWAP_CHAIN_DESC *pFakeSwapChainDesc,
+		IDXGISwapChain1 **ppFakeSwapChain1, ID3D11Texture2D **ppFakeBackBuffer);
 
 	STDMETHOD(GetBuffer)(THIS_
 		/* [in] */ UINT Buffer,

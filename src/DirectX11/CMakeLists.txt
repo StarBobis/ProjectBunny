@@ -145,6 +145,10 @@ target_compile_definitions(DirectX11 PRIVATE
 
 set_target_msvc_options(DirectX11)
 set_target_common_definitions(DirectX11)
+if(MSVC)
+    # F-113 AV diagnostics: map file for RVA -> function lookup.
+    target_link_options(DirectX11 PRIVATE /MAP)
+endif()
 
 if(BUILD_TESTING)
     option(DX11_AUDIT_ASAN_LOCKS "Instrument lock cleanup in the regression host with AddressSanitizer" OFF)
@@ -355,6 +359,10 @@ if(BUILD_TESTING)
     endif()
     set_target_msvc_options(dx11_upstream_regression)
     set_target_common_definitions(dx11_upstream_regression)
+    if(MSVC)
+        # F-113 AV diagnostics: map file for RVA -> function lookup.
+        target_link_options(dx11_upstream_regression PRIVATE /MAP)
+    endif()
     add_dependencies(dx11_upstream_regression DirectX11 dx11_version_header)
     target_link_libraries(dx11_upstream_regression PRIVATE Version.lib)
     add_library(dx11_debug_layer_audit STATIC tests/debug_layer_audit_regression.cpp)
