@@ -3121,7 +3121,9 @@ bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_
     if (!native_context || native_context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return false;
     Microsoft::WRL::ComPtr<ID3D11Device> resource_device, context_device;
     resource->GetDevice(&resource_device); native_context->GetDevice(&context_device);
-    if (resource_device.Get() != context_device.Get()) return false;
+    Microsoft::WRL::ComPtr<IUnknown> resource_identity, context_identity;
+    if (!resource_device || !context_device || FAILED(resource_device.As(&resource_identity)) ||
+        FAILED(context_device.As(&context_identity)) || resource_identity.Get() != context_identity.Get()) return false;
     D3D11_RESOURCE_DIMENSION dimension{};
     resource->GetType(&dimension);
     if (dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return false;

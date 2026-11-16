@@ -588,7 +588,11 @@ static void ParseIniKeyValLine(wstring *wline, wstring *section,
 			val = wline->substr(first);
 		else {
 			IniWarningW(L"No value found for: \"%ls\"\n - [%ls] @ [%ls]\n", wline->c_str(), section->c_str(), ini_namespace->c_str());
-			return;
+            // Retain explicit empty new match keys as invalid values. Otherwise
+            // alias fallback could silently revive an older, valid declaration.
+            if (_wcsnicmp(section->c_str(), L"Resource", 8) ||
+                (_wcsicmp(key.c_str(), L"match_format") && _wcsicmp(key.c_str(), L"match_dhash")))
+                return;
 		}
 
 		if (warn_duplicates == 2) {
@@ -2235,10 +2239,13 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
-    const wchar_t* match_format_key = GetIniString(section_name, L"match_format", nullptr, setting, MAX_PATH)
+    std::string match_format_probe;
+    const wchar_t* match_format_key = GetIniString(section_name, L"match_format", nullptr, &match_format_probe)
         ? L"match_format" : L"original_format";
-    if (GetIniString(section_name, match_format_key, nullptr, setting, MAX_PATH)) {
+    if (GetIniString(section_name, match_format_key, nullptr, &match_format_probe)) {
+        GetIniString(section_name, match_format_key, nullptr, setting, MAX_PATH);
         custom_resource->match_format = ParseFormatString(setting, true);
+        custom_resource->match_format_valid = custom_resource->match_format != static_cast<DXGI_FORMAT>(-1);
         if (custom_resource->match_format == static_cast<DXGI_FORMAT>(-1))
             IniWarningW(L"Unknown %ls \"%ls\"\n - [%ls]\n", match_format_key, setting, section_name);
         else
@@ -2247,7 +2254,13 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
     std::string match_hash;
     const wchar_t* match_hash_key = GetIniString(section_name, L"match_dhash", nullptr, &match_hash)
         ? L"match_dhash" : L"original_dhash";
-    custom_resource->match_dhash = GetIniHash(section_name, match_hash_key, 0, nullptr);
+    custom_resource->match_dhash = GetIniHash(section_name, match_hash_key, 0, &custom_resource->match_dhash_set);
+    custom_resource->match_confidence = GetIniFloat(section_name, L"match_confidence", 0.75f, nullptr);
+    if (!std::isfinite(custom_resource->match_confidence)) {
+        IniWarningW(L"Invalid match_confidence; using 0.75\n - [%ls]\n", section_name);
+        custom_resource->match_confidence = 0.75f;
+    }
+    custom_resource->match_confidence = (std::max)(0.0f, (std::min)(1.0f, custom_resource->match_confidence));
 
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space",
 		CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
@@ -4867,6 +4880,7 @@ void LoadConfigFile()
     G->cache_resource_data.store(data_cache_flags, std::memory_order_relaxed);
     // Policies belong to this load, not the prior configuration or its snapshots.
     InvalidateResourceDataCaches();
+    InvalidateTextureMatchSnapshots();
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);

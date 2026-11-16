@@ -56,8 +56,12 @@ public:
             "[ResourceOriginalMaximum]\noriginal_format=R16_UINT\noriginal_dhash=ffffffffffffffff\n"
             "[ResourceOriginalInvalid]\noriginal_format=definitely_invalid\noriginal_dhash=1234garbage\n"
             "[ResourceOriginalOverflow]\noriginal_dhash=12345678901234567\n"
-            "[ResourceMatchNew]\nmatch_format=R8G8B8A8_UNORM\nmatch_dhash=0123456789abcdef\n"
-            "[ResourceMatchPriority]\noriginal_format=R16_UINT\nmatch_format=R32_UINT\noriginal_dhash=1\nmatch_dhash=ffffffffffffffff\n";
+            "[ResourceMatchNew]\nmatch_format=R8G8B8A8_UNORM\nmatch_dhash=0123456789abcdef\nmatch_confidence=0.875\n"
+            "[ResourceMatchPriority]\noriginal_format=R16_UINT\nmatch_format=R32_UINT\noriginal_dhash=1\nmatch_dhash=ffffffffffffffff\n"
+            "[ResourceMatchLow]\nmatch_confidence=-2\n"
+            "[ResourceMatchHigh]\nmatch_confidence=2\n"
+            "[ResourceMatchNaN]\nmatch_confidence=nan\n"
+            "[ResourceMatchEmpty]\noriginal_format=R32_UINT\nmatch_format=\noriginal_dhash=1\nmatch_dhash=\n";
         out.close();
         check(out.good(), "write actual resource metadata INI");
         ClearKeyBindings();
@@ -141,15 +145,29 @@ void exercise(BatchDevice& device)
             "match metadata: new getter and legacy getter both remain supported");
     }
 
+    check(customResources.at(L"resourcematchnew").match_confidence == 0.875f &&
+        customResources.at(L"resourcematchnew").match_dhash_set &&
+        customResources.at(L"resourceoriginalomitted").match_confidence == 0.75f &&
+        !customResources.at(L"resourceoriginalomitted").match_dhash_set &&
+        !customResources.at(L"resourceoriginalinvalid").match_format_valid &&
+        customResources.at(L"resourcematchlow").match_confidence == 0.0f &&
+        customResources.at(L"resourcematchhigh").match_confidence == 1.0f &&
+        customResources.at(L"resourcematchnan").match_confidence == 0.75f,
+        "match metadata: real INI confidence defaults, clamping, NaN and presence validation");
+    check(!customResources.at(L"resourcematchempty").match_format_valid &&
+        !customResources.at(L"resourcematchempty").match_dhash_set,
+        "match metadata: explicitly empty new keys cannot fall back to valid legacy aliases");
     Registry registry;
     auto pixels = texture(device, 0x90abcdef);
     auto view = srv(device, pixels.Get());
     auto& source = registry.resource(L"resourceoriginalsource", device, pixels.Get());
     source.match_format = DXGI_FORMAT_R16_UINT; source.match_dhash = 0xfedcba9876543210ULL;
+    source.match_confidence = 0.5f; source.match_dhash_set = true;
     auto& destination = registry.resource(L"resourceoriginaldestination", device);
     for (const auto* option : {L"ref ", L"copy ", L"copy_desc "}) {
         metadata_copy(device, L"resourceoriginaldestination", std::wstring(option) + L"resourceoriginalsource");
         pair(destination, source.match_format, source.match_dhash, "original metadata: actual custom ref/copy/copy_desc preserves pair");
+        check(destination.match_confidence == 0.5f && destination.match_dhash_set, "match metadata: reference/copy/copy_desc retains confidence and presence");
         check(destination.resource != nullptr, "original metadata: successful copy publishes native resource");
     }
     metadata_copy(device, L"resourceoriginaldestination", L"null");

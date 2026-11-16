@@ -58,6 +58,8 @@ add_library(DirectX11 SHARED
     Override.cpp
     profiling.cpp
     ResourceHash.cpp
+    TextureMatch.cpp
+    TextureMatch.h
     ShaderRegex.cpp
     ShaderBindings.cpp
     ShaderBindings.h
@@ -222,6 +224,7 @@ if(BUILD_TESTING)
         tests/member_argument_regression.cpp
         tests/dhash_cache_regression.cpp
         tests/hamming_distance_regression.cpp
+        tests/texture_match_regression.cpp
         tests/adversarial_region_regression.cpp
         tests/adversarial_dhash_regression.cpp
         tests/adversarial_store_regression.cpp
@@ -275,6 +278,8 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME dx11_upstream_regression COMMAND dx11_upstream_regression)
     add_test(NAME dx11_overlay_text_regression COMMAND dx11_upstream_regression --overlay-text)
+    add_test(NAME dx11_texture_match_regression COMMAND dx11_upstream_regression --texture-match)
+    add_test(NAME dx11_texture_match_hooked_regression COMMAND dx11_upstream_regression --texture-match-hooked)
     add_executable(dx11_proxy_smoke tests/proxy_smoke.cpp)
     target_include_directories(dx11_proxy_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_features(dx11_proxy_smoke PRIVATE cxx_std_17)

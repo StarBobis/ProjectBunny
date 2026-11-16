@@ -922,6 +922,8 @@ void test_dx11_dhash_gpu_regression();
 void test_dx11_member_argument_regression();
 void test_dx11_dhash_cache_regression();
 void test_dx11_hamming_distance_regression();
+void test_dx11_texture_match_regression();
+void test_dx11_texture_match_hooked_regression();
 void test_dx11_adversarial_region_regression();
 void test_dx11_adversarial_dhash_regression();
 void test_dx11_adversarial_store_regression();
@@ -952,6 +954,14 @@ int main(int argc, char** argv)
     InitializeCriticalSection(&resource_creation_mode_lock);
     test_dx11_version_regression();
     try {
+        if (argc == 2 && std::string(argv[1]) == "--texture-match-hooked") {
+            test_dx11_texture_match_hooked_regression();
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--texture-match") {
+            test_dx11_texture_match_regression();
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--overlay-text") {
             test_dx11_overlay_text_regression();
             return 0;
@@ -986,6 +996,7 @@ int main(int argc, char** argv)
         test_dx11_member_argument_regression();
         test_dx11_dhash_cache_regression();
         test_dx11_hamming_distance_regression();
+        test_dx11_texture_match_regression();
         test_dx11_adversarial_region_regression();
         test_dx11_adversarial_dhash_regression();
         test_dx11_adversarial_store_regression();

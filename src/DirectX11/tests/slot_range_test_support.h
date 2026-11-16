@@ -30,6 +30,8 @@ public:
     std::unique_ptr<HackerContext> wrapper;
     CommandListState state;
 
+    bool hooked_lifetime = false;
+
     BatchDevice()
     {
         runtime = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -57,7 +59,8 @@ public:
     ~BatchDevice()
     {
         wrapper->ClearState();
-        wrapper.reset();
+        if (hooked_lifetime) wrapper.release(); // Native hooked Release owns wrapper destruction.
+        else wrapper.reset();
         context.Reset();
         native.Reset();
         device->Release();
@@ -219,7 +222,7 @@ public:
         auto& value = customResources[name];
         value.name = name; value.resource = native;
         if (native) native->AddRef();
-        value.device = device.native.Get();
+        value.device = device.state.mOrigDevice1;
         value.is_null = native == nullptr; value.substantiated = true;
         value.format = format; value.stride = stride; value.buf_size = size;
         return value;
