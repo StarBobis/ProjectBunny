@@ -81,19 +81,22 @@ void test_dx11_precision_delimiter_review()
     catch(const std::exception&) {local_exception=true;}
     check_assembler_audit(!local_exception, "F145 review: malformed synthetic ICB text no longer escapes as an exception");
     check_assembler_audit(malformed_result==malformed, "F145 review: malformed synthetic ICB text falls back to the original assembly");
+    std::fprintf(stderr,"F145: missing-brace exception=%d equal=%d\n",local_exception,malformed_result==malformed);
     std::fputs("F145 observation: malformed missing-brace text now falls back to the original assembly; native producer reachability remains unproved\n",stderr);
     const std::pair<const char*,const char*> missing_comma_cases[] = {
         {"dcl_immediateConstantBuffer { { 1.0, 2.0, 3.0 4.0} }",
             "dcl_immediateConstantBuffer { { 1.0, 2.0, 3.0, 5.0} }"},
         {"mov r0.xyzw, l(1.0, 2.0, 3.0 4.0)",
             "mov r0.xyzw, l(1.0, 2.0, 3.0, 5.0)"}};
-    for (const auto& missing_comma : missing_comma_cases) {
+    for (size_t caseIndex=0; caseIndex<2; ++caseIndex) {
+        const auto& missing_comma=missing_comma_cases[caseIndex];
         bool missing_comma_exception=false;
         std::string missing_comma_result;
         try { missing_comma_result=assembleAndCompare(missing_comma.first,assembleIns(missing_comma.second)); }
         catch(const std::exception&) {missing_comma_exception=true;}
         check_assembler_audit(!missing_comma_exception, "F145 review: missing-comma literal text no longer escapes as an exception");
         check_assembler_audit(missing_comma_result==missing_comma.first, "F145 review: missing-comma literal text falls back to the original assembly");
+        std::fprintf(stderr,"F145: missing-comma case%d exception=%d equal=%d\n",static_cast<int>(caseIndex),missing_comma_exception,missing_comma_result==missing_comma.first);
     }
     for (const auto* text : {"mov r0.x, l(1.0)", "add r0.xyzw, l(1.0, 2.0, 3.0, 4.0), l(5.0, 6.0, 7.0, 8.0)",
             "dmov r0.xyzw, d(1.0l, 2.0l)", "dcl_immediateConstantBuffer { { 1.0, 2.0, 3.0, 4.0} }"}) {
