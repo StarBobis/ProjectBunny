@@ -75,6 +75,7 @@ void check_dx11_decompiler_lifetime(const void*,size_t,const char*,size_t);
 void test_dx11_decompiler_lifetime_regression();
 void test_dx11_decode_dxbc_bounds_regression();
 void test_dx11_decompiler_decode_bounds_regression();
+void test_dx11_reflect_bounds_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
 void test_dx11_initial_data_ownership_regression();
@@ -1247,6 +1248,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-283", test_dx11_decompiler_lifetime_regression},
     {"F-104", test_dx11_decode_dxbc_bounds_regression},
     {"F-101", test_dx11_decompiler_decode_bounds_regression},
+    {"F-128", test_dx11_reflect_bounds_regression},
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},

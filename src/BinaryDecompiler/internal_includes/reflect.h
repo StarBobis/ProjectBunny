@@ -3,6 +3,8 @@
 
 #include "hlslcc.h"
 
+#include <cstddef>
+
 ResourceGroup ResourceTypeToResourceGroup(ResourceType);
 
 int GetResourceFromBindingPoint(const ResourceGroup eGroup, const uint32_t ui32BindPoint, const ShaderInfo* psShaderInfo, ResourceBinding** ppsOutBinding);
@@ -20,19 +22,30 @@ int GetShaderVarFromOffset(const uint32_t ui32Vec4Offset,
 						   int32_t* pi32Index,
 						   int32_t* pi32Rebase);
 
-typedef struct
+//F-128: every reflection chunk carries the payload byte count that DecodeDXBC
+//already validated against the real container. The reader stops at uiSize
+//instead of trusting the counts and string offsets inside the payload.
+struct ReflectionChunk
 {
-    uint32_t* pui32Inputs;
-    uint32_t* pui32Outputs;
-    uint32_t* pui32Resources;
-    uint32_t* pui32Interfaces;
-    uint32_t* pui32Inputs11;
-    uint32_t* pui32Outputs11;
-	uint32_t* pui32OutputsWithStreams;
-	uint32_t* pui32PatchConstants;
-} ReflectionChunks;
+    const uint8_t* pui8Data = nullptr;
+    size_t uiSize = 0;
 
-void LoadShaderInfo(const uint32_t ui32MajorVersion,
+    bool present() const { return pui8Data != nullptr; }
+};
+
+struct ReflectionChunks
+{
+    ReflectionChunk inputs;
+    ReflectionChunk outputs;
+    ReflectionChunk resources;
+    ReflectionChunk interfaces;
+    ReflectionChunk inputs11;
+    ReflectionChunk outputs11;
+    ReflectionChunk outputsWithStreams;
+    ReflectionChunk patchConstants;
+};
+
+bool LoadShaderInfo(const uint32_t ui32MajorVersion,
     const uint32_t ui32MinorVersion,
     const ReflectionChunks* psChunks,
     ShaderInfo* psInfo);

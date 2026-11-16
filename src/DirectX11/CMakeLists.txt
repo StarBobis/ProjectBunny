@@ -250,6 +250,7 @@ if(BUILD_TESTING)
         tests/audit_regressions.cpp
         tests/hook_lookup_audit_regression.cpp
         tests/audit_dx9_regression.cpp
+        tests/reflect_bounds_audit.cpp
         tests/shader_regex_temp_regression.cpp
         tests/shader_ownership_audit.cpp
         tests/shader_regex_declaration_audit.cpp

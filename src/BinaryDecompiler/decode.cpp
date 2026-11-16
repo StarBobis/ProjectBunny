@@ -1632,37 +1632,37 @@ Shader* DecodeDXBC(const void* data, size_t byteSize)
 		{
 			case FOURCC_ISGN:
 			{
-				refChunks.pui32Inputs = const_cast<uint32_t*>(payload);
+				refChunks.inputs = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			case FOURCC_ISG1:
 			{
-				refChunks.pui32Inputs11 = const_cast<uint32_t*>(payload);
+				refChunks.inputs11 = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			case FOURCC_RDEF:
 			{
-				refChunks.pui32Resources = const_cast<uint32_t*>(payload);
+				refChunks.resources = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			case FOURCC_IFCE:
 			{
-				refChunks.pui32Interfaces = const_cast<uint32_t*>(payload);
+				refChunks.interfaces = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			case FOURCC_OSGN:
 			{
-				refChunks.pui32Outputs = const_cast<uint32_t*>(payload);
+				refChunks.outputs = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			case FOURCC_OSG1:
 			{
-				refChunks.pui32Outputs11 = const_cast<uint32_t*>(payload);
+				refChunks.outputs11 = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			case FOURCC_OSG5:
 			{
-				refChunks.pui32OutputsWithStreams = const_cast<uint32_t*>(payload);
+				refChunks.outputsWithStreams = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			case FOURCC_SHDR:
@@ -1676,7 +1676,7 @@ Shader* DecodeDXBC(const void* data, size_t byteSize)
 			}
 			case FOURCC_PSGN:
 			{
-				refChunks.pui32PatchConstants = const_cast<uint32_t*>(payload);
+				refChunks.patchConstants = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
 			default:
@@ -1704,10 +1704,14 @@ Shader* DecodeDXBC(const void* data, size_t byteSize)
 
 	try
 	{
-		LoadShaderInfo(ui32MajorVersion,
+		//F-128: reflection counts/offsets that do not fit their chunk are
+		//malformed input. Release the owner and report failure; F-101 still
+		//owns the catch below for errors raised by Decode itself.
+		if (!LoadShaderInfo(ui32MajorVersion,
 			ui32MinorVersion,
 			&refChunks,
-			shader->sInfo);
+			shader->sInfo))
+			return nullptr;
 
 		Decode(shaderChunk, shaderWords, shader.get());
 	}

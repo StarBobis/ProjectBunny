@@ -3,271 +3,368 @@
 #include "internal_includes/decode.h"
 #include <stdlib.h>
 
+#include <algorithm>
+#include <cstring>
 #include <string>
 
-static void ReadStringFromTokenStream(const uint32_t* tokens, std::string &str)
+namespace {
+
+//F-128: D3D structures are nested far below this; the limit keeps a malformed
+//type graph from exhausting the thread stack before the cycle check runs.
+constexpr unsigned kMaxShaderTypeDepth = 64;
+
+size_t ReflectionBudget(size_t chunkSize)
 {
-    char* charTokens = (char*) tokens;
-    char nextCharacter = *charTokens++;
-	str.clear();
-
-    //Add each individual character until
-    //a terminator is found.
-    while(nextCharacter != 0) {
-
-        str.push_back(nextCharacter);
-
-        nextCharacter = *charTokens++;
-    }
+    //Type traversal budget for DAG expansion. Strings are deliberately not
+    //budgeted: legal RDEF data can re-read the same shared struct member names
+    //once per variable, which is proportional to the output type tree, not to
+    //the bytes stored once in the chunk.
+    const size_t minimum = 1024;
+    const size_t maximum = static_cast<size_t>(-1);
+    if (chunkSize > (maximum - minimum) / 2)
+        return maximum;
+    return std::max(minimum, chunkSize * 2);
 }
 
-static void ReadInputSignatures(const uint32_t* pui32Tokens,
-                        ShaderInfo* psShaderInfo,
-						const int extended)
+struct ReflectionReader
 {
-    uint32_t i;
+    const uint8_t* base = nullptr;
+    size_t size = 0;
+    size_t typeBudget = 0;
 
-    InOutSignature* psSignatures;
-    const uint32_t* pui32FirstSignatureToken = pui32Tokens;
-    const uint32_t ui32ElementCount = *pui32Tokens++;
-    const uint32_t ui32Key = *pui32Tokens++;
-
-    psSignatures = new InOutSignature[ui32ElementCount];
-    psShaderInfo->psInputSignatures = psSignatures;
-    psShaderInfo->ui32NumInputSignatures = ui32ElementCount;
-
-    for(i=0; i<ui32ElementCount; ++i)
+    bool HasBytes(size_t offset, size_t count) const
     {
-        uint32_t ui32ComponentMasks;
-        InOutSignature* psCurrentSignature = psSignatures + i;
-        uint32_t ui32SemanticNameOffset;
-
-		psCurrentSignature->ui32Stream = 0;
-		psCurrentSignature->eMinPrec = MIN_PRECISION_DEFAULT;
-
-		if(extended)
-			psCurrentSignature->ui32Stream = *pui32Tokens++;
-
-		ui32SemanticNameOffset = *pui32Tokens++;
-        psCurrentSignature->ui32SemanticIndex = *pui32Tokens++;
-        psCurrentSignature->eSystemValueType = (SPECIAL_NAME) *pui32Tokens++;
-        psCurrentSignature->eComponentType = (INOUT_COMPONENT_TYPE) *pui32Tokens++;
-        psCurrentSignature->ui32Register = *pui32Tokens++;
-        
-        ui32ComponentMasks = *pui32Tokens++;
-        psCurrentSignature->ui32Mask = ui32ComponentMasks & 0x7F;
-        //Shows which components are read
-        psCurrentSignature->ui32ReadWriteMask = (ui32ComponentMasks & 0x7F00) >> 8;
-
-		if(extended)
-			psCurrentSignature->eMinPrec = (MIN_PRECISION) *pui32Tokens++;
-
-        ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstSignatureToken+ui32SemanticNameOffset), psCurrentSignature->SemanticName);
+        return base != nullptr && offset <= size && count <= size - offset;
     }
-}
 
-static void ReadOutputSignatures(const uint32_t* pui32Tokens,
-                        ShaderInfo* psShaderInfo,
-						const int minPrec,
-						const int streams)
-{
-    uint32_t i;
-
-    InOutSignature* psSignatures;
-    const uint32_t* pui32FirstSignatureToken = pui32Tokens;
-    const uint32_t ui32ElementCount = *pui32Tokens++;
-    const uint32_t ui32Key = *pui32Tokens++;
-
-    psSignatures = new InOutSignature[ui32ElementCount];
-    psShaderInfo->psOutputSignatures = psSignatures;
-    psShaderInfo->ui32NumOutputSignatures = ui32ElementCount;
-
-    for(i=0; i<ui32ElementCount; ++i)
+    bool ReadU32(size_t offset, uint32_t* value) const
     {
-        uint32_t ui32ComponentMasks;
-        InOutSignature* psCurrentSignature = psSignatures + i;
-        uint32_t ui32SemanticNameOffset;
-
-		psCurrentSignature->ui32Stream = 0;
-		psCurrentSignature->eMinPrec = MIN_PRECISION_DEFAULT;
-
-		if(streams)
-			psCurrentSignature->ui32Stream = *pui32Tokens++;
-
-		ui32SemanticNameOffset = *pui32Tokens++;
-        psCurrentSignature->ui32SemanticIndex = *pui32Tokens++;
-        psCurrentSignature->eSystemValueType = (SPECIAL_NAME)*pui32Tokens++;
-        psCurrentSignature->eComponentType = (INOUT_COMPONENT_TYPE) *pui32Tokens++;
-        psCurrentSignature->ui32Register = *pui32Tokens++;
-
-        ui32ComponentMasks = *pui32Tokens++;
-        psCurrentSignature->ui32Mask = ui32ComponentMasks & 0x7F;
-        //Shows which components are NEVER written.
-        psCurrentSignature->ui32ReadWriteMask = (ui32ComponentMasks & 0x7F00) >> 8;
-
-		if(minPrec)
-			psCurrentSignature->eMinPrec = (MIN_PRECISION) *pui32Tokens++;
-
-        ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstSignatureToken+ui32SemanticNameOffset), psCurrentSignature->SemanticName);
+        if (!HasBytes(offset, sizeof(*value)))
+            return false;
+        std::memcpy(value, base + offset, sizeof(*value));
+        return true;
     }
-}
 
-static void ReadPatchConstantSignatures(const uint32_t* pui32Tokens,
-                    ShaderInfo* psShaderInfo,
-					const int minPrec,
-					const int streams)
-{
-    uint32_t i;
-
-    InOutSignature* psSignatures;
-    const uint32_t* pui32FirstSignatureToken = pui32Tokens;
-    const uint32_t ui32ElementCount = *pui32Tokens++;
-    const uint32_t ui32Key = *pui32Tokens++;
-
-    psSignatures = new InOutSignature[ui32ElementCount];
-    psShaderInfo->psPatchConstantSignatures = psSignatures;
-    psShaderInfo->ui32NumPatchConstantSignatures = ui32ElementCount;
-
-    for(i=0; i<ui32ElementCount; ++i)
+    bool ReadU16(size_t offset, uint16_t* value) const
     {
-        uint32_t ui32ComponentMasks;
-        InOutSignature* psCurrentSignature = psSignatures + i;
-        uint32_t ui32SemanticNameOffset;
-
-		psCurrentSignature->ui32Stream = 0;
-		psCurrentSignature->eMinPrec = MIN_PRECISION_DEFAULT;
-
-		if(streams)
-			psCurrentSignature->ui32Stream = *pui32Tokens++;
-
-		ui32SemanticNameOffset = *pui32Tokens++;
-        psCurrentSignature->ui32SemanticIndex = *pui32Tokens++;
-        psCurrentSignature->eSystemValueType = (SPECIAL_NAME)*pui32Tokens++;
-        psCurrentSignature->eComponentType = (INOUT_COMPONENT_TYPE) *pui32Tokens++;
-        psCurrentSignature->ui32Register = *pui32Tokens++;
-
-		// Massage some special inputs/outputs to match the types of GLSL counterparts
-		if (psCurrentSignature->eSystemValueType == NAME_RENDER_TARGET_ARRAY_INDEX)
-		{
-			psCurrentSignature->eComponentType = INOUT_COMPONENT_SINT32;
-		}
-
-        ui32ComponentMasks = *pui32Tokens++;
-        psCurrentSignature->ui32Mask = ui32ComponentMasks & 0x7F;
-        //Shows which components are NEVER written.
-        psCurrentSignature->ui32ReadWriteMask = (ui32ComponentMasks & 0x7F00) >> 8;
-
-		if(minPrec)
-			psCurrentSignature->eMinPrec = (MIN_PRECISION) *pui32Tokens++;
-
-        ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstSignatureToken+ui32SemanticNameOffset), psCurrentSignature->SemanticName);
+        if (!HasBytes(offset, sizeof(*value)))
+            return false;
+        std::memcpy(value, base + offset, sizeof(*value));
+        return true;
     }
+
+    bool ReadString(size_t offset, std::string* value)
+    {
+        value->clear();
+        if (!base || offset >= size)
+            return false;
+
+        //Scan only the actual remaining payload. No chunk-wide budget: a legal
+        //shader may reference the same long name many times while building a
+        //separate type tree for each variable.
+        const size_t scanBytes = size - offset;
+        const void* terminator = std::memchr(base + offset, 0, scanBytes);
+        if (!terminator)
+            return false;
+
+        const size_t length = static_cast<const uint8_t*>(terminator) - (base + offset);
+        value->assign(reinterpret_cast<const char*>(base + offset), length);
+        return true;
+    }
+};
+
+ReflectionReader MakeReader(const ReflectionChunk& chunk)
+{
+    ReflectionReader reader;
+    reader.base = chunk.pui8Data;
+    reader.size = chunk.uiSize;
+    reader.typeBudget = ReflectionBudget(chunk.uiSize);
+    return reader;
 }
 
-static const uint32_t* ReadResourceBinding(const uint32_t* pui32FirstResourceToken, const uint32_t* pui32Tokens, ResourceBinding* psBinding)
+//count records of recordBytes each must fit between offset and the chunk end.
+//The division form cannot overflow for a 32-bit count and a size_t offset.
+bool CheckTable(const ReflectionReader& reader, size_t offset, uint32_t count, size_t recordBytes)
 {
-    uint32_t ui32NameOffset = *pui32Tokens++;
+    if (offset > reader.size)
+        return false;
+    return count <= (reader.size - offset) / recordBytes;
+}
 
-    ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstResourceToken+ui32NameOffset), psBinding->Name);
+bool ReadSignatures(ReflectionReader& reader,
+                    InOutSignature** ppsSignatures,
+                    uint32_t* pui32NumSignatures,
+                    bool streams,
+                    bool minPrec,
+                    bool patchConstants)
+{
+    uint32_t elementCount = 0;
+    uint32_t key = 0;
+    if (!reader.ReadU32(0, &elementCount) || !reader.ReadU32(sizeof(uint32_t), &key))
+        return false;
 
-    psBinding->eType = (ResourceType) *pui32Tokens++;
-    psBinding->ui32ReturnType = *pui32Tokens++;
-    psBinding->eDimension = (REFLECT_RESOURCE_DIMENSION)*pui32Tokens++;
-    psBinding->ui32NumSamples = *pui32Tokens++;
-    psBinding->ui32BindPoint = *pui32Tokens++;
-    psBinding->ui32BindCount = *pui32Tokens++;
-    psBinding->ui32Flags = *pui32Tokens++;
+    const size_t recordBytes = 6 * sizeof(uint32_t) +
+        (streams ? sizeof(uint32_t) : 0) +
+        (minPrec ? sizeof(uint32_t) : 0);
+    if (!CheckTable(reader, 2 * sizeof(uint32_t), elementCount, recordBytes))
+        return false;
 
-    return pui32Tokens;
+    InOutSignature* psSignatures = new InOutSignature[elementCount];
+    *ppsSignatures = psSignatures;
+    *pui32NumSignatures = elementCount;
+
+    size_t recordOffset = 2 * sizeof(uint32_t);
+    for (uint32_t i = 0; i < elementCount; ++i, recordOffset += recordBytes)
+    {
+        InOutSignature* psCurrentSignature = psSignatures + i;
+        size_t cursor = recordOffset;
+        uint32_t value = 0;
+
+        psCurrentSignature->ui32Stream = 0;
+        psCurrentSignature->eMinPrec = MIN_PRECISION_DEFAULT;
+
+        if (streams)
+        {
+            if (!reader.ReadU32(cursor, &psCurrentSignature->ui32Stream))
+                return false;
+            cursor += sizeof(uint32_t);
+        }
+
+        uint32_t ui32SemanticNameOffset = 0;
+        if (!reader.ReadU32(cursor, &ui32SemanticNameOffset))
+            return false;
+        cursor += sizeof(uint32_t);
+        if (!reader.ReadU32(cursor, &psCurrentSignature->ui32SemanticIndex))
+            return false;
+        cursor += sizeof(uint32_t);
+        if (!reader.ReadU32(cursor, &value))
+            return false;
+        psCurrentSignature->eSystemValueType = (SPECIAL_NAME)value;
+        cursor += sizeof(uint32_t);
+        if (!reader.ReadU32(cursor, &value))
+            return false;
+        psCurrentSignature->eComponentType = (INOUT_COMPONENT_TYPE)value;
+        cursor += sizeof(uint32_t);
+        if (!reader.ReadU32(cursor, &psCurrentSignature->ui32Register))
+            return false;
+        cursor += sizeof(uint32_t);
+        uint32_t ui32ComponentMasks = 0;
+        if (!reader.ReadU32(cursor, &ui32ComponentMasks))
+            return false;
+        psCurrentSignature->ui32Mask = ui32ComponentMasks & 0x7F;
+        psCurrentSignature->ui32ReadWriteMask = (ui32ComponentMasks & 0x7F00) >> 8;
+        cursor += sizeof(uint32_t);
+
+        if (minPrec)
+        {
+            if (!reader.ReadU32(cursor, &value))
+                return false;
+            psCurrentSignature->eMinPrec = (MIN_PRECISION)value;
+            cursor += sizeof(uint32_t);
+        }
+
+        //Massage some special inputs/outputs to match the types of GLSL counterparts
+        if (patchConstants && psCurrentSignature->eSystemValueType == NAME_RENDER_TARGET_ARRAY_INDEX)
+            psCurrentSignature->eComponentType = INOUT_COMPONENT_SINT32;
+
+        if (!reader.ReadString(ui32SemanticNameOffset, &psCurrentSignature->SemanticName))
+            return false;
+    }
+
+    return true;
+}
+
+bool ReadInputSignatures(ReflectionReader& reader, ShaderInfo* psShaderInfo, bool extended)
+{
+    return ReadSignatures(reader, &psShaderInfo->psInputSignatures,
+        &psShaderInfo->ui32NumInputSignatures, extended, extended, false);
+}
+
+bool ReadOutputSignatures(ReflectionReader& reader, ShaderInfo* psShaderInfo,
+                          bool minPrec, bool streams)
+{
+    return ReadSignatures(reader, &psShaderInfo->psOutputSignatures,
+        &psShaderInfo->ui32NumOutputSignatures, streams, minPrec, false);
+}
+
+bool ReadPatchConstantSignatures(ReflectionReader& reader, ShaderInfo* psShaderInfo,
+                                 bool minPrec, bool streams)
+{
+    return ReadSignatures(reader, &psShaderInfo->psPatchConstantSignatures,
+        &psShaderInfo->ui32NumPatchConstantSignatures, streams, minPrec, true);
+}
+
+static bool ReadResourceBinding(ReflectionReader& reader, size_t offset, ResourceBinding* psBinding)
+{
+    uint32_t values[8];
+    size_t cursor = offset;
+    for (unsigned i = 0; i < 8; ++i, cursor += sizeof(uint32_t))
+    {
+        if (!reader.ReadU32(cursor, &values[i]))
+            return false;
+    }
+
+    if (!reader.ReadString(values[0], &psBinding->Name))
+        return false;
+
+    psBinding->eType = (ResourceType) values[1];
+    psBinding->ui32ReturnType = values[2];
+    psBinding->eDimension = (REFLECT_RESOURCE_DIMENSION) values[3];
+    psBinding->ui32NumSamples = values[4];
+    psBinding->ui32BindPoint = values[5];
+    psBinding->ui32BindCount = values[6];
+    psBinding->ui32Flags = values[7];
+
+    return true;
 }
 
 //Read D3D11_SHADER_TYPE_DESC
-static void ReadShaderVariableType(const uint32_t ui32MajorVersion,
-								   const uint32_t* pui32FirstConstBufToken,
-								   const uint32_t* pui32tokens, ShaderVarType* varType)
+static bool ReadShaderVariableType(ReflectionReader& reader,
+                                   uint32_t ui32TypeOffset,
+                                   ShaderVarType* varType,
+                                   unsigned uiDepth,
+                                   const uint32_t* pui32Ancestors,
+                                   unsigned ui32AncestorCount)
 {
-    const uint16_t* pui16Tokens = (const uint16_t*) pui32tokens;
-    uint16_t ui32MemberCount;
-    uint32_t ui32MemberOffset;
-	const uint32_t* pui32MemberTokens;
-	uint32_t i;
+    if (uiDepth > kMaxShaderTypeDepth || reader.typeBudget == 0)
+        return false;
+    --reader.typeBudget;
 
-    varType->Class = (SHADER_VARIABLE_CLASS)pui16Tokens[0];
-    varType->Type = (SHADER_VARIABLE_TYPE)pui16Tokens[1];
-    varType->Rows = pui16Tokens[2];
-    varType->Columns = pui16Tokens[3];
-    varType->Elements = pui16Tokens[4];
+    const size_t typeOffset = ui32TypeOffset;
+    if (!reader.HasBytes(typeOffset, 16))
+        return false;
 
-    varType->MemberCount = ui32MemberCount = pui16Tokens[5];
-	varType->Members = 0;
+    for (unsigned i = 0; i < ui32AncestorCount; ++i)
+    {
+        if (pui32Ancestors[i] == ui32TypeOffset)
+            return false;
+    }
 
-	if(varType->ParentCount)
-	{
-		varType->FullName = varType->Parent->FullName +
-			"." +
-			varType->Name;
-	}
+    uint16_t header[6];
+    for (unsigned i = 0; i < 6; ++i)
+    {
+        if (!reader.ReadU16(typeOffset + i * sizeof(uint16_t), &header[i]))
+            return false;
+    }
+    uint32_t ui32MemberInfoOffset = 0;
+    if (!reader.ReadU32(typeOffset + 3 * sizeof(uint32_t), &ui32MemberInfoOffset))
+        return false;
 
-	if(ui32MemberCount)
-	{
-		varType->Members = new ShaderVarType[ui32MemberCount];
+    varType->Class = (SHADER_VARIABLE_CLASS) header[0];
+    varType->Type = (SHADER_VARIABLE_TYPE) header[1];
+    varType->Rows = header[2];
+    varType->Columns = header[3];
+    varType->Elements = header[4];
+    varType->MemberCount = header[5];
+    varType->Members = 0;
 
-		ui32MemberOffset = pui32tokens[3];
-	
-		pui32MemberTokens = (const uint32_t*)((const char*)pui32FirstConstBufToken+ui32MemberOffset);
+    if (varType->ParentCount)
+    {
+        varType->FullName = varType->Parent->FullName +
+            "." +
+            varType->Name;
+    }
 
-		for(i=0; i< ui32MemberCount; ++i)
-		{
-			uint32_t ui32NameOffset = *pui32MemberTokens++;
-			uint32_t ui32MemberTypeOffset = *pui32MemberTokens++;
-			
-			varType->Members[i].Parent = varType;
-			varType->Members[i].ParentCount = varType->ParentCount + 1;
+    const uint32_t ui32MemberCount = varType->MemberCount;
+    if (!ui32MemberCount)
+        return true;
 
-			varType->Members[i].Offset = *pui32MemberTokens++;
+    if (ui32AncestorCount > kMaxShaderTypeDepth)
+        return false;
+    if (!CheckTable(reader, ui32MemberInfoOffset, ui32MemberCount, 3 * sizeof(uint32_t)))
+        return false;
 
-			ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstConstBufToken+ui32NameOffset), varType->Members[i].Name);
+    uint32_t aui32ChildAncestors[kMaxShaderTypeDepth + 1];
+    for (unsigned i = 0; i < ui32AncestorCount; ++i)
+        aui32ChildAncestors[i] = pui32Ancestors[i];
+    aui32ChildAncestors[ui32AncestorCount] = ui32TypeOffset;
 
-			ReadShaderVariableType(ui32MajorVersion, pui32FirstConstBufToken, 
-				(const uint32_t*)((const char*)pui32FirstConstBufToken+ui32MemberTypeOffset), &varType->Members[i]);
-		}
-	}
+    ShaderVarType* psMembers = new ShaderVarType[ui32MemberCount];
+    varType->Members = psMembers;
+
+    size_t memberOffset = ui32MemberInfoOffset;
+    for (uint32_t i = 0; i < ui32MemberCount; ++i, memberOffset += 3 * sizeof(uint32_t))
+    {
+        uint32_t ui32NameOffset = 0;
+        uint32_t ui32MemberTypeOffset = 0;
+        uint32_t ui32MemberFieldOffset = 0;
+        if (!reader.ReadU32(memberOffset, &ui32NameOffset))
+            return false;
+        if (!reader.ReadU32(memberOffset + sizeof(uint32_t), &ui32MemberTypeOffset))
+            return false;
+        if (!reader.ReadU32(memberOffset + 2 * sizeof(uint32_t), &ui32MemberFieldOffset))
+            return false;
+
+        psMembers[i].Parent = varType;
+        psMembers[i].ParentCount = varType->ParentCount + 1;
+        psMembers[i].Offset = ui32MemberFieldOffset;
+
+        if (!reader.ReadString(ui32NameOffset, &psMembers[i].Name))
+            return false;
+
+        if (!ReadShaderVariableType(reader, ui32MemberTypeOffset, &psMembers[i],
+                uiDepth + 1, aui32ChildAncestors, ui32AncestorCount + 1))
+            return false;
+    }
+
+    return true;
 }
 
-static const uint32_t* ReadConstantBuffer(ShaderInfo* psShaderInfo,
-    const uint32_t* pui32FirstConstBufToken, const uint32_t* pui32Tokens, ConstantBuffer* psBuffer)
+static bool ReadConstantBuffer(ShaderInfo* psShaderInfo,
+    ReflectionReader& reader, size_t offset, ConstantBuffer* psBuffer)
 {
-    uint32_t i;
-    uint32_t ui32NameOffset = *pui32Tokens++;
-    uint32_t ui32VarCount = *pui32Tokens++;
-    uint32_t ui32VarOffset = *pui32Tokens++;
-    const uint32_t* pui32VarToken = (const uint32_t*)((const char*)pui32FirstConstBufToken+ui32VarOffset);
+    uint32_t header[6];
+    size_t cursor = offset;
+    for (unsigned i = 0; i < 6; ++i, cursor += sizeof(uint32_t))
+    {
+        if (!reader.ReadU32(cursor, &header[i]))
+            return false;
+    }
 
-    ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstConstBufToken+ui32NameOffset), psBuffer->Name);
+    const uint32_t ui32NameOffset = header[0];
+    const uint32_t ui32VarCount = header[1];
+    const uint32_t ui32VarOffset = header[2];
+
+    const size_t variableRecordBytes = psShaderInfo->ui32MajorVersion >= 5 ?
+        10 * sizeof(uint32_t) : 6 * sizeof(uint32_t);
+    if (!CheckTable(reader, ui32VarOffset, ui32VarCount, variableRecordBytes))
+        return false;
+
+    if (!reader.ReadString(ui32NameOffset, &psBuffer->Name))
+        return false;
 
     psBuffer->asVars.resize(ui32VarCount);
 
-    for(i=0; i<ui32VarCount; ++i)
+    size_t varCursor = ui32VarOffset;
+    for (uint32_t i = 0; i < ui32VarCount; ++i, varCursor += variableRecordBytes)
     {
         //D3D11_SHADER_VARIABLE_DESC
-		// DarkStarSword: Changed this to resize first, then get a pointer.
-		// The way we originally did this filling out the structure then inserting
-		// it with push_back(), was problematic, as the inserted struct was a copy,
-		// not the original, so the Parent pointers of all members were invalid.
+        // DarkStarSword: Changed this to resize first, then get a pointer.
+        // The way we originally did this filling out the structure then inserting
+        // it with push_back(), was problematic, as the inserted struct was a copy,
+        // not the original, so the Parent pointers of all members were invalid.
         ShaderVar * const psVar = &psBuffer->asVars[i];
 
-        uint32_t ui32Flags;
-        uint32_t ui32TypeOffset;
-        uint32_t ui32DefaultValueOffset;
+        uint32_t ui32Flags = 0;
+        uint32_t ui32TypeOffset = 0;
+        uint32_t ui32DefaultValueOffset = 0;
 
-        ui32NameOffset = *pui32VarToken++;
+        uint32_t ui32VarNameOffset = 0;
+        if (!reader.ReadU32(varCursor, &ui32VarNameOffset))
+            return false;
+        if (!reader.ReadU32(varCursor + sizeof(uint32_t), &psVar->ui32StartOffset))
+            return false;
+        if (!reader.ReadU32(varCursor + 2 * sizeof(uint32_t), &psVar->ui32Size))
+            return false;
+        if (!reader.ReadU32(varCursor + 3 * sizeof(uint32_t), &ui32Flags))
+            return false;
+        if (!reader.ReadU32(varCursor + 4 * sizeof(uint32_t), &ui32TypeOffset))
+            return false;
+        if (!reader.ReadU32(varCursor + 5 * sizeof(uint32_t), &ui32DefaultValueOffset))
+            return false;
 
-        ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstConstBufToken+ui32NameOffset), psVar->Name);
-
-        psVar->ui32StartOffset = *pui32VarToken++;
-        psVar->ui32Size = *pui32VarToken++;
-        ui32Flags = *pui32VarToken++;
-        ui32TypeOffset = *pui32VarToken++;
+        if (!reader.ReadString(ui32VarNameOffset, &psVar->Name))
+            return false;
 
 		psVar->sType.Name = psVar->Name;
 		psVar->sType.FullName = psVar->Name;
@@ -275,19 +372,8 @@ static const uint32_t* ReadConstantBuffer(ShaderInfo* psShaderInfo,
 		psVar->sType.ParentCount = 0;
 		psVar->sType.Offset = 0;
 
-        ReadShaderVariableType(psShaderInfo->ui32MajorVersion, pui32FirstConstBufToken, 
-			(const uint32_t*)((const char*)pui32FirstConstBufToken+ui32TypeOffset), &psVar->sType);
-
-        ui32DefaultValueOffset = *pui32VarToken++;
-
-
-		if (psShaderInfo->ui32MajorVersion  >= 5)
-		{
-			uint32_t StartTexture = *pui32VarToken++;
-			uint32_t TextureSize = *pui32VarToken++;
-			uint32_t StartSampler = *pui32VarToken++;
-			uint32_t SamplerSize = *pui32VarToken++;
-		}
+        if (!ReadShaderVariableType(reader, ui32TypeOffset, &psVar->sType, 0, nullptr, 0))
+            return false;
 
 		psVar->haveDefaultValue = false;
 
@@ -295,86 +381,83 @@ static const uint32_t* ReadConstantBuffer(ShaderInfo* psShaderInfo,
         {
 			uint32_t i = 0;
 			const uint32_t ui32NumDefaultValues = psVar->ui32Size / 4;
-			const uint32_t* pui32DefaultValToken = (const uint32_t*)((const char*)pui32FirstConstBufToken+ui32DefaultValueOffset);
 
 			//Always a sequence of 4-bytes at the moment.
 			//bool const becomes 0 or 0xFFFFFFFF int, int & float are 4-bytes.
-			ASSERT(psVar->ui32Size%4 == 0);
+			if (psVar->ui32Size % 4 != 0)
+				return false;
+			if (!CheckTable(reader, ui32DefaultValueOffset, psVar->ui32Size, 1))
+				return false;
 
 			psVar->haveDefaultValue = true;
+			psVar->pui32DefaultValues.resize(ui32NumDefaultValues);
 
 			for(i=0; i<ui32NumDefaultValues;++i)
 			{
-				psVar->pui32DefaultValues.push_back(pui32DefaultValToken[i]);
+				if (!reader.ReadU32(size_t(ui32DefaultValueOffset) + i * sizeof(uint32_t),
+						&psVar->pui32DefaultValues[i]))
+					return false;
 			}
         }
     }
 
-
-    {
-        uint32_t ui32Flags;
-        uint32_t ui32BufferType;
-
-        psBuffer->ui32TotalSizeInBytes = *pui32Tokens++;
-        ui32Flags = *pui32Tokens++;
-        ui32BufferType = *pui32Tokens++;
-    }
-
+	psBuffer->ui32TotalSizeInBytes = header[3];
 	psBuffer->iUnsized = 0;
 
-    return pui32Tokens;
+    return true;
 }
 
-static void ReadResources(const uint32_t* pui32Tokens,//in
-                   ShaderInfo* psShaderInfo)//out
+static bool ReadResources(ReflectionReader& reader, ShaderInfo* psShaderInfo)
 {
-    ResourceBinding* psResBindings;
-    ConstantBuffer* psConstantBuffers;
-    const uint32_t* pui32ConstantBuffers;
-    const uint32_t* pui32ResourceBindings;
-    const uint32_t* pui32FirstToken = pui32Tokens;
-    uint32_t i;
+    uint32_t header[6];
+    size_t cursor = 0;
+    for (unsigned i = 0; i < 6; ++i, cursor += sizeof(uint32_t))
+    {
+        if (!reader.ReadU32(cursor, &header[i]))
+            return false;
+    }
 
-	const uint32_t ui32NumConstantBuffers = *pui32Tokens++;
-    const uint32_t ui32ConstantBufferOffset = *pui32Tokens++;
+	const uint32_t ui32NumConstantBuffers = header[0];
+    const uint32_t ui32ConstantBufferOffset = header[1];
+    const uint32_t ui32NumResourceBindings = header[2];
+    const uint32_t ui32ResourceBindingOffset = header[3];
 
-    uint32_t ui32NumResourceBindings = *pui32Tokens++;
-    uint32_t ui32ResourceBindingOffset = *pui32Tokens++;
-    uint32_t ui32ShaderModel = *pui32Tokens++;
-    uint32_t ui32CompileFlags = *pui32Tokens++;//D3DCompile flags? http://msdn.microsoft.com/en-us/library/gg615083(v=vs.85).aspx
+    if (!CheckTable(reader, ui32ResourceBindingOffset, ui32NumResourceBindings, 8 * sizeof(uint32_t)))
+        return false;
+    if (!CheckTable(reader, ui32ConstantBufferOffset, ui32NumConstantBuffers, 6 * sizeof(uint32_t)))
+        return false;
 
     //Resources
-    pui32ResourceBindings = (const uint32_t*)((const char*)pui32FirstToken + ui32ResourceBindingOffset);
-
-    psResBindings = new ResourceBinding[ui32NumResourceBindings];
+    ResourceBinding* psResBindings = new ResourceBinding[ui32NumResourceBindings];
 
     psShaderInfo->ui32NumResourceBindings = ui32NumResourceBindings;
     psShaderInfo->psResourceBindings = psResBindings;
 
-    for(i=0; i < ui32NumResourceBindings; ++i)
+    size_t bindingOffset = ui32ResourceBindingOffset;
+    for (uint32_t i = 0; i < ui32NumResourceBindings; ++i, bindingOffset += 8 * sizeof(uint32_t))
     {
-        pui32ResourceBindings = ReadResourceBinding(pui32FirstToken, pui32ResourceBindings, psResBindings+i);
+        if (!ReadResourceBinding(reader, bindingOffset, psResBindings + i))
+            return false;
 		ASSERT(psResBindings[i].ui32BindPoint < MAX_RESOURCE_BINDINGS);
 	}
 
     //Constant buffers
-    pui32ConstantBuffers = (const uint32_t*)((const char*)pui32FirstToken + ui32ConstantBufferOffset);
-
-    psConstantBuffers = new ConstantBuffer[ui32NumConstantBuffers];
+    ConstantBuffer* psConstantBuffers = new ConstantBuffer[ui32NumConstantBuffers];
 
     psShaderInfo->ui32NumConstantBuffers = ui32NumConstantBuffers;
     psShaderInfo->psConstantBuffers = psConstantBuffers;
 
-    for(i=0; i < ui32NumConstantBuffers; ++i)
+    size_t constantBufferOffset = ui32ConstantBufferOffset;
+    for (uint32_t i = 0; i < ui32NumConstantBuffers; ++i, constantBufferOffset += 6 * sizeof(uint32_t))
     {
-        pui32ConstantBuffers = ReadConstantBuffer(psShaderInfo, pui32FirstToken, pui32ConstantBuffers, psConstantBuffers+i);
+        if (!ReadConstantBuffer(psShaderInfo, reader, constantBufferOffset, psConstantBuffers + i))
+            return false;
     }
-
 
 	//Map resource bindings to constant buffers
 	if(psShaderInfo->ui32NumConstantBuffers)
 	{
-		for(i=0; i < ui32NumResourceBindings; ++i)
+		for(uint32_t i = 0; i < ui32NumResourceBindings; ++i)
 		{
 			ResourceGroup eRGroup;
 			uint32_t cbufIndex = 0;
@@ -391,105 +474,160 @@ static void ReadResources(const uint32_t* pui32Tokens,//in
 			}
 		}
 	}
+
+    return true;
 }
 
-static const uint16_t* ReadClassType(const uint32_t* pui32FirstInterfaceToken, const uint16_t* pui16Tokens, ClassType* psClassType)
+static bool ReadClassType(ReflectionReader& reader, size_t offset, ClassType* psClassType)
 {
-    const uint32_t* pui32Tokens = (const uint32_t*)pui16Tokens;
-    uint32_t ui32NameOffset = *pui32Tokens;
-    pui16Tokens+= 2;
+    uint32_t ui32NameOffset = 0;
+    uint16_t ui16ID = 0;
+    uint16_t ui16ConstBufStride = 0;
+    uint16_t ui16Texture = 0;
+    uint16_t ui16Sampler = 0;
 
-    psClassType->ui16ID = *pui16Tokens++;
-    psClassType->ui16ConstBufStride = *pui16Tokens++;
-    psClassType->ui16Texture = *pui16Tokens++;
-    psClassType->ui16Sampler = *pui16Tokens++;
+    if (!reader.ReadU32(offset, &ui32NameOffset))
+        return false;
+    if (!reader.ReadU16(offset + 4, &ui16ID))
+        return false;
+    if (!reader.ReadU16(offset + 6, &ui16ConstBufStride))
+        return false;
+    if (!reader.ReadU16(offset + 8, &ui16Texture))
+        return false;
+    if (!reader.ReadU16(offset + 10, &ui16Sampler))
+        return false;
 
-    ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstInterfaceToken+ui32NameOffset), psClassType->Name);
+    psClassType->ui16ID = ui16ID;
+    psClassType->ui16ConstBufStride = ui16ConstBufStride;
+    psClassType->ui16Texture = ui16Texture;
+    psClassType->ui16Sampler = ui16Sampler;
 
-    return pui16Tokens;
+    return reader.ReadString(ui32NameOffset, &psClassType->Name);
 }
 
-static const uint16_t* ReadClassInstance(const uint32_t* pui32FirstInterfaceToken, const uint16_t* pui16Tokens, ClassInstance* psClassInstance)
+static bool ReadClassInstance(ReflectionReader& reader, size_t offset, ClassInstance* psClassInstance)
 {
-    uint32_t ui32NameOffset = *pui16Tokens++ << 16;
-    ui32NameOffset |= *pui16Tokens++;
+    uint16_t ui16NameHigh = 0;
+    uint16_t ui16NameLow = 0;
+    if (!reader.ReadU16(offset, &ui16NameHigh) || !reader.ReadU16(offset + 2, &ui16NameLow))
+        return false;
+    //Preserve the existing word order; only the signed-left-shift UB is fixed.
+    uint32_t ui32NameOffset = (static_cast<uint32_t>(ui16NameHigh) << 16) | ui16NameLow;
 
-    psClassInstance->ui16ID = *pui16Tokens++;
-    psClassInstance->ui16ConstBuf = *pui16Tokens++;
-    psClassInstance->ui16ConstBufOffset = *pui16Tokens++;
-    psClassInstance->ui16Texture = *pui16Tokens++;
-    psClassInstance->ui16Sampler = *pui16Tokens++;
+    uint16_t ui16ID = 0;
+    uint16_t ui16ConstBuf = 0;
+    uint16_t ui16ConstBufOffset = 0;
+    uint16_t ui16Texture = 0;
+    uint16_t ui16Sampler = 0;
+    if (!reader.ReadU16(offset + 4, &ui16ID))
+        return false;
+    if (!reader.ReadU16(offset + 6, &ui16ConstBuf))
+        return false;
+    if (!reader.ReadU16(offset + 8, &ui16ConstBufOffset))
+        return false;
+    if (!reader.ReadU16(offset + 10, &ui16Texture))
+        return false;
+    if (!reader.ReadU16(offset + 12, &ui16Sampler))
+        return false;
 
-    ReadStringFromTokenStream((const uint32_t*)((const char*)pui32FirstInterfaceToken+ui32NameOffset), psClassInstance->Name);
+    psClassInstance->ui16ID = ui16ID;
+    psClassInstance->ui16ConstBuf = ui16ConstBuf;
+    psClassInstance->ui16ConstBufOffset = ui16ConstBufOffset;
+    psClassInstance->ui16Texture = ui16Texture;
+    psClassInstance->ui16Sampler = ui16Sampler;
 
-    return pui16Tokens;
+    return reader.ReadString(ui32NameOffset, &psClassInstance->Name);
 }
 
 
-static void ReadInterfaces(const uint32_t* pui32Tokens,
-                        ShaderInfo* psShaderInfo)
+static bool ReadInterfaces(ReflectionReader& reader, ShaderInfo* psShaderInfo)
 {
-    uint32_t i;
-    uint32_t ui32StartSlot;
-    const uint32_t* pui32FirstInterfaceToken = pui32Tokens;
-    const uint32_t ui32ClassInstanceCount = *pui32Tokens++;
-    const uint32_t ui32ClassTypeCount = *pui32Tokens++;
-    const uint32_t ui32InterfaceSlotRecordCount = *pui32Tokens++;
-    const uint32_t ui32InterfaceSlotCount = *pui32Tokens++;
-    const uint32_t ui32ClassInstanceOffset = *pui32Tokens++;
-    const uint32_t ui32ClassTypeOffset = *pui32Tokens++;
-    const uint32_t ui32InterfaceSlotOffset = *pui32Tokens++;
+    uint32_t header[7];
+    size_t cursor = 0;
+    for (unsigned i = 0; i < 7; ++i, cursor += sizeof(uint32_t))
+    {
+        if (!reader.ReadU32(cursor, &header[i]))
+            return false;
+    }
 
-    const uint16_t* pui16ClassTypes = (const uint16_t*)((const char*)pui32FirstInterfaceToken + ui32ClassTypeOffset);
-    const uint16_t* pui16ClassInstances = (const uint16_t*)((const char*)pui32FirstInterfaceToken + ui32ClassInstanceOffset);
-    const uint32_t* pui32InterfaceSlots = (const uint32_t*)((const char*)pui32FirstInterfaceToken + ui32InterfaceSlotOffset);
+    const uint32_t ui32ClassInstanceCount = header[0];
+    const uint32_t ui32ClassTypeCount = header[1];
+    const uint32_t ui32InterfaceSlotRecordCount = header[2];
+    const uint32_t ui32ClassInstanceOffset = header[4];
+    const uint32_t ui32ClassTypeOffset = header[5];
+    const uint32_t ui32InterfaceSlotOffset = header[6];
 
-    const uint32_t* pui32InterfaceSlotTokens = pui32InterfaceSlots;
+    if (!CheckTable(reader, ui32ClassTypeOffset, ui32ClassTypeCount, 12))
+        return false;
+    //D3D11_CLASS_INSTANCE_DESC: DWORD name offset plus five WORD fields.
+    if (!CheckTable(reader, ui32ClassInstanceOffset, ui32ClassInstanceCount, 14))
+        return false;
+    if (!CheckTable(reader, ui32InterfaceSlotOffset, ui32InterfaceSlotRecordCount, 16))
+        return false;
 
-    ClassType* psClassTypes;
-    ClassInstance* psClassInstances;
-
-    psClassTypes = new ClassType[ui32ClassTypeCount];
+    ClassType* psClassTypes = new ClassType[ui32ClassTypeCount];
     //F-104: publish before filling so FreeShaderInfo can release a partially
     //constructed array when a string allocation below throws.
     psShaderInfo->ui32NumClassTypes = ui32ClassTypeCount;
     psShaderInfo->psClassTypes = psClassTypes;
-    for(i=0; i<ui32ClassTypeCount; ++i)
+    size_t classTypeOffset = ui32ClassTypeOffset;
+    for (uint32_t i = 0; i < ui32ClassTypeCount; ++i, classTypeOffset += 12)
     {
-        pui16ClassTypes = ReadClassType(pui32FirstInterfaceToken, pui16ClassTypes, psClassTypes+i);
+        if (!ReadClassType(reader, classTypeOffset, psClassTypes + i))
+            return false;
         psClassTypes[i].ui16ID = (uint16_t)i;
     }
 
-    psClassInstances = new ClassInstance[ui32ClassInstanceCount];
+    ClassInstance* psClassInstances = new ClassInstance[ui32ClassInstanceCount];
     psShaderInfo->ui32NumClassInstances = ui32ClassInstanceCount;
     psShaderInfo->psClassInstances = psClassInstances;
-    for(i=0; i<ui32ClassInstanceCount; ++i)
+    size_t classInstanceOffset = ui32ClassInstanceOffset;
+    for (uint32_t i = 0; i < ui32ClassInstanceCount; ++i, classInstanceOffset += 14)
     {
-        pui16ClassInstances = ReadClassInstance(pui32FirstInterfaceToken, pui16ClassInstances, psClassInstances+i);
+        if (!ReadClassInstance(reader, classInstanceOffset, psClassInstances + i))
+            return false;
     }
 
     //Slots map function table to $ThisPointer cbuffer variable index
-    ui32StartSlot = 0;
-    for(i=0; i<ui32InterfaceSlotRecordCount;++i)
+    size_t slotOffset = ui32InterfaceSlotOffset;
+    for (uint32_t i = 0; i < ui32InterfaceSlotRecordCount; ++i, slotOffset += 16)
     {
-        uint32_t k;
-        
-        const uint32_t ui32SlotSpan = *pui32InterfaceSlotTokens++;
-        const uint32_t ui32Count = *pui32InterfaceSlotTokens++;
-        const uint32_t ui32TypeIDOffset = *pui32InterfaceSlotTokens++;
-        const uint32_t ui32TableIDOffset = *pui32InterfaceSlotTokens++;
+        uint32_t ui32SlotSpan = 0;
+        uint32_t ui32Count = 0;
+        uint32_t ui32TypeIDOffset = 0;
+        uint32_t ui32TableIDOffset = 0;
+        if (!reader.ReadU32(slotOffset, &ui32SlotSpan))
+            return false;
+        if (!reader.ReadU32(slotOffset + sizeof(uint32_t), &ui32Count))
+            return false;
+        if (!reader.ReadU32(slotOffset + 2 * sizeof(uint32_t), &ui32TypeIDOffset))
+            return false;
+        if (!reader.ReadU32(slotOffset + 3 * sizeof(uint32_t), &ui32TableIDOffset))
+            return false;
 
-        const uint16_t* pui16TypeID = (const uint16_t*)((const char*)pui32FirstInterfaceToken+ui32TypeIDOffset);
-        const uint32_t* pui32TableID = (const uint32_t*)((const char*)pui32FirstInterfaceToken+ui32TableIDOffset);
+        if (!CheckTable(reader, ui32TypeIDOffset, ui32Count, sizeof(uint16_t)))
+            return false;
+        if (!CheckTable(reader, ui32TableIDOffset, ui32Count, sizeof(uint32_t)))
+            return false;
 
-        for(k=0; k < ui32Count; ++k)
+        for (uint32_t k = 0; k < ui32Count; ++k)
         {
-            psShaderInfo->aui32TableIDToTypeID[*pui32TableID++] = *pui16TypeID++;
+            uint16_t ui16TypeID = 0;
+            uint32_t ui32TableID = 0;
+            if (!reader.ReadU16(size_t(ui32TypeIDOffset) + k * sizeof(uint16_t), &ui16TypeID))
+                return false;
+            if (!reader.ReadU32(size_t(ui32TableIDOffset) + k * sizeof(uint32_t), &ui32TableID))
+                return false;
+            psShaderInfo->aui32TableIDToTypeID[ui32TableID] = ui16TypeID;
         }
 
-        ui32StartSlot += ui32SlotSpan;
+        (void)ui32SlotSpan;
     }
+
+    return true;
 }
+
+} // namespace
 
 void GetConstantBufferFromBindingPoint(const ResourceGroup eGroup, const uint32_t ui32BindPoint, const ShaderInfo* psShaderInfo, ConstantBuffer** ppsConstBuf)
 {
@@ -795,43 +933,65 @@ ResourceGroup ResourceTypeToResourceGroup(ResourceType eType)
 	return RGROUP_CBUFFER;
 }
 
-void LoadShaderInfo(const uint32_t ui32MajorVersion,
+bool LoadShaderInfo(const uint32_t ui32MajorVersion,
     const uint32_t ui32MinorVersion,
     const ReflectionChunks* psChunks,
     ShaderInfo* psInfo)
 {
-    const uint32_t* pui32Inputs = psChunks->pui32Inputs;
-	const uint32_t* pui32Inputs11 = psChunks->pui32Inputs11;
-    const uint32_t* pui32Resources = psChunks->pui32Resources;
-    const uint32_t* pui32Interfaces = psChunks->pui32Interfaces;
-    const uint32_t* pui32Outputs = psChunks->pui32Outputs;
-	const uint32_t* pui32Outputs11 = psChunks->pui32Outputs11;
-	const uint32_t* pui32OutputsWithStreams = psChunks->pui32OutputsWithStreams;
-	const uint32_t* pui32PatchConstants = psChunks->pui32PatchConstants;
-
     psInfo->eTessOutPrim = TESSELLATOR_OUTPUT_UNDEFINED;
     psInfo->eTessPartitioning = TESSELLATOR_PARTITIONING_UNDEFINED;
 
     psInfo->ui32MajorVersion = ui32MajorVersion;
     psInfo->ui32MinorVersion = ui32MinorVersion;
 
-
-    if(pui32Inputs)
-        ReadInputSignatures(pui32Inputs, psInfo, 0);
-    if(pui32Inputs11)
-        ReadInputSignatures(pui32Inputs11, psInfo, 1);
-    if(pui32Resources)
-        ReadResources(pui32Resources, psInfo);
-    if(pui32Interfaces)
-        ReadInterfaces(pui32Interfaces, psInfo);
-    if(pui32Outputs)
-        ReadOutputSignatures(pui32Outputs, psInfo, 0, 0);
-    if(pui32Outputs11)
-        ReadOutputSignatures(pui32Outputs11, psInfo, 1, 1);
-	if(pui32OutputsWithStreams)
-		ReadOutputSignatures(pui32OutputsWithStreams, psInfo, 0, 1);
-	if(pui32PatchConstants)
-		ReadPatchConstantSignatures(pui32PatchConstants, psInfo, 0, 0);
+    if(psChunks->inputs.present())
+    {
+        ReflectionReader reader = MakeReader(psChunks->inputs);
+        if (!ReadInputSignatures(reader, psInfo, false))
+            return false;
+    }
+    if(psChunks->inputs11.present())
+    {
+        ReflectionReader reader = MakeReader(psChunks->inputs11);
+        if (!ReadInputSignatures(reader, psInfo, true))
+            return false;
+    }
+    if(psChunks->resources.present())
+    {
+        ReflectionReader reader = MakeReader(psChunks->resources);
+        if (!ReadResources(reader, psInfo))
+            return false;
+    }
+    if(psChunks->interfaces.present())
+    {
+        ReflectionReader reader = MakeReader(psChunks->interfaces);
+        if (!ReadInterfaces(reader, psInfo))
+            return false;
+    }
+    if(psChunks->outputs.present())
+    {
+        ReflectionReader reader = MakeReader(psChunks->outputs);
+        if (!ReadOutputSignatures(reader, psInfo, false, false))
+            return false;
+    }
+    if(psChunks->outputs11.present())
+    {
+        ReflectionReader reader = MakeReader(psChunks->outputs11);
+        if (!ReadOutputSignatures(reader, psInfo, true, true))
+            return false;
+    }
+	if(psChunks->outputsWithStreams.present())
+	{
+        ReflectionReader reader = MakeReader(psChunks->outputsWithStreams);
+        if (!ReadOutputSignatures(reader, psInfo, false, true))
+            return false;
+	}
+	if(psChunks->patchConstants.present())
+	{
+        ReflectionReader reader = MakeReader(psChunks->patchConstants);
+        if (!ReadPatchConstantSignatures(reader, psInfo, false, false))
+            return false;
+	}
 
     {
         uint32_t i;
@@ -845,6 +1005,8 @@ void LoadShaderInfo(const uint32_t ui32MajorVersion,
             }
         }
     }
+
+    return true;
 }
 
 void FreeShaderInfo(ShaderInfo* psShaderInfo)
