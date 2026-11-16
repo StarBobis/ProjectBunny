@@ -2948,14 +2948,21 @@ HRESULT disassembler(vector<byte> *buffer, vector<byte> *ret, const char *commen
 	DWORD one;
 	DWORD fSize;
 	DWORD numChunks;
-	vector<DWORD> chunkOffsets;
 	int rdef_state = 0;
+	const HRESULT invalid_dxbc = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
 
-	// TODO: Add robust error checking here (buffer is at least as large as
-	// the header, etc). I've added a check for numChunks < 1 as that
-	// would lead to codeByteStart being used uninitialised
+	if (!buffer || !ret)
+		return E_INVALIDARG;
+
+	// Fixed DXBC container header: 32 bytes. Layout matches
+	// src/common/shader.h:3-9.
+	if (buffer->size() < 32)
+		return invalid_dxbc;
+
 	byte* pPosition = buffer->data();
 	std::memcpy(fourcc, pPosition, 4);
+	if (std::memcmp(fourcc, "DXBC", 4) != 0)
+		return invalid_dxbc;
 	pPosition += 4;
 	std::memcpy(fHash, pPosition, 16);
 	pPosition += 16;
@@ -2964,11 +2971,42 @@ HRESULT disassembler(vector<byte> *buffer, vector<byte> *ret, const char *commen
 	fSize = *(DWORD*)pPosition;
 	pPosition += 4;
 	numChunks = *(DWORD*)pPosition;
-	if (numChunks < 1)
-		return S_FALSE;
+	// Division, not 4 * numChunks: this proves the whole directory fits
+	// without performing the multiplication that used to wrap at 2^30.
+	if (numChunks < 1 ||
+			numChunks > (buffer->size() - 32) / sizeof(DWORD))
+		return invalid_dxbc;
 	pPosition += 4;
-	chunkOffsets.resize(numChunks);
-	std::memcpy(chunkOffsets.data(), pPosition, 4 * numChunks);
+
+	// Validate every directory entry before using any offset, and remember
+	// the last SHEX/SHDR chunk (same effective choice as the old reverse scan).
+	const byte* pDirectory = pPosition;
+	size_t codeOffset = 0;
+	bool codeFound = false;
+	for (DWORD i = 0; i < numChunks; i++) {
+		DWORD chunkOffset;
+		std::memcpy(&chunkOffset, pDirectory + i * sizeof(DWORD),
+				sizeof(chunkOffset));
+		const size_t offset = chunkOffset;
+		if (offset > buffer->size() || buffer->size() - offset < 8)
+			return invalid_dxbc;
+		DWORD chunkSize;
+		std::memcpy(&chunkSize, buffer->data() + offset + 4,
+				sizeof(chunkSize));
+		if (chunkSize > buffer->size() - offset - 8)
+			return invalid_dxbc;
+		if (std::memcmp(buffer->data() + offset, "SHEX", 4) == 0 ||
+				std::memcmp(buffer->data() + offset, "SHDR", 4) == 0) {
+			// The code chunk needs the 8-byte program header
+			// (version token + program length in DWORDs).
+			if (chunkSize < 8)
+				return invalid_dxbc;
+			codeOffset = offset;
+			codeFound = true;
+		}
+	}
+	if (!codeFound)
+		return invalid_dxbc;
 
 	char* asmBuffer;
 	size_t asmSize;
@@ -2987,15 +3025,7 @@ HRESULT disassembler(vector<byte> *buffer, vector<byte> *ret, const char *commen
 	asmBuffer = (char*)pDissassembly->GetBufferPointer();
 	asmSize = pDissassembly->GetBufferSize();
 
-	byte* codeByteStart;
-	int codeChunk = 0;
-	for (DWORD i = 1; i <= numChunks; i++) {
-		codeChunk = numChunks - i;
-		codeByteStart = buffer->data() + chunkOffsets[numChunks - i];
-		if (memcmp(codeByteStart, "SHEX", 4) == 0 || memcmp(codeByteStart, "SHDR", 4) == 0)
-			break;
-	}
-	// FIXME: If neither SHEX or SHDR was found in the shader, codeByteStart will be garbage
+	byte* codeByteStart = buffer->data() + codeOffset;
 	vector<string> lines = stringToLines(asmBuffer, asmSize);
 	DWORD* codeStart = (DWORD*)(codeByteStart + 8);
 	bool codeStarted = false;

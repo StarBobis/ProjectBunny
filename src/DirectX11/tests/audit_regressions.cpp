@@ -15,6 +15,8 @@
 #include "D3D_Shaders/stdafx.h"
 
 extern std::vector<CommandList*> pending_post_command_lists;
+extern unsigned f105_disassemble_calls;
+extern bool f105_disassemble_fail;
 std::array<unsigned char,4> render_dx11_audit_constant_pixel(dx11_slot_test::BatchDevice&, ID3D11PixelShader*);
 
 void test_dx11_dx9_constant_reset_regression();
@@ -232,6 +234,152 @@ void test_f106()
         output.close();
         require_batch(output.good(), "F106: persist exact native-validated shader bytes for CLI integration");
     }
+}
+
+void test_dx11_disassembler_header_bounds_regression()
+{
+    auto put32 = [](std::vector<byte>& b, size_t off, DWORD v) {
+        require_batch(off <= b.size() && b.size() - off >= sizeof(v),
+            "F105: fixture word bounds");
+        std::memcpy(b.data() + off, &v, sizeof(v));
+    };
+    auto reject = [](std::vector<byte> input, const char* what) {
+        const auto original = input;
+        std::vector<byte> output{0x41, 0x42, 0x43};
+        const auto previous = output;
+        const unsigned calls = f105_disassemble_calls;
+        std::fprintf(stderr, "F105: reject %s\n", what); std::fflush(stderr);
+        require_batch(FAILED(disassembler(&input, &output, nullptr)), what);
+        require_batch(input == original && output == previous,
+            "F105: failure leaves input/output untouched");
+        require_batch(f105_disassemble_calls == calls,
+            "F105: rejection happens before D3DDisassemble");
+    };
+
+    // T0/T1: no complete 32-byte fixed header.
+    reject({}, "F105: empty input");
+    for (size_t n = 1; n < 32; ++n)
+        reject(std::vector<byte>(n, 0), "F105: short fixed header");
+
+    std::vector<byte> header(32, 0);
+    std::memcpy(header.data(), "DXBC", 4);
+    put32(header, 20, 1);
+    put32(header, 24, 32);
+    // T2: zero chunks is no longer S_FALSE.
+    put32(header, 28, 0);
+    reject(header, "F105: zero chunks");
+    // T3/T4: count must fit the 32-bit directory without wrapping 4*n.
+    put32(header, 28, 0xFFFFFFFFu);
+    reject(header, "F105: count 0xFFFFFFFF");
+    put32(header, 28, 0x40000000u);
+    reject(header, "F105: count 0x40000000");
+
+    // T5/T6: directory offsets must leave an 8-byte chunk header in range.
+    std::vector<byte> one(36, 0);
+    std::memcpy(one.data(), "DXBC", 4);
+    put32(one, 20, 1);
+    put32(one, 24, 36);
+    put32(one, 28, 1);
+    put32(one, 32, 0xFFFFFFFFu);
+    reject(one, "F105: directory offset 0xFFFFFFFF");
+    put32(one, 32, 34);
+    reject(one, "F105: directory offset ends 2 bytes early");
+
+    // T7: chunk payload length must stay inside the buffer.
+    std::vector<byte> chunk(48, 0);
+    std::memcpy(chunk.data(), "DXBC", 4);
+    put32(chunk, 20, 1);
+    put32(chunk, 24, 48);
+    put32(chunk, 28, 1);
+    put32(chunk, 32, 36);
+    std::memcpy(chunk.data() + 36, "SHEX", 4);
+    put32(chunk, 40, 0xFFFFFFFFu);
+    reject(chunk, "F105: chunk length overruns buffer");
+
+    // T8: a container without a SHEX/SHDR code chunk is rejected.
+    std::vector<byte> no_code(64, 0);
+    std::memcpy(no_code.data(), "DXBC", 4);
+    put32(no_code, 20, 1);
+    put32(no_code, 24, 64);
+    put32(no_code, 28, 2);
+    put32(no_code, 32, 40);
+    put32(no_code, 36, 52);
+    std::memcpy(no_code.data() + 40, "ISGN", 4); put32(no_code, 44, 4);
+    std::memcpy(no_code.data() + 52, "PRIV", 4); put32(no_code, 56, 4);
+    reject(no_code, "F105: no SHEX/SHDR chunk");
+
+    ComPtr<ID3DBlob> code, errors;
+    const char source[] = "float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}";
+    require_batch(SUCCEEDED(D3DCompile(source, sizeof(source) - 1, nullptr, nullptr,
+        nullptr, "main", "ps_5_0", 0, 0, &code, &errors)),
+        "F105: compile real pixel shader");
+    const auto* data = static_cast<const byte*>(code->GetBufferPointer());
+    const std::vector<byte> original(data, data + code->GetBufferSize());
+    DWORD n;
+    std::memcpy(&n, original.data() + 28, 4);
+    require_batch(n >= 1 && 32 + 4 * static_cast<size_t>(n) <= original.size(),
+        "F105: real fixture has a complete directory");
+
+    auto bad_magic = original;
+    std::memcpy(bad_magic.data(), "DXB0", 4);
+    reject(bad_magic, "F105: non-DXBC magic");
+
+    // T9: a count in directory capacity whose extra entry is invalid.
+    auto extra = original;
+    put32(extra, 28, n + 1);
+    put32(extra, 32 + 4 * static_cast<size_t>(n), 0xFFFFFFFFu);
+    reject(extra, "F105: count+1 with invalid extra directory entry");
+
+    // T10: the last directory entry points at the final two bytes.
+    auto last_short = original;
+    put32(last_short, 32 + 4 * static_cast<size_t>(n - 1),
+        static_cast<DWORD>(last_short.size()) - 2);
+    reject(last_short, "F105: last directory entry ends 2 bytes early");
+
+    // T11: the code chunk's declared length overruns the container.
+    auto long_code = original;
+    bool code_chunk_found = false;
+    for (DWORD i = 0; i < n; i++) {
+        DWORD off;
+        std::memcpy(&off, original.data() + 32 + 4 * static_cast<size_t>(i),
+            sizeof(off));
+        if (off > original.size() || original.size() - off < 8)
+            continue;
+        if (!std::memcmp(original.data() + off, "SHEX", 4) ||
+                !std::memcmp(original.data() + off, "SHDR", 4)) {
+            put32(long_code, off + 4, 0xFFFFFFFFu);
+            code_chunk_found = true;
+            break;
+        }
+    }
+    require_batch(code_chunk_found, "F105: real fixture contains a code chunk");
+    reject(long_code, "F105: code chunk length overruns buffer");
+
+    // Green path: the same container still disassembles, once.
+    std::vector<byte> input = original, text;
+    const unsigned before = f105_disassemble_calls;
+    require_batch(SUCCEEDED(disassembler(&input, &text, nullptr)),
+        "F105: real shader still disassembles");
+    const std::string text_string(text.begin(), text.end());
+    require_batch(input == original && text_string.find("ps_5_0") != std::string::npos &&
+        f105_disassemble_calls == before + 1,
+        "F105: valid path preserves input, emits the model line and calls the SDK once");
+
+    // Aliased input/output must still publish the complete text.
+    std::vector<byte> alias = original;
+    require_batch(SUCCEEDED(disassembler(&alias, &alias, nullptr)) && !alias.empty(),
+        "F105: aliased input/output still publishes complete text");
+    const std::string alias_string(alias.begin(), alias.end());
+    require_batch(alias_string.find("ps_5_0") != std::string::npos,
+        "F105: aliased output is disassembly text, not the original bytecode");
+
+    // SDK failure propagation leaves the output untouched.
+    std::vector<byte> failed{1, 2, 3};
+    f105_disassemble_fail = true;
+    const HRESULT hr = disassembler(&input, &failed, nullptr);
+    f105_disassemble_fail = false;
+    require_batch(hr == E_OUTOFMEMORY && failed == std::vector<byte>({1, 2, 3}),
+        "F105: SDK failure propagates and leaves output untouched");
 }
 
 class AuditConfigScope {
@@ -732,7 +880,8 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-900", test_dx11_version_regression},
     {"F-292", test_dx11_debug_layer_interfaces_regression},
     {"F-196", test_dx11_legacy_profiling_regression},
-    {"F-001", test_f001}, {"F-106", test_f106}, {"F-114", test_f114},
+    {"F-001", test_f001}, {"F-105", test_dx11_disassembler_header_bounds_regression},
+    {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},
     {"F-124", test_dx11_customdata_length_regression},
     {"F-125", test_dx11_dx9_register_bounds_regression},

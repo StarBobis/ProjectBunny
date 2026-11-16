@@ -1,6 +1,25 @@
 // The regression target replaces its Assembler.cpp object with this TU, so
 // these tests call the real private operand parser without copying its logic.
+#include "../../D3D_Shaders/stdafx.h"
+
+// F-105: observe the production disassembler's SDK calls from the TU that
+// defines it. audit_regressions.cpp reads these through extern declarations.
+unsigned f105_disassemble_calls = 0;
+bool f105_disassemble_fail = false;
+static const auto f105_real_disassemble = &D3DDisassemble;
+static HRESULT WINAPI f105_observe_disassemble(
+        LPCVOID data, SIZE_T size, UINT flags, LPCSTR comments, ID3DBlob** output)
+{
+    ++f105_disassemble_calls;
+    if (f105_disassemble_fail) {
+        if (output) *output = nullptr;
+        return E_OUTOFMEMORY;
+    }
+    return f105_real_disassemble(data, size, flags, comments, output);
+}
+#define D3DDisassemble f105_observe_disassemble
 #include "../../D3D_Shaders/Assembler.cpp"
+#undef D3DDisassemble
 #include <stdexcept>
 
 namespace {
