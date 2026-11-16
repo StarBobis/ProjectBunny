@@ -118,6 +118,7 @@ void test_f200();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
 void test_dx11_lock_cleanup_regression();
+void test_dx11_lock_name_concurrency_regression();
 #endif
 
 namespace {
@@ -1325,6 +1326,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"P-01", test_dx11_ini_lookup_performance},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
+    {"F-190", test_dx11_lock_name_concurrency_regression},
 #endif
 };
 }

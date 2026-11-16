@@ -2,7 +2,11 @@
 // Windows hooks are installed; only the native Delete boundary is counted and
 // immediately delegated to the real native operation.
 #include "../lock.cpp"
+#include <atomic>
 #include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace {
 decltype(_DeleteCriticalSection) audit_native_delete = nullptr;
@@ -70,4 +74,80 @@ void test_dx11_lock_cleanup_regression()
     audit_native_delete(&retained); audit_native_delete(&graph_lock);
     delete thread;
     TlsSetValue(owned_tls, nullptr); TlsFree(owned_tls); tls_idx = previous_tls;
+}
+
+// F-190: readers must not observe a torn or stale lock name while other
+// threads insert entries (including unordered_map rehashes). Writers register
+// distinct real CRITICAL_SECTIONs exactly once, so this does not re-initialize
+// a lock; it only exercises the registry protocol.
+void test_dx11_lock_name_concurrency_regression()
+{
+    constexpr size_t kLockCount = 128;
+    constexpr size_t kWriterThreads = 4;
+    constexpr size_t kReaderThreads = 4;
+
+    std::vector<CRITICAL_SECTION> locks(kLockCount);
+    std::vector<std::string> names;
+    names.reserve(kLockCount);
+    for (size_t i = 0; i < kLockCount; i++)
+        names.push_back("F190_lock_name_" + std::to_string(i));
+
+    std::atomic<bool> published[kLockCount];
+    for (size_t i = 0; i < kLockCount; i++)
+        published[i].store(false, std::memory_order_relaxed);
+
+    std::atomic<bool> writers_done{false};
+    std::atomic<bool> failed{false};
+    std::vector<std::thread> threads;
+
+    for (size_t t = 0; t < kWriterThreads; t++) {
+        threads.emplace_back([&, t] {
+            for (size_t i = t; i < kLockCount; i += kWriterThreads) {
+                _InitializeCriticalSectionPretty(&locks[i], const_cast<char*>(names[i].c_str()));
+                published[i].store(true, std::memory_order_release);
+            }
+        });
+    }
+    for (size_t t = 0; t < kReaderThreads; t++) {
+        threads.emplace_back([&, t] {
+            size_t next = t;
+            while (!writers_done.load(std::memory_order_acquire)) {
+                for (size_t n = 0; n < kLockCount; n++) {
+                    const size_t i = (next + n) % kLockCount;
+                    if (!published[i].load(std::memory_order_acquire))
+                        continue;
+                    if (lock_name(&locks[i]) != names[i]) {
+                        failed.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                }
+                next = (next + 17) % kLockCount;
+                std::this_thread::yield();
+            }
+        });
+    }
+
+    for (size_t t = 0; t < kWriterThreads; t++)
+        threads[t].join();
+    writers_done.store(true, std::memory_order_release);
+    for (size_t t = kWriterThreads; t < threads.size(); t++)
+        threads[t].join();
+
+    check_lock_audit(!failed.load(std::memory_order_relaxed),
+        "F190: a concurrent reader observed a torn or stale lock name");
+    for (size_t i = 0; i < kLockCount; i++)
+        check_lock_audit(lock_name(&locks[i]) == names[i],
+            "F190: a registered diagnostic name changed after concurrent insertion");
+
+    // The longest production name in the DX11 tree (27 chars) must survive
+    // both the registry and the returned std::string unchanged.
+    std::string long_name = "resource_creation_mode_lock";
+    CRITICAL_SECTION long_lock{};
+    _InitializeCriticalSectionPretty(&long_lock, &long_name[0]);
+    check_lock_audit(lock_name(&long_lock) == long_name,
+        "F190: the full resource_creation_mode_lock diagnostic name is preserved");
+
+    for (size_t i = 0; i < kLockCount; i++)
+        DeleteCriticalSection(&locks[i]);
+    DeleteCriticalSection(&long_lock);
 }
