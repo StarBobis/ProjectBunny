@@ -1,7 +1,9 @@
 #include "IniHandler.h"
 
 #include <algorithm>
+#include <climits>
 #include <iterator>
+#include <share.h>
 #include <string>
 #include <strsafe.h>
 #include <fstream>
@@ -690,6 +692,131 @@ static void ParseIniExcerpt(const wchar_t *excerpt)
 	ParseIniStream(&stream, NULL);
 }
 
+enum class IniDecodeResult {
+	Ok,
+	OpenFailed,
+	ReadFailed,
+	DecodeFailed,
+	UnsupportedEncoding,
+};
+
+static bool DecodeIniBytes(const char *data, int size, UINT code_page, DWORD flags,
+	std::wstring &text)
+{
+	text.clear();
+	if (size == 0)
+		return true;
+
+	const int length = MultiByteToWideChar(code_page, flags, data, size, nullptr, 0);
+	if (length <= 0)
+		return false;
+	text.resize(static_cast<size_t>(length));
+	return MultiByteToWideChar(code_page, flags, data, size, &text[0], length) == length;
+}
+
+// Returns the offset of the first byte that is not a well formed UTF-8
+// sequence, matching the validity rules of MultiByteToWideChar with
+// MB_ERR_INVALID_CHARS (overlong forms, surrogates and values above U+10FFFF
+// are rejected). Only used to report the line of the first bad byte.
+static size_t FindFirstInvalidUtf8(const char *data, size_t size)
+{
+	const unsigned char *bytes = reinterpret_cast<const unsigned char *>(data);
+
+	for (size_t i = 0; i < size;) {
+		const unsigned char lead = bytes[i];
+		size_t extra;
+		unsigned long code;
+
+		if (lead < 0x80) {
+			++i;
+			continue;
+		}
+		if (lead >= 0xC2 && lead <= 0xDF) {
+			extra = 1;
+			code = lead & 0x1F;
+		} else if (lead >= 0xE0 && lead <= 0xEF) {
+			extra = 2;
+			code = lead & 0x0F;
+		} else if (lead >= 0xF0 && lead <= 0xF4) {
+			extra = 3;
+			code = lead & 0x07;
+		} else {
+			return i;
+		}
+		if (i + extra >= size)
+			return i;
+		for (size_t j = 1; j <= extra; ++j) {
+			const unsigned char next = bytes[i + j];
+			if ((next & 0xC0) != 0x80)
+				return i;
+			code = (code << 6) | (next & 0x3F);
+		}
+		if ((extra == 1 && code < 0x80) ||
+		    (extra == 2 && (code < 0x800 || (code >= 0xD800 && code <= 0xDFFF))) ||
+		    (extra == 3 && (code < 0x10000 || code > 0x10FFFF)))
+			return i;
+		i += extra + 1;
+	}
+	return std::wstring::npos;
+}
+
+static IniDecodeResult ReadIniFileUtf8(const wchar_t *ini, std::wstring &text,
+	size_t &invalid_line)
+{
+	text.clear();
+	invalid_line = 0;
+
+	// Text mode keeps the existing CRLF translation of the old wifstream.
+	FILE *file = _wfsopen(ini, L"r", _SH_DENYNO);
+	if (!file)
+		return IniDecodeResult::OpenFailed;
+
+	std::string bytes;
+	char buffer[8192];
+	size_t count;
+	while ((count = fread(buffer, 1, sizeof(buffer), file)) != 0)
+		bytes.append(buffer, count);
+	const bool read_failed = ferror(file) != 0;
+	fclose(file);
+	if (read_failed)
+		return IniDecodeResult::ReadFailed;
+
+	if (bytes.size() >= 2 &&
+	    ((static_cast<unsigned char>(bytes[0]) == 0xFF &&
+	      static_cast<unsigned char>(bytes[1]) == 0xFE) ||
+	     (static_cast<unsigned char>(bytes[0]) == 0xFE &&
+	      static_cast<unsigned char>(bytes[1]) == 0xFF)))
+		return IniDecodeResult::UnsupportedEncoding;
+
+	size_t offset = 0;
+	if (bytes.size() >= 3 &&
+	    static_cast<unsigned char>(bytes[0]) == 0xEF &&
+	    static_cast<unsigned char>(bytes[1]) == 0xBB &&
+	    static_cast<unsigned char>(bytes[2]) == 0xBF)
+		offset = 3;
+	if (bytes.size() - offset > static_cast<size_t>(INT_MAX))
+		return IniDecodeResult::DecodeFailed;
+
+	const char *data = bytes.data() + offset;
+	const int size = static_cast<int>(bytes.size() - offset);
+
+	if (DecodeIniBytes(data, size, CP_UTF8, MB_ERR_INVALID_CHARS, text))
+		return IniDecodeResult::Ok;
+
+	// The strict decode rejected the file, so tell the user where the first
+	// bad byte is, then decode again with U+FFFD replacement and parse it all.
+	invalid_line = 1;
+	const size_t invalid = FindFirstInvalidUtf8(data, size);
+	if (invalid != std::wstring::npos)
+		for (size_t i = 0; i < invalid; ++i)
+			if (data[i] == '\n')
+				++invalid_line;
+
+	if (!DecodeIniBytes(data, size, CP_UTF8, 0, text))
+		return IniDecodeResult::DecodeFailed;
+	return IniDecodeResult::Ok;
+}
+
 // Parse the ini file into data structures. We used to use the
 // GetPrivateProfile family of Windows API calls to parse the ini file, but
 // they have the disadvantage that they open and parse the whole ini file every
@@ -711,15 +838,32 @@ static void ParseIniExcerpt(const wchar_t *excerpt)
 static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namespace,
     const wstring* recursive_root = nullptr)
 {
-	wifstream f(ini, ios::in, _SH_DENYNO);
-	if (!f) {
-		LogOverlay(LOG_WARNING, "  Error opening %S\n", ini);
-		return;
-	}
-	f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t, 0x10ffff, std::consume_header>));
 	const InputDisableScope scope = recursive_root && IsInputPathWithinDirectory(ini, *recursive_root)
 		? InputDisableScope::MODS : InputDisableScope::ALL;
-	ParseIniStream(&f, ini_namespace, scope);
+
+	std::wstring text;
+	size_t invalid_line = 0;
+	switch (ReadIniFileUtf8(ini, text, invalid_line)) {
+	case IniDecodeResult::OpenFailed:
+		LogOverlay(LOG_WARNING, "  Error opening %S\n", ini);
+		return;
+	case IniDecodeResult::UnsupportedEncoding:
+		IniWarningW(L"INI file is UTF-16 encoded, not UTF-8; re-save as UTF-8: %ls\n", ini);
+		return;
+	case IniDecodeResult::ReadFailed:
+	case IniDecodeResult::DecodeFailed:
+		LogOverlay(LOG_WARNING, "  Error reading %S\n", ini);
+		return;
+	case IniDecodeResult::Ok:
+		break;
+	}
+
+	if (invalid_line)
+		IniWarningW(L"Invalid UTF-8 in %ls at line %Iu; invalid bytes replaced with U+FFFD; re-save as UTF-8\n",
+			ini, invalid_line);
+
+	std::wistringstream stream(text);
+	ParseIniStream(&stream, ini_namespace, scope);
 }
 
 static void ParseIniFile(const wchar_t *ini)

@@ -1,6 +1,7 @@
 // The regression target substitutes this TU for IniHandler.cpp, compiling the
 // production parser once and testing its private entry points directly.
 #include "../IniHandler.cpp"
+#include <clocale>
 #include <stdexcept>
 #include <filesystem>
 #include "slot_range_test_support.h"
@@ -46,6 +47,26 @@ public:
     ~IniAuditLogCapture()
     {
         LogFile = saved; gLogVerbosity = saved_level; G->gShowWarnings = saved_warnings; std::fclose(capture);
+    }
+};
+
+// LogOverlayW converts wide messages to the current LC_CTYPE encoding, and the
+// fixture path contains the build directory's non-ASCII characters. Production
+// LoadConfigFile selects this locale before parsing, so mirror that here.
+class IniUtf8LocaleScope {
+    std::string saved;
+public:
+    IniUtf8LocaleScope()
+    {
+        const char* current = std::setlocale(LC_CTYPE, nullptr);
+        check_ini_audit(current != nullptr, "F185: query current locale");
+        saved = current;
+        check_ini_audit(std::setlocale(LC_CTYPE, "en_US.UTF-8") != nullptr,
+            "F185: use the production config-load UTF-8 locale");
+    }
+    ~IniUtf8LocaleScope()
+    {
+        if (!std::setlocale(LC_CTYPE, saved.c_str())) std::abort();
     }
 };
 
@@ -158,6 +179,55 @@ void test_dx11_ini_enumeration_regression()
     for (size_t i = 0; i < lines.size(); ++i)
         check_ini_audit(lines[i].second == std::to_wstring(i) && lines[i].ini_namespace == paths[i],
             "F294: preserve case-insensitive file ordering, directory recursion ordering and exact namespace paths");
+}
+
+void test_dx11_ini_invalid_utf8_regression()
+{
+    IniWarningScope warnings; IniSectionStateScope sections; IniEnumerationFixture files;
+    IniUtf8LocaleScope locale; IniAuditLogCapture log;
+
+    static const char valid_fixture[] = "\xEF\xBB\xBF[System]\r\nvalue = 3\r\n; \xE4\xB8\xAD\xE6\x96\x87\r\n";
+    const auto valid_path = files.root / L"valid-bom-crlf.ini";
+    {
+        std::ofstream output(valid_path, std::ios::binary | std::ios::trunc);
+        output.write(valid_fixture, sizeof(valid_fixture) - 1);
+        output.close();
+        check_ini_audit(output.good(), "F185: write complete valid UTF-8 BOM/CRLF fixture");
+    }
+    ParseNamespacedIniFile(valid_path.c_str(), nullptr);
+    check_ini_audit(GetIniInt(L"System", L"value", -1, nullptr) == 3,
+        "F185: valid UTF-8 with BOM and CRLF still parses unchanged");
+    check_ini_audit(!contains_ini_audit_text(log.read(), "Invalid UTF-8"),
+        "F185: valid UTF-8 must not raise the invalid encoding warning");
+
+    static const char fixture[] =
+        "[Present]\n"
+        "before = 1\n"
+        "; \xE4\xB8\xAD\xE6\x96\x87\n"
+        "bad = \xC3\x28\n"
+        "after = 2\n"
+        "[AfterInvalid]\n"
+        "value = 7\n";
+    const auto path = files.root / L"invalid-utf8.ini";
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(fixture, sizeof(fixture) - 1);
+        output.close();
+        check_ini_audit(output.good(), "F185: write complete invalid UTF-8 fixture");
+    }
+
+    ParseNamespacedIniFile(path.c_str(), nullptr);
+    const auto messages = log.read();
+
+    check_ini_audit(GetIniInt(L"Present", L"before", -1, nullptr) == 1,
+        "F185: valid lines before the invalid byte still parse");
+    check_ini_audit(GetIniInt(L"Present", L"after", -1, nullptr) == 2 &&
+        GetIniInt(L"AfterInvalid", L"value", -1, nullptr) == 7,
+        "F185: invalid UTF-8 must not truncate the rest of the file");
+    check_ini_audit(contains_ini_audit_text(messages, "Invalid UTF-8") &&
+        contains_ini_audit_text(messages, "invalid-utf8.ini") &&
+        contains_ini_audit_text(messages, "line 4"),
+        "F185: decode failure is reported with the file name and the first bad line");
 }
 
 void test_dx11_stencil_diagnostic_regression()

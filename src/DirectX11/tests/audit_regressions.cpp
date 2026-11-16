@@ -45,6 +45,7 @@ void test_dx11_reload_shader_filename_regression();
 void test_dx11_masked_flags_regression();
 void test_dx11_crash_help_regression();
 void test_dx11_ini_enumeration_regression();
+void test_dx11_ini_invalid_utf8_regression();
 void test_dx11_stencil_diagnostic_regression();
 void test_dx11_view_reference_null_diagnostic_regression();
 void test_dx11_hunting_shader_selection_regression();
@@ -1214,6 +1215,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-113-RA", test_dx11_f113_ra_regression},
     {"F-006", test_dx11_swapchain_destructor_protocol_regression},
     {"F-184", test_dx11_reload_shader_filename_regression},
+    {"F-185", test_dx11_ini_invalid_utf8_regression},
     {"F-187", test_dx11_masked_flags_regression},
     {"F-286", test_dx11_crash_help_regression},
     {"F-285", test_dx11_dx9_sampler_dimension_regression},
