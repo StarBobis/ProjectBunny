@@ -146,6 +146,50 @@ public:
     ~GuardedSignatureText() { if (allocation) VirtualFree(allocation, 0, MEM_RELEASE); }
 };
 
+// F-277: keep the text, its c_str NUL and a 32-byte readable pad before the
+// inaccessible page. strncmp/sscanf may read the NUL; only the old fixed
+// 80-byte diagnostic read crosses the pad and faults.
+class GuardedShortTail {
+    void* allocation = nullptr;
+public:
+    char* data = nullptr;
+    GuardedShortTail(const char* text, size_t size)
+    {
+        const size_t padding = 32;
+        SYSTEM_INFO system{};
+        GetSystemInfo(&system);
+        check_literal_audit(size + 1 + padding <= system.dwPageSize,
+            "F277: the guarded tail and padding fit in one page");
+        allocation = VirtualAlloc(nullptr, system.dwPageSize * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        check_literal_audit(allocation != nullptr, "F277: allocate the guarded pages");
+        DWORD previous = 0;
+        if (!VirtualProtect(static_cast<char*>(allocation) + system.dwPageSize,
+                system.dwPageSize, PAGE_NOACCESS, &previous)) {
+            VirtualFree(allocation, 0, MEM_RELEASE);
+            allocation = nullptr;
+            throw std::runtime_error("F277: protect the page after the tail");
+        }
+        data = static_cast<char*>(allocation) + system.dwPageSize - (size + 1 + padding);
+        // Copy the view plus its caller-provided readable sentinel at text[size].
+        std::memcpy(data, text, size + 1);
+    }
+    ~GuardedShortTail() { if (allocation) VirtualFree(allocation, 0, MEM_RELEASE); }
+};
+
+// F-277: kept free of C++ objects requiring unwinding so /EHsc permits __try.
+DWORD f277_parse_short_tail(Decompiler& decoder, const char* text, size_t size, bool& warned)
+{
+    DWORD code = 0;
+    decoder.mErrorOccurred = false;
+    __try {
+        decoder.ParseStructureDefinitions(nullptr, text, size);
+        warned = decoder.mErrorOccurred;
+    }
+    __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return code;
+}
+
 // F-278b: drive the real ParseCode/DecompileBinaryHLSL path with an assembled
 // multi-line ICB followed by a mov. The ICB branch must leave the newline for
 // ParseCode's unconditional NextLine; otherwise the next physical line is lost.
@@ -611,6 +655,61 @@ void test_dx11_decompiler_skip_packing_regression()
         "F273: a row without a following newline returns false");
     check_literal_audit(!direct.SkipPacking(single, 0, inUse),
         "F273: an empty remaining range is rejected without reading");
+}
+
+void test_dx11_decompiler_f277_diagnostic_bounds_regression()
+{
+    // F-277: the snippet is bounded by the caller's size, not by strlen and not
+    // by a fixed 80 bytes.
+    const char sample[] = "abcdef";
+    check_literal_audit(Decompiler::diagnosticSnippet(sample, 0, 6) == "abcdef",
+        "F277: a short legal tail is copied in full");
+    check_literal_audit(Decompiler::diagnosticSnippet(sample, 4, 6) == "ef",
+        "F277: the snippet stops at size - pos");
+    check_literal_audit(Decompiler::diagnosticSnippet(sample, 6, 6).empty() &&
+        Decompiler::diagnosticSnippet(sample, 7, 6).empty(),
+        "F277: pos >= size produces an empty snippet without unsigned underflow");
+    check_literal_audit(Decompiler::diagnosticSnippet(nullptr, 0, 6).empty(),
+        "F277: a null input produces an empty snippet");
+    const std::string long_tail(100, 'x');
+    check_literal_audit(Decompiler::diagnosticSnippet(long_tail.data(), 5, long_tail.size()).size() == 80,
+        "F277: a long tail still caps the diagnostic at 80 bytes");
+
+    // The 31-byte view leaves only 2 bytes on the // line. The old string(c,80)
+    // read 77 bytes past the logical end; the readable sentinel and 32-byte pad
+    // below keep strncmp/sscanf inside the page so only that diagnostic read
+    // faults. The trailing 'x' is outside size and only keeps the existing
+    // c[pos] probes at pos==size readable without relying on uninitialized stack
+    // data.
+    const char short_tail[] = "\n// Resource bind info for X\n//x";
+    constexpr size_t short_tail_size = 31;
+    static_assert(sizeof(short_tail) - 1 == short_tail_size + 1,
+        "F277: the short tail view is 31 bytes plus one readable sentinel");
+    {
+        GuardedShortTail guarded(short_tail, short_tail_size);
+        Decompiler decoder;
+        bool warned = false;
+        const DWORD code = f277_parse_short_tail(decoder, guarded.data, short_tail_size, warned);
+        std::fprintf(stderr, "F277 31-byte tail: exception=0x%08lx warned=%d\n", code, warned);
+        check_literal_audit(code == 0,
+            "F277: a 2-byte tail must be diagnosed from size, not by reading 80 bytes");
+        check_literal_audit(warned, "F277: the truncated // line is still diagnosed");
+    }
+
+    // The final line is "//   struct " with no type name. This is the :1755
+    // direct diagnostic; fixing the helper alone does not cover it.
+    const char struct_tail[] = "\n// Resource bind info for X\n// {\n//\n//   struct ";
+    static_assert(sizeof(struct_tail) - 1 == 49, "F277: the struct tail is 49 bytes");
+    {
+        GuardedShortTail guarded(struct_tail, sizeof(struct_tail) - 1);
+        Decompiler decoder;
+        bool warned = false;
+        const DWORD code = f277_parse_short_tail(decoder, guarded.data, sizeof(struct_tail) - 1, warned);
+        std::fprintf(stderr, "F277 struct tail: exception=0x%08lx warned=%d\n", code, warned);
+        check_literal_audit(code == 0,
+            "F277: a short struct type name must be diagnosed from size, not by reading 80 bytes");
+        check_literal_audit(warned, "F277: the truncated struct line is still diagnosed");
+    }
 }
 
 void test_dx11_decompiler_output_signature_regression()

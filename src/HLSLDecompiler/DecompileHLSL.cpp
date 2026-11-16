@@ -290,6 +290,16 @@ public:
 		pos = next_line_bounded(c, pos, max);
 	}
 
+	// F-277: diagnostics are bounded by the caller's remaining input.
+	// Do not derive the length with strlen(c): c may point at a short tail
+	// that has no NUL inside [pos, size), and scanning would read past it.
+	static string diagnosticSnippet(const char *input, size_t pos, size_t size)
+	{
+		if (!input || pos >= size)
+			return string();
+		return string(input + pos, std::min<size_t>(80, size - pos));
+	}
+
 	// F-278b: :1675 compares at c[pos] after NextLine, and pos can equal size.
 	// Every caller of DecompileBinaryHLSL in this tree passes std::string::c_str()
 	// (HackerDevice.cpp:962-963, Hunting.cpp:345-346 and the audit tests), so c[size]
@@ -1769,12 +1779,15 @@ public:
 		return 0;
 	}
 
-	bool warn_if_line_is_not(const char *expect, const char *c)
+	bool warn_if_line_is_not(const char *expect, const char *input, size_t pos, size_t size)
 	{
-		if (strncmp(c, expect, strlen(expect))) {
+		const size_t expect_len = strlen(expect);
+		const size_t remaining = pos < size ? size - pos : 0;
+
+		if (remaining < expect_len || strncmp(input + pos, expect, expect_len)) {
 			logDecompileError("WARNING: Unexpected string in shader"
 					"\n  Expected: " + string(expect) +
-					"\n     Found: " + string(c, 80));
+					"\n     Found: " + diagnosticSnippet(input, pos, size));
 			return true;
 		}
 		return false;
@@ -1809,14 +1822,14 @@ public:
 		while (pos = find_next_header("// Resource bind info for ", c, pos, size)) {
 			n = sscanf_s(c + pos, "// Resource bind info for %s", bind_name, UCOUNTOF(bind_name));
 			if (n != 1) {
-				logDecompileError("Error parsing structure bind name: " + string(c + pos, 80));
+				logDecompileError("Error parsing structure bind name: " + diagnosticSnippet(c, pos, size));
 				continue;
 			}
 			NextLine(c, pos, size);
 
-			warn_if_line_is_not("// {\n", c + pos);
+			warn_if_line_is_not("// {\n", c, pos, size);
 			NextLine(c, pos, size);
-			warn_if_line_is_not("//\n", c + pos);
+			warn_if_line_is_not("//\n", c, pos, size);
 			NextLine(c, pos, size);
 
 			if (!strncmp(c + pos, "//   struct ", 12)) {
@@ -1826,7 +1839,7 @@ public:
 				// matches "\n" in scanf:
 				n = sscanf_s(c + pos + 12, "%s", type_name_buf, UCOUNTOF(type_name_buf));
 				if (n != 1) {
-					logDecompileError("Error parsing structure type name: " + string(c + pos, 80));
+					logDecompileError("Error parsing structure type name: " + diagnosticSnippet(c, pos, size));
 					continue;
 				}
 				type_name = type_name_buf;
@@ -1839,7 +1852,7 @@ public:
 				n = 0;
 				sscanf_s(c + pos, "//   %s $Element;%n", type_name_buf, UCOUNTOF(type_name_buf), &n);
 				if (!n) {
-					logDecompileError("Error parsing primitive structure type: " + string(c + pos, 80));
+					logDecompileError("Error parsing primitive structure type: " + diagnosticSnippet(c, pos, size));
 					continue;
 				}
 				mStructuredBufferTypes[bind_name] = type_name_buf;
@@ -1854,16 +1867,16 @@ public:
 			}
 			NextLine(c, pos, size);
 
-			warn_if_line_is_not("//   {\n", c + pos);
+			warn_if_line_is_not("//   {\n", c, pos, size);
 			NextLine(c, pos, size);
-			warn_if_line_is_not("//       \n", c + pos);
+			warn_if_line_is_not("//       \n", c, pos, size);
 			NextLine(c, pos, size);
 
 			hlsl = "\nstruct " + string(type_name) + "\n{\n";
 
 			while (true) {
 				// Strip comments:
-				if (warn_if_line_is_not("//", c + pos))
+				if (warn_if_line_is_not("//", c, pos, size))
 					break;
 				spos = pos + 2;
 
@@ -1893,9 +1906,9 @@ public:
 				if (!strncmp(&c[fpos], "struct ", 7) || !strncmp(&c[fpos], "struct\n", 7)) {
 					hlsl += string(c, spos, fpos - spos) + "struct {\n";
 					NextLine(c, pos, size); // struct typename
-					warn_if_line_is_not("{\n", c + pos + strspn(c + pos, "/ "));
+					warn_if_line_is_not("{\n", c, pos + strspn(c + pos, "/ "), size);
 					NextLine(c, pos, size); // {
-					warn_if_line_is_not("\n", c + pos + strspn(c + pos, "/ "));
+					warn_if_line_is_not("\n", c, pos + strspn(c + pos, "/ "), size);
 					NextLine(c, pos, size); // blank
 				} else {
 					// Add the stripped line to the HLSL output, unless blank:
