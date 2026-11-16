@@ -947,10 +947,17 @@ struct TextureOverrideFuzzyMatch {
 };
 typedef std::vector<TextureOverrideFuzzyMatch> TextureOverrideFuzzyMatches;
 
+// Caller must hold G->mCriticalSection; the returned draw-map vector is
+// rebuilt under G on reload and must be consumed before unlocking.
 TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info);
 
 template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
+// Caller must hold G->mCriticalSection across the call and while consuming
+// `matches`; these functions only hold G while collecting. The returned
+// TextureOverride* point into the config map and become invalid on reload.
+// The resource handle is AddRef'd for the lookup only, not for the config
+// nodes, so the caller's G must still cover consumption.
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 
@@ -961,8 +968,9 @@ void ClearRegionHashesGlobalCache();
 
 // Ordinary/fuzzy candidate lookup never matches an untracked resource.
 // Explicit region exact matching is a separate path.
-// Caller must hold G->mCriticalSection and a live resource reference; consume
-// returned pointers before unlocking. Untracked resources return nullptr.
+// Caller must hold G->mCriticalSection and a live resource reference; that
+// reference must cover the whole candidate use, and returned pointers must
+// be consumed before unlocking. Untracked resources return nullptr.
 TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resource);
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 // Takes G->mCriticalSection before mResourcesLock; call before old maps die.

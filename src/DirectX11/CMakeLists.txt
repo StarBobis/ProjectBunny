@@ -307,6 +307,7 @@ if(BUILD_TESTING)
         tests/slot_batch_regression.cpp
         tests/pool_range_flags_regression.cpp
         tests/texture_override_cache_regression.cpp
+        tests/f197_override_lifetime_regression.cpp
         tests/dynamic_slot_regression.cpp
         tests/dynamic_pipeline_slot_regression.cpp
         tests/slot_range_regression.cpp

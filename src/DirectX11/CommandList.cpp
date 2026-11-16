@@ -1170,6 +1170,9 @@ void CheckTextureOverrideCommand::run(CommandListState* state)
 {
     if (!state) return;
     CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    // Keep every TextureOverride* in `matches` inside this guard: reload
+    // clears the config map under the same lock, so consumption must finish
+    // before the guard is released.
     CheckTextureStateScope restore(*state);
     COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
     unsigned first = 0, count = 1;
@@ -2816,6 +2819,7 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 		case ResourceCopyTargetEvaluationMode::RESOURCE:
 		{
 			CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+            // `matches` is valid only while this guard is held.
             TextureOverrideMatches matches;
 			TextureOverrideMatches::reverse_iterator rit;
 			bool resource_found;

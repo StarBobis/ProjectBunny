@@ -986,10 +986,14 @@ uint32_t CalcTexture2DDataHashAccurate(
 	return hash;
 }
 
-// Must be called with the critical section held to protect mResources against
-// simultaneous reads & modifications (hmm, tempted to implement a lock free
-// map given that it's add only, or use RCU). Is there anything on Windows like
-// lockdep to statically prove this is called with the lock held?
+// Returns a borrowed pointer into G->mResources, or NULL if the resource is
+// not tracked. This function takes mResourcesLock itself, but that only
+// protects the map lookup; the entry remains valid only while it is not
+// erased. The normal erase path is the resource's last COM reference being
+// released (ResourceReleaseTracker::Release), not a config reload.
+// The caller must hold a live COM reference to `resource` while using the
+// pointer and must not carry it across an unlocked blocking COM/GPU call.
+// Access to mutable fields (hash, etc.) is separately protected by G.
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource)
 {
 	std::unordered_map<ID3D11Resource *, ResourceHandleInfo>::iterator j;
@@ -1006,8 +1010,10 @@ ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource)
 	return ret;
 }
 
-// Must be called with the critical section held to protect mResources against
-// simultaneous reads & modifications
+// orig_hash is written once when the resource is registered and never
+// changes, so no G is required for this read; GetResourceHandleInfo protects
+// only the mResources lookup itself. The caller's resource reference must
+// still keep the entry alive while the value is used.
 uint32_t GetOrigResourceHash(ID3D11Resource *resource)
 {
 	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
@@ -1017,8 +1023,9 @@ uint32_t GetOrigResourceHash(ID3D11Resource *resource)
 	return 0;
 }
 
-// Must be called with the critical section held to protect mResources against
-// simultaneous reads & modifications
+// Caller must hold G->mCriticalSection while reading the mutable hash field
+// and must hold a live resource reference; GetResourceHandleInfo only
+// protects the mResources lookup itself.
 uint32_t GetResourceHash(ID3D11Resource *resource)
 {
 	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
@@ -1848,6 +1855,9 @@ static bool matches_draw_info(TextureOverride *tex_override, DrawCallInfo *call_
 	return true;
 }
 
+// Caller must hold G->mCriticalSection across this call and while consuming
+// `matches`: the function only holds G while collecting, and the returned
+// TextureOverride* point into mTextureOverrideMap, which reload clears under G.
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
     CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
@@ -1876,6 +1886,8 @@ static uint32_t get_hash_for_resource(ID3D11Resource* resource)
 	return hash;
 }
 
+// Caller must hold G->mCriticalSection. The returned vector belongs to the
+// draw maps and is rebuilt under G on reload; consume it before unlocking.
 TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info)
 {
 	if (call_info->IndexCount)
@@ -2044,6 +2056,9 @@ static void AppendFuzzyCandidates(const TextureOverrideCandidates& candidates, T
 
 // The region path has already selected its exact region hash; never append
 // the cached whole-resource exact matches here.
+// This overload holds G only while collecting. The caller must still hold G
+// when it consumes `matches`; the ComPtr below keeps the resource alive for
+// the lookup, not the returned config nodes.
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
 {
     if (!resource || !matches) return;
@@ -2056,6 +2071,9 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, Texture
     sample.Finish(matches->size() > before);
 }
 
+// This overload holds G only while collecting. The caller must still hold G
+// when it consumes `matches`; the ComPtr below keeps the resource alive for
+// the lookup, not the returned config nodes.
 void find_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
 {
     if (!resource || !matches) return;
@@ -2544,6 +2562,11 @@ uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset
 		return 0;
 	}
 
+	// Keep the COM resource alive across the unlocked CacheBufferData GPU
+	// readback below. Without this, the last external reference can release
+	// the tracker and erase mResources while handle_info is still in use.
+	Microsoft::WRL::ComPtr<ID3D11Buffer> buffer_lifetime(buffer);
+
     // Copy the fast-cache value before taking G; never hold L3 across G,
     // resource-map locks, COM, or GPU calls.
 	RegionHashKeyL3 level_3_cache_key{ (uint64_t)buffer, offset, size };
@@ -2746,6 +2769,10 @@ bool TryGetSpatialHash(HackerContext* context, ID3D11Buffer* buffer,
     hash = 0;
     if (!context || !buffer || !std::isfinite(cell_size) || cell_size <= 0)
         return false;
+    // Same lifetime guard as GetRegionHash: CacheBufferData releases G for a
+    // GPU readback, so the caller's resource must not be allowed to vanish
+    // while `info` is still dereferenced after re-entering G.
+    Microsoft::WRL::ComPtr<ID3D11Buffer> buffer_lifetime(buffer);
     EnterCriticalSectionPretty(&G->mCriticalSection);
     ResourceHandleInfo* info = custom_resource ? custom_resource->GetHandleInfo() : GetResourceHandleInfo(buffer);
     if (!info) {

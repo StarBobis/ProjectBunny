@@ -111,6 +111,7 @@ void test_dx11_debug_layer_interfaces_regression();
 void test_dx11_hook_lookup_regression();
 void test_dx11_hook_release_regression();
 void test_dx11_hook_install_regression();
+void test_dx11_f197_override_lifetime_regression();
 void test_dx11_loader_file_bounds_regression();
 void test_dx11_legacy_profiling_regression();
 void test_f200();
@@ -1301,6 +1302,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-002", test_dx11_hook_release_regression},
     {"F-182", test_dx11_hook_install_regression},
     {"F-109", test_dx11_initial_data_ownership_regression},
+    {"F-197", test_dx11_f197_override_lifetime_regression},
     {"F-193", test_f193},
     {"F-195", test_f195},
     {"F-195-EXCLUDE", test_f195_exclude_lost_window},

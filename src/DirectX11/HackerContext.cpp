@@ -1319,26 +1319,28 @@ bool HackerContext::MapDenyCPURead(
 	UINT MapFlags,
 	D3D11_MAPPED_SUBRESOURCE *pMappedResource)
 {
-	uint32_t hash;
-	TextureOverrideMap::iterator i;
-
 	// Currently only replacing first subresource to simplify map type, and
 	// only on read access as it is unclear how to handle a read/write access.
 	if (Subresource != 0)
 		return false;
 
-	if (G->mTextureOverrideMap.empty())
-		return false;
+	// The whole config lookup is performed under G and only the bool escapes.
+	// Reload clears mTextureOverrideMap under the same lock; keeping an
+	// iterator or TextureOverride* past this scope would race with reload.
+	bool deny_cpu_read = false;
+	{
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-		hash = GetResourceHash(pResource);
-	LeaveCriticalSection(&G->mCriticalSection);
+		if (G->mTextureOverrideMap.empty())
+			return false;
 
-	i = lookup_textureoverride(hash);
-	if (i == G->mTextureOverrideMap.end())
-		return false;
+		const uint32_t hash = GetResourceHash(pResource);
+		auto i = lookup_textureoverride(hash);
+		if (i != G->mTextureOverrideMap.end() && !i->second.empty())
+			deny_cpu_read = i->second.begin()->deny_cpu_read;
+	}
 
-	return i->second.begin()->deny_cpu_read;
+	return deny_cpu_read;
 }
 
 // Checks resource for being an index or vertex buffer.
@@ -1908,7 +1910,7 @@ bool HackerContext::ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,
 	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
 	D3D11_RESOURCE_DIMENSION srcDim, dstDim;
 	uint32_t srcHash, dstHash;
-	TextureOverrideMap::iterator i;
+	bool expand_region_copy = false;
 
 	if (!pSrcResource || !pDstResource || !pSrcBox)
 		return false;
@@ -1920,20 +1922,23 @@ bool HackerContext::ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,
 
 	srcTex->GetDesc(&srcDesc);
 	dstTex->GetDesc(&dstDesc);
-	EnterCriticalSectionPretty(&G->mCriticalSection);
+	{
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 		srcHash = GetResourceHash(srcTex);
 		dstHash = GetResourceHash(dstTex);
-	LeaveCriticalSection(&G->mCriticalSection);
+		// Snapshot only the bool while G protects the config map. Reload
+		// clears mTextureOverrideMap under this same lock, so an iterator
+		// must not escape this block.
+		auto i = lookup_textureoverride(dstHash);
+		if (i != G->mTextureOverrideMap.end() && !i->second.empty())
+			expand_region_copy = i->second.begin()->expand_region_copy;
+	}
 
 	LogDebug("CopySubresourceRegion %08lx (%u:%u x %u:%u / %u x %u) -> %08lx (%u x %u / %u x %u)\n",
 			srcHash, pSrcBox->left, pSrcBox->right, pSrcBox->top, pSrcBox->bottom, srcDesc.Width, srcDesc.Height, 
 			dstHash, DstX, DstY, dstDesc.Width, dstDesc.Height);
 
-	i = lookup_textureoverride(dstHash);
-	if (i == G->mTextureOverrideMap.end())
-		return false;
-
-	if (!i->second.begin()->expand_region_copy)
+	if (!expand_region_copy)
 		return false;
 
 	memcpy(replaceBox, pSrcBox, sizeof(D3D11_BOX));
