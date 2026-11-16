@@ -58,7 +58,7 @@ void test_dx11_dx9_constant_reset_regression()
     }
 }
 
-const uint32_t *DecodeDeclaration(Shader *, const uint32_t *, Declaration *);
+const uint32_t *DecodeDeclaration(Shader *, const uint32_t *, const uint32_t *, Declaration *);
 
 void test_dx11_customdata_length_regression()
 {
@@ -70,7 +70,7 @@ void test_dx11_customdata_length_regression()
         static_cast<uint32_t>(OPCODE_CUSTOMDATA), 5, 0x11223344, 0x55667788, 0x99aabbcc
     };
     Declaration comment_decl{};
-    const uint32_t *after_comment = DecodeDeclaration(&shader, comment, &comment_decl);
+    const uint32_t *after_comment = DecodeDeclaration(&shader, comment, comment + 5, &comment_decl);
     std::fprintf(stderr, "F124: odd-length COMMENT returned offset=%td\n", after_comment - comment);
     check(after_comment == comment + 5, "F124: non-vec4-aligned COMMENT payload decodes with the full length");
 
@@ -80,7 +80,7 @@ void test_dx11_customdata_length_regression()
         5, 0, 0, 0
     };
     bool rejected = false;
-    try { Declaration decl{}; DecodeDeclaration(&shader, bad_icb, &decl); } catch (...) { rejected = true; }
+    try { Declaration decl{}; DecodeDeclaration(&shader, bad_icb, bad_icb + 5, &decl); } catch (...) { rejected = true; }
     std::fprintf(stderr, "F124: misaligned ICB rejected=%d\n", rejected ? 1 : 0);
     check(rejected, "F124: misaligned immediate constant buffer length is rejected");
 
@@ -89,7 +89,7 @@ void test_dx11_customdata_length_regression()
     big[0] = static_cast<uint32_t>(OPCODE_CUSTOMDATA) | (CUSTOMDATA_DCL_IMMEDIATE_CONSTANT_BUFFER << 11);
     big[1] = 4098;
     Declaration big_decl{};
-    const uint32_t *after_big = DecodeDeclaration(&shader, big.data(), &big_decl);
+    const uint32_t *after_big = DecodeDeclaration(&shader, big.data(), big.data() + big.size(), &big_decl);
     std::fprintf(stderr, "F124: 1024-vec4 ICB returned offset=%td operands=%u\n",
         after_big - big.data(), big_decl.ui32NumOperands);
     check(after_big == big.data() + 4098 && big_decl.ui32NumOperands == 1024,

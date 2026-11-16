@@ -11,6 +11,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <new>
+#include <type_traits>
 #include <vector>
 #include <cstring>
 #include "log.h"
@@ -996,6 +999,344 @@ void test_dx11_decode_dxbc_bounds_regression()
         dx9Rejected = true;
     }
     check_literal_audit(dx9Rejected, "F104: DX9 stream truncated before END is rejected");
+}
+
+namespace {
+
+//F-101: minimal well-formed DXBC container around a raw SHDR/SHEX payload.
+std::vector<uint32_t> make_f101_shader(SHADER_TYPE type, std::initializer_list<uint32_t> body)
+{
+    std::vector<uint32_t> shader;
+    shader.push_back((static_cast<uint32_t>(type) << 16) | 0x50u); // SM 5.0
+    shader.push_back(static_cast<uint32_t>(body.size() + 2));      // version + length
+    shader.insert(shader.end(), body.begin(), body.end());
+    return shader;
+}
+
+std::vector<uint32_t> make_f101_dxbc(const std::vector<uint32_t>& shader)
+{
+    // 32-byte DXBC header + one offset + 8-byte chunk header + payload.
+    std::vector<uint32_t> bytes(11 + shader.size(), 0);
+    std::memcpy(&bytes[0], "DXBC", 4);
+    bytes[5] = 1;                                                   // header.one
+    bytes[6] = static_cast<uint32_t>(bytes.size() * sizeof(uint32_t));
+    bytes[7] = 1;                                                   // chunkCount
+    bytes[8] = 36;                                                  // chunk table[0]
+    std::memcpy(&bytes[9], "SHEX", 4);
+    bytes[10] = static_cast<uint32_t>(shader.size() * sizeof(uint32_t));
+    std::copy(shader.begin(), shader.end(), bytes.begin() + 11);
+    return bytes;
+}
+
+size_t f101_shader_token_cap(const std::vector<uint32_t>& words)
+{
+    // DXBC words 11/12 are the shader payload's version/length DWORDs.
+    return words.size() > 12 ? static_cast<size_t>(words[12]) : 0;
+}
+
+std::vector<uint32_t> f101_case_words(const char* name)
+{
+    const uint32_t L1 = 1u << 24;
+    const uint32_t L127 = 127u << 24;
+    if (!std::strcmp(name, "S2-missing-length"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_CUSTOMDATA)}));
+    if (!std::strcmp(name, "S2-short-length"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_CUSTOMDATA), 1u}));
+    if (!std::strcmp(name, "S2-overlong"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_NOP) | L1,
+             static_cast<uint32_t>(OPCODE_CUSTOMDATA), 0xFFFFFFFFu}));
+    if (!std::strcmp(name, "S4-extended-overrun"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_RET) | L1,
+             static_cast<uint32_t>(OPCODE_RET) | L1 | 0x80000000u, 0u}));
+    if (!std::strcmp(name, "S5-decl-zero"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_DCL_INPUT), 0u}));
+    if (!std::strcmp(name, "S6-inst-zero"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_RET) | L1,
+             static_cast<uint32_t>(OPCODE_NOP)}));
+    if (!std::strcmp(name, "S7-hull-zero"))
+        return make_f101_dxbc(make_f101_shader(HULL_SHADER,
+            {static_cast<uint32_t>(OPCODE_NOP)}));
+    if (!std::strcmp(name, "S7-hull-second"))
+        return make_f101_dxbc(make_f101_shader(HULL_SHADER,
+            {static_cast<uint32_t>(OPCODE_DCL_GLOBAL_FLAGS) | L1,
+             static_cast<uint32_t>(OPCODE_NOP)}));
+    if (!std::strcmp(name, "T5-overlong"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_NOP) | L127}));
+    if (!std::strcmp(name, "T8-msad"))
+        return make_f101_dxbc(make_f101_shader(PIXEL_SHADER,
+            {static_cast<uint32_t>(OPCODE_NOP) | L1,
+             static_cast<uint32_t>(OPCODE_MSAD) | L1}));
+    return std::vector<uint32_t>();
+}
+
+unsigned f101_expected_passes(const char* name)
+{
+    if (!std::strcmp(name, "S6-inst-zero")) return 2;
+    if (!std::strcmp(name, "S7-hull-second")) return 2;
+    return 1;
+}
+
+int f101_run_child(const char* name)
+{
+    const std::vector<uint32_t> words = f101_case_words(name);
+    if (words.empty()) {
+        std::fprintf(stderr, "F-101 child: unknown case %s\n", name);
+        return 44;
+    }
+    std::fprintf(stderr, "F-101 child %s: bad-token pass(es)=%u shader token cap=%zu\n",
+        name, f101_expected_passes(name), f101_shader_token_cap(words));
+    std::fflush(stderr);
+    try {
+        Shader* shader = ::DecodeDXBC(words.data(), words.size() * sizeof(uint32_t));
+        if (shader) {
+            ::FreeShaderInfo(shader->sInfo);
+            delete shader;
+        }
+        std::fprintf(stderr, "F-101 child %s: decode returned without rejecting\n", name);
+        return 43;
+    } catch (const std::bad_alloc&) {
+        std::fprintf(stderr, "F-101 child %s: ran into the memory cap\n", name);
+        return 42;
+    } catch (...) {
+        std::fprintf(stderr, "F-101 child %s: rejected by decompileError\n", name);
+        return 0;
+    }
+}
+
+class F101Handle {
+public:
+    explicit F101Handle(HANDLE value = nullptr) : value(value) {}
+    ~F101Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    F101Handle(const F101Handle&) = delete;
+    F101Handle& operator=(const F101Handle&) = delete;
+    HANDLE get() const { return value; }
+private:
+    HANDLE value;
+};
+
+void f101_require_child_rejects(const char* name)
+{
+    wchar_t executable[32768]{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    check_literal_audit(length != 0 && length < ARRAYSIZE(executable),
+        "F-101: locate the regression host for the isolated child");
+    check_literal_audit(SetEnvironmentVariableA("F101_DECODE_CASE", name) != FALSE,
+        "F-101: publish the child case name");
+
+    F101Handle job(CreateJobObjectW(nullptr, nullptr));
+    check_literal_audit(job.get() != nullptr, "F-101: create owned child job");
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    limits.ProcessMemoryLimit = 512ull * 1024 * 1024;
+    check_literal_audit(SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
+        &limits, sizeof(limits)) != FALSE, "F-101: configure child memory cap");
+
+    std::wstring command = L"\"" + std::wstring(executable) +
+        L"\" --audit-item F-101 --fixture-isolated";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION process{};
+    check_literal_audit(CreateProcessW(executable, &command[0], nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &startup, &process) != FALSE,
+        "F-101: launch isolated child");
+    F101Handle child(process.hProcess);
+    F101Handle thread(process.hThread);
+
+    if (!AssignProcessToJobObject(job.get(), child.get()) ||
+        ResumeThread(thread.get()) == DWORD(-1)) {
+        TerminateProcess(child.get(), EXIT_FAILURE);
+        WaitForSingleObject(child.get(), 5000);
+        throw std::runtime_error("F-101: attach and resume the isolated child");
+    }
+    check_literal_audit(SetEnvironmentVariableA("F101_DECODE_CASE", nullptr) != FALSE,
+        "F-101: clear the child case name");
+
+    const DWORD waited = WaitForSingleObject(child.get(), 5000);
+    if (waited != WAIT_OBJECT_0) {
+        TerminateJobObject(job.get(), ERROR_TIMEOUT);
+        WaitForSingleObject(child.get(), 5000);
+    }
+    DWORD code = EXIT_FAILURE;
+    const BOOL collected = GetExitCodeProcess(child.get(), &code);
+    std::fprintf(stderr, "F-101 child %s: exit=%lu wait=%lu\n", name, code, waited);
+    check_literal_audit(waited == WAIT_OBJECT_0 && collected && code == 0,
+        "F-101: a zero-length token must reject inside the 5s/512MiB child cap");
+}
+
+void f101_require_rejected(const char* name)
+{
+    const std::vector<uint32_t> words = f101_case_words(name);
+    check_literal_audit(!words.empty(), "F-101: known decoder length fixture");
+    bool threw = false;
+    Shader* shader = nullptr;
+    try { shader = ::DecodeDXBC(words.data(), words.size() * sizeof(uint32_t)); }
+    catch (const std::bad_alloc&) { threw = false; }
+    catch (...) { threw = true; }
+    if (shader) {
+        ::FreeShaderInfo(shader->sInfo);
+        delete shader;
+    }
+    std::fprintf(stderr, "F-101 %s: threw=%d returned=%s shader token cap=%zu\n",
+        name, threw ? 1 : 0, shader ? "shader" : "nullptr", f101_shader_token_cap(words));
+    check_literal_audit(threw && shader == nullptr,
+        "F-101: a zero or overlong token length must throw decompileError");
+}
+
+void f101_check_legal_fixture()
+{
+    const std::string bytecode = read_f104_fixture("negate-positive.dxbc");
+    const std::string assembly = read_f104_fixture("negate-positive.asm");
+    uint32_t shex = find_f104_chunk(bytecode, 0x58454853u); // 'SHEX'
+    if (!shex) shex = find_f104_chunk(bytecode, 0x52444853u); // 'SHDR'
+    check_literal_audit(shex != 0, "F-101: legal fixture has a shader chunk");
+    const uint32_t declaredLength = read_f104_u32(bytecode, size_t(shex) + 12);
+    check_literal_audit(declaredLength >= 2, "F-101: legal fixture declares a full shader length");
+
+    Shader* shader = ::DecodeDXBC(bytecode.data(), bytecode.size());
+    check_literal_audit(shader != nullptr, "F-101: legal native fixture still decodes");
+    check_literal_audit(shader->ui32MajorVersion == 5 && shader->eShaderType == PIXEL_SHADER &&
+        shader->ui32ShaderLength == declaredLength,
+        "F-101: legal fixture keeps ps_5_0 and its declared length");
+    const auto& decls = shader->asPhase[MAIN_PHASE].ppsDecl[0];
+    const auto& insts = shader->asPhase[MAIN_PHASE].ppsInst[0];
+    check_literal_audit(decls.size() == 2 && decls[0].eOpcode == OPCODE_DCL_GLOBAL_FLAGS &&
+        decls[1].eOpcode == OPCODE_DCL_OUTPUT,
+        "F-101: legal fixture keeps both declarations");
+    check_literal_audit(insts.size() == 3 && insts[0].eOpcode == OPCODE_FTOU &&
+        insts[1].eOpcode == OPCODE_MOV && insts[2].eOpcode == OPCODE_RET,
+        "F-101: legal fixture keeps ftou/mov/ret in order");
+    ::FreeShaderInfo(shader->sInfo);
+    delete shader;
+
+    DecompilerSettings settings;
+    ParseParameters params{};
+    params.bytecode = bytecode.data();
+    params.bytecodeSize = bytecode.size();
+    params.decompiled = assembly.c_str();
+    params.decompiledSize = assembly.size();
+    params.G = &settings;
+    bool patched = false, failed = false;
+    std::string model;
+    const std::string first = DecompileBinaryHLSL(params, patched, model, failed);
+    check_literal_audit(!failed && !first.empty() && model == "ps_5_0",
+        "F-101: legal fixture keeps its previous public decompiler output");
+    DecompilerSettings settings2;
+    params.G = &settings2;
+    patched = false;
+    failed = false;
+    const std::string second = DecompileBinaryHLSL(params, patched, model, failed);
+    check_literal_audit(!failed && second == first,
+        "F-101: legal fixture output is stable across the checked length path");
+}
+
+void f101_check_free_shader_info()
+{
+    ShaderInfo zero{};
+    ::FreeShaderInfo(&zero);
+    check_literal_audit(zero.psInputSignatures == nullptr && zero.psOutputSignatures == nullptr &&
+        zero.psPatchConstantSignatures == nullptr && zero.psResourceBindings == nullptr &&
+        zero.psConstantBuffers == nullptr && zero.psClassTypes == nullptr &&
+        zero.psClassInstances == nullptr,
+        "F-101: FreeShaderInfo accepts an all-zero ShaderInfo");
+    ::FreeShaderInfo(nullptr);
+
+    Shader partial;
+    partial.sInfo->psInputSignatures = new InOutSignature[2];
+    partial.sInfo->ui32NumInputSignatures = 2;
+    partial.sInfo->psConstantBuffers = new ConstantBuffer[1];
+    partial.sInfo->ui32NumConstantBuffers = 1;
+    ::FreeShaderInfo(partial.sInfo);
+    check_literal_audit(partial.sInfo->psInputSignatures == nullptr &&
+        partial.sInfo->psConstantBuffers == nullptr &&
+        partial.sInfo->ui32NumInputSignatures == 0 &&
+        partial.sInfo->ui32NumConstantBuffers == 0,
+        "F-101: FreeShaderInfo accepts a partially populated ShaderInfo");
+}
+
+void f101_check_failed_decode_lifetime()
+{
+    const std::vector<uint32_t> words = f101_case_words("T8-msad");
+    auto attempt = [&] {
+        try {
+            Shader* shader = ::DecodeDXBC(words.data(), words.size() * sizeof(uint32_t));
+            if (shader) {
+                ::FreeShaderInfo(shader->sInfo);
+                delete shader;
+            }
+        } catch (...) {
+        }
+    };
+    attempt(); // Exclude one-time logging/CRT initialization.
+    const size_t before = decompiler_live_bytes();
+    for (unsigned iteration = 0; iteration < 64; ++iteration)
+        attempt();
+    const size_t after = decompiler_live_bytes();
+    std::fprintf(stderr, "F-101: failed decode live bytes %zu -> %zu (64 attempts)\n", before, after);
+    check_literal_audit(before == after,
+        "F-101: failed DecodeDXBC releases Shader and ShaderInfo");
+}
+
+void f101_check_public_failure_contract()
+{
+    const std::vector<uint32_t> words = f101_case_words("T5-overlong");
+    const std::string assembly = read_f104_fixture("negate-positive.asm");
+    DecompilerSettings settings;
+    ParseParameters params{};
+    params.bytecode = words.data();
+    params.bytecodeSize = words.size() * sizeof(uint32_t);
+    params.decompiled = assembly.c_str();
+    params.decompiledSize = assembly.size();
+    params.G = &settings;
+    bool patched = false, failed = false;
+    std::string model;
+    bool threw = false;
+    std::string result;
+    try { result = DecompileBinaryHLSL(params, patched, model, failed); }
+    catch (...) { threw = true; }
+    std::fprintf(stderr, "F-101 public: threw=%d failed=%d output=%zu\n",
+        threw ? 1 : 0, failed ? 1 : 0, result.size());
+    check_literal_audit(!threw && failed && result.empty(),
+        "F-101: decode failure is caught at the public entry and reported as failed/empty");
+}
+
+static_assert(noexcept(ShaderOwnerDeleter{}(static_cast<Shader*>(nullptr))),
+    "F-101: ShaderOwnerDeleter must be noexcept");
+static_assert(std::is_nothrow_destructible<ShaderPtr>::value,
+    "F-101: ShaderPtr destruction must be noexcept");
+
+}
+
+void test_dx11_decompiler_decode_bounds_regression()
+{
+    if (const char* child_case = std::getenv("F101_DECODE_CASE"))
+        std::_Exit(f101_run_child(child_case));
+
+    std::fputs("F-101: checked token length, bounded loops and owner cleanup\n", stderr);
+    std::fflush(stderr);
+
+    f101_check_legal_fixture();
+    for (const char* name : {"S2-missing-length", "S2-short-length", "S2-overlong",
+            "S4-extended-overrun", "S5-decl-zero", "S6-inst-zero", "S7-hull-zero",
+            "S7-hull-second", "T5-overlong"}) {
+        f101_require_rejected(name);
+    }
+    f101_check_free_shader_info();
+    f101_check_failed_decode_lifetime();
+    f101_check_public_failure_contract();
+    for (const char* name : {"S5-decl-zero", "S6-inst-zero", "S7-hull-zero", "S7-hull-second"})
+        f101_require_child_rejects(name);
 }
 
 void test_dx11_decompiler_negative_literal_regression()

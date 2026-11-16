@@ -849,6 +849,12 @@ void LoadShaderInfo(const uint32_t ui32MajorVersion,
 
 void FreeShaderInfo(ShaderInfo* psShaderInfo)
 {
+    //F-101: the decode owner may see a partially constructed ShaderInfo. A
+    //null info adds nothing to release; an all-zero/partially-null info is
+    //already safe because delete[] accepts null and the counts are reset below.
+    if (!psShaderInfo)
+        return;
+
     delete[] psShaderInfo->psInputSignatures; psShaderInfo->psInputSignatures = 0;
     delete[] psShaderInfo->psResourceBindings; psShaderInfo->psResourceBindings = 0;
     delete[] psShaderInfo->psConstantBuffers; psShaderInfo->psConstantBuffers = 0;

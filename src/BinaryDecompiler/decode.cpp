@@ -8,6 +8,7 @@
 #include "log.h"
 
 #include <cstring>
+#include <new>
 
 #define FOURCC(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24 ))
 enum {FOURCC_DXBC = FOURCC('D', 'X', 'B', 'C')}; //DirectX byte code
@@ -140,6 +141,40 @@ static uint64_t instructionID = 0;
 
 // VS2013 BUG WORKAROUND: Make sure this class has a unique type name!
 class DecompileError: public std::exception {} decompileError;
+
+//F-101: the only place that turns a token's self-reported length into a
+//pointer step. The payload end is mandatory so a token can neither claim a
+//zero length (which would stall the caller's loop) nor a length past the
+//payload. CUSTOMDATA keeps its length in the second DWORD, so that DWORD must
+//exist and the total must cover both header DWORDs.
+static uint32_t DecodeCheckedTokenLength(const uint32_t* pui32Token,
+                                         const uint32_t* pui32End)
+{
+    if (pui32Token >= pui32End)
+        throw decompileError;
+
+    const size_t ui32Remaining =
+        static_cast<size_t>(pui32End - pui32Token);
+
+    uint32_t ui32Length = DecodeInstructionLength(*pui32Token);
+    if (DecodeOpcodeType(*pui32Token) == OPCODE_CUSTOMDATA)
+    {
+        if (ui32Remaining < 2)
+            throw decompileError;
+        ui32Length = pui32Token[1];
+        if (ui32Length < 2)
+            throw decompileError;
+    }
+    else if (ui32Length == 0)
+    {
+        throw decompileError;
+    }
+
+    if (static_cast<size_t>(ui32Length) > ui32Remaining)
+        throw decompileError;
+
+    return ui32Length;
+}
 
 void DecodeNameToken(const uint32_t* pui32NameToken, Operand* psOperand)
 {
@@ -437,12 +472,17 @@ uint32_t DecodeOperand (const uint32_t *pui32Tokens, Operand* psOperand)
     return ui32NumTokens;
 }
 
-const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, Declaration* psDecl)
+const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token,
+                                  const uint32_t* pui32End, Declaration* psDecl)
 {
-    uint32_t ui32TokenLength = DecodeInstructionLength(*pui32Token);
+    const uint32_t ui32TokenLength = DecodeCheckedTokenLength(pui32Token, pui32End);
     const uint32_t bExtended = DecodeIsOpcodeExtended(*pui32Token);
     const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32Token);
     uint32_t ui32OperandOffset = 1;
+
+    //An extended token is itself one of the declared DWORDs.
+    if (bExtended && ui32TokenLength < 2)
+        throw decompileError;
 
     psDecl->eOpcode = eOpcode;
 
@@ -696,7 +736,8 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
 		}
 		case OPCODE_CUSTOMDATA:
 		{
-			ui32TokenLength = pui32Token[1];
+			//F-101: DecodeCheckedTokenLength already read and validated the
+			//CUSTOMDATA length DWORD before this switch was entered.
 			{
 				int iTupleSrc = 0, iTupleDest = 0;
 				//const uint32_t ui32ConstCount = pui32Token[1] - 2;
@@ -881,9 +922,11 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
     return pui32Token + ui32TokenLength;
 }
 
-const uint32_t* DeocdeInstruction(const uint32_t* pui32Token, Instruction* psInst, Shader* psShader)
+const uint32_t* DeocdeInstruction(const uint32_t* pui32Token,
+                                  const uint32_t* pui32End,
+                                  Instruction* psInst, Shader* psShader)
 {
-    uint32_t ui32TokenLength = DecodeInstructionLength(*pui32Token);
+    const uint32_t ui32TokenLength = DecodeCheckedTokenLength(pui32Token, pui32End);
     const uint32_t bExtended = DecodeIsOpcodeExtended(*pui32Token);
     const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32Token);
     uint32_t ui32OperandOffset = 1;
@@ -901,6 +944,10 @@ const uint32_t* DeocdeInstruction(const uint32_t* pui32Token, Instruction* psIns
     if(bExtended)
     {
         do {
+            //F-101: the extended-opcode chain is part of this instruction, so
+            //it cannot read past the instruction's declared token length.
+            if (ui32OperandOffset >= ui32TokenLength)
+                throw decompileError;
             const uint32_t ui32ExtOpcodeToken = pui32Token[ui32OperandOffset];
             const EXTENDED_OPCODE_TYPE eExtType = DecodeExtendedOpcodeType(ui32ExtOpcodeToken);
 
@@ -1215,7 +1262,7 @@ const uint32_t* DeocdeInstruction(const uint32_t* pui32Token, Instruction* psIns
 		case OPCODE_CUSTOMDATA:
 		{
             psInst->ui32NumOperands = 0;
-			ui32TokenLength = pui32Token[1];
+			//F-101: the helper already consumed the CUSTOMDATA length DWORD.
 			break;
 		}
         case OPCODE_EVAL_CENTROID:
@@ -1315,49 +1362,52 @@ const uint32_t* DecodeShaderPhase(const uint32_t* pui32Tokens,
 	const uint32_t* pui32CurrentToken = pui32Tokens;
 	const uint32_t ui32ShaderLength = psShader->ui32ShaderLength;
 	const uint32_t ui32InstanceIndex = psShader->asPhase[ui32Phase].ui32InstanceCount;
+	const uint32_t* const pui32End = psShader->pui32FirstToken + ui32ShaderLength;
 
 	//Declarations
 	std::vector<Declaration> &psDecl = psShader->asPhase[ui32Phase].ppsDecl[ui32InstanceIndex];
 
 	psShader->asPhase[ui32Phase].ui32InstanceCount++;
 
-    while(1) //Keep going until we reach the first non-declaration token, or the end of the shader.
+    //F-101: every accepted declaration advances by at least one token, so the
+    //remaining payload size is also a hard pass limit.
+    size_t ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
+
 		Declaration decl;
-        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, &decl);
+        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, pui32End, &decl);
 
-        if(pui32Result)
-        {
-            pui32CurrentToken = pui32Result;
-			psDecl.push_back(decl);
-
-            if(pui32CurrentToken >= (psShader->pui32FirstToken + ui32ShaderLength))
-            {
-                break;
-            }
-        }
-        else
+        if(!pui32Result)
         {
             break;
         }
+
+        pui32CurrentToken = pui32Result;
+		psDecl.push_back(decl);
     }
 
 
 	//Instructions
 	std::vector<Instruction> &psInst = psShader->asPhase[ui32Phase].ppsInst[ui32InstanceIndex];
 
-    while (pui32CurrentToken < (psShader->pui32FirstToken + ui32ShaderLength))
+    ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
-		Instruction inst;
-        const uint32_t* nextInstr = DeocdeInstruction(pui32CurrentToken, &inst, psShader);
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
 
-#ifdef _DEBUG
-        if(nextInstr == pui32CurrentToken)
-        {
-            ASSERT(0);
-            break;
-        }
-#endif
+		Instruction inst;
+        const uint32_t* nextInstr = DeocdeInstruction(pui32CurrentToken, pui32End, &inst, psShader);
+
+        //F-101: unconditional in Release too; a stalled pointer must fail the
+        //decode instead of pushing the same instruction forever.
+        if (nextInstr <= pui32CurrentToken || nextInstr > pui32End)
+            throw decompileError;
 
 		if(inst.eOpcode == OPCODE_HS_FORK_PHASE)
 		{
@@ -1382,18 +1432,20 @@ const void AllocateHullPhaseArrays(const uint32_t* pui32Tokens,
 {
 	const uint32_t* pui32CurrentToken = pui32Tokens;
 	const uint32_t ui32ShaderLength = psShader->ui32ShaderLength;
+	const uint32_t* const pui32End = psShader->pui32FirstToken + ui32ShaderLength;
 	uint32_t ui32InstanceCount = 0;
 
-    while(1) //Keep going until we reach the first non-declaration token, or the end of the shader.
+    //F-101: use the checked length helper so a zero-length token cannot spin
+    //here forever, and keep an explicit payload-sized pass cap.
+    size_t ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
-		uint32_t ui32TokenLength = DecodeInstructionLength(*pui32CurrentToken);
-		const uint32_t bExtended = DecodeIsOpcodeExtended(*pui32CurrentToken);
-		const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32CurrentToken);
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
 
-		if(eOpcode == OPCODE_CUSTOMDATA)
-		{
-			ui32TokenLength = pui32CurrentToken[1];
-		}
+		const uint32_t ui32TokenLength = DecodeCheckedTokenLength(pui32CurrentToken, pui32End);
+		const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32CurrentToken);
 
         pui32CurrentToken = pui32CurrentToken + ui32TokenLength;
 
@@ -1401,11 +1453,6 @@ const void AllocateHullPhaseArrays(const uint32_t* pui32Tokens,
 		{
 			ui32InstanceCount++;
 		}
-
-        if(pui32CurrentToken >= (psShader->pui32FirstToken + ui32ShaderLength))
-        {
-            break;
-        }
     }
 
 	if(ui32InstanceCount)
@@ -1420,6 +1467,7 @@ const uint32_t* DecodeHullShader(const uint32_t* pui32Tokens, Shader* psShader)
 {
 	const uint32_t* pui32CurrentToken = pui32Tokens;
 	const uint32_t ui32ShaderLength = psShader->ui32ShaderLength;
+	const uint32_t* const pui32End = psShader->pui32FirstToken + ui32ShaderLength;
 
 	std::vector<Declaration> &psDecl = psShader->asPhase[HS_GLOBAL_DECL].ppsDecl[0];
 	psShader->asPhase[HS_GLOBAL_DECL].ui32InstanceCount = 1;
@@ -1429,41 +1477,39 @@ const uint32_t* DecodeHullShader(const uint32_t* pui32Tokens, Shader* psShader)
 	AllocateHullPhaseArrays(pui32Tokens, psShader, HS_JOIN_PHASE, OPCODE_HS_JOIN_PHASE);
 
 	//Keep going until we have done all phases or the end of the shader.
-    while(1)
+    size_t ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
+
 		Declaration decl;
-        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, &decl);
+        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, pui32End, &decl);
 
-        if(pui32Result)
-        {
-            pui32CurrentToken = pui32Result;
-
-			if(decl.eOpcode == OPCODE_HS_CONTROL_POINT_PHASE)
-			{
-				pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_CTRL_POINT_PHASE);
-			}
-			else if(decl.eOpcode == OPCODE_HS_FORK_PHASE)
-			{
-				pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_FORK_PHASE);
-			}
-			else if(decl.eOpcode == OPCODE_HS_JOIN_PHASE)
-			{
-				pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_JOIN_PHASE);
-			}
-			else
-			{
-				psDecl.push_back(decl);
-			}
-
-			if(pui32CurrentToken >= (psShader->pui32FirstToken + ui32ShaderLength))
-			{
-				break;
-			}
-		}
-        else
+        if(!pui32Result)
         {
             break;
         }
+
+        pui32CurrentToken = pui32Result;
+
+		if(decl.eOpcode == OPCODE_HS_CONTROL_POINT_PHASE)
+		{
+			pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_CTRL_POINT_PHASE);
+		}
+		else if(decl.eOpcode == OPCODE_HS_FORK_PHASE)
+		{
+			pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_FORK_PHASE);
+		}
+		else if(decl.eOpcode == OPCODE_HS_JOIN_PHASE)
+		{
+			pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_JOIN_PHASE);
+		}
+		else
+		{
+			psDecl.push_back(decl);
+		}
     }
 
 	return pui32CurrentToken;
@@ -1651,14 +1697,35 @@ Shader* DecodeDXBC(const void* data, size_t byteSize)
 	const uint32_t ui32MajorVersion = DecodeProgramMajorVersion(shaderChunk[0]);
 	const uint32_t ui32MinorVersion = DecodeProgramMinorVersion(shaderChunk[0]);
 
+	//F-101: the owner covers both calls, so a decompileError raised by the
+	//checked length helper releases the partial Shader and its reflection
+	//arrays before the exception leaves this decode entry point.
 	ShaderPtr shader(new Shader());
 
-	LoadShaderInfo(ui32MajorVersion,
-		ui32MinorVersion,
-		&refChunks,
-		shader->sInfo);
+	try
+	{
+		LoadShaderInfo(ui32MajorVersion,
+			ui32MinorVersion,
+			&refChunks,
+			shader->sInfo);
 
-	Decode(shaderChunk, shaderWords, shader.get());
+		Decode(shaderChunk, shaderWords, shader.get());
+	}
+	catch (const DecompileError&)
+	{
+		throw;
+	}
+	catch (const std::bad_alloc&)
+	{
+		//Keep allocation failure distinguishable from malformed input.
+		throw;
+	}
+	catch (...)
+	{
+		//F-101: normalize unexpected decode exceptions to the decoder's
+		//documented failure type so callers only have decompileError to handle.
+		throw decompileError;
+	}
 
 	return shader.release();
 }
