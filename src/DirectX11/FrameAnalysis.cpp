@@ -985,6 +985,17 @@ static void dump_ia_layout(FILE *fd, const D3D11_INPUT_ELEMENT_DESC *layout_desc
 	}
 }
 
+// VB text is a preview; binary dumps retain the complete buffer.
+static UINT limit_vb_text_preview(FILE *fd, UINT start, UINT end)
+{
+    constexpr UINT preview_count = 11;
+    if (end > start && end - start > preview_count) {
+        fprintf(fd, "# VB text preview truncated to entries [0]-[10]; remaining data omitted.\n");
+        return start + preview_count;
+    }
+    return end;
+}
+
 static void dump_vb_unknown_layout(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 		UINT size, int slot, UINT offset, UINT first, UINT count, UINT stride)
 {
@@ -997,6 +1008,7 @@ static void dump_vb_unknown_layout(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 	end = size / stride;
 	if (count)
 		end = min(end, start + count);
+	end = limit_vb_text_preview(fd, start, end);
 
 	for (vertex = start; vertex < end; vertex++) {
 		fprintf(fd, "\n");
@@ -1362,6 +1374,7 @@ static void dump_vb_known_layout(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 	end = size / stride;
 	if (count)
 		end = min(end, start + count);
+	end = limit_vb_text_preview(fd, start, end);
 
 	for (vertex = start; vertex < end; vertex++) {
 		fprintf(fd, "\n");
@@ -1386,6 +1399,7 @@ static void dump_vb_instance_data(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 	end = size / stride;
 	if (count)
 		end = min(end, start + count);
+	end = limit_vb_text_preview(fd, start, end);
 
 	for (instance = start; instance < end; instance++) {
 		fprintf(fd, "\n");

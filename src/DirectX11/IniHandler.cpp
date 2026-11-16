@@ -143,6 +143,9 @@ static bool whitelisted_duplicate_key(const wchar_t *section, const wchar_t *key
 			return true;
 	}
 
+	if (!_wcsnicmp(section, L"ShaderRegex", 11) && !_wcsicmp(key, L"exclude_hash"))
+		return true;
+
 	if (!_wcsicmp(section, L"include"))
 		return true;
 
@@ -2461,7 +2464,7 @@ static void ParseCommandList(const wchar_t *id,
 				// allowed duplicate keys *except for these
 				// whitelisted entries*, so check for
 				// duplicates here:
-				if (whitelisted_keys.count(key->c_str())) {
+				if (whitelisted_keys.count(key->c_str()) && !whitelisted_duplicate_key(id, key->c_str())) {
 					IniWarningW(L"Duplicate non-command list key found: %ls\n - [%ls]\n", key->c_str(), id);
 				}
 				whitelisted_keys.insert(key->c_str());
@@ -2832,6 +2835,7 @@ static uint32_t hash_ini_section(uint32_t hash, const wstring *sname)
 // List of keys in [ShaderRegex] sections that are processed in this
 // function. Used by ParseCommandList to find any unrecognised lines.
 wchar_t *ShaderRegexIniKeys[] = {
+	L"exclude_hash",
 	L"shader_model",
 	L"temps",
 	L"filter_index",
@@ -2849,6 +2853,14 @@ static bool parse_shader_regex_section_main(const std::wstring *section_id, Shad
 		return false;
 	}
 	regex_group->shader_models = vec_to_set(split_string(&setting, ' '));
+
+    for (const auto& value : GetIniStringMultipleKeys(section_id->c_str(), L"exclude_hash")) {
+        if (!regex_group->add_excluded_hash(value)) {
+            IniWarningW(L"Invalid ShaderRegex exclude_hash=%ls\n - [%ls]\n", value.c_str(), section_id->c_str());
+            return false;
+        }
+        LogInfo("  exclude_hash=%S\n", value.c_str());
+    }
 
 	if (GetIniStringAndLog(section_id->c_str(), L"temps", NULL, &setting))
 		regex_group->temp_regs = vec_to_set(split_string(&setting, ' '));

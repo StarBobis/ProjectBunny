@@ -944,13 +944,18 @@ void test_dx11_dds_mips_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
-int main()
+int main(int argc, char** argv)
 {
     InitializeCriticalSection(&G->mCriticalSection);
     InitializeCriticalSection(&G->mResourcesLock);
     InitializeCriticalSection(&resource_creation_mode_lock);
     test_dx11_version_regression();
     try {
+        if (argc == 2 && std::string(argv[1]) == "--shader-regex-exclusions") {
+            test_dx11_round5_config_regression();
+            std::puts("PASS: ShaderRegex exclusion INI, matching, cache and reload regression");
+            return 0;
+        }
         test_dx11_slot_range_numeric_regression();
         test_dx11_dynamic_slot_regression();
         test_dx11_dynamic_pipeline_slot_regression();

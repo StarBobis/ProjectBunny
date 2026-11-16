@@ -363,8 +363,30 @@ void ShaderRegexGroup::apply_regex_patterns(std::string *asm_text, bool *match, 
 		*patch = insert_declarations(asm_text, &declarations) || *patch;
 }
 
+bool ShaderRegexGroup::add_excluded_hash(const std::wstring& value)
+{
+    size_t start = value.size() >= 2 && value[0] == L'0' &&
+        (value[1] == L'x' || value[1] == L'X') ? 2 : 0;
+    if (value.size() == start || value.size() - start > 16)
+        return false;
+    UINT64 hash = 0;
+    for (size_t i = start; i < value.size(); ++i) {
+        const wchar_t c = value[i];
+        unsigned digit;
+        if (c >= L'0' && c <= L'9') digit = c - L'0';
+        else if (c >= L'a' && c <= L'f') digit = c - L'a' + 10;
+        else if (c >= L'A' && c <= L'F') digit = c - L'A' + 10;
+        else return false;
+        hash = (hash << 4) | digit;
+    }
+    excluded_hashes.insert(hash);
+    return true;
+}
+
 void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 {
+	if (excludes(shader_hash))
+		return;
 	ShaderOverride *shader_override = NULL;
 	wstring ini_section, ini_line;
 	CommandList::Commands::reverse_iterator i;
@@ -522,6 +544,12 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 		ret = ShaderRegexCache::NO_MATCH;
 		goto out;
 	}
+
+	for (i = 0; i < header->num_matches; ++i) {
+        if (match_ids[i] >= shader_regex_group_index.size() ||
+            shader_regex_group_index[match_ids[i]]->excludes(hash))
+            goto out;
+    }
 
 	for (i = 0; i < header->num_matches; i++) {
 		// The ShaderRegex groups are sorted and since the cached hash
@@ -728,6 +756,9 @@ void link_shader_regex_groups_without_patterns(const wchar_t* shader_type, std::
 	for (i = shader_regex_groups.begin(), j = 0; i != shader_regex_groups.end(); i++, j++) {
 		ShaderRegexGroup* group = &i->second;
 
+		if (group->excludes(hash))
+			continue;
+
 		// Skip group without matching shader model.
 		if (!group->shader_models.count(*shader_model)) {
 			continue;
@@ -771,6 +802,9 @@ bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type
 
 	for (i = shader_regex_groups.begin(), j = 0; i != shader_regex_groups.end(); i++, j++) {
 		group = &i->second;
+
+		if (group->excludes(hash))
+			continue;
 
 		// Skip group without matching shader model.
 		if (!group->shader_models.count(*shader_model)) {

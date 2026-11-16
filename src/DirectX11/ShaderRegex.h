@@ -62,12 +62,16 @@ public:
 	ShaderRegexDeclarations declarations;
 	ShaderRegexModels shader_models;
 	ShaderRegexTemps temp_regs;
+	std::set<UINT64> excluded_hashes;
 	float filter_index;
 
 	CommandList command_list;
 	CommandList post_command_list;
 	std::shared_ptr<RunLinkedCommandList> link;
 	std::shared_ptr<RunLinkedCommandList> post_link;
+
+	bool add_excluded_hash(const std::wstring& value);
+	bool excludes(UINT64 hash) const { return excluded_hashes.count(hash) != 0; }
 
 	void apply_regex_patterns(std::string *asm_text, bool *match, bool *patch);
 	void link_command_lists_and_filter_index(UINT64 shader_hash);
