@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <iterator>
 #include <sstream>
+#include <string_view>
 #include <typeinfo>
 #include <cmath>
 #include <wrl/client.h>
@@ -3789,7 +3790,7 @@ static inline bool is_operator_char(wchar_t c)
     return wcschr(L"=&|+-/*><%!^~()[]", c) != nullptr;
 }
 
-static size_t FindIdentifierTokenEnd(const std::wstring& str, const size_t start = 0, OptionalChars identifier_flags = OptionalChars::NONE)
+static size_t FindIdentifierTokenEnd(std::wstring_view str, const size_t start = 0, OptionalChars identifier_flags = OptionalChars::NONE)
 {
 	for (size_t i = start; i < str.size(); ++i)
 	{
@@ -3806,7 +3807,7 @@ static size_t FindIdentifierTokenEnd(const std::wstring& str, const size_t start
 class NamespaceScanner
 {
 public:
-	bool Consume(wchar_t c, const std::wstring& str, size_t pos)
+	bool Consume(wchar_t c, std::wstring_view str, size_t pos)
 	{
 		if (!mStarted) {
 			if (c != L'\\')
@@ -3833,7 +3834,7 @@ private:
 	size_t mEnd = std::wstring::npos;
 };
 
-static size_t FindVariableTokenEnd(const std::wstring& str, size_t start = 0)
+static size_t FindVariableTokenEnd(std::wstring_view str, size_t start = 0)
 {
 	// Scans a variable token and returns the end position after performing minimal syntax validation:
 	// 1. Ensures identifier characters match `[a-z_0-9]+`.
@@ -3856,7 +3857,7 @@ static size_t FindVariableTokenEnd(const std::wstring& str, size_t start = 0)
 	return str.size();
 }
 
-static size_t FindResourceCopyTargetTokenEnd(const std::wstring& str, size_t start = 0)
+static size_t FindResourceCopyTargetTokenEnd(std::wstring_view str, size_t start = 0)
 {
 	// Scans a resource copy target token and returns the end position after performing minimal syntax validation:
 	// 1. Ensures identifier characters match `[a-z_-.0-9]+`.
@@ -3936,13 +3937,22 @@ static size_t FindResourceCopyTargetTokenEnd(const std::wstring& str, size_t sta
 	return str.size();
 }
 
-inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
+// `input` must be backed by a string that is NUL-terminated at input.data() +
+// input.size(), because std::wcstof() has no length-bounded variant.
+inline bool ParseFloatToken(std::wstring_view input, float& out, size_t& length)
 {
 	// Binary literal.
 	if (input.size() >= 3 && input[0] == L'0' && input[1] == L'b')
 	{
 		std::uint64_t value;
-		if (!ParseBinaryLiterals(input, 2, value, length))
+
+		// ParseBinaryLiterals() takes an owning string. It reads at most 67
+		// characters (the "0b" prefix plus the 65 digits that trigger its
+		// overflow check), so a bounded copy keeps this path O(1).
+		const size_t binary_scan_limit = 67;
+		const size_t binary_scan_size = input.size() < binary_scan_limit ? input.size() : binary_scan_limit;
+
+		if (!ParseBinaryLiterals(wstring(input.data(), binary_scan_size), 2, value, length))
 			return false;
 
 		out = static_cast<float>(value);
@@ -3953,16 +3963,31 @@ inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
 	wchar_t* end = nullptr;
 
 	errno = 0;
-	out = std::wcstof(input.c_str(), &end);
+	const wchar_t* begin = input.empty() ? L"" : input.data();
+	out = std::wcstof(begin, &end);
 
-	if (end == input.c_str())
+	if (end == begin)
 		return false;
 
-	length = static_cast<std::size_t>(end - input.c_str());
+	length = static_cast<std::size_t>(end - begin);
 
 	// Preserve wcstof overflow, underflow and signed zero.
 
 	return true;
+}
+
+// Defined below, next to the other operand context helpers.
+static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope* scope);
+
+// View-based counterpart of CommandListOperand::parse_float(): tokenise() reads
+// straight from the remaining expression instead of materialising a wstring.
+static bool parse_float_token(CommandListOperand* operand, std::wstring_view text, CommandListScope* scope, size_t& out_length)
+{
+	if (!ParseFloatToken(text, operand->val, out_length))
+		return false;
+
+	operand->type = ParamOverrideType::VALUE;
+	return operand_allowed_in_context(operand->type, scope);
 }
 
 #pragma region CommandArgumentReader
@@ -4462,7 +4487,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 	ResourceCopyTarget texture_filter_target;
 	shared_ptr<CommandListOperand> operand;
 	wstring token;
-	wstring remain;
+	std::wstring_view remain;
 	size_t pos = 0;
 	size_t friendly_pos = 0;
 	int i;
@@ -4472,7 +4497,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 	// TODO: C++20 refactor.
 	// This rewrite stays close to the old (mostly missing) architecture to simplify transition.
-	// Proper refactor should implement Lexer and CommandParser classes and use `std::wstring_view` once it's available.
+	// Proper refactor should implement Lexer and CommandParser classes.
 	while (true)
 	{
 		// Skip whitespace:
@@ -4482,7 +4507,9 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 		friendly_pos = pos;
 
-		remain = expr.substr(pos);
+		// Non-owning view of the remaining expression; tokens copy their own text
+		// when they are stored in the syntax tree.
+		remain = std::wstring_view(expr.data(), expr.size()).substr(pos);
 
 		bool matched = false;
 		const bool has_variable_prefix = remain[0] == L'$';
@@ -4497,9 +4524,12 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			if (remain.compare(0, len, operator_tokens[i]) == 0)
 			{
                 operator_mask |= GetOperatorMask(operator_tokens[i], len);
-				LogDebug("      Operator: \"%S\"\n", remain.substr(0, len).c_str());
 
-				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, remain.substr(0, len)));
+				// Operator tokens are owned by the syntax tree, so copy the view here.
+				wstring operator_token(remain.data(), len);
+				LogDebug("      Operator: \"%S\"\n", operator_token.c_str());
+
+				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, std::move(operator_token)));
 
 				pos += len;
 				last_was_operand = false;
@@ -4521,7 +4551,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
                 operator_mask |= OP_UNARY;
 				LogDebug("      Function: \"%S\"\n", function_tokens[i]);
 
-				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, remain.substr(0, len)));
+				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, wstring(remain.data(), len)));
 
 				pos += len;
 				last_was_operand = false;
@@ -4544,15 +4574,15 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			// - Special literals (inf, nan, etc) are being parsed last.
 			size_t len = remain.size();
 
-			if (operand->parse_float(&remain, ini_namespace, scope, len))
+			if (parse_float_token(operand.get(), remain, scope, len))
 			{
-				token = remain.substr(0, len);
+				token.assign(remain.data(), len);
 				LogDebug("      Float: \"%S\"\n", token.c_str());
 				pos += len;
 				goto import_operand;
 			}
 
-			throw CommandListSyntaxError(L"Float not recognized: " + remain, friendly_pos);
+			throw CommandListSyntaxError(L"Float not recognized: " + wstring(remain), friendly_pos);
 		}
 
 
@@ -4563,7 +4593,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
             if (remain.size() >= 6 && remain.compare(0, 5, L"$pool") == 0) {
                 const size_t pool_length = FindResourceCopyTargetTokenEnd(remain, 1);
                 if (pool_length) {
-                    token = remain.substr(0, pool_length);
+                    token.assign(remain.data(), pool_length);
                     auto pool_operand = make_shared<CommandListOperand>(friendly_pos);
                     if (pool_operand->parse_target(&token, ini_namespace, scope)) {
                         operand = std::move(pool_operand);
@@ -4577,7 +4607,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 			if (len)
 			{
-				token = remain.substr(0, len);
+				token.assign(remain.data(), len);
 
 				if (operand->parse_variable( &token, ini_namespace, scope))
 				{
@@ -4586,7 +4616,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 					goto import_operand;
 				}
 
-				throw CommandListSyntaxError(L"Variable not recognized: " + remain, friendly_pos);
+				throw CommandListSyntaxError(L"Variable not recognized: " + wstring(remain), friendly_pos);
 			}
 		}
 
@@ -4605,7 +4635,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 			if (len)
 			{
-				token = remain.substr(0, len);
+				token.assign(remain.data(), len);
 
 				// Parse target without hyphen (e.g. `ib`, `vb0`).
 				if (operand->parse_slot(&token, ini_namespace, scope))
@@ -4632,9 +4662,9 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 				}
 
 				// Parse special float (e.g. `inf`, `NaN`). Hyphen before `inf` is handled by operator.
-				if (operand->parse_float(&remain, ini_namespace, scope, len))
+				if (parse_float_token(operand.get(), remain, scope, len))
 				{
-					token = remain.substr(0, len);
+					token.assign(remain.data(), len);
 					LogDebug("      Float: \"%S\"\n", token.c_str());
 					pos += len;
 					goto import_operand;
@@ -4655,7 +4685,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		len_target = FindResourceCopyTargetTokenEnd(remain, has_prefix ? 1 : 0);
 		if (len_target)
 		{
-			token = remain.substr(0, len_target);
+			token.assign(remain.data(), len_target);
 
 			// Parse custom resource, pool or other target (e.g. `ResourceFoo`, `PoolFoo`, `cs-cb0`, `ib`).
 			if (operand->parse_target(&token, ini_namespace, scope))
@@ -5501,12 +5531,7 @@ bool parse_command_list_var_name(const wstring &name, const wstring *ini_namespa
 
 bool CommandListOperand::parse_float(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope, size_t& out_length)
 {
-	if (ParseFloatToken(*operand, val, out_length))
-	{
-		type = ParamOverrideType::VALUE;
-		return operand_allowed_in_context(type, scope);
-	}
-	return false;
+	return parse_float_token(this, *operand, scope, out_length);
 }
 
 bool CommandListOperand::parse_ini_param(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
