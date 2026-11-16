@@ -3,7 +3,7 @@
   "branch": "master",
   "baseline": "44378b1b3694bc28c0488f78f2d346f38a4f50d0",
   "baselineEvidence": "43/45 DX11 C/C++ files byte-identical at 7ee05173 and 44378b1b; ResourceHash.h adds const find_ptr; ResourceHash.cpp fixes two log formats. 44378b1b only changes upstream release workflow.",
-  "observedTip": "946f047def4e915b3790b9b3bc1686a64cf1e8bb",
+  "observedTip": "b0bff3fa56ab14487a35f2fc96e126e04aa89441",
   "commits": [
     {
       "sha": "4269c75ba3ac9d5775771a190121daa5a292d664",
@@ -5260,6 +5260,55 @@
         "src/DirectX11/tests/round5_config_regression.cpp",
         "src/DirectX11/CMakeLists.txt"
       ]
+    },
+    {
+      "sha": "4b29e9b326f3d034c62805eb33407dc2b063944c",
+      "subject": "Moved `HammingDistance()` helper to ResourceHash",
+      "status": "pending",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/ResourceHash.h"
+      ],
+      "adaptation": "Pending adaptation: shared HammingDistance relocation; preserve local zero-hash semantics and existing regression coverage.",
+      "validation": {
+        "review": "Observed commit metadata and affected files; first two patches inspected. No production adaptation performed in this check-only task.",
+        "commands": "python scripts/check-dx11-upstream.py; git show --format=fuller --stat <sha>; git show <sha> (first two commits)",
+        "result": "Check succeeded. Port/build/regression/runtime validation pending; synchronized position not advanced."
+      }
+    },
+    {
+      "sha": "1231d8dd1c1bf902ee948dd2944a1e963acc3148",
+      "subject": "Renamed Resource section's  `original_format` to `match_format`, `original_dhash` to `match_dhash`",
+      "status": "pending",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/IniHandler.cpp"
+      ],
+      "adaptation": "Pending adaptation: INI/resource/member renames require checking backward compatibility for original_format, original_dhash and originalformat.",
+      "validation": {
+        "review": "Observed commit metadata and affected files; first two patches inspected. No production adaptation performed in this check-only task.",
+        "commands": "python scripts/check-dx11-upstream.py; git show --format=fuller --stat <sha>; git show <sha> (first two commits)",
+        "result": "Check succeeded. Port/build/regression/runtime validation pending; synchronized position not advanced."
+      }
+    },
+    {
+      "sha": "b0bff3fa56ab14487a35f2fc96e126e04aa89441",
+      "subject": "Added INI syntax for dHash-based pixel-shader texture slot overrides",
+      "status": "pending",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/HackerContext.h",
+        "src/DirectX11/IniHandler.cpp"
+      ],
+      "adaptation": "Pending adaptation: dHash-based PS texture matching with snapshot/restore; requires original-slot ownership, matching priority, invalidation/reload and state restoration validation.",
+      "validation": {
+        "review": "Observed commit metadata and affected files; first two patches inspected. No production adaptation performed in this check-only task.",
+        "commands": "python scripts/check-dx11-upstream.py; git show --format=fuller --stat <sha>; git show <sha> (first two commits)",
+        "result": "Check succeeded. Port/build/regression/runtime validation pending; synchronized position not advanced."
+      }
     }
   ],
   "round2AdversarialReview": {
