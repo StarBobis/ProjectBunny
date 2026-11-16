@@ -76,6 +76,7 @@ void test_dx11_decode_dxbc_bounds_regression();
 void test_dx11_decompiler_decode_bounds_regression();
 void test_dx11_resource_filename_regression();
 void test_dx11_pool_access_regression();
+void test_dx11_initial_data_ownership_regression();
 void test_dx11_decompile_file_diagnostic_regression();
 void test_dx11_parameter_conversion_regression();
 void test_dx11_assembler_declaration_regression();
@@ -1207,6 +1208,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-181", test_dx11_hook_lookup_regression},
     {"F-002", test_dx11_hook_release_regression},
     {"F-182", test_dx11_hook_install_regression},
+    {"F-109", test_dx11_initial_data_ownership_regression},
     {"F-193", test_f193},
     {"F-272", test_dx11_decompiler_swizzle_count_regression},
     {"F-179", test_dx11_empty_hunting_present_regression},

@@ -618,6 +618,8 @@ public:
 	float width_multiply;
 	float height_multiply;
 
+	// Owned malloc snapshot. CopyMetadataFrom deep-copies it so no two
+	// CustomResources ever share this pointer; the destructor always frees it.
 	void *initial_data;
 	size_t initial_data_size;
 

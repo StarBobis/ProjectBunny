@@ -5883,8 +5883,10 @@ CustomResource::~CustomResource()
 		resource->Release();
 	if (view)
 		view->Release();
-	if (pool_index < 0)
-		free(initial_data);
+	// initial_data is always an owned malloc snapshot (see CopyMetadataFrom);
+	// pool_index describes pool semantics, not ownership.
+	free(initial_data);
+	initial_data = nullptr;
 }
 
 static bool CanAddResourceFlags(const CustomResource* resource, D3D11_BIND_FLAG extra)
@@ -6188,6 +6190,10 @@ void CustomResource::SubstantiateBuffer(ID3D11Device *mOrigDevice1, void **buf, 
 			}
 			memset((char*)new_buf + size, 0, desc.ByteWidth - size);
 			*buf = new_buf;
+			// Only the owned initial_data snapshot changes size; a file buffer
+			// passed by LoadBufferFromFile is local to that call.
+			if (buf == &initial_data)
+				initial_data_size = desc.ByteWidth;
 		}
 
 		data.pSysMem = *buf;
@@ -6424,6 +6430,9 @@ void CustomResource::ResetRuntimeState()
 
 void CustomResource::CopyMetadataFrom(const CustomResource& src)
 {
+	if (this == &src)
+		return;
+
     // Only declaration/config metadata is copied. Keep runtime buf_size and
     // its count/extent discriminator together, just like resource and offset.
 	max_copies_per_frame = src.max_copies_per_frame;
@@ -6455,8 +6464,34 @@ void CustomResource::CopyMetadataFrom(const CustomResource& src)
 	bind_flags = src.bind_flags;
 	misc_flags = src.misc_flags;
 
-	initial_data = src.initial_data;
-	initial_data_size = src.initial_data_size;
+	// Take an independent snapshot: every CustomResource owns its initial_data
+	// and releases it unconditionally. Do not alias src's buffer because both
+	// objects may outlive each other and may realloc their own copy.
+	const bool reusable =
+		initial_data && src.initial_data &&
+		initial_data != src.initial_data &&
+		initial_data_size == src.initial_data_size &&
+		(!initial_data_size ||
+		 !memcmp(initial_data, src.initial_data, initial_data_size));
+
+	if (!reusable) {
+		void* copy = nullptr;
+		if (src.initial_data && src.initial_data_size) {
+			copy = malloc(src.initial_data_size);
+			if (copy)
+				memcpy(copy, src.initial_data, src.initial_data_size);
+			else
+				LogOverlayW(LOG_WARNING,
+					L"Out of memory copying initial data for [%ls]\n", name.c_str());
+		}
+		// Never free a pointer that is still the source's buffer. This is only
+		// possible for objects created by the previous shallow-copy code, but
+		// keeping the guard makes the transition safe as well.
+		if (initial_data && initial_data != src.initial_data)
+			free(initial_data);
+		initial_data = copy;
+		initial_data_size = copy ? src.initial_data_size : 0;
+	}
 }
 
 // Returns 1 for definite dsv formats

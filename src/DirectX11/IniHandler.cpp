@@ -2088,6 +2088,7 @@ static void ConstructInitialData(CustomResource *custom_resource, std::istringst
 	custom_resource->initial_data_size = sizeof(T) * vals.size();
 	custom_resource->initial_data = malloc(custom_resource->initial_data_size);
 	if (!custom_resource->initial_data) {
+		custom_resource->initial_data_size = 0;
 		IniWarning("ERROR allocating initial data\n");
 		return;
 	}
@@ -2116,6 +2117,7 @@ static void ConstructInitialDataNorm(CustomResource *custom_resource, std::istri
 	custom_resource->initial_data_size = bytes * vals.size();
 	custom_resource->initial_data = malloc(custom_resource->initial_data_size);
 	if (!custom_resource->initial_data) {
+		custom_resource->initial_data_size = 0;
 		IniWarning("ERROR allocating initial data\n");
 		return;
 	}
@@ -2168,6 +2170,7 @@ static void ConstructInitialDataString(CustomResource *custom_resource, std::str
 		custom_resource->initial_data_size = data->length() - 2;
 		custom_resource->initial_data = malloc(custom_resource->initial_data_size);
 		if (!custom_resource->initial_data) {
+			custom_resource->initial_data_size = 0;
 			IniWarning("ERROR allocating initial data\n");
 			return;
 		}

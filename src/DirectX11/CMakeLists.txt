@@ -279,6 +279,7 @@ if(BUILD_TESTING)
         tests/resource_region_regression.cpp
         tests/reader_variable_regression.cpp
         tests/pool_lifecycle_regression.cpp
+        tests/initial_data_ownership_regression.cpp
         tests/utf8_tokenizer_regression.cpp
         tests/pool_missing_regression.cpp
         tests/proxy_recovery_regression.cpp
