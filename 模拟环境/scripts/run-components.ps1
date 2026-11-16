@@ -2,7 +2,7 @@
 param([string]$Item='',[switch]$SpecialOnly,[string]$ReportPointer='')
 $ErrorActionPreference='Stop'
 if(-not [Environment]::Is64BitProcess -or $PSVersionTable.PSVersion.Major -lt 7){throw 'Use x64 PowerShell 7.'}
-if($Item -and $Item -notin @('F-152','F-153')){throw 'Unknown component specialization.'}
+if($Item -and $Item -notin @('F-152','F-153','F-200b')){throw 'Unknown component specialization.'}
 . (Join-Path $PSScriptRoot 'process.ps1')
 $simulationRoot=Split-Path -Parent $PSScriptRoot
 $buildRoot=Join-Path $simulationRoot 'build'
@@ -83,6 +83,34 @@ if($export.status -eq 'PASS') {
 }else{$replacement=[pscustomobject]@{status='NOT_RUN';exitCode=$null;message='Export prerequisite failed.'}}
 $results.Add([pscustomobject]@{id='compiler-asan-replacement';status=$replacement.status;input=$asanDll;sha256=(Get-FileHash -LiteralPath $asanDll).Hash;detail=$replacement})
 Write-Host "[$($replacement.status)] compiler-asan-replacement"
+if($Item -eq 'F-200b') {
+    $pathRoot=Join-Path $asanRoot 'path-reject'
+    New-Item -ItemType Directory -Path $pathRoot -Force | Out-Null
+    $pathExe=Join-Path $pathRoot 'component-host.exe'; $pathDll=Join-Path $pathRoot 'compiler_audit_asan.dll'
+    Copy-Item -LiteralPath $asanHost -Destination $pathExe
+    Copy-Item -LiteralPath $asanSource -Destination $pathDll
+    Copy-Item -LiteralPath $nativeCompiler -Destination (Join-Path $pathRoot 'D3DCompiler_46_org.dll')
+    Copy-Item -LiteralPath (Join-Path $asanRoot 'clang_rt.asan_dynamic-x86_64.dll') -Destination $pathRoot
+    # Keep EXE directory + storage_directory below MAX_PATH so the #10 prefix
+    # helper still succeeds; 240 leaves the #12 filename without room.
+    $directoryLength=$pathRoot.Length+1
+    if($directoryLength -ge 240){throw "F-200 fixture directory is too long: $pathRoot"}
+    $storageLength=240-$directoryLength
+    $longStorage='a'*$storageLength
+    "[Logging]`ncalls=1`nunbuffered=1`n[Rendering]`nstorage_directory=$longStorage`nexport_shaders=1`n" |
+        Set-Content -LiteralPath (Join-Path $pathRoot 'd3dx.ini') -Encoding utf8
+    $pathRun=Invoke-IsolatedSimulationProcess -Executable $pathExe -Arguments @($pathDll,'compiler-export') -WorkingDirectory $pathRoot -LogPrefix (Join-Path $pathRoot 'reject') -EnvironmentOverrides $asanEnvironment
+    $longDir=Join-Path $pathRoot $longStorage
+    $pathExports=@(Get-ChildItem -LiteralPath $longDir -Filter '*.txt' -ErrorAction SilentlyContinue)
+    $pathLog=Join-Path $pathRoot 'D3DCompiler_46_log.txt'
+    $pathLogText=if(Test-Path -LiteralPath $pathLog){Get-Content -LiteralPath $pathLog -Raw}else{''}
+    if($pathRun.status -eq 'PASS') {
+        if($pathExports.Count -ne 0){$pathRun.status='FAIL';$pathRun.message='Long storage_directory still exported a file.'}
+        elseif($pathLogText -notmatch '路径过长被拒'){$pathRun.status='FAIL';$pathRun.message='Long storage_directory rejection was not logged.'}
+    }
+    $results.Add([pscustomobject]@{id='compiler-asan-path-reject';status=$pathRun.status;input=$pathDll;sha256=(Get-FileHash -LiteralPath $pathDll).Hash;detail=$pathRun;storageLength=$storageLength})
+    Write-Host "[$($pathRun.status)] compiler-asan-path-reject"
+}
 $status=if(@($results | Where-Object status -ne 'PASS').Count){'FAIL'}else{'PASS'}
 $report=[ordered]@{item=$Item;status=$status;cases=$results.ToArray();nativeCompilerProvider=$nativeCompiler;providerSha256=$providerHash;providerMode='System D3DCompiler_47 copied under the declared legacy _46_org dependency name; public API compatibility coverage, not original 46/private export certification';scope='Actual DXGI/Compiler DLL public normal/failure business with real native providers and controlled logging modes';bridgeProtocolTested=$false}
 $reportPath=Join-Path $runRoot 'results.json'

@@ -13,6 +13,7 @@
 #include <map>
 #include <d3d11shader.h>
 #include "D3D_Shaders/stdafx.h"
+#include "bounded_path_format.h"
 
 extern std::vector<CommandList*> pending_post_command_lists;
 extern unsigned f105_disassemble_calls;
@@ -1025,6 +1026,74 @@ void test_f200()
     run_rejected(233u,false,"truncated path (n=-1)");
 }
 
+void test_f200b()
+{
+    // F-200b: one rule for every path derived from storage_directory — the
+    // complete name fits, or the operation is rejected. The formatter is the
+    // same one d3dcWrapper.cpp and DX12Diag.h call.
+    const uint32_t bhi = 0x11223344u, blo = 0x55667788u;
+    const uint32_t shi = 0x99aabbccu, slo = 0xddeeff00u;
+    wchar_t path[MAX_PATH];
+    wchar_t expected[MAX_PATH];
+
+    require_batch(FormatPathBounded(path, std::size(path), L"%ls\\%08lx%08lx-%ls_%08lx%08lx.txt",
+        L"C:\\shaders", bhi, blo, L"ps_5_0", shi, slo), "F200b: legal export path fits");
+    swprintf_s(expected, L"%ls\\%08lx%08lx-%ls_%08lx%08lx.txt",
+        L"C:\\shaders", bhi, blo, L"ps_5_0", shi, slo);
+    require_batch(!wcscmp(path, expected), "F200b: legal export path is byte-for-byte unchanged");
+
+    // Export name overhead is 45 characters after the composed storage path:
+    // "\" + 16 hash + "-" + "ps_5_0" + "_" + 16 hash + ".txt". 214 + 45 = 259
+    // fits MAX_PATH; 215 + 45 = 260 needs 261 with the terminating NUL.
+    const std::wstring exactShaderPath(214, L'a');
+    require_batch(FormatPathBounded(path, std::size(path), L"%ls\\%08lx%08lx-%ls_%08lx%08lx.txt",
+        exactShaderPath.c_str(), bhi, blo, L"ps_5_0", shi, slo),
+        "F200b: 214-character composed storage path fits the export name exactly");
+    const std::wstring tooLongShaderPath(215, L'a');
+    require_batch(!FormatPathBounded(path, std::size(path), L"%ls\\%08lx%08lx-%ls_%08lx%08lx.txt",
+        tooLongShaderPath.c_str(), bhi, blo, L"ps_5_0", shi, slo),
+        "F200b: 215-character composed storage path is rejected instead of truncated");
+
+    require_batch(FormatPathBounded(path, std::size(path), L"%ls\\%08lx%08lx-%ls_%08lx%08lx*replace.txt",
+        L"C:\\shaders", bhi, blo, L"ps_5_0", shi, slo), "F200b: legal replacement search path fits");
+    swprintf_s(expected, L"%ls\\%08lx%08lx-%ls_%08lx%08lx*replace.txt",
+        L"C:\\shaders", bhi, blo, L"ps_5_0", shi, slo);
+    require_batch(!wcscmp(path, expected), "F200b: legal replacement search path is byte-for-byte unchanged");
+
+    require_batch(FormatPathBounded(path, std::size(path), L"%ls\\%ls", L"C:\\shaders", L"shader_replace.txt"),
+        "F200b: legal replacement file path fits");
+    swprintf_s(expected, L"%ls\\%ls", L"C:\\shaders", L"shader_replace.txt");
+    require_batch(!wcscmp(path, expected), "F200b: legal replacement file path is byte-for-byte unchanged");
+
+    // 300 characters cannot fit MAX_PATH. The preflight refuses before the
+    // destination is touched, so neither the buffer nor its guards change.
+    std::array<wchar_t, MAX_PATH + 16> guarded;
+    guarded.fill(L'Z');
+    wchar_t *const out = guarded.data() + 8;
+    const std::wstring longShaderPath(300, L'a');
+    require_batch(!FormatPathBounded(out, MAX_PATH, L"%ls\\%08lx%08lx-%ls_%08lx%08lx.txt",
+        longShaderPath.c_str(), bhi, blo, L"ps_5_0", shi, slo),
+        "F200b: 300-character composed storage path is rejected, not truncated");
+    for (size_t i = 0; i < 8; ++i)
+        require_batch(guarded[i] == L'Z', "F200b: rejected export path leaves the leading guard intact");
+    for (size_t i = 8 + MAX_PATH; i < guarded.size(); ++i)
+        require_batch(guarded[i] == L'Z', "F200b: rejected export path leaves the trailing guard intact");
+    require_batch(!FormatPathBounded(out, MAX_PATH, L"%ls\\%08lx%08lx-%ls_%08lx%08lx*replace.txt",
+        longShaderPath.c_str(), bhi, blo, L"ps_5_0", shi, slo),
+        "F200b: long replacement search path is rejected, not truncated");
+    require_batch(!FormatPathBounded(out, MAX_PATH, L"%ls\\%ls", longShaderPath.c_str(), longShaderPath.c_str()),
+        "F200b: long replacement file path is rejected, not truncated");
+
+    // F-200 #6 uses the same formatter for the TIMING-only history log name.
+    wchar_t history[MAX_PATH];
+    require_batch(!FormatPathBounded(history, std::size(history), L"%s\\d3d12_log_%llu.txt",
+        longShaderPath.c_str(), 123456789ull), "F200b: long DX12 TIMING log directory is rejected, not truncated");
+    require_batch(FormatPathBounded(history, std::size(history), L"%s\\d3d12_log_%llu.txt",
+        L"C:\\game", 123456789ull), "F200b: legal DX12 TIMING log path fits");
+    require_batch(!wcscmp(history, L"C:\\game\\d3d12_log_123456789.txt"),
+        "F200b: legal DX12 TIMING log name is unchanged");
+}
+
 void test_f199_review()
 {
     AuditConfigScope config;
@@ -1107,6 +1176,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-176", test_f176},
     {"F-186", test_f186},
     {"F-200", test_f200},
+    {"F-200b", test_f200b},
     {"F-194", test_dx11_ini_upload_failure_regression},
     {"F-199", test_f199_review},
     {"F-201", test_dx11_shader_model_bounds_regression},

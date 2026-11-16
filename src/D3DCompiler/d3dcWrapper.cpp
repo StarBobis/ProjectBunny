@@ -2,9 +2,11 @@
 #include <D3D11ShaderTracing.h>
 #include <Shlobj.h>
 #include <algorithm>
+#include <cstdlib>
 #include <ctime>
 
 #include "util.h"
+#include "bounded_path_format.h"
 
 #define COMPILER_DLL_VERSION "46"
 #define COMPILER_DLL_VERSIONL L"46"
@@ -445,58 +447,88 @@ HRESULT WINAPI D3DCompile(_In_reads_bytes_(SrcDataSize) LPCVOID pSrcData,
 		LogInfo("    Filename = %s\n", shaderName);
 		LogInfo("    Compiled bytecode size = %d, bytecode handle = %p\n", (*ppCode)->GetBufferSize(), (*ppCode)->GetBufferPointer());
 		
+		// F-200: every optional name below is either complete or the operation
+		// is skipped. A truncated path is never handed to FindFirstFile or
+		// _wfopen_s, and the native compile result is left untouched.
 		if (SHADER_PATH[0])
 		{
-			wchar_t val[MAX_PATH], entrypoint[MAX_PATH], target[MAX_PATH];
-			mbstowcs(entrypoint, pEntrypoint, MAX_PATH);
-			mbstowcs(target, pTarget, MAX_PATH);
-			wsprintf(val, L"%ls\\%08lx%08lx-%ls_%08lx%08lx.txt", SHADER_PATH, 
-				(UINT32)(binaryHash >> 32), (UINT32)binaryHash, target, (UINT32)(sourceHash >> 32), (UINT32)sourceHash);
-			if (EXPORT_SHADERS)
+			wchar_t target[MAX_PATH];
+			size_t targetLength = 0;
+			if (!pTarget || mbstowcs_s(&targetLength, target, _countof(target), pTarget, _TRUNCATE) != 0)
 			{
-				FILE *f;
-				_wfopen_s(&f, val, L"wb");
-				if (f)
+				LogInfo("D3DCompiler: target name too long, optional shader files rejected\n");
+			}
+			else if (EXPORT_SHADERS)
+			{
+				wchar_t val[MAX_PATH];
+				if (!FormatPathBounded(val, _countof(val), L"%ls\\%08lx%08lx-%ls_%08lx%08lx.txt", SHADER_PATH,
+					(UINT32)(binaryHash >> 32), (UINT32)binaryHash, target, (UINT32)(sourceHash >> 32), (UINT32)sourceHash))
 				{
-					fwrite(pSrcData, 1, SrcDataSize, f);
-					fclose(f);
+					LogInfo("D3DCompiler: 路径过长被拒 (export path too long; storage_directory path_len=%Iu, max_path=%d)\n",
+						wcslen(SHADER_PATH), MAX_PATH);
+				}
+				else
+				{
+					FILE *f;
+					_wfopen_s(&f, val, L"wb");
+					if (f)
+					{
+						fwrite(pSrcData, 1, SrcDataSize, f);
+						fclose(f);
+					}
 				}
 			}
 			else
 			{
-				wsprintf(val, L"%ls\\%08lx%08lx-%ls_%08lx%08lx*replace.txt", SHADER_PATH, (UINT32)(binaryHash >> 32), (UINT32)binaryHash, target, (UINT32)(sourceHash >> 32), (UINT32)sourceHash);
-				WIN32_FIND_DATA findFileData;
-				HANDLE hFind = FindFirstFile(val, &findFileData);
-				if (hFind != INVALID_HANDLE_VALUE)
+				wchar_t val[MAX_PATH];
+				if (!FormatPathBounded(val, _countof(val), L"%ls\\%08lx%08lx-%ls_%08lx%08lx*replace.txt", SHADER_PATH,
+					(UINT32)(binaryHash >> 32), (UINT32)binaryHash, target, (UINT32)(sourceHash >> 32), (UINT32)sourceHash))
 				{
-					wsprintf(val, L"%ls\\%ls", SHADER_PATH, findFileData.cFileName);
-					FindClose(hFind);
-					FILE *f;
-					_wfopen_s(&f, val, L"rb");
-					if (LogFile)
+					LogInfo("D3DCompiler: 路径过长被拒 (replacement search path too long; storage_directory path_len=%Iu, max_path=%d)\n",
+						wcslen(SHADER_PATH), MAX_PATH);
+				}
+				else
+				{
+					WIN32_FIND_DATA findFileData;
+					HANDLE hFind = FindFirstFile(val, &findFileData);
+					if (hFind != INVALID_HANDLE_VALUE)
 					{
-						char path[MAX_PATH];
-						wcstombs(path, val, MAX_PATH);
-						LogInfo("    Replacement shader found. Loading replacement HLSL code from file \"%s\".\n", path);
-						
-					}
-					if (f)
-					{
-						fseek(f, 0, SEEK_END);
-						SrcDataSize = ftell(f);
-						fseek(f, 0, SEEK_SET);
-						pSrcData = new char[SrcDataSize];
-						fread((void *) pSrcData, 1, SrcDataSize, f);
-						fclose(f);
-						LogInfo("    Source code loaded. Size = %d\n", SrcDataSize);
-						
+						FindClose(hFind);
+						if (!FormatPathBounded(val, _countof(val), L"%ls\\%ls", SHADER_PATH, findFileData.cFileName))
+						{
+							LogInfo("D3DCompiler: 路径过长被拒 (replacement file path too long; storage_directory path_len=%Iu, max_path=%d)\n",
+								wcslen(SHADER_PATH), MAX_PATH);
+						}
+						else
+						{
+							FILE *f;
+							_wfopen_s(&f, val, L"rb");
+							if (LogFile)
+							{
+								char path[MAX_PATH];
+								wcstombs(path, val, MAX_PATH);
+								LogInfo("    Replacement shader found. Loading replacement HLSL code from file \"%s\".\n", path);
+								
+							}
+							if (f)
+							{
+								fseek(f, 0, SEEK_END);
+								SrcDataSize = ftell(f);
+								fseek(f, 0, SEEK_SET);
+								pSrcData = new char[SrcDataSize];
+								fread((void *) pSrcData, 1, SrcDataSize, f);
+								fclose(f);
+								LogInfo("    Source code loaded. Size = %d\n", SrcDataSize);
+								
 
-						// Compile replacement.
-						if (*ppErrorMsgs) (*ppErrorMsgs)->Release();
-						if (*ppCode) (*ppCode)->Release();
-						ret = (*_D3DCompile)(pSrcData, SrcDataSize, pSourceName, pDefines, pInclude, pEntrypoint,
-							pTarget, Flags1, Flags2, ppCode, ppErrorMsgs);
-						delete[] static_cast<const char*>(pSrcData);
+								// Compile replacement.
+								if (*ppErrorMsgs) (*ppErrorMsgs)->Release();
+								if (*ppCode) (*ppCode)->Release();
+								ret = (*_D3DCompile)(pSrcData, SrcDataSize, pSourceName, pDefines, pInclude, pEntrypoint,
+									pTarget, Flags1, Flags2, ppCode, ppErrorMsgs);
+								delete[] static_cast<const char*>(pSrcData);
+							}
+						}
 					}
 				}
 			}

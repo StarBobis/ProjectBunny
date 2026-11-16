@@ -30,6 +30,7 @@
 #include "../DX12RuntimeState.h"
 #include "DX12CrashReport.h"
 #include "DX12ProfilingText.h"
+#include "bounded_path_format.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1021,20 +1022,30 @@ inline bool DX12DiagLog::Open()
 	return true;
 #else
 	wchar_t path[MAX_PATH];
-	if (!GetModuleFileNameW(DX12RuntimeState::GetModule(), path, MAX_PATH))
+	const DWORD pathLength = GetModuleFileNameW(DX12RuntimeState::GetModule(), path, MAX_PATH);
+	if (pathLength == 0 || pathLength >= MAX_PATH)
 		return false;
 
 	PathRemoveFileSpecW(path);
 	// Keep a timestamped copy of every run so normal vs broken sessions can
-	// be compared: the log is overwritten on each launch otherwise.
+	// be compared: the log is overwritten on each launch otherwise. This
+	// rotation is diagnostic-only and best-effort: if either name cannot be
+	// built completely, skip the copy rather than touching a truncated path.
+	// FormatPathBounded uses the truncating CRT form internally but reports a
+	// truncation as failure, so the partial name is never consumed here.
 	wchar_t logPath[MAX_PATH];
 	wchar_t historyPath[MAX_PATH];
-	wsprintfW(logPath, L"%s\\d3d12_log.txt", path);
-	swprintf_s(historyPath, L"%s\\d3d12_log_%llu.txt", path,
+	const bool logPathComplete = FormatPathBounded(logPath, ARRAYSIZE(logPath),
+		L"%s\\d3d12_log.txt", path);
+	const bool historyPathComplete = FormatPathBounded(historyPath, ARRAYSIZE(historyPath),
+		L"%s\\d3d12_log_%llu.txt", path,
 		static_cast<unsigned long long>(GetTickCount64()));
-	if (PathFileExistsW(logPath))
+	if (logPathComplete && historyPathComplete && PathFileExistsW(logPath))
 		CopyFileW(logPath, historyPath, FALSE);
-	PathAppendW(path, L"d3d12_log.txt");
+	// The current log is opened through the bounded Shlwapi append, not through
+	// either diagnostic name above. Failure here is a clean no-log return.
+	if (!PathAppendW(path, L"d3d12_log.txt"))
+		return false;
 	sLog = _wfsopen(path, L"w", _SH_DENYNO);
 	if (!sLog)
 		return false;
