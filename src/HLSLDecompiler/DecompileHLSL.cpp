@@ -260,9 +260,10 @@ public:
 	// Make this bump to new line slightly more clear by making it a convenience routine.
 	static void NextLine(const char *c, size_t &pos, size_t max)
 	{
-		while (c[pos] != 0x0a && pos < max) 
-			pos++; 
-		pos++;
+		while (pos < max && c[pos] != 0x0a)
+			pos++;
+		if (pos < max)
+			pos++;
 	}
 
 	// Just take the current input line, and copy it to the output.

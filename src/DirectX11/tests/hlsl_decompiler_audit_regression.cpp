@@ -291,6 +291,36 @@ void test_dx11_decompiler_swizzle_count_regression()
     check_literal_audit(swizCount(nullptr).empty(),"F272: the existing null operand scalar result is preserved");
 }
 
+void test_dx11_decompiler_next_line_regression()
+{
+    // F-278: production NextLine must test the bound before reading c[pos] and
+    // must never leave pos past max. Before the fix, pos == max produced max + 1
+    // (after reading c[max]); a line without a newline also produced max + 1.
+    const char unterminated[] = "mov r0, r1";
+    const size_t size = sizeof(unterminated) - 1;
+    size_t pos = size;
+    Decompiler::NextLine(unterminated, pos, size);
+    std::fprintf(stderr, "F278 NextLine eof: pos=%zu max=%zu\n", pos, size);
+    check_literal_audit(pos <= size, "F278: NextLine at pos==max must not advance past max");
+
+    pos = 0;
+    Decompiler::NextLine(unterminated, pos, size);
+    std::fprintf(stderr, "F278 NextLine unterminated: pos=%zu max=%zu\n", pos, size);
+    check_literal_audit(pos == size, "F278: a line without a newline ends exactly at max");
+
+    const char terminated[] = "abc\ndef";
+    const size_t terminated_size = sizeof(terminated) - 1;
+    pos = 0;
+    Decompiler::NextLine(terminated, pos, terminated_size);
+    check_literal_audit(pos == 4, "F278: a legal newline still advances exactly one byte past it");
+
+    const char trailing_newline[] = "abc\n";
+    pos = 0;
+    Decompiler::NextLine(trailing_newline, pos, sizeof(trailing_newline) - 1);
+    check_literal_audit(pos == sizeof(trailing_newline) - 1,
+        "F278: a trailing newline still lands exactly at max");
+}
+
 void test_dx11_decompiler_output_signature_regression()
 {
     const std::string header = "// Output signature:\n//\n"
