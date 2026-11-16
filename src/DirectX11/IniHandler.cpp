@@ -2235,14 +2235,19 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
-    if (GetIniString(section_name, L"original_format", nullptr, setting, MAX_PATH)) {
-        custom_resource->original_format = ParseFormatString(setting, true);
-        if (custom_resource->original_format == static_cast<DXGI_FORMAT>(-1))
-            IniWarningW(L"Unknown original_format \"%ls\"\n - [%ls]\n", setting, section_name);
+    const wchar_t* match_format_key = GetIniString(section_name, L"match_format", nullptr, setting, MAX_PATH)
+        ? L"match_format" : L"original_format";
+    if (GetIniString(section_name, match_format_key, nullptr, setting, MAX_PATH)) {
+        custom_resource->match_format = ParseFormatString(setting, true);
+        if (custom_resource->match_format == static_cast<DXGI_FORMAT>(-1))
+            IniWarningW(L"Unknown %ls \"%ls\"\n - [%ls]\n", match_format_key, setting, section_name);
         else
-            LogInfo("  original_format=%s\n", TexFormatStr(custom_resource->original_format));
+            LogInfo("  %S=%s\n", match_format_key, TexFormatStr(custom_resource->match_format));
     }
-    custom_resource->original_dhash = GetIniHash(section_name, L"original_dhash", 0, nullptr);
+    std::string match_hash;
+    const wchar_t* match_hash_key = GetIniString(section_name, L"match_dhash", nullptr, &match_hash)
+        ? L"match_dhash" : L"original_dhash";
+    custom_resource->match_dhash = GetIniHash(section_name, match_hash_key, 0, nullptr);
 
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space",
 		CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);

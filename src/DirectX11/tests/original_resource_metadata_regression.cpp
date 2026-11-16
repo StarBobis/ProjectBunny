@@ -55,7 +55,9 @@ public:
             "[ResourceOriginalValid]\noriginal_format=DXGI_FORMAT_R32_UINT\noriginal_dhash=fedcba9876543210\n"
             "[ResourceOriginalMaximum]\noriginal_format=R16_UINT\noriginal_dhash=ffffffffffffffff\n"
             "[ResourceOriginalInvalid]\noriginal_format=definitely_invalid\noriginal_dhash=1234garbage\n"
-            "[ResourceOriginalOverflow]\noriginal_dhash=12345678901234567\n";
+            "[ResourceOriginalOverflow]\noriginal_dhash=12345678901234567\n"
+            "[ResourceMatchNew]\nmatch_format=R8G8B8A8_UNORM\nmatch_dhash=0123456789abcdef\n"
+            "[ResourceMatchPriority]\noriginal_format=R16_UINT\nmatch_format=R32_UINT\noriginal_dhash=1\nmatch_dhash=ffffffffffffffff\n";
         out.close();
         check(out.good(), "write actual resource metadata INI");
         ClearKeyBindings();
@@ -99,7 +101,7 @@ float original_format(BatchDevice& device, const std::wstring& target)
 }
 void pair(const CustomResource& resource, DXGI_FORMAT format, UINT64 hash, const char* message)
 {
-    check(resource.original_format == format && resource.original_dhash == hash, message);
+    check(resource.match_format == format && resource.match_dhash == hash, message);
 }
 void metadata_copy(BatchDevice& device, const std::wstring& destination, const std::wstring& source)
 {
@@ -127,27 +129,39 @@ void exercise(BatchDevice& device)
         original_format(device, L"resourceoriginalvalid") == DXGI_FORMAT_R32_UINT &&
         original_format(device, L"ps-t0") == -1, "original metadata: sentinel and declaration getter before allocation");
 
+    pair(customResources.at(L"resourcematchnew"), DXGI_FORMAT_R8G8B8A8_UNORM, 0x0123456789abcdefULL,
+        "match metadata: new upstream INI names parse");
+    pair(customResources.at(L"resourcematchpriority"), DXGI_FORMAT_R32_UINT, UINT64_MAX,
+        "match metadata: new names take precedence over legacy aliases");
+    {
+        const std::wstring text = L"resourcematchnew->getmatchformat", ns;
+        CommandListScope scope;
+        CommandListExpression expression;
+        check(expression.parse(&text, &ns, &scope) && expression.evaluate(&device.state) == DXGI_FORMAT_R8G8B8A8_UNORM,
+            "match metadata: new getter and legacy getter both remain supported");
+    }
+
     Registry registry;
     auto pixels = texture(device, 0x90abcdef);
     auto view = srv(device, pixels.Get());
     auto& source = registry.resource(L"resourceoriginalsource", device, pixels.Get());
-    source.original_format = DXGI_FORMAT_R16_UINT; source.original_dhash = 0xfedcba9876543210ULL;
+    source.match_format = DXGI_FORMAT_R16_UINT; source.match_dhash = 0xfedcba9876543210ULL;
     auto& destination = registry.resource(L"resourceoriginaldestination", device);
     for (const auto* option : {L"ref ", L"copy ", L"copy_desc "}) {
         metadata_copy(device, L"resourceoriginaldestination", std::wstring(option) + L"resourceoriginalsource");
-        pair(destination, source.original_format, source.original_dhash, "original metadata: actual custom ref/copy/copy_desc preserves pair");
+        pair(destination, source.match_format, source.match_dhash, "original metadata: actual custom ref/copy/copy_desc preserves pair");
         check(destination.resource != nullptr, "original metadata: successful copy publishes native resource");
     }
     metadata_copy(device, L"resourceoriginaldestination", L"null");
-    pair(destination, source.original_format, source.original_dhash, "original metadata: null retains reference declaration pair");
+    pair(destination, source.match_format, source.match_dhash, "original metadata: null retains reference declaration pair");
     destination.ResetRuntimeState();
-    pair(destination, source.original_format, source.original_dhash, "original metadata: runtime reset retains reference declaration pair");
+    pair(destination, source.match_format, source.match_dhash, "original metadata: runtime reset retains reference declaration pair");
     set_slot(device, L'p', 0, view.Get());
     destination.max_copies_per_frame = 1;
     destination.frame_no = G->frame_no;
     destination.copies_this_frame = 1;
     metadata_copy(device, L"resourceoriginaldestination", L"copy ps-t0");
-    pair(destination, source.original_format, source.original_dhash,
+    pair(destination, source.match_format, source.match_dhash,
         "original metadata: rejected maxcopies operation cannot publish new pair");
     destination.max_copies_per_frame = 0;
     metadata_copy(device, L"resourceoriginaldestination", L"ref ps-t0");
@@ -155,16 +169,16 @@ void exercise(BatchDevice& device)
 
     CustomResource copied;
     copied.CopyMetadataFrom(source);
-    pair(copied, source.original_format, source.original_dhash, "original metadata: declaration/template CopyMetadataFrom");
+    pair(copied, source.match_format, source.match_dhash, "original metadata: declaration/template CopyMetadataFrom");
     auto& pool = registry.pool(L"pooloriginal", device, PoolIndexType::RING, 2);
     pool.resource_template->CopyMetadataFrom(source);
     auto* first = pool.GetResource(0, false, false, true);
     auto* second = pool.GetResource(1, false, false, true);
     check(first && second, "original metadata: lazily instantiate real pool slots");
-    pair(*first, source.original_format, source.original_dhash, "original metadata: lazy pool clones original pair");
+    pair(*first, source.match_format, source.match_dhash, "original metadata: lazy pool clones original pair");
     metadata_copy(device, L"pooloriginal[0]", L"ref resourceoriginalsource");
     metadata_copy(device, L"pooloriginal[1]", L"ref resourceoriginalsource");
-    second->original_format = DXGI_FORMAT_R32_FLOAT; second->original_dhash = 0x123456789abcdef0ULL;
+    second->match_format = DXGI_FORMAT_R32_FLOAT; second->match_dhash = 0x123456789abcdef0ULL;
     auto alternate = texture(device, 0x31415926);
     assign(device, second, alternate.Get());
     const auto before = GetExpressionRandomSampleCount();
@@ -173,17 +187,17 @@ void exercise(BatchDevice& device)
         "original metadata: source selection and metadata acquisition sample dynamic pool once");
     auto* selected = destination.resource == first->resource ? first : second;
     check(destination.resource == selected->resource, "original metadata: destination owns selected native resource");
-    pair(destination, selected->original_format, selected->original_dhash, "original metadata: pair belongs to same dynamically selected resource");
+    pair(destination, selected->match_format, selected->match_dhash, "original metadata: pair belongs to same dynamically selected resource");
 
     ResourceCopyTarget this_target;
     this_target.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
     this_target.SetCustomResource(&source);
     device.state.this_target = &this_target;
     metadata_copy(device, L"resourceoriginaldestination", L"ref this");
-    pair(destination, source.original_format, source.original_dhash, "original metadata: THIS source forwards selected snapshot");
+    pair(destination, source.match_format, source.match_dhash, "original metadata: THIS source forwards selected snapshot");
     this_target.SetCustomResource(&destination);
     metadata_copy(device, L"this", L"ref resourceoriginalsource");
-    pair(destination, source.original_format, source.original_dhash, "original metadata: THIS destination publishes pair");
+    pair(destination, source.match_format, source.match_dhash, "original metadata: THIS destination publishes pair");
     device.state.this_target = nullptr;
 
     metadata_copy(device, L"pooloriginal[0:1]", L"ref ps-t[0:1]");
@@ -191,8 +205,8 @@ void exercise(BatchDevice& device)
     pair(*second, DXGI_FORMAT_R32_FLOAT, 0x123456789abcdef0ULL,
         "original metadata: null range source retains prior pair");
     metadata_copy(device, L"pooloriginal[*]", L"copy_desc resourceoriginalsource");
-    pair(*first, source.original_format, source.original_dhash, "original metadata: whole pool copy_desc first slot");
-    pair(*second, source.original_format, source.original_dhash, "original metadata: whole pool copy_desc last slot");
+    pair(*first, source.match_format, source.match_dhash, "original metadata: whole pool copy_desc first slot");
+    pair(*second, source.match_format, source.match_dhash, "original metadata: whole pool copy_desc last slot");
 }
 } // namespace
 void test_dx11_original_resource_metadata_regression()

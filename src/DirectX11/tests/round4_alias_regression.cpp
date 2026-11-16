@@ -33,8 +33,8 @@ void test_dx11_round4_alias_regression()
     auto b=buffer(device,128,D3D11_BIND_VERTEX_BUFFER);
     auto& source=registry.resource(L"resourceround4aliasa",device,a.Get(),DXGI_FORMAT_R32_FLOAT,4,64);
     auto& sentinel=registry.resource(L"resourceround4aliasb",device,b.Get(),DXGI_FORMAT_R32_FLOAT,4,128);
-    source.original_format=DXGI_FORMAT_R32_FLOAT; source.original_dhash=0x123456789abcdef0ull;
-    sentinel.original_format=DXGI_FORMAT_R16_UINT; sentinel.original_dhash=7;
+    source.match_format=DXGI_FORMAT_R32_FLOAT; source.match_dhash=0x123456789abcdef0ull;
+    sentinel.match_format=DXGI_FORMAT_R16_UINT; sentinel.match_dhash=7;
     auto& destination=registry.pool(L"poolround4aliasdst",device,PoolIndexType::RING,2);
     destination.PropagateFlags(D3D11_BIND_VERTEX_BUFFER,static_cast<D3D11_RESOURCE_MISC_FLAG>(0));
     unsigned seed=1, selected=0;
@@ -59,10 +59,10 @@ void test_dx11_round4_alias_regression()
         auto* other=destination.GetResource(static_cast<float>(1-selected),false,true,false);
         const bool null_operation=!*operation;
         bool correct=samples==1 && chosen && other && other->resource==b.Get() &&
-            other->original_dhash==7 && !other->is_null;
+            other->match_dhash==7 && !other->is_null;
         if (null_operation) correct &= chosen && chosen->is_null;
         else correct &= chosen && !chosen->is_null && chosen->resource!=b.Get() &&
-            chosen->original_format==source.original_format && chosen->original_dhash==source.original_dhash;
+            chosen->match_format==source.match_format && chosen->match_dhash==source.match_dhash;
         if (operation[0]==L'r') correct &= chosen && chosen->resource==a.Get();
         std::fprintf(stderr,"round4 alias assignment %ls: samples=%u selected=%u aligned=%d\n",
             operation,samples,selected,correct);
@@ -83,7 +83,7 @@ void test_dx11_round4_alias_regression()
     auto* actual=destination.GetResource(static_cast<float>(destination_index),false,true,false);
     const auto samples=GetExpressionRandomSampleCount()-before;
     all_correct &= samples==2 && actual && actual->resource==(source_index?b.Get():a.Get()) &&
-        actual->original_dhash==(source_index?7:source.original_dhash);
+        actual->match_dhash==(source_index?7:source.match_dhash);
     std::fprintf(stderr,"round4 alias dynamic source/destination: samples=%u\n",samples);
     // A failed selector must be consumed once and must not mutate a real slot.
     for (const auto* operation : {L"ref ",L"copy ",L"copy_desc ",L""}) {
@@ -98,7 +98,7 @@ void test_dx11_round4_alias_regression()
         for (unsigned i=0;i<2;++i) {
             const auto* unchanged=destination.GetResource(static_cast<float>(i),false,true,false);
             all_correct &= unchanged && unchanged->resource==b.Get() && !unchanged->is_null &&
-                unchanged->original_dhash==7;
+                unchanged->match_dhash==7;
         }
     }
     registry.resource(L"resourceround4aliasmissing",device);
@@ -121,7 +121,7 @@ void test_dx11_round4_alias_regression()
         RunCommandList(device.device,device.wrapper.get(),&repeated,nullptr,false);
         const auto* result=destination.GetResource(static_cast<float>(index),false,true,false);
         all_correct &= GetExpressionRandomSampleCount()==start+1 && result &&
-            result->resource==a.Get() && result->original_dhash==source.original_dhash;
+            result->resource==a.Get() && result->match_dhash==source.match_dhash;
     }
     require_batch(all_correct,"round4 alias: resolve assignment destination once and align cache/resource/reference metadata");
 }

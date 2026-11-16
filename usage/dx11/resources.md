@@ -66,3 +66,7 @@ color_space = srgb
 ```
 
 这是格式解释，不是把像素数值做颜色转换。自动检测 PNG 的额外 sRGB 扫描由 `[System] force_detect_color_space` 控制，默认关闭。
+
+## 贴图匹配元数据命名兼容
+
+推荐使用 `match_format`、`match_dhash` 和资源成员 `->getmatchformat`。旧 INI 的 `original_format`、`original_dhash` 及 `->originalformat` 仍可使用；同一资源同时声明新旧键时，新键优先。dHash 按完整 64 位十六进制解析，不经浮点数转换。

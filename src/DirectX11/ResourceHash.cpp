@@ -3174,3 +3174,11 @@ bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_
     out_hash = computed;
     return true;
 }
+
+unsigned HammingDistance(uint64_t a, uint64_t b)
+{
+    if ((a == 0) != (b == 0)) return 64;
+    unsigned distance = 0;
+    for (uint64_t bits = a ^ b; bits; bits &= bits - 1) ++distance;
+    return distance;
+}

@@ -2882,8 +2882,8 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 
         case ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT: {
             const auto* resource = texture_filter_target.GetCustomResource(state);
-            return !resource || resource->original_format == static_cast<DXGI_FORMAT>(-1) ? -1.0f :
-                static_cast<float>(resource->original_format);
+            return !resource || resource->match_format == static_cast<DXGI_FORMAT>(-1) ? -1.0f :
+                static_cast<float>(resource->match_format);
         }
 
 		case ResourceCopyTargetEvaluationMode::POOL_INDEX:
@@ -5813,8 +5813,8 @@ CustomResource::CustomResource() :
 	offset(0),
 	buf_size(0),
 	format(DXGI_FORMAT_UNKNOWN),
-    original_format(static_cast<DXGI_FORMAT>(-1)),
-    original_dhash(0),
+    match_format(static_cast<DXGI_FORMAT>(-1)),
+    match_dhash(0),
 	source_stride(0),
 	max_copies_per_frame(0),
 	frame_no(0),
@@ -6385,8 +6385,8 @@ void CustomResource::CopyMetadataFrom(const CustomResource& src)
     // Only declaration/config metadata is copied. Keep runtime buf_size and
     // its count/extent discriminator together, just like resource and offset.
 	max_copies_per_frame = src.max_copies_per_frame;
-    original_format = src.original_format;
-    original_dhash = src.original_dhash;
+    match_format = src.match_format;
+    match_dhash = src.match_dhash;
 
 	filename = src.filename;
 
@@ -7741,6 +7741,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::String, MemberArg::Type::Unsigned
 		}} },
         { L"->originalformat", 16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
+        { L"->getmatchformat", 16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
         { L"->hammingdistance", 17, ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE, {{
             MemberArg::Type::Resource,
         }} },
@@ -9296,8 +9297,8 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
             if (size_is_length) *size_is_length = custom_resource->buf_size_is_length;
             if (source_original_stride) *source_original_stride = custom_resource->source_stride;
             if (original_metadata) {
-                original_metadata->format = custom_resource->original_format;
-                original_metadata->dhash = custom_resource->original_dhash;
+                original_metadata->format = custom_resource->match_format;
+                original_metadata->dhash = custom_resource->match_dhash;
             }
 
 			if (custom_resource->is_null) {
@@ -9612,8 +9613,8 @@ void ResourceCopyTarget::SetResource(
 		}
 		custom_resource->is_null = false;
         if (original_metadata) {
-            custom_resource->original_format = original_metadata->format;
-            custom_resource->original_dhash = original_metadata->dhash;
+            custom_resource->match_format = original_metadata->format;
+            custom_resource->match_dhash = original_metadata->dhash;
         }
 
 		// If we are passed our own resource (might happen if the
@@ -10146,11 +10147,8 @@ float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
     ResourceCopyTarget reference = *member_args[0].resource;
     const auto* custom = reference.GetCustomResource(state);
     if (!custom) return ResourcePropertyResult::UNKNOWN;
-    const uint64_t reference_hash = custom->original_dhash;
-    if ((hash == 0) != (reference_hash == 0)) return 64.0f;
-    unsigned distance = 0;
-    for (uint64_t bits = hash ^ reference_hash; bits; bits &= bits - 1) ++distance;
-    return static_cast<float>(distance);
+    const uint64_t reference_hash = custom->match_dhash;
+    return static_cast<float>(HammingDistance(reference_hash, hash));
 }
 
 D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState* state)

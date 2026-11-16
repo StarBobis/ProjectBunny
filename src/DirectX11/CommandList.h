@@ -583,8 +583,8 @@ public:
 	UINT buf_size;
     bool buf_size_is_length = false; // Explicit captured Region count; legacy metadata remains an extent.
 	DXGI_FORMAT format;
-    DXGI_FORMAT original_format;
-    UINT64 original_dhash;
+    DXGI_FORMAT match_format;
+    UINT64 match_dhash;
 
 	UINT source_stride;
 

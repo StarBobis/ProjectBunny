@@ -5264,33 +5264,33 @@
     {
       "sha": "4b29e9b326f3d034c62805eb33407dc2b063944c",
       "subject": "Moved `HammingDistance()` helper to ResourceHash",
-      "status": "pending",
+      "status": "validated",
       "files": [
         "src/DirectX11/CommandList.cpp",
         "src/DirectX11/ResourceHash.cpp",
         "src/DirectX11/ResourceHash.h"
       ],
-      "adaptation": "Pending adaptation: shared HammingDistance relocation; preserve local zero-hash semantics and existing regression coverage.",
+      "adaptation": "Moved the portable 64-bit HammingDistance implementation into ResourceHash and reused it from the existing getter. Preserved zero/nonzero guard and C++17; no new CPU instruction requirement.",
       "validation": {
-        "review": "Observed commit metadata and affected files; first two patches inspected. No production adaptation performed in this check-only task.",
-        "commands": "python scripts/check-dx11-upstream.py; git show --format=fuller --stat <sha>; git show <sha> (first two commits)",
-        "result": "Check succeeded. Port/build/regression/runtime validation pending; synchronized position not advanced."
+        "commands": "powershell -NoProfile -ExecutionPolicy Bypass -File build/run-upstream-validation.ps1; ctest --test-dir build/dx11-dump-validation --output-on-failure",
+        "result": "PASS: DX11 Release DLL and production regression executable build; all 5 CTest entries passed. Shared helper boundaries/symmetry/zero guard plus real getter/config/GPU tests passed.",
+        "runtime": "Pure helper relocation is validated by production tests; no new game-side behavior introduced."
       }
     },
     {
       "sha": "1231d8dd1c1bf902ee948dd2944a1e963acc3148",
       "subject": "Renamed Resource section's  `original_format` to `match_format`, `original_dhash` to `match_dhash`",
-      "status": "pending",
+      "status": "implemented-awaiting-validation",
       "files": [
         "src/DirectX11/CommandList.cpp",
         "src/DirectX11/CommandList.h",
         "src/DirectX11/IniHandler.cpp"
       ],
-      "adaptation": "Pending adaptation: INI/resource/member renames require checking backward compatibility for original_format, original_dhash and originalformat.",
+      "adaptation": "Renamed internal CustomResource fields to match_format/match_dhash. Added new INI names and ->getmatchformat; retained original_format/original_dhash and ->originalformat aliases. New names take precedence. Preserved exact uint64 and local metadata propagation through copy/ref/pools/THIS/ranges.",
       "validation": {
-        "review": "Observed commit metadata and affected files; first two patches inspected. No production adaptation performed in this check-only task.",
-        "commands": "python scripts/check-dx11-upstream.py; git show --format=fuller --stat <sha>; git show <sha> (first two commits)",
-        "result": "Check succeeded. Port/build/regression/runtime validation pending; synchronized position not advanced."
+        "commands": "powershell -NoProfile -ExecutionPolicy Bypass -File build/run-upstream-validation.ps1; ctest --test-dir build/dx11-dump-validation --output-on-failure",
+        "result": "PASS: DX11 Release build and all 5 CTest entries, including actual INI new/legacy names, precedence, malformed/overflow and member getters plus production resource-copy/pool metadata regression.",
+        "runtime": "pending: target game configuration/runtime verification; synchronized position not advanced."
       }
     },
     {
