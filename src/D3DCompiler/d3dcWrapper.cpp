@@ -435,7 +435,8 @@ HRESULT WINAPI D3DCompile(_In_reads_bytes_(SrcDataSize) LPCVOID pSrcData,
 		pTarget, Flags1, Flags2, ppCode, ppErrorMsgs);
 	UINT64 binaryHash;
 	char shaderName[MAX_PATH];
-	if (ret == S_OK && ppCode && *ppCode && !wrapperCall)
+	const bool needsShaderName = SHADER_PATH[0] != 0 || LogFile != nullptr;
+	if (ret == S_OK && ppCode && *ppCode && !wrapperCall && needsShaderName)
 	{
 		// Calculate CRC and name.
 		UINT64 sourceHash = fnv_64_buf(pSrcData, SrcDataSize);
