@@ -88,6 +88,14 @@ void test_dx11_shader_model_bounds_regression();
 void test_dx11_initialization_gate_reliability_regression();
 void test_dx11_version_regression();
 void test_dx11_decompiler_swizzle_count_regression();
+void test_dx11_decompiler_f103_red_r1();
+void test_dx11_decompiler_f103_red_r2();
+void test_dx11_decompiler_f103_red_r3();
+void test_dx11_decompiler_f103_red_r4();
+void test_dx11_decompiler_f103_red_r5();
+void test_dx11_decompiler_f103_red_m1();
+void test_dx11_decompiler_f103_red_m2();
+void test_dx11_decompiler_f103_red_m3();
 void test_dx11_debug_layer_interfaces_regression();
 void test_dx11_hook_lookup_regression();
 void test_dx11_hook_release_regression();
@@ -1061,6 +1069,16 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-279", test_dx11_decompiler_suffix_regression},
     {"F-280", test_dx11_decompiler_texture_literal_regression},
     {"F-282", test_dx11_decompiler_immediate_regression},
+    {"F-103-RED-R4", test_dx11_decompiler_f103_red_r4},
+    {"F-103-RED-R5", test_dx11_decompiler_f103_red_r5},
+    {"F-103-RED-M3", test_dx11_decompiler_f103_red_m3},
+#ifdef DX11_AUDIT_ASAN_DECOMPILER
+    {"F-103-RED-R1", test_dx11_decompiler_f103_red_r1},
+    {"F-103-RED-R2", test_dx11_decompiler_f103_red_r2},
+    {"F-103-RED-R3", test_dx11_decompiler_f103_red_r3},
+    {"F-103-RED-M1", test_dx11_decompiler_f103_red_m1},
+    {"F-103-RED-M2", test_dx11_decompiler_f103_red_m2},
+#endif
     {"F-296", test_dx11_shader_regex_declaration_regression},
     {"F-297", test_dx11_shader_regex_temp_count_regression},
     {"P-02", test_dx11_tokenizer_regression},

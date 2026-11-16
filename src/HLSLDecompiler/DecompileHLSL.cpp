@@ -50,6 +50,21 @@
 
 using namespace std;
 
+// F-103: a fixed-size decompiler buffer that cannot hold the input is a fatal
+// error for this decompile attempt. Throwing unwinds to the catch(...) in
+// DecompileBinaryHLSL, which sets errorOccurred and returns an empty string, so
+// callers never receive a half-generated shader.
+struct DecompileFatal
+{
+	string message;
+};
+
+[[noreturn]] static void fatalDecompileError(const string &err)
+{
+	LogInfo("    fatal decompile error> %s\n", err.c_str());
+	throw DecompileFatal{ err };
+}
+
 enum DataType
 {
 	DT_bool,
@@ -1228,15 +1243,29 @@ public:
 			}
 			const int bufferRegister = i->second;
 			// Write declaration.
-			char buffer[256];
+			// F-103: 512 holds the largest legal declaration line: a 255-byte
+			// cbuffer member name plus the "//   <type> <name>;// Offset..."
+			// decoration and the added packoffset text.
+			char buffer[512];
 			if (name[0] == '$') name[0] = '_';
 			_snprintf_s(buffer, 256, 256, "\ncbuffer %s : register(b%d)\n{\n", name, bufferRegister);
 			mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 			do
 			{
-				const char *eolPos = strchr(c + pos, '\n');
-				memcpy(buffer, c + pos, eolPos - c - pos + 1);
-				buffer[eolPos - c - pos + 1] = 0;
+				// F-103: bound the line by the shader text, not by the NUL
+				// terminator, then copy it including the newline. A line that
+				// does not fit is a controlled decompile failure, never a
+				// stack overflow.
+				if (pos >= size)
+					fatalDecompileError("unterminated cbuffer line");
+				const char *eolPos = static_cast<const char *>(memchr(c + pos, '\n', size - pos));
+				if (!eolPos)
+					fatalDecompileError("unterminated cbuffer line");
+				const size_t lineLen = static_cast<size_t>(eolPos - (c + pos)) + 1;
+				if (lineLen >= sizeof(buffer))
+					fatalDecompileError("cbuffer line too long");
+				memcpy(buffer, c + pos, lineLen);
+				buffer[lineLen] = 0;
 				// Skip opening bracket.
 				if (strstr(buffer, " {\n"))
 				{
@@ -1282,10 +1311,24 @@ public:
 				if (strstr(buffer, " }"))
 				{
 					// Read struct name.
-					while (c[pos] != '}') ++pos;
+					// F-103: a 255-byte struct name spans 258 bytes here
+					// (closing brace + newline + name), which overflowed the
+					// old 256-byte buffer; the old loops also read past the
+					// end of the shader text. Bound the scan, the copy, and
+					// leave room for the packoffset/terminator suffix below.
+					while (pos < size && c[pos] != '}') ++pos;
+					if (pos >= size)
+						fatalDecompileError("unterminated struct name");
 					int bpos = 0;
-					while (c[pos] != ';')
+					while (pos < size && c[pos] != ';')
+					{
+						if (static_cast<size_t>(bpos) + 32 >= sizeof(buffer))
+							fatalDecompileError("struct name too long");
 						buffer[bpos++] = c[pos++];
+					}
+					if (pos >= size)
+						fatalDecompileError("unterminated struct name");
+					buffer[bpos] = 0;
 					string structName = string(buffer + 2, buffer + bpos) + ".";
 					// Read offset.
 					while (c[pos] != '/' && pos < size) pos++;
@@ -1406,18 +1449,18 @@ public:
 				// Uses projection matrix?
 				if (e.bt == DT_float4x4 && e.Name.find_first_of("Projection") >= 0)
 				{
-					eolPos = strchr(c + pos, '\n');
+					const char *eolPos = strchr(c + pos, '\n');
 					// Used?
-					if (*(eolPos - 1) != ']')
+					if (eolPos && *(eolPos - 1) != ']')
 						mUsesProjection = true;
 				}
 
 				// SR3 variant of projection matrix.
 				if (e.bt == DT_float4x4 && e.Name.find_first_of("projTM") >= 0)
 				{
-					eolPos = strchr(c + pos, '\n');
+					const char *eolPos = strchr(c + pos, '\n');
 					// Used?
-					if (*(eolPos - 1) != ']')
+					if (eolPos && *(eolPos - 1) != ']')
 						mUsesProjection = true;
 				}
 
@@ -3376,11 +3419,21 @@ public:
 					char *pos = strstr(mOutput.data(), op1);
 					if (pos)
 					{
+						// F-103 (P1 defense): the target expression comes from
+						// already generated mOutput, so a malformed/long line
+						// must fail here instead of running off the front of
+						// the buffer or aborting inside applySwizzle's
+						// opcodeSize-sized contract.
 						char *bpos = pos;
-						while (*--bpos != ' ');
+						while (bpos > mOutput.data() && *--bpos != ' ') {}
+						if (*bpos != ' ' || bpos + 1 > pos)
+							fatalDecompileError("bad position texture register");
+						const size_t nameLen = static_cast<size_t>(pos - (bpos + 1));
+						if (nameLen >= static_cast<size_t>(opcodeSize))
+							fatalDecompileError("position texture register name too long");
 						char buf[512];
-						memcpy(buf, bpos + 1, pos - (bpos + 1));
-						buf[pos - (bpos + 1)] = 0;
+						memcpy(buf, bpos + 1, nameLen);
+						buf[nameLen] = 0;
 						applySwizzle(".xyz", buf);
 						char calcStatement[256];
 						sprintf(calcStatement, G->ZRepair_WorldPosCalc.c_str(), buf);
@@ -3527,10 +3580,23 @@ public:
 								(pos[3] == 'x' || pos[3] == 'y' || pos[3] == 'z'))
 							{
 								char *lightPosDecl = pos + 1;
-								while (*--pos != '=');
+								while (pos > mOutput.data() && *--pos != '=') {}
+								if (*pos != '=')
+									fatalDecompileError("bad object position expression");
 								char *bpos = pos;
-								while (*--bpos != '\n');
-								size_t size = (pos - 1) - (bpos + 3);
+								while (bpos > mOutput.data() && *--bpos != '\n') {}
+								if (*bpos != '\n')
+									fatalDecompileError("bad object position expression");
+								// F-103 (P1 defense): op1 is opcodeSize bytes.
+								// A 128-byte target used to write the NUL into
+								// op2[0]; longer targets overran the member.
+								const size_t assignPos = static_cast<size_t>(pos - mOutput.data());
+								const size_t lineStart = static_cast<size_t>(bpos - mOutput.data());
+								if (assignPos < lineStart + 4)
+									fatalDecompileError("bad object position expression");
+								const size_t size = assignPos - lineStart - 4;
+								if (size >= static_cast<size_t>(opcodeSize))
+									fatalDecompileError("object position expression too long");
 								memcpy(op1, bpos + 3, size);
 								op1[size] = 0;
 
@@ -3582,10 +3648,22 @@ public:
 								(pos[3] == 'x' || pos[3] == 'y' || pos[3] == 'z'))
 							{
 								char *spotPosDecl = pos + 1;
-								while (*--pos != '=');
+								while (pos > mOutput.data() && *--pos != '=') {}
+								if (*pos != '=')
+									fatalDecompileError("bad object position expression");
 								char *bpos = pos;
-								while (*--bpos != '\n');
-								size_t size = (pos - 1) - (bpos + 3);
+								while (bpos > mOutput.data() && *--bpos != '\n') {}
+								if (*bpos != '\n')
+									fatalDecompileError("bad object position expression");
+								// F-103 (P1 defense): same op1 contract as the
+								// ObjectPos_ID1 block above.
+								const size_t assignPos = static_cast<size_t>(pos - mOutput.data());
+								const size_t lineStart = static_cast<size_t>(bpos - mOutput.data());
+								if (assignPos < lineStart + 4)
+									fatalDecompileError("bad object position expression");
+								const size_t size = assignPos - lineStart - 4;
+								if (size >= static_cast<size_t>(opcodeSize))
+									fatalDecompileError("object position expression too long");
 								memcpy(op1, bpos + 3, size);
 								op1[size] = 0;
 

@@ -152,6 +152,7 @@ endif()
 
 if(BUILD_TESTING)
     option(DX11_AUDIT_ASAN_LOCKS "Instrument lock cleanup in the regression host with AddressSanitizer" OFF)
+    option(DX11_AUDIT_ASAN_DECOMPILER "Instrument the decompiler bounds regression with AddressSanitizer" OFF)
     configure_file(tests/data/wic.png wic-regression.png COPYONLY)
     # Exercise the real parser/globals/resource lifecycle without exporting test
     # hooks from d3d11.dll or replacing production dependencies with mocks.
@@ -185,6 +186,17 @@ if(BUILD_TESTING)
         DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
     set_source_files_properties(tests/hlsl_decompiler_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/HLSLDecompiler/DecompileHLSL.cpp")
+    if(DX11_AUDIT_ASAN_DECOMPILER)
+        if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+            message(FATAL_ERROR "DX11_AUDIT_ASAN_DECOMPILER requires MSVC x64 with AddressSanitizer.")
+        endif()
+        # F-103: only the TU that includes DecompileHLSL.cpp is instrumented, so
+        # stack overflows in the production local buffers get a redzone and a
+        # source line. The DLL is instrumented by the real build, not here.
+        set_source_files_properties(tests/hlsl_decompiler_audit_regression.cpp PROPERTIES
+            COMPILE_OPTIONS "/GL-;/fsanitize=address;/Zi"
+            COMPILE_DEFINITIONS "_DISABLE_VECTOR_ANNOTATION;_DISABLE_STRING_ANNOTATION")
+    endif()
     list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)ShaderRegex\\.cpp$")
     list(APPEND DX11_REGRESSION_SOURCES tests/shader_regex_audit_regression.cpp)
     set_source_files_properties(tests/shader_regex_audit_regression.cpp PROPERTIES
@@ -357,6 +369,21 @@ if(BUILD_TESTING)
     target_compile_features(dx11_upstream_regression PRIVATE cxx_std_17)
     if(DX11_AUDIT_ASAN_LOCKS)
         target_compile_definitions(dx11_upstream_regression PRIVATE DX11_AUDIT_ASAN_LOCKS=1)
+    endif()
+    if(DX11_AUDIT_ASAN_DECOMPILER)
+        target_compile_definitions(dx11_upstream_regression PRIVATE DX11_AUDIT_ASAN_DECOMPILER=1)
+        # The regression host re-execs itself in an isolated directory and only
+        # copies the ASan runtime if it is already next to the executable.
+        get_filename_component(F103_ASAN_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        set(F103_ASAN_RUNTIME "${F103_ASAN_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll")
+        if(EXISTS "${F103_ASAN_RUNTIME}")
+            add_custom_command(TARGET dx11_upstream_regression POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${F103_ASAN_RUNTIME}"
+                    "$<TARGET_FILE_DIR:dx11_upstream_regression>/clang_rt.asan_dynamic-x86_64.dll"
+                VERBATIM)
+        else()
+            message(WARNING "DX11_AUDIT_ASAN_DECOMPILER: clang_rt.asan_dynamic-x86_64.dll not found next to ${CMAKE_CXX_COMPILER}; copy it next to the regression exe before running.")
+        endif()
     endif()
     set_target_msvc_options(dx11_upstream_regression)
     set_target_common_definitions(dx11_upstream_regression)

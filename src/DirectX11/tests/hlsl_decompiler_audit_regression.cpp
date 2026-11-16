@@ -12,7 +12,33 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include <cstring>
 #include "log.h"
+
+// F-103 RED: the ObjectPos target array (op1) is a Decompiler member, so
+// AddressSanitizer cannot place a redzone between op1 and op2.  The bytes
+// immediately after op1 are op2; paint op2's first byte with 0xCC and check it
+// at the first strcpy whose destination is op2 (the production code's next use
+// of that member).  Production strcpy behaviour is otherwise unchanged: the
+// wrapper forwards to the CRT.
+namespace f103_red {
+struct CanaryHit {};
+inline thread_local unsigned char* canary = nullptr;
+inline thread_local bool canary_hit = false;
+inline char* checked_strcpy(char* dest, const char* src)
+{
+    if (canary && reinterpret_cast<unsigned char*>(dest) == canary) {
+        if (*canary != 0xCC) {
+            canary_hit = true;
+            canary = nullptr;
+            throw CanaryHit{};
+        }
+        canary = nullptr; // The canary slot is about to be written by production code.
+    }
+    return std::strcpy(dest, src);
+}
+}
+#define strcpy f103_red::checked_strcpy
 namespace {
 Shader* decode_lifetime_audit(const void*, size_t);
 void free_lifetime_audit(ShaderInfo*);
@@ -22,6 +48,7 @@ std::string header_time_lifetime_audit();
 #define FreeShaderInfo free_lifetime_audit
 #define LogTime header_time_lifetime_audit
 #include "../../HLSLDecompiler/DecompileHLSL.cpp"
+#undef strcpy
 #undef LogTime
 #undef FreeShaderInfo
 #undef DecodeDXBC
@@ -929,4 +956,297 @@ void check_dx11_dx9_dcl_const_without_ctab_lifetime(const uint32_t* tokens, size
         "F126: every repeated decode of the malformed stream is rejected");
     check_literal_audit(before == after,
         "F126: rejected decodes release the Shader and ShaderInfo");
+}
+
+// ---------------------------------------------------------------------------
+// F-103 RED: fixed-buffer bounds in DecompileHLSL.cpp.
+//
+// Current worktree line numbers (the design document's numbers are one line
+// lower for the same code identities):
+//   R1  1238-1239  ParseBufferDefinitions cbuffer line memcpy + NUL
+//   R2  1285-1288  ParseBufferDefinitions struct-name hand-written loop
+//   R3  3382-3383  WritePatches position-texture register memcpy + NUL
+//   R4  3534-3535  WritePatches ObjectPos_ID1 memcpy + NUL
+//   R5  3589-3590  WritePatches ObjectPos_ID2 memcpy + NUL
+//   M1  old 1178 -> 1238-1239 (255-byte legal cbuffer member name)
+//   M2  old 1228 -> 1285-1288  (258-byte struct-name span, 2-byte overflow)
+//   M3  old 3328 -> 3534-3535 / 3589-3590 (128-byte target, NUL byte overflow)
+//
+// R1/R2/R3/M1/M2 write local stack arrays, so AddressSanitizer observes them.
+// R4/R5/M3 write op1, a Decompiler member; ASan has no redzone between op1
+// and op2, so those use the op2 0xCC canary defined at the top of this TU.
+// ---------------------------------------------------------------------------
+namespace {
+
+void f103_require(bool condition, const char* message)
+{
+    if (!condition) throw std::runtime_error(message);
+}
+
+std::string f103_text(const Decompiler& decoder)
+{
+    return std::string(decoder.mOutput.begin(), decoder.mOutput.end());
+}
+
+struct F103RunResult {
+    bool threw = false;
+    bool canary_hit = false;
+    bool error = false;
+    bool saw_world_pos = false;
+    bool saw_stereo_pos = false;
+    std::string output;
+};
+
+F103RunResult f103_run_write_patches(Decompiler& decoder, bool arm_canary)
+{
+    F103RunResult result;
+    f103_red::canary_hit = false;
+    if (arm_canary) {
+        f103_require(reinterpret_cast<unsigned char*>(decoder.op2) ==
+                reinterpret_cast<unsigned char*>(decoder.op1) + sizeof(decoder.op1),
+            "F-103: the op2 canary requires op2 to immediately follow op1");
+        decoder.op2[0] = static_cast<char>(0xCC);
+        f103_red::canary = reinterpret_cast<unsigned char*>(decoder.op2);
+    }
+    try {
+        decoder.WritePatches();
+    } catch (const f103_red::CanaryHit&) {
+        result.canary_hit = true;
+    } catch (...) {
+        result.threw = true;
+    }
+    f103_red::canary = nullptr;
+    result.error = decoder.mErrorOccurred;
+    result.output = f103_text(decoder);
+    result.saw_world_pos = result.output.find("float3 worldPos") != std::string::npos;
+    result.saw_stereo_pos = result.output.find("stereoPos") != std::string::npos;
+    return result;
+}
+
+void f103_prepare_write_patches(Decompiler& decoder, DecompilerSettings& settings,
+    const std::string& object_name, bool id2)
+{
+    settings = DecompilerSettings{};
+    settings.ZRepair_PositionTexture = "F103PosTex";
+    settings.ZRepair_WorldPosCalc = "%s";
+    settings.InvTransforms.push_back("F103InvTransform");
+    if (id2) settings.ObjectPos_ID2 = object_name;
+    else settings.ObjectPos_ID1 = object_name;
+
+    decoder.G = &settings;
+    decoder.mErrorOccurred = false;
+    decoder.mPatched = false;
+    decoder.mUsesProjection = false;
+    decoder.mShaderType = "ps_5_0";
+    decoder.mTextureNames[0] = "F103PosTex";
+    decoder.mCBufferData[0] = BufferEntry{DT_float4, 0, false, object_name};
+    decoder.mCodeStartPos = 0;
+}
+
+void f103_set_object_pos_output(Decompiler& decoder, const std::string& dest,
+    const std::string& object_name)
+{
+    const std::string text =
+        "\nvoid main(\n  float4 p : SV_Position0,\n  float4 q : TEXCOORD0)\n{\n"
+        "  o0.xyzw = F103PosTex.Sample(s, uv);\n"
+        "  " + dest + " = " + object_name + ".xyz;\n"
+        "}\n";
+    decoder.mOutput.assign(text.begin(), text.end());
+}
+
+void f103_check_object_pos_case(const char* label, bool id2, const std::string& dest,
+    bool expect_controlled_failure)
+{
+    DecompilerSettings settings;
+    Decompiler decoder;
+    const std::string object_name = id2 ? "F103ObjPos2" : "F103ObjPos1";
+    f103_prepare_write_patches(decoder, settings, object_name, id2);
+    f103_set_object_pos_output(decoder, dest, object_name);
+
+    std::fprintf(stderr, "%s: target=%zu bytes, canary at op2[0], object=%s\n",
+        label, dest.size(), object_name.c_str());
+    std::fflush(stderr);
+    const auto result = f103_run_write_patches(decoder, true);
+    std::fprintf(stderr, "%s: canary_hit=%d threw=%d error=%d stereo=%d world=%d\n",
+        label, static_cast<int>(result.canary_hit), static_cast<int>(result.threw),
+        static_cast<int>(result.error), static_cast<int>(result.saw_stereo_pos),
+        static_cast<int>(result.saw_world_pos));
+
+    f103_require(!result.canary_hit,
+        (std::string(label) + ": the target write crossed op1 and overwrote the op2 0xCC canary").c_str());
+    if (expect_controlled_failure) {
+        f103_require(result.threw || result.error,
+            (std::string(label) + ": an overlong target must fail as a controlled decompile error").c_str());
+        f103_require(!result.saw_stereo_pos,
+            (std::string(label) + ": a controlled failure must not publish a truncated stereoPos patch").c_str());
+    } else {
+        f103_require(result.saw_world_pos && result.saw_stereo_pos,
+            (std::string(label) + ": the production position/ObjectPos path must be reached").c_str());
+    }
+}
+
+void f103_check_struct_name_case(const char* label, size_t name_length)
+{
+#ifdef DX11_AUDIT_ASAN_DECOMPILER
+    DecompilerSettings settings;
+    Decompiler decoder;
+    decoder.G = &settings;
+    decoder.mErrorOccurred = false;
+    decoder.mCBufferNames["cb0"] = 0;
+    const std::string name(name_length, 's');
+    // Put the closing brace on its own short line so the memcpy at :1238
+    // copies only "//   }\n"; the struct-name loop then crosses into the next
+    // line and overflows buffer[256] without R1 masking it.
+    const std::string text =
+        "// cbuffer cb0\n// {\n"
+        "//   struct\n//   {\n"
+        "//     float4 a; // Offset:    0 Size:   16\n"
+        "//   }\n" + name + "; // Offset:    0\n"
+        "// }\n";
+    std::fprintf(stderr, "%s: struct name=%zu bytes, span=%zu bytes, buffer[256]\n",
+        label, name_length, 2 + name_length);
+    std::fflush(stderr);
+    bool threw = false;
+    try {
+        decoder.ParseBufferDefinitions(nullptr, text.c_str(), text.size());
+    } catch (...) {
+        threw = true;
+    }
+    const std::string output = f103_text(decoder);
+    f103_require(!threw && !decoder.mErrorOccurred,
+        (std::string(label) + ": the struct declaration must parse").c_str());
+    f103_require(output.find(name) != std::string::npos,
+        (std::string(label) + ": the complete struct name must be emitted").c_str());
+#else
+    (void)label;
+    (void)name_length;
+    throw std::runtime_error("F-103 struct-name case requires DX11_AUDIT_ASAN_DECOMPILER=ON");
+#endif
+}
+}
+
+void test_dx11_decompiler_f103_red_r1()
+{
+#ifdef DX11_AUDIT_ASAN_DECOMPILER
+    DecompilerSettings settings;
+    Decompiler decoder;
+    decoder.G = &settings;
+    decoder.mErrorOccurred = false;
+    decoder.mCBufferNames["cb0"] = 0;
+    const std::string name(600, 'n');
+    const std::string line = "//   float4 " + name + ";// Offset:    0 Size:   16";
+    const std::string text = "// cbuffer cb0\n// {\n" + line + "\n// }\n";
+    std::fprintf(stderr, "F-103 RED R1 ParseBufferDefinitions (DecompileHLSL.cpp:1238): 600-byte cbuffer line\n");
+    std::fflush(stderr);
+    bool threw = false;
+    try {
+        decoder.ParseBufferDefinitions(nullptr, text.c_str(), text.size());
+    } catch (...) {
+        threw = true;
+    }
+    const std::string output = f103_text(decoder);
+    const bool full = output.find(name) != std::string::npos;
+    f103_require(threw || decoder.mErrorOccurred || full,
+        "F-103 R1: a 600-byte cbuffer line must decompile completely or fail controlled");
+#else
+    throw std::runtime_error("F-103 R1 requires DX11_AUDIT_ASAN_DECOMPILER=ON");
+#endif
+}
+
+void test_dx11_decompiler_f103_red_r2()
+{
+    f103_check_struct_name_case("F-103 RED R2 ParseBufferDefinitions (DecompileHLSL.cpp:1288)", 400);
+}
+
+void test_dx11_decompiler_f103_red_r3()
+{
+#ifdef DX11_AUDIT_ASAN_DECOMPILER
+    DecompilerSettings settings;
+    settings.ZRepair_PositionTexture = "F103PosTex";
+    settings.ZRepair_WorldPosCalc = "%s";
+    Decompiler decoder;
+    decoder.G = &settings;
+    decoder.mErrorOccurred = false;
+    decoder.mPatched = false;
+    decoder.mShaderType = "ps_5_0";
+    decoder.mTextureNames[0] = "F103PosTex";
+    decoder.mCodeStartPos = 0;
+    const std::string dest(600, 'p');
+    const std::string text =
+        "\nvoid main(\n  float4 p : SV_Position)\n{\n  " + dest +
+        " = F103PosTex.Sample(s, uv);\n}\n";
+    decoder.mOutput.assign(text.begin(), text.end());
+    std::fprintf(stderr, "F-103 RED R3 WritePatches position texture (DecompileHLSL.cpp:3382): 600-byte register token\n");
+    std::fflush(stderr);
+    bool threw = false;
+    try {
+        decoder.WritePatches();
+    } catch (...) {
+        threw = true;
+    }
+    const std::string output = f103_text(decoder);
+    const bool full = output.find(dest) != std::string::npos &&
+        output.find("float3 worldPos") != std::string::npos;
+    f103_require(threw || decoder.mErrorOccurred || full,
+        "F-103 R3: a 600-byte position-texture target must decompile completely or fail controlled");
+    f103_require(!((threw || decoder.mErrorOccurred) && output.find("float3 worldPos") != std::string::npos),
+        "F-103 R3: a controlled failure must not publish a partial worldPos patch");
+#else
+    throw std::runtime_error("F-103 R3 requires DX11_AUDIT_ASAN_DECOMPILER=ON");
+#endif
+}
+
+void test_dx11_decompiler_f103_red_r4()
+{
+    f103_check_object_pos_case("F-103 RED R4 control", false, std::string(32, 'a'), false);
+    f103_check_object_pos_case("F-103 RED R4 ObjectPos_ID1 (DecompileHLSL.cpp:3534)",
+        false, std::string(600, 'b'), true);
+}
+
+void test_dx11_decompiler_f103_red_r5()
+{
+    f103_check_object_pos_case("F-103 RED R5 control", true, std::string(32, 'c'), false);
+    f103_check_object_pos_case("F-103 RED R5 ObjectPos_ID2 (DecompileHLSL.cpp:3589)",
+        true, std::string(600, 'd'), true);
+}
+
+void test_dx11_decompiler_f103_red_m1()
+{
+#ifdef DX11_AUDIT_ASAN_DECOMPILER
+    DecompilerSettings settings;
+    Decompiler decoder;
+    decoder.G = &settings;
+    decoder.mErrorOccurred = false;
+    decoder.mCBufferNames["cb0"] = 0;
+    const std::string name(255, 'm');
+    const std::string line = "//   float4 " + name + ";// Offset:    0 Size:   16";
+    const std::string text = "// cbuffer cb0\n// {\n" + line + "\n// }\n";
+    std::fprintf(stderr, "F-103 RED M1 old 1178 = ParseBufferDefinitions:1238: legal 255-byte member name\n");
+    std::fflush(stderr);
+    bool threw = false;
+    try {
+        decoder.ParseBufferDefinitions(nullptr, text.c_str(), text.size());
+    } catch (...) {
+        threw = true;
+    }
+    const std::string output = f103_text(decoder);
+    f103_require(!threw && !decoder.mErrorOccurred,
+        "F-103 M1: a legal 255-byte cbuffer member name must not fail");
+    f103_require(output.find(name) != std::string::npos,
+        "F-103 M1: a legal 255-byte member name must be emitted complete");
+#else
+    throw std::runtime_error("F-103 M1 requires DX11_AUDIT_ASAN_DECOMPILER=ON");
+#endif
+}
+
+void test_dx11_decompiler_f103_red_m2()
+{
+    f103_check_struct_name_case("F-103 RED M2 old 1228 = ParseBufferDefinitions:1288", 256);
+}
+
+void test_dx11_decompiler_f103_red_m3()
+{
+    f103_check_object_pos_case("F-103 RED M3 control", false, std::string(32, 'e'), false);
+    f103_check_object_pos_case("F-103 RED M3 old 3328 = ObjectPos_ID1:3535 (128-byte NUL)",
+        false, std::string(128, 'e'), true);
 }
