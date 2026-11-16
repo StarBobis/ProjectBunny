@@ -183,6 +183,8 @@ HackerSwapChain::HackerSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pDev
 	}
 }
 
+HackerSwapChain::~HackerSwapChain() = default;
+
 IDXGISwapChain1* HackerSwapChain::GetOrigSwapChain1()
 {
 	LogDebug("HackerSwapChain::GetOrigSwapChain returns %p\n", mOrigSwapChain1);

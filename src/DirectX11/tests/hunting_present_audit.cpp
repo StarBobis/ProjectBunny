@@ -864,3 +864,72 @@ void test_dx11_f113_ra_regression()
 {
     exercise_f113_swap_chain(F113_CREATE_FAILURE);
 }
+
+namespace {
+// F-006: HackerSwapChain::Release() does `delete this` through the base type.
+// The base must have a virtual destructor so the upscaling wrapper's destructor
+// runs; otherwise the fake back buffer reference survives the final Release.
+// Measured on a real WARP device and a real hidden swap chain: the fake
+// texture's reference count must drop by exactly one across that Release.
+void exercise_swap_chain_destructor_protocol()
+{
+    using namespace dx11_slot_test;
+    F113ConfigScope config;
+    BatchDevice device;
+    HuntingWindow window;
+    ComPtr<IDXGIFactory2> factory = f113_factory(device);
+
+    G->SCREEN_UPSCALING = 1;
+    G->UPSCALE_MODE = 0;
+    G->SCREEN_WIDTH = G->SCREEN_HEIGHT = -1;
+
+    DXGI_SWAP_CHAIN_DESC desc = f113_swap_chain_desc(window.handle, 64, 64);
+    ComPtr<IDXGISwapChain> real = f113_real_chain(device, factory.Get(), window.handle, 64, 64);
+    IDXGISwapChain* wrapped = real.Detach();
+    wrap_swap_chain(device.device, &wrapped, &desc, &desc);
+    require_batch(wrapped != nullptr && G->SCREEN_UPSCALING == 1,
+        "F-006: real fake-texture upscaling wrapper created");
+
+    // Call through the IDXGISwapChain1 prefix: a shifted or overwritten COM
+    // vtable slot would dispatch to the wrong method here.
+    IDXGISwapChain1* iface = static_cast<IDXGISwapChain1*>(wrapped);
+    DXGI_SWAP_CHAIN_DESC1 actual1{};
+    require_batch(SUCCEEDED(iface->GetDesc1(&actual1)) &&
+        actual1.Width == 64 && actual1.Height == 64,
+        "F-006: IDXGISwapChain1 prefix layout unchanged");
+
+    ComPtr<ID3D11Texture2D> fake;
+    require_batch(SUCCEEDED(wrapped->GetBuffer(0, IID_PPV_ARGS(&fake))) && fake,
+        "F-006: fake back buffer exists");
+
+    const ULONG before = fake->AddRef();
+    fake->Release();
+    require_batch(wrapped->Release() == 0, "F-006: final Release reaches zero");
+    const ULONG after = fake->AddRef();
+    fake->Release();
+    std::fprintf(stderr, "F-006 fake back buffer refcounts: before=%lu after=%lu delta=%ld\n",
+        before, after, static_cast<long>(after) - static_cast<long>(before));
+    std::fflush(stderr);
+    require_batch(after + 1 == before,
+        "F-006: derived destructor must release the fake back buffer");
+    require_batch(device.device->GetHackerSwapChain() == nullptr,
+        "F-006: base Release cleanup preserved");
+
+    // A plain HackerSwapChain must stay a plain object even while the
+    // hot-reloadable config says upscaling: branching delete on
+    // G->SCREEN_UPSCALING would treat it as the derived type.
+    G->SCREEN_UPSCALING = 1;
+    ComPtr<IDXGISwapChain> plainReal = f113_real_chain(device, factory.Get(), window.handle, 64, 64);
+    ComPtr<IDXGISwapChain1> plainOne;
+    require_batch(SUCCEEDED(plainReal.As(&plainOne)), "F-006: plain chain offers IDXGISwapChain1");
+    plainReal.Reset();
+    HackerSwapChain* plain = new HackerSwapChain(plainOne.Detach(), device.device, device.wrapper.get());
+    require_batch(plain->Release() == 0,
+        "F-006: plain wrapper released while config says upscaling");
+}
+}
+
+void test_dx11_swapchain_destructor_protocol_regression()
+{
+    exercise_swap_chain_destructor_protocol();
+}

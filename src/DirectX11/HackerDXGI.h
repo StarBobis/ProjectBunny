@@ -30,6 +30,7 @@ protected:
 
 public:
 	HackerSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pDevice, HackerContext *pContext);
+	virtual ~HackerSwapChain();
 	
 	IDXGISwapChain1* GetOrigSwapChain1();
 	void RunFrameActions();
@@ -203,7 +204,7 @@ public:
 	HackerUpscalingSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pHackerDevice, HackerContext *pHackerContext,
 		IDXGISwapChain1 *pFakeSwapChain1, ID3D11Texture2D *pFakeBackBuffer,
 		UINT newWidth, UINT newHeight);
-	~HackerUpscalingSwapChain();
+	~HackerUpscalingSwapChain() override;
 
 	// Creates the fake backing resource before the upscaling wrapper exists.
 	// On success exactly one of *ppFakeSwapChain1 / *ppFakeBackBuffer is
