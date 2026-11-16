@@ -254,6 +254,21 @@ HackerDevice::HackerDevice(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pConte
 	mUnknown = register_hacker_device(this);
 }
 
+// F-112 (A): HackerDevice owns one reference to the captured z buffer SRV.
+// Release it before the object goes away; clear the pointer afterwards so a
+// later reader cannot observe a released value.
+long HackerDevice::ReleaseZBufferResourceView()
+{
+	if (!mZBufferResourceView)
+		return -1;
+
+	ID3D11ShaderResourceView *view = mZBufferResourceView;
+	long result = view->Release();
+	mZBufferResourceView = nullptr;
+	LogInfo("  releasing z buffer resource view, result = %d\n", result);
+	return result;
+}
+
 HRESULT HackerDevice::CreateIniParamResources()
 {
 	// No longer making this conditional. We are pretty well dependent on
@@ -1476,6 +1491,11 @@ STDMETHODIMP_(ULONG) HackerDevice::Release(THIS)
 
 		unregister_hacker_device(this);
 
+		// F-112 (A): drop the retained z buffer SRV reference before the
+		// object is destroyed. ReleaseZBufferResourceView() releases first and
+		// clears mZBufferResourceView afterwards.
+		ReleaseZBufferResourceView();
+
 		if (mIniResourceView)
 		{
 			long result = mIniResourceView->Release();
@@ -2372,18 +2392,31 @@ STDMETHODIMP HackerDevice::CreateShaderResourceView(THIS_
 
 	HRESULT hr = mOrigDevice1->CreateShaderResourceView(pResource, pDesc, ppSRView);
 
-	// Check for depth buffer view.
-	if (hr == S_OK && G->ZBufferHashToInject && ppSRView)
+	// Check for depth buffer view. The hash lookup runs under mResourcesLock;
+	// AddRef/Release on the view are COM calls and happen outside that lock
+	// (same rule as the tracker installation in CreateTexture2D).
+	if (hr == S_OK && G->ZBufferHashToInject && ppSRView && *ppSRView)
 	{
+		bool match = false;
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 		unordered_map<ID3D11Resource *, ResourceHandleInfo>::iterator i = lookup_resource_handle_info(pResource);
-		if (i != G->mResources.end() && i->second.hash == G->ZBufferHashToInject)
-		{
-			LogInfo("  resource view of z buffer found: handle = %p, hash = %08lx\n", *ppSRView, i->second.hash);
-
-			mZBufferResourceView = *ppSRView;
-		}
+		match = i != G->mResources.end() && i->second.hash == G->ZBufferHashToInject;
 		LeaveCriticalSection(&G->mResourcesLock);
+
+		if (match)
+		{
+			LogInfo("  resource view of z buffer found: handle = %p, hash = %08lx\n",
+				*ppSRView, G->ZBufferHashToInject);
+
+			// F-112 (A): keep one reference of our own. AddRef the new view
+			// before replacing, then release the previous value exactly once.
+			ID3D11ShaderResourceView *view = *ppSRView;
+			view->AddRef();
+			ID3D11ShaderResourceView *previous = mZBufferResourceView;
+			mZBufferResourceView = view;
+			if (previous)
+				previous->Release();
+		}
 	}
 
 	LogDebug("  returns result = %x\n", hr);

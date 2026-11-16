@@ -3163,7 +3163,9 @@ STDMETHODIMP_(void) HackerContext::PSSetShader(THIS_
 		 &mCurrentPixelShaderHandle);
 
 	if (pPixelShader) {
-		// Set custom depth texture.
+		// Set custom depth texture. HackerDevice retains a reference, so the
+		// captured value stays valid until it is replaced or the device is
+		// released (F-112 A).
 		if (mHackerDevice->mZBufferResourceView)
 		{
 			LogDebug("  adding Z buffer to shader resources in slot 126.\n");

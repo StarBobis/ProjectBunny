@@ -907,6 +907,7 @@ void test_dx11_cache_resource_data_regression();
 void test_dx11_store_cache_regression();
 void test_dx11_check_to_range_regression();
 void test_dx11_view_reference_regression();
+void test_dx11_zbuffer_view_ownership_regression();
 void test_dx11_conditional_batch_regression();
 void test_dx11_conditional_batch_followup_regression();
 void test_dx11_region_reference_followup_regression();
@@ -1018,6 +1019,7 @@ int main(int argc, char** argv)
         test_dx11_store_cache_regression();
         test_dx11_check_to_range_regression();
         test_dx11_view_reference_regression();
+        test_dx11_zbuffer_view_ownership_regression();
         test_dx11_conditional_batch_regression();
         test_dx11_conditional_batch_followup_regression();
         test_dx11_region_reference_followup_regression();

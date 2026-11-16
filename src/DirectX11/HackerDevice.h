@@ -115,6 +115,10 @@ private:
 
 public:
 	bool GetShaderBindings(UINT64 hash, ShaderBindings* out) const;
+	// Drops the retained z buffer SRV reference (if any) and then clears
+	// mZBufferResourceView. Called from HackerDevice::Release(). Returns the
+	// value from the view's Release so the lifecycle audit can print it.
+	long ReleaseZBufferResourceView();
 
 	ID3D11ShaderResourceView *mZBufferResourceView;
 	ID3D11Texture1D *mIniTexture;

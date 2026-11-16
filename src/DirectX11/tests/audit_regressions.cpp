@@ -48,6 +48,7 @@ void test_dx11_ini_enumeration_regression();
 void test_dx11_ini_invalid_utf8_regression();
 void test_dx11_stencil_diagnostic_regression();
 void test_dx11_view_reference_null_diagnostic_regression();
+void test_dx11_zbuffer_view_ownership_regression();
 void test_dx11_hunting_shader_selection_regression();
 void test_dx11_ini_lookup_performance();
 void test_dx11_file_publication_regression();
@@ -1165,6 +1166,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-108", test_dx11_resource_filename_regression},
     {"F-110", test_dx11_pool_access_regression},
     {"F-111", test_dx11_decompile_file_diagnostic_regression},
+    {"F-112", test_dx11_zbuffer_view_ownership_regression},
     {"F-137", test_f137},
     {"F-138", test_f138},
     {"F-143", test_f143},
