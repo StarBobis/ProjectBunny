@@ -2324,16 +2324,23 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 	}
 
 	if (v2.size() > 0) {
+		// Malformed literals can make the find()/substr() offsets below
+		// invalid; fall back to the original assembly instead of throwing.
+		try {
 		if (v2.size() == v.size()) {
 			for (DWORD i = 0; i < v.size(); i++) {
 				if (v[i] == 0x1835) {
 					int size = v[++i];
 					int loopSize = (size - 2) / 4;
 					lastLiteral = sNew.find("{ { ");
+					if (loopSize > 0 && lastLiteral == string::npos)
+						return s;
 					for (int j = 0; j < loopSize; j++) {
 						i++;
 						lastLiteral = sNew.find("{ ", lastLiteral + 1);
 						lastEnd = sNew.find(",", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2346,6 +2353,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 						i++;
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 						lastEnd = sNew.find(",", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2360,6 +2369,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 						i++;
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 						lastEnd = sNew.find(",", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2374,6 +2385,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 						i++;
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 						lastEnd = sNew.find("}", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2391,6 +2404,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find("l(", lastLiteral + 1);
 					lastEnd = sNew.find(")", lastLiteral);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 2); // +2 matches length of "l("
@@ -2403,6 +2418,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find("l(", lastLiteral);
 					lastEnd = sNew.find(",", lastLiteral);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 2); // +2 matches length of "l("
@@ -2414,6 +2431,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(",", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1); // BUG FIXED: Was using +2, but "," is only length 1 -DSS
@@ -2427,6 +2446,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(",", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1); // BUG FIXED: Was using +2, but "," is only length 1 -DSS
@@ -2440,6 +2461,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(")", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1); // BUG FIXED: Was using +2, but "," is only length 1 -DSS
@@ -2454,9 +2477,13 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i += 2;
 					lastLiteral = sNew.find("d(", lastLiteral);
 					lastEnd = sNew.find(",", lastLiteral);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					// If it's a hex literal it is split over four components instead of two:
 					if (!sNew.compare(lastLiteral + 2, 2, "0x"))
 						lastEnd = sNew.find(",", lastLiteral + 1);
+					if (lastEnd == string::npos)
+						return s;
 					if (v[i-1] != v2[i-1] || v[i] != v2[i]) {
 						string sLiteral = convertD(v[i-1], v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 2);
@@ -2467,10 +2494,14 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					}
 					i += 2;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
+					if (lastLiteral == string::npos)
+						return s;
 					// If it's a hex literal it is split over four components instead of two:
 					if (!sNew.compare(lastLiteral + 2, 2, "0x"))
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(")", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i-1] != v2[i-1] || v[i] != v2[i]) {
 						string sLiteral = convertD(v[i-1], v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1);
@@ -2517,6 +2548,9 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 				s2.append(" fail");
 				codeBin[s2] = v2;
 			}
+		}
+		} catch (const std::out_of_range&) {
+			return s;
 		}
 	} else {
 		if (s != "undecipherable custom data") {
