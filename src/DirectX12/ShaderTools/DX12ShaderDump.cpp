@@ -6,6 +6,7 @@
 #include "DX12Runtime.h"
 #include "DX12Resources.h"
 #include "DX12Presentation.h"
+#include "DX12ShaderModelParse.h"
 
 #include <Windows.h>
 #include <Shlwapi.h>
@@ -69,34 +70,20 @@ static HMODULE gDXCompiler = nullptr;
 static DxcCreateInstanceProc gDxcCreateInstance = nullptr;
 static IDxcCompiler3 *gDxcCompiler = nullptr;
 
-static constexpr uint32_t MakeFourCC(char a, char b, char c, char d)
-{
-	return static_cast<uint32_t>(static_cast<uint8_t>(a)) |
-		(static_cast<uint32_t>(static_cast<uint8_t>(b)) << 8) |
-		(static_cast<uint32_t>(static_cast<uint8_t>(c)) << 16) |
-		(static_cast<uint32_t>(static_cast<uint8_t>(d)) << 24);
-}
-
-static bool ReadU32LE(const uint8_t *data, size_t size, size_t offset, uint32_t *value)
-{
-	if (!value || offset + sizeof(uint32_t) > size)
-		return false;
-	memcpy(value, data + offset, sizeof(uint32_t));
-	return true;
-}
-
+// Shader-model container parsing lives in DX12ShaderModelParse.h: pure C++,
+// no D3D12 dependency, so the F-201b audit binary exercises the same rules.
 static bool ShaderHasChunk(const std::vector<uint8_t> &bytecode, uint32_t fourCC)
 {
 	if (bytecode.size() < 32 || memcmp(bytecode.data(), "DXBC", 4))
 		return false;
 
 	uint32_t chunkCount = 0;
-	if (!ReadU32LE(bytecode.data(), bytecode.size(), 28, &chunkCount))
+	if (!dx12_shader_parse::ReadU32LE(bytecode.data(), bytecode.size(), 28, &chunkCount))
 		return false;
 
 	for (uint32_t i = 0; i < chunkCount; ++i) {
 		uint32_t chunkOffset = 0;
-		if (!ReadU32LE(bytecode.data(), bytecode.size(), 32 + sizeof(uint32_t) * i, &chunkOffset))
+		if (!dx12_shader_parse::ReadU32LE(bytecode.data(), bytecode.size(), 32 + sizeof(uint32_t) * i, &chunkOffset))
 			return false;
 		if (chunkOffset + sizeof(uint32_t) > bytecode.size())
 			continue;
@@ -109,121 +96,17 @@ static bool ShaderHasChunk(const std::vector<uint8_t> &bytecode, uint32_t fourCC
 	return false;
 }
 
-static const char *ShaderKindPrefix(uint32_t kind)
-{
-	switch (kind) {
-	case 0:
-		return "ps";
-	case 1:
-		return "vs";
-	case 2:
-		return "gs";
-	case 3:
-		return "hs";
-	case 4:
-		return "ds";
-	case 5:
-		return "cs";
-	default:
-		return nullptr;
-	}
-}
-
-static bool FormatShaderModel(uint32_t kind, uint32_t major, uint32_t minor, std::string *model)
-{
-	if (!model)
-		return false;
-	const char *prefix = ShaderKindPrefix(kind);
-	if (!prefix)
-		return false;
-	char text[16] = {};
-	sprintf_s(text, "%s_%u_%u", prefix, major, minor);
-	*model = text;
-	return true;
-}
-
-static bool GetDxbcShaderModel(const void *data, size_t size, std::string *model)
-{
-	if (!data || size < 32 || !model)
-		return false;
-
-	const uint8_t *bytes = static_cast<const uint8_t*>(data);
-	if (memcmp(bytes, "DXBC", 4))
-		return false;
-
-	uint32_t chunkCount = 0;
-	if (!ReadU32LE(bytes, size, 28, &chunkCount))
-		return false;
-
-	for (uint32_t i = 0; i < chunkCount; ++i) {
-		uint32_t chunkOffset = 0;
-		if (!ReadU32LE(bytes, size, 32 + sizeof(uint32_t) * i, &chunkOffset))
-			return false;
-		if (chunkOffset + 12 > size)
-			continue;
-		uint32_t chunkFourCC = 0;
-		memcpy(&chunkFourCC, bytes + chunkOffset, sizeof(chunkFourCC));
-		if (chunkFourCC != MakeFourCC('S', 'H', 'D', 'R') &&
-		    chunkFourCC != MakeFourCC('S', 'H', 'E', 'X'))
-			continue;
-		uint32_t versionToken = 0;
-		if (!ReadU32LE(bytes, size, chunkOffset + 8, &versionToken))
-			continue;
-		const uint32_t kind = (versionToken >> 16) & 0xffff;
-		const uint32_t major = (versionToken >> 4) & 0xf;
-		const uint32_t minor = versionToken & 0xf;
-		return FormatShaderModel(kind, major, minor, model);
-	}
-	return false;
-}
-
-static bool GetDxilShaderModel(const void *data, size_t size, std::string *model)
-{
-	if (!data || size < 32 || !model)
-		return false;
-
-	const uint8_t *bytes = static_cast<const uint8_t*>(data);
-	if (memcmp(bytes, "DXBC", 4))
-		return false;
-
-	uint32_t chunkCount = 0;
-	if (!ReadU32LE(bytes, size, 28, &chunkCount))
-		return false;
-
-	for (uint32_t i = 0; i < chunkCount; ++i) {
-		uint32_t chunkOffset = 0;
-		if (!ReadU32LE(bytes, size, 32 + sizeof(uint32_t) * i, &chunkOffset))
-			return false;
-		if (chunkOffset + 16 > size)
-			continue;
-		uint32_t chunkFourCC = 0;
-		memcpy(&chunkFourCC, bytes + chunkOffset, sizeof(chunkFourCC));
-		if (chunkFourCC != MakeFourCC('D', 'X', 'I', 'L'))
-			continue;
-		uint32_t programVersion = 0;
-		if (!ReadU32LE(bytes, size, chunkOffset + 8, &programVersion))
-			continue;
-		const uint32_t kind = (programVersion >> 16) & 0xffff;
-		const uint32_t major = (programVersion >> 4) & 0xf;
-		const uint32_t minor = programVersion & 0xf;
-		return FormatShaderModel(kind, major, minor, model);
-	}
-	return false;
-}
-
 static bool GetShaderModel(const D3D12_SHADER_BYTECODE &bytecode, std::string *model)
 {
 	if (!bytecode.pShaderBytecode || bytecode.BytecodeLength == 0 || !model)
 		return false;
-	return GetDxilShaderModel(
-		bytecode.pShaderBytecode, bytecode.BytecodeLength, model) ||
-		GetDxbcShaderModel(
-			bytecode.pShaderBytecode, bytecode.BytecodeLength, model);
+	return dx12_shader_parse::GetShaderModelFromBytes(
+		bytecode.pShaderBytecode, bytecode.BytecodeLength, model);
 }
 
 static bool ShaderIsDXIL(const ShaderRecord &record)
 {
-	return ShaderHasChunk(record.bytecode, MakeFourCC('D', 'X', 'I', 'L'));
+	return ShaderHasChunk(record.bytecode, dx12_shader_parse::MakeFourCC('D', 'X', 'I', 'L'));
 }
 
 static uint64_t Fnv1a64(const void *data, size_t size)

@@ -132,6 +132,7 @@ add_library(DirectX12 SHARED
 
     # Shader dump & hunt
     ShaderTools/DX12ShaderDump.cpp
+    ShaderTools/DX12ShaderModelParse.h
     ShaderTools/DX12ShaderHunt.cpp
     ShaderTools/DX12NativeOverlay.cpp
 
@@ -227,4 +228,22 @@ if(MSVC)
         $<$<CONFIG:Release>:/Gw>
         $<$<CONFIG:Release>:/Zc:inline>
     )
+endif()
+
+# F-201b: the shader-model container parser is pure C++ (no D3D12 device), so
+# its audit binary builds and runs without the proxy.  Opt-in until DX12 grows
+# a full audit harness; see the usage line in tests/shader_model_bounds_audit.cpp.
+option(DX12_AUDIT_TESTS "Build the DX12 audit test executables" OFF)
+
+if(BUILD_TESTING AND DX12_AUDIT_TESTS)
+    add_executable(dx12_shader_model_audit tests/shader_model_bounds_audit.cpp)
+    target_include_directories(dx12_shader_model_audit PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/ShaderTools
+    )
+    target_compile_features(dx12_shader_model_audit PRIVATE cxx_std_20)
+    set_target_msvc_options(dx12_shader_model_audit)
+    set_target_common_definitions(dx12_shader_model_audit)
+    add_test(NAME dx12_shader_model_audit
+        COMMAND dx12_shader_model_audit --audit-item F-201b)
+    set_tests_properties(dx12_shader_model_audit PROPERTIES TIMEOUT 60)
 endif()
