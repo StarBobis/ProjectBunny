@@ -5,9 +5,11 @@
 
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 
 using Microsoft::WRL::ComPtr;
@@ -139,6 +141,112 @@ static void test_cached_shader_checks(CallCounterDevice& fixture)
     G->CACHE_SHADERS = previous_shader_cache;
 }
 
+static void test_draw_indexed_literal_args(CallCounterDevice& fixture)
+{
+    const char vs_source[] = "struct V{float4 p:SV_Position;float v:VALUE;};"
+        "V main(float value:VALUE){V o;o.p=float4(0,0,0,1);o.v=value;return o;}";
+    const char gs_source[] = "struct V{float4 p:SV_Position;float v:VALUE;};"
+        "[maxvertexcount(1)]void main(point V input[1],inout PointStream<V> output){output.Append(input[0]);}";
+    ComPtr<ID3DBlob> vs_code, gs_code;
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11GeometryShader> gs;
+    ComPtr<ID3D11InputLayout> layout;
+    const D3D11_INPUT_ELEMENT_DESC element{"VALUE", 0, DXGI_FORMAT_R32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0};
+    const D3D11_SO_DECLARATION_ENTRY declaration{0, "VALUE", 0, 0, 1, 0};
+    const UINT stride = sizeof(float), zero = 0;
+    require_call_counter(SUCCEEDED(D3DCompile(vs_source, sizeof(vs_source), nullptr, nullptr, nullptr,
+        "main", "vs_5_0", 0, 0, &vs_code, nullptr)) && SUCCEEDED(fixture.device->CreateVertexShader(
+        vs_code->GetBufferPointer(), vs_code->GetBufferSize(), nullptr, &vs)) && SUCCEEDED(fixture.device->CreateInputLayout(
+        &element, 1, vs_code->GetBufferPointer(), vs_code->GetBufferSize(), &layout)), "indexed literals: real VS and input layout");
+    require_call_counter(SUCCEEDED(D3DCompile(gs_source, sizeof(gs_source), nullptr, nullptr, nullptr,
+        "main", "gs_5_0", 0, 0, &gs_code, nullptr)) && SUCCEEDED(fixture.device->CreateGeometryShaderWithStreamOutput(
+        gs_code->GetBufferPointer(), gs_code->GetBufferSize(), &declaration, 1, &stride, 1, D3D11_SO_NO_RASTERIZED_STREAM,
+        nullptr, &gs)), "indexed literals: real stream output shader");
+
+    const float vertices[] = {10, 20, 30, 40, 50, 60, 70, 80};
+    const uint16_t indices[] = {7, 4, 2, 6, 3, 5, 7};
+    std::array<float, 12> initial;
+    initial.fill(-1.0f);
+    const auto make_buffer = [&](UINT bytes, UINT flags, const void* data) {
+        D3D11_BUFFER_DESC desc{};
+        desc.ByteWidth = bytes;
+        desc.BindFlags = flags;
+        D3D11_SUBRESOURCE_DATA source{};
+        source.pSysMem = data;
+        ComPtr<ID3D11Buffer> buffer;
+        require_call_counter(SUCCEEDED(fixture.device->CreateBuffer(&desc, &source, &buffer)), "indexed literals: native buffer");
+        return buffer;
+    };
+    auto vb = make_buffer(sizeof(vertices), D3D11_BIND_VERTEX_BUFFER, vertices);
+    auto ib = make_buffer(sizeof(indices), D3D11_BIND_INDEX_BUFFER, indices);
+    auto so = make_buffer(sizeof(initial), D3D11_BIND_STREAM_OUTPUT, initial.data());
+    auto* context = fixture.native;
+    context->ClearState();
+    context->IASetInputLayout(layout.Get());
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+    context->IASetVertexBuffers(0, 1, vb.GetAddressOf(), &stride, &zero);
+    context->IASetIndexBuffer(ib.Get(), DXGI_FORMAT_R16_UINT, 0);
+    context->VSSetShader(vs.Get(), nullptr, 0);
+    context->GSSetShader(gs.Get(), nullptr, 0);
+    context->SOSetTargets(1, so.GetAddressOf(), &zero);
+
+    CommandListScope scope;
+    scope.emplace_front();
+    CommandListVariable start(L"$draw_index_start", 1, VariableFlags::NONE);
+    scope.front().emplace(start.name, &start);
+    const std::wstring ini_namespace;
+    const auto parse_draw = [&](std::wstring args) {
+        CommandList list;
+        list.scope = &scope;
+        require_call_counter(ParseCommandListGeneralCommands(L"CommandListIndexedLiterals", L"drawindexed", &args,
+            &list, &list, nullptr, &ini_namespace) && list.commands.size() == 1, "indexed literals: real INI parser");
+        auto command = std::dynamic_pointer_cast<DrawCommand>(list.commands.front());
+        require_call_counter(command != nullptr, "indexed literals: parsed actual DrawCommand");
+        return command;
+    };
+    auto negative = parse_draw(L"3, 2, -2");
+    auto positive = parse_draw(L"2, +3, 1");
+    auto dynamic = parse_draw(L"1, $draw_index_start, -1");
+    require_call_counter(negative->optimise(fixture.wrapper) && positive->optimise(fixture.wrapper) &&
+        !dynamic->optimise(fixture.wrapper) && !parse_draw(L"auto")->optimise(fixture.wrapper) &&
+        !parse_draw(L"3, 2, 2147483648")->optimise(fixture.wrapper),
+        "indexed literals: fold signed literals only within the native integer range");
+
+    ShaderResourceBatchStats stats;
+    CommandListState state;
+    state.mHackerContext = fixture.context.get();
+    state.mHackerDevice = fixture.wrapper;
+    state.mOrigContext1 = context;
+    state.mOrigDevice1 = fixture.device;
+    state.slot_batch_stats = &stats;
+    const unsigned before = Profiling::injected_draw_calls;
+    negative->run(&state);
+    dynamic->run(&state);
+    positive->run(&state);
+    start.fval = 4;
+    dynamic->run(&state);
+    negative->run(&state);
+    require_call_counter(stats.literal_indexed_draws == 3 && Profiling::injected_draw_calls == before + 5,
+        "indexed literals: submissions are preserved and only the literal executions hit the fast path");
+    Profiling::injected_draw_calls = before;
+
+    context->SOSetTargets(0, nullptr, nullptr);
+    D3D11_BUFFER_DESC staging_desc{};
+    staging_desc.ByteWidth = sizeof(initial);
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Buffer> staging;
+    require_call_counter(SUCCEEDED(fixture.device->CreateBuffer(&staging_desc, nullptr, &staging)), "indexed literals: staging buffer");
+    context->CopyResource(staging.Get(), so.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    require_call_counter(SUCCEEDED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)), "indexed literals: actual GPU output map");
+    std::array<float, 12> result;
+    std::memcpy(result.data(), mapped.pData, sizeof(result));
+    context->Unmap(staging.Get(), 0);
+    require_call_counter(result == std::array<float, 12>{10, 50, 20, 40, 80, 50, 30, 10, 50, 20, -1, -1},
+        "indexed literals: real draw order, count, first index, signed base vertex and dynamic values are preserved");
+}
+
 void test_dx11_draw_dispatch_regression()
 {
     std::fputs("Testing real WARP draw and dispatch counters\n", stderr);
@@ -223,6 +331,7 @@ void test_dx11_draw_dispatch_regression()
         require_call_counter(!invalid_draw.parse(&draw_text, &ini_namespace, nullptr) &&
             !invalid_dispatch.parse(&dispatch_text, &ini_namespace, nullptr), "configuration without command scope rejects counters");
         test_cached_shader_checks(fixture);
+        test_draw_indexed_literal_args(fixture);
         deferred->ClearState();
         fixture.native->ClearState();
         fixture.native->Flush();

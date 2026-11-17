@@ -2141,20 +2141,44 @@ void DrawCommand::eval_args(int nargs, INT result[5], CommandListState *state)
 
 bool DrawCommand::optimise(HackerDevice*)
 {
-	has_literal_dispatch_args = false;
-	if (type != DrawCommandType::DISPATCH)
+	has_literal_args = false;
+	if (type != DrawCommandType::DISPATCH && type != DrawCommandType::DRAW_INDEXED)
 		return false;
-	for (size_t i = 0; i < literal_dispatch_args.size(); ++i) {
+	for (size_t i = 0; i < literal_args.size(); ++i) {
 		const auto* operand = dynamic_cast<CommandListOperand*>(args[i].evaluatable.get());
+		bool negate = false;
+		if (!operand && type == DrawCommandType::DRAW_INDEXED) {
+			// The parser represents a leading sign as a unary operator.
+			const auto* sign = dynamic_cast<CommandListOperator*>(args[i].evaluatable.get());
+			if (sign && !sign->lhs && (sign->token == L"-" || sign->token == L"+")) {
+				operand = dynamic_cast<CommandListOperand*>(sign->rhs.get());
+				negate = sign->token == L"-";
+			}
+		}
 		if (!operand || operand->type != ParamOverrideType::VALUE)
 			return false;
-		const double value = operand->val;
+		const double value = negate ? -operand->val : operand->val;
 		if (!std::isfinite(value) || value < INT_MIN || value > INT_MAX)
 			return false;
-		literal_dispatch_args[i] = static_cast<INT>(value);
+		literal_args[i] = static_cast<INT>(value);
 	}
-	has_literal_dispatch_args = true;
+	has_literal_args = true;
 	return true;
+}
+
+void DrawCommand::eval_three_args(INT result[5], CommandListState* state)
+{
+	if (!has_literal_args) {
+		eval_args(3, result, state);
+		return;
+	}
+	std::copy(literal_args.begin(), literal_args.end(), result);
+	if (auto* stats = state->slot_batch_stats) {
+		if (type == DrawCommandType::DISPATCH)
+			++stats->literal_dispatches;
+		else
+			++stats->literal_indexed_draws;
+	}
 }
 
 void DrawCommand::run(CommandListState *state)
@@ -2201,7 +2225,7 @@ void DrawCommand::run(CommandListState *state)
 			}
 			break;
 		case DrawCommandType::DRAW_INDEXED:
-			eval_args(3, eargs, state);
+			eval_three_args(eargs, state);
 			COMMAND_LIST_LOG(state, "[%S] DrawIndexed(%u, %u, %i)\n", ini_section.c_str(), eargs[0], eargs[1], (INT)eargs[2]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
@@ -2225,13 +2249,7 @@ void DrawCommand::run(CommandListState *state)
 			}
 			break;
 		case DrawCommandType::DISPATCH:
-			if (has_literal_dispatch_args) {
-				std::copy(literal_dispatch_args.begin(), literal_dispatch_args.end(), eargs);
-				if (state->slot_batch_stats)
-					++state->slot_batch_stats->literal_dispatches;
-			} else {
-				eval_args(3, eargs, state);
-			}
+			eval_three_args(eargs, state);
 			COMMAND_LIST_LOG(state, "[%S] Dispatch(%u, %u, %u)\n", ini_section.c_str(), eargs[0], eargs[1], eargs[2]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, true);

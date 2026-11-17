@@ -60,6 +60,7 @@ struct ShaderResourceBatchStats {
 	unsigned om_saves = 0, om_restores = 0;
 	unsigned om_uav_probes = 0;
 	unsigned compute_ref_hits = 0, literal_dispatches = 0;
+	unsigned literal_indexed_draws = 0;
 	unsigned graphics_ref_hits = 0;
 	unsigned alias_metadata_hits = 0;
 };
@@ -1862,8 +1863,9 @@ enum class DrawCommandType {
 };
 
 class DrawCommand : public CommandListCommand {
-	std::array<INT, 3> literal_dispatch_args{};
-	bool has_literal_dispatch_args = false;
+	std::array<INT, 3> literal_args{};
+	bool has_literal_args = false;
+	void eval_three_args(INT result[5], CommandListState* state);
 public:
 	wstring ini_section;
 	DrawCommandType type;
