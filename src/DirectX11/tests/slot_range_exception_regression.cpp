@@ -87,11 +87,14 @@ void verify_exception_prefix(ExceptionDevice& device, bool copy)
         Registry registry;
         const std::wstring pool_name = copy ? L"poolrange_exception_copy" : L"poolrange_exception_ref";
         auto& pool = registry.pool(pool_name, device, PoolIndexType::STATIC, 4);
+        // Interrupt the ref batch before its first hole and the copy batch after it.
+        const UINT gap = copy ? 1 : 2;
+        const UINT second_source = copy ? 2 : 1;
         // No source view is supplied. Both copy and ref take the ordinary
         // CopyResourceToResource path inside the real indentation scope.
         assign(device, pool.GetResource(0, false, true, true), a.Get());
-        assign(device, pool.GetResource(1, false, true, true), nullptr);
-        assign(device, pool.GetResource(2, false, true, true), b.Get());
+        assign(device, pool.GetResource(gap, false, true, true), nullptr);
+        assign(device, pool.GetResource(second_source, false, true, true), b.Get());
         assign(device, pool.GetResource(3, false, true, true), c.Get());
         for (UINT slot = 3; slot <= 6; ++slot) set_slot(device, L'p', slot, previous_view.Get());
         CommandList commands;
@@ -114,7 +117,7 @@ void verify_exception_prefix(ExceptionDevice& device, bool copy)
             "range exception: real virtual log throws inside later nonempty element");
         require_batch(device.state.extra_indent == 5,
             "range exception: scoped indentation is restored during unwinding");
-        require_batch(interrupted.get_calls == 1 && interrupted.set_calls == 1,
+        require_batch(interrupted.get_calls == 1 && interrupted.srv_slots_read == (copy ? 4 : 3) && interrupted.set_calls == 1,
             "range exception: previously completed prefix is really published once before rethrow");
         auto first = bound_resource(device, L'p', 3);
         require_batch(first && first.Get() != previous.Get() && (copy ? first.Get() != a.Get() : first.Get() == a.Get()),
@@ -125,11 +128,12 @@ void verify_exception_prefix(ExceptionDevice& device, bool copy)
             require_batch(get_slot(device, L'p', slot).Get() == previous_view.Get(),
                 "range exception: skipped hole, throwing element and untouched tail retain prior native views");
         const auto recovered = execute(commands, device);
-        require_batch(recovered.get_calls == 1 && recovered.set_calls == 1 && device.state.extra_indent == 5,
+        require_batch(recovered.get_calls == 1 && recovered.srv_slots_read == (copy ? 4 : 2) &&
+            recovered.set_calls == 1 && device.state.extra_indent == 5,
             "range exception: identical command recovers with one native packet and balanced indent");
-        require_batch(get_slot(device, L'p', 4).Get() == previous_view.Get(),
+        require_batch(get_slot(device, L'p', 3 + gap).Get() == previous_view.Get(),
             "range exception: recovery still preserves the unless_null hole");
-        const UINT slots[] = {3, 5, 6};
+        const UINT slots[] = {3, 3 + second_source, 6};
         ID3D11Resource* expected[] = {a.Get(), b.Get(), c.Get()};
         for (unsigned i = 0; i < 3; ++i) {
             auto actual = bound_resource(device, L'p', slots[i]);

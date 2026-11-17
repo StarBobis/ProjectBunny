@@ -13326,7 +13326,10 @@ static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT
     case L'c': state->mOrigContext1->CSGetShaderResources(first, count, views); break;
     default: return;
     }
-    if (state->slot_batch_stats) ++state->slot_batch_stats->get_calls;
+    if (auto* stats = state->slot_batch_stats) {
+        ++stats->get_calls;
+        stats->srv_slots_read += count;
+    }
 }
 
 static void SetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
@@ -13884,6 +13887,15 @@ struct SlotRangeBindings {
             buffers[i].Attach(raw_buffers[i]);
         }
     }
+    void FetchSrvTail(CommandListState* state, wchar_t shader_type, unsigned first, unsigned offset, unsigned count)
+    {
+        const unsigned remaining = count - offset;
+        ID3D11ShaderResourceView* original[capacity];
+        std::fill_n(original, remaining, nullptr);
+        GetShaderResourcesBatch(state, shader_type, first + offset, remaining, original);
+        for (unsigned i = 0; i < remaining; ++i)
+            views[offset + i].Attach(original[i]);
+    }
     void Publish(CommandListState* state, ResourceCopyTarget& target, unsigned first, unsigned count)
     {
         ID3D11View* raw_views[capacity] = {};
@@ -14074,26 +14086,44 @@ void SlotRangeCopyOperation::run(CommandListState* state)
     SlotRangeCacheLease cache(cache_mutex, available_cache);
     cache.entries.resize((std::max)(cache.entries.size(), static_cast<size_t>(count)));
     SlotRangeBindings bindings;
-    bindings.Fetch(state, slots, first, count);
-    CustomResource* single = bind && other.type == ResourceCopyTargetType::CUSTOM_RESOURCE ? other.GetCustomResource(state) : nullptr;
     const int plain_ref = static_cast<int>(ResourceCopyOptions::REFERENCE) |
         static_cast<int>(ResourceCopyOptions::UNLESS_NULL) | static_cast<int>(ResourceCopyOptions::NO_VIEW_CACHE);
     const bool fast_ref = !(static_cast<int>(options) & ~plain_ref);
+    // Plain SRV references do not change pipeline bindings until Publish.
+    bool needs_previous_srvs = bind && slots.type == ResourceCopyTargetType::SHADER_RESOURCE &&
+        fast_ref && (options & ResourceCopyOptions::REFERENCE) && !other.pool_dynamic_index_expression;
+    if (!needs_previous_srvs)
+        bindings.Fetch(state, slots, first, count);
+    const auto preserve_tail = [&](unsigned offset) {
+        if (needs_previous_srvs) {
+            bindings.FetchSrvTail(state, slots.shader_type, first, offset, count);
+            needs_previous_srvs = false;
+        }
+    };
+    CustomResource* single = bind && other.type == ResourceCopyTargetType::CUSTOM_RESOURCE ? other.GetCustomResource(state) : nullptr;
     bool published = false;
+    unsigned i = 0;
     try {
-        for (unsigned i = 0; i < count; ++i) {
+        for (; i < count; ++i) {
             auto target = RangeSlotTarget(slots, first + i);
             auto& entry = cache.entries[i];
             const unsigned physical = pool ? static_cast<unsigned>((static_cast<uint64_t>(pool_first) + i) % pool_size) : 0;
             if (bind) {
                 auto* source = pool ? PoolRangeElement(other.custom_resource_pool, pool_first, i, false) : single;
-                published = BindElement(state, bindings, entry, i, std::move(target), source, fast_ref) || published;
+                if (BindElement(state, bindings, entry, i, std::move(target), source, fast_ref))
+                    published = true;
+                else
+                    preserve_tail(i);
             } else {
                 FetchElement(state, bindings, entry, i, std::move(target), physical, fast_ref);
             }
         }
     } catch (...) {
-        if (bind && published) bindings.Publish(state, slots, first, count);
+        if (bind && published) {
+            // The unprocessed suffix is needed when publishing a successful prefix.
+            preserve_tail(i);
+            bindings.Publish(state, slots, first, count);
+        }
         throw;
     }
     if (bind) bindings.Publish(state, slots, first, count);

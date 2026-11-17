@@ -52,6 +52,7 @@ struct InputLayoutElementOverride {
 
 struct ShaderResourceBatchStats {
 	unsigned get_calls = 0;
+	unsigned srv_slots_read = 0;
 	unsigned set_calls = 0;
 	unsigned cb_get_calls = 0, cb_set_calls = 0, cb1_set_calls = 0;
 	unsigned uav_get_calls = 0, uav_set_calls = 0;

@@ -311,6 +311,53 @@ void fetch_metadata(BatchDevice& device, Registry& registry)
     require_batch(element->resource == b.Get(), "range: reference fetch still enforces destination max_copies_per_frame");
     element->max_copies_per_frame = 0;
 }
+
+void pool_srv_writeback(BatchDevice& device, Registry& registry)
+{
+    device.context->ClearState();
+    auto a = texture(device, 0x77442211u), b = texture(device, 0x99886633u);
+    auto a_view = srv(device, a.Get()), b_view = srv(device, b.Get());
+    registry.pool(L"poolslot_range_writeback", device, PoolIndexType::STATIC, 19);
+    constexpr UINT null_slot = 4;
+    ID3D11ShaderResourceView* original[19];
+    for (UINT i = 0; i < 19; ++i) {
+        original[i] = i == null_slot ? nullptr : i % 2 ? b_view.Get() : a_view.Get();
+        set_slot(device, L'p', i, original[i]);
+    }
+    set_slot(device, L'p', 19, b_view.Get());
+
+    CommandList save;
+    append(save, L"poolslot_range_writeback[0:9]", L"ref ps-t[0:9]");
+    append(save, L"poolslot_range_writeback[10:18]", L"ref ps-t[10:18]");
+    const auto captured = execute(save, device);
+    require_batch(captured.get_calls == 2 && captured.srv_slots_read == 19 && captured.set_calls == 0,
+        "range writeback: capture both native SRV ranges into the pool");
+
+    for (UINT i = 0; i < 19; ++i)
+        set_slot(device, L'p', i, b_view.Get());
+    CommandList restore;
+    append(restore, L"ps-t[0:9]", L"ref poolslot_range_writeback[0:9]");
+    append(restore, L"ps-t[10:18]", L"ref poolslot_range_writeback[10:18]");
+    const auto restored = execute(restore, device);
+    require_batch(restored.get_calls == 0 && restored.set_calls == 2,
+        "range writeback: both complete ranges set once each without reading the old bindings");
+    for (UINT i = 0; i < 19; ++i)
+        require_batch(get_slot(device, L'p', i).Get() == original[i],
+            "range writeback: preserve the exact saved view or explicitly clear a null slot");
+    require_batch(get_slot(device, L'p', 19).Get() == b_view.Get(), "range writeback: slots outside the range stay bound");
+
+    for (UINT i = 0; i < 10; ++i)
+        set_slot(device, L'p', i, b_view.Get());
+    CommandList partial;
+    append(partial, L"ps-t[0:9]", L"ref unless_null poolslot_range_writeback[0:9]");
+    const auto preserved = execute(partial, device);
+    require_batch(preserved.get_calls == 1 && preserved.srv_slots_read == 10 - null_slot && preserved.set_calls == 1,
+        "range writeback: the first unless_null hole fetches only the remaining suffix");
+    for (UINT i = 0; i < 10; ++i)
+        require_batch(get_slot(device, L'p', i).Get() == (i == null_slot ? b_view.Get() : original[i]),
+            "range writeback: preserve the hole and publish successful writes on both sides");
+    device.context->ClearState();
+}
 } // namespace
 
 void test_dx11_slot_range_regression()
@@ -327,7 +374,7 @@ void test_dx11_slot_range_regression()
         CommandList bind;
         append(bind, prefix + L"[0:127]", L"ref poolslot_range_full[0:127]");
         auto stats = execute(bind, device);
-        require_batch(stats.get_calls == 1 && stats.set_calls == 1, "range: full 128-SRV bind has one real Get/Set without CB-array overflow");
+        require_batch(stats.get_calls == 0 && stats.set_calls == 1, "range: full 128-SRV bind has one real Set and no Get");
         for (UINT i = 0; i < 128; ++i)
             require_batch(bound_resource(device, stage, i).Get() == (i % 2 ? b.Get() : a.Get()), "range: every real SRV slot retains physical FIFO element identity");
         CommandList fetch;
@@ -349,5 +396,6 @@ void test_dx11_slot_range_regression()
     full_uav_ranges(device, registry);
     all_copy_options(device, registry);
     fetch_metadata(device, registry);
+    pool_srv_writeback(device, registry);
 
 }
