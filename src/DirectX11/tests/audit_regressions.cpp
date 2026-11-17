@@ -2112,6 +2112,19 @@ public:
 };
 thread_local CandidateBindingSpy* CandidateBindingSpy::active = nullptr;
 
+struct CandidateRoutingCase {
+    const char* name;
+    bool query, match, enabled, unused_query;
+};
+constexpr CandidateRoutingCase candidate_routing_cases[] = {
+    {"legacy_hit", false, true, true, false},
+    {"legacy_miss", false, false, true, false},
+    {"explicit_hit", true, true, true, false},
+    {"explicit_miss", true, false, true, false},
+    {"explicit_disabled", true, true, false, false},
+    {"legacy_with_unused_query", false, true, true, true},
+};
+
 struct CandidatePerfWorkload {
     const char* name;
     unsigned matches;
@@ -2264,6 +2277,39 @@ void test_dx11_to_candidate_regression()
         require_batch(evaluate(L"ps-t127->tocandidate") == 1 && spy.ps_calls == 1 &&
             spy.ps_first == 127 && spy.ps_count == 1 && spy.vb_calls == 0 && spy.ib_calls == 0,
             "candidate: an evaluated query reads only its specified target");
+    }
+    for (const auto& test : candidate_routing_cases) {
+        const std::string text = std::string("global $compat_enabled=") + (test.enabled ? "1" : "0") +
+            "\nglobal $compat_pre=0\nglobal $compat_post=0\n"
+            "[ShaderOverrideCandidateCompatibility]\nhash=0000000000000000\nrun=CommandListCandidateCompatibility\n"
+            "[CommandListCandidateCompatibility]\nif $compat_enabled\nif " +
+            (test.query ? "ps-t127->tocandidate" : "1") +
+            "\nchecktextureoverride=ps-t127\nendif\nendif\nhandling=skip\n"
+            "[TextureOverrideCandidateCompatibility]\nhash=5a17c0de\n"
+            "$compat_pre=$compat_pre+1\npost $compat_post=$compat_post+1\n" +
+            (test.unused_query ? "[CommandListUnusedCompatibilityQuery]\nif ib->tocandidate\nx=1\nendif\n" : "");
+        config.load(text.c_str(), 0, true);
+        set_hash(texture.Get(), test.match ? 0x5a17c0de : 0x5a17c0df);
+        set_slot(device, L'p', 127, view.Get());
+        Profiling::mode = Profiling::Mode::SUMMARY;
+        Profiling::texture_override_candidates_lookup_overhead.clear();
+        CandidateBindingSpy spy(device.context.Get());
+        device.wrapper->DrawIndexed(6, 0, 0);
+        const unsigned full_checks = test.enabled && (!test.query || test.match) ? 4 : 0;
+        const unsigned candidate_queries = test.enabled && test.query ? 4 : 0;
+        const unsigned phase_commands = test.enabled && test.match ? 2 : 0;
+        require_batch(spy.ps_calls == full_checks + candidate_queries && spy.vb_calls == 0 && spy.ib_calls == 0,
+            "candidate compatibility: only the configured route issues native queries");
+        require_batch(Profiling::texture_override_candidates_lookup_overhead.count == full_checks,
+            "candidate compatibility: new misses skip the old full lookup; legacy has no extra lookup");
+        require_batch(command_list_globals.at(L"$compat_pre").fval == phase_commands &&
+            command_list_globals.at(L"$compat_post").fval == phase_commands,
+            "candidate compatibility: each shader-stage entry executes TO pre/post commands once");
+        const unsigned observed_checks = Profiling::texture_override_candidates_lookup_overhead.count;
+        std::printf("TO_COMPATIBILITY={\"case\":\"%s\",\"nativePSReads\":%u,\"candidateQueries\":%u,\"fullChecks\":%u,\"preCommands\":%u,\"postCommands\":%u}\n",
+            test.name, spy.ps_calls, spy.ps_calls - observed_checks, observed_checks,
+            static_cast<unsigned>(command_list_globals.at(L"$compat_pre").fval),
+            static_cast<unsigned>(command_list_globals.at(L"$compat_post").fval));
     }
     config.load("", 0, true);
     const std::wstring removed_keyword = L"draw_has_override";
