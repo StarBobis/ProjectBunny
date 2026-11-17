@@ -469,7 +469,10 @@ void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 	if (command_list.noop() && post_command_list.noop() && filter_index == FLT_MAX)
 		return;
 
-	shader_override = &G->mShaderOverrideMap[shader_hash];
+	const auto result = G->mShaderOverrideMap.try_emplace(shader_hash);
+	shader_override = &result.first->second;
+	if (result.second)
+		G->shader_override_generation.fetch_add(1, std::memory_order_release);
 
 	// Initialise the ShaderOverride's command lists if they aren't already:
 	if (shader_override->command_list.ini_section.empty()) {

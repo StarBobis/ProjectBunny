@@ -613,6 +613,8 @@ struct Globals
 	int mSelectedHullShaderPos;
 
 	ShaderOverrideMap mShaderOverrideMap;
+	std::atomic<uint64_t> shader_override_generation{1};
+	std::atomic<uint64_t> shader_regex_generation{1};
 	TextureOverrideMap mTextureOverrideMap;
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
 

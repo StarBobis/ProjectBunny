@@ -178,12 +178,25 @@ private:
 	void AfterDraw(DrawContext &data);
 	bool BeforeDispatch(DispatchContext *context);
 	void AfterDispatch(DispatchContext *context);
+	struct ShaderRegexCheck {
+		ID3D11DeviceChild* processed_shader = nullptr;
+		uint64_t generation = 0;
+	};
+	ShaderRegexCheck vertex_regex, hull_regex, domain_regex, geometry_regex, pixel_regex, compute_regex;
+	struct ShaderOverrideMiss {
+		uint64_t hash = 0;
+		uint64_t generation = 0;
+	};
+	ShaderOverrideMiss vertex_override_miss, hull_override_miss, domain_override_miss;
+	ShaderOverrideMiss geometry_override_miss, pixel_override_miss, compute_override_miss;
+	ShaderOverride* FindDrawShaderOverride(uint64_t hash, ShaderOverrideMiss& miss);
 	template <class ID3D11Shader,
 		void (__stdcall ID3D11DeviceContext::*GetShaderVS2013BUGWORKAROUND)(ID3D11Shader**, ID3D11ClassInstance**, UINT*),
 		void (__stdcall ID3D11DeviceContext::*SetShaderVS2013BUGWORKAROUND)(ID3D11Shader*, ID3D11ClassInstance*const*, UINT),
 		HRESULT (__stdcall ID3D11Device::*CreateShader)(const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11Shader**)
 	>
-	void DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 hash, wchar_t *shader_type);
+	void DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 hash, wchar_t *shader_type,
+		ShaderRegexCheck& check, uint64_t generation);
 	void DeferredShaderReplacementBeforeDraw();
 	void DeferredShaderReplacementBeforeDispatch();
 	bool ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,

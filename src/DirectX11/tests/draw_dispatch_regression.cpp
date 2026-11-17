@@ -80,6 +80,65 @@ static void install_counter_shaders(ID3D11Device1* device, ID3D11DeviceContext1*
     context->CSSetShader(cs.Get(), nullptr, 0);
 }
 
+class CountShaderRuleCommand final : public CommandListCommand {
+    unsigned& count;
+public:
+    explicit CountShaderRuleCommand(unsigned& count) : count(count) {}
+    void run(CommandListState*) override { ++count; }
+};
+
+static void test_cached_shader_checks(CallCounterDevice& fixture)
+{
+    const auto previous_mode = Profiling::mode.load();
+    const bool previous_shader_cache = G->CACHE_SHADERS;
+    G->CACHE_SHADERS = false;
+    auto& group = shader_regex_groups[L"stage cache regression"];
+    G->mShaderOverrideMap.try_emplace(1);
+
+    const char source[] = "float4 main(uint i:SV_VertexID):SV_Position{return float4(i,0,0,1);}";
+    ComPtr<ID3DBlob> code;
+    ComPtr<ID3D11VertexShader> vs;
+    require_call_counter(SUCCEEDED(D3DCompile(source, sizeof(source), nullptr, nullptr, nullptr,
+        "main", "vs_5_0", 0, 0, &code, nullptr)), "compile stage cache test shader");
+    require_call_counter(SUCCEEDED(fixture.wrapper->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(),
+        nullptr, &vs)), "register stage cache test shader through the wrapper");
+    const auto hash = G->mShaders.at(vs.Get());
+    require_call_counter(hash != 1 && !G->mShaderOverrideMap.count(hash), "bound shader initially misses every override");
+    fixture.context->VSSetShader(vs.Get(), nullptr, 0);
+
+    Profiling::clear();
+    Profiling::mode = Profiling::Mode::SUMMARY;
+    fixture.context->Draw(3, 0);
+    const unsigned regex_lookups = Profiling::shader_reload_lookup_overhead.count;
+    const unsigned override_lookups = Profiling::shaderoverride_lookup_overhead.count;
+    require_call_counter(regex_lookups > 0 && override_lookups > 0, "first draw checks both registries");
+    for (unsigned draw = 0; draw < 8; ++draw)
+        fixture.context->Draw(3, 0);
+    require_call_counter(Profiling::shader_reload_lookup_overhead.count == regex_lookups &&
+        Profiling::shaderoverride_lookup_overhead.count == override_lookups,
+        "stable shader skips both the processed regex lookup and the override miss");
+
+    unsigned pre = 0, post = 0;
+    group.command_list.commands.push_back(std::make_shared<CountShaderRuleCommand>(pre));
+    group.post_command_list.commands.push_back(std::make_shared<CountShaderRuleCommand>(post));
+    group.link_command_lists_and_filter_index(hash);
+    fixture.context->Draw(3, 0);
+    require_call_counter(pre == 1 && post == 1, "dynamic link replaces a cached miss without rebinding");
+
+    CleanupShaderMaps(vs.Get());
+    const unsigned after_cleanup = Profiling::shader_reload_lookup_overhead.count;
+    fixture.context->Draw(3, 0);
+    require_call_counter(Profiling::shader_reload_lookup_overhead.count == after_cleanup + 1,
+        "retired shader metadata invalidates the processed-stage cache");
+
+    Profiling::clear();
+    Profiling::mode = previous_mode;
+    fixture.context->VSSetShader(nullptr, nullptr, 0);
+    G->mShaderOverrideMap.clear();
+    shader_regex_groups.clear();
+    G->CACHE_SHADERS = previous_shader_cache;
+}
+
 void test_dx11_draw_dispatch_regression()
 {
     std::fputs("Testing real WARP draw and dispatch counters\n", stderr);
@@ -163,6 +222,7 @@ void test_dx11_draw_dispatch_regression()
         CommandListExpression invalid_draw, invalid_dispatch;
         require_call_counter(!invalid_draw.parse(&draw_text, &ini_namespace, nullptr) &&
             !invalid_dispatch.parse(&dispatch_text, &ini_namespace, nullptr), "configuration without command scope rejects counters");
+        test_cached_shader_checks(fixture);
         deferred->ClearState();
         fixture.native->ClearState();
         fixture.native->Flush();

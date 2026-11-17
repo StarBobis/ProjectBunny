@@ -121,6 +121,7 @@ void test_dx11_texture_override_cache_regression();
 void test_dx11_loader_file_bounds_regression();
 void test_dx11_legacy_profiling_regression();
 void test_dx11_auto_texture_check_regression();
+void test_dx11_draw_dispatch_regression();
 void test_f200();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
@@ -2771,6 +2772,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-293", test_dx11_hunting_shader_selection_regression},
     {"P-01", test_dx11_ini_lookup_performance},
     {"P-AUTO-TEX", test_dx11_auto_texture_check_regression},
+    {"P-SHADER-STAGE", test_dx11_draw_dispatch_regression},
     {"P-TO-CANDIDATE", test_dx11_to_candidate_regression},
     {"P-TO-DRAW-GATE", test_dx11_draw_override_gate},
     {"P-TO-CANDIDATE-PERF", test_dx11_to_candidate_performance},

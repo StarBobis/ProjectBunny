@@ -2978,6 +2978,7 @@ static void ParseShaderOverrideSections()
 
 		warn_deprecated_shaderoverride_options(id, override);
 	}
+	G->shader_override_generation.fetch_add(1, std::memory_order_release);
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 
@@ -5686,6 +5687,7 @@ static void MarkAllShadersDeferredUnprocessed()
 		// any that are loaded from disk:
 		i->second.deferred_replacement_processed = false;
 	}
+	G->shader_regex_generation.fetch_add(1, std::memory_order_release);
 
 	// TODO: If ShaderRegex hash is unchanged leave these shaders in place
 	// and just update the ShaderOverrides & filter_index
