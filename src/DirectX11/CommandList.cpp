@@ -346,6 +346,8 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 		res->Release();
 }
 
+static void WarnUnusedAutoCheckTextureSlots();
+
 void optimise_command_lists(HackerDevice *device)
 {
 	bool making_progress;
@@ -413,6 +415,11 @@ void optimise_command_lists(HackerDevice *device)
 		// add a special command for that particular case, but would be
 		// nice if this sort of thing worked more generally.
 	} while (making_progress);
+
+	for (CommandList* command_list : registered_command_lists)
+		MergeAutoCheckTextureOverrides(command_list);
+
+	WarnUnusedAutoCheckTextureSlots();
 
 	for (CommandList* command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
@@ -1169,6 +1176,362 @@ public:
         state.extra_indent = original_indent;
     }
 };
+
+bool IsAutoCheckTextureSlotCovered(const ResourceCopyTarget& target)
+{
+    if (G->auto_check_texture_slots.empty())
+        return false;
+
+    // Only plain static slots are covered. Ranges, dynamic slot expressions,
+    // pools and property/identity targets keep running through the legacy path.
+    if (target.IsRange() || target.slot_expression || target.custom_resource_pool ||
+        target.pool_dynamic_index_expression ||
+        target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
+        return false;
+
+    for (const auto& slot : G->auto_check_texture_slots) {
+        if (slot.type != target.type || slot.slot != target.slot)
+            continue;
+        if (target.type == ResourceCopyTargetType::SHADER_RESOURCE && slot.shader_type != target.shader_type)
+            continue;
+        return true;
+    }
+
+    return false;
+}
+
+namespace {
+
+int AutoCheckShaderStageIndex(wchar_t shader_type)
+{
+	switch (shader_type) {
+	case L'p': return 0;
+	case L'v': return 1;
+	case L'c': return 2;
+	default: return -1;
+	}
+}
+
+struct AutoCheckBinding {
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+	Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+	UINT stride = 0, offset = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+};
+
+// Batched binding snapshot for one adjacent run of covered checks. Used only
+// while that run executes at its original command-list position; if a TO
+// command list runs, later targets are re-queried instead of trusting this
+// snapshot.
+class AutoCheckBindingCache {
+public:
+	std::vector<AutoCheckBinding> entries;
+
+	void Prefetch(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
+	{
+		entries.assign(targets.size(), AutoCheckBinding());
+		if (!state || !state->mOrigContext1)
+			return;
+
+		UINT first[3] = {UINT_MAX, UINT_MAX, UINT_MAX};
+		UINT last[3] = {0, 0, 0};
+		UINT vb_first = UINT_MAX, vb_last = 0;
+		bool check_ib = false;
+
+		for (const auto& check : targets) {
+			const auto& target = check->target;
+			switch (target.type) {
+			case ResourceCopyTargetType::SHADER_RESOURCE: {
+				const int stage = AutoCheckShaderStageIndex(target.shader_type);
+				if (stage < 0)
+					continue;
+				first[stage] = (std::min)(first[stage], target.slot);
+				last[stage] = (std::max)(last[stage], target.slot);
+				break;
+			}
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+				vb_first = (std::min)(vb_first, target.slot);
+				vb_last = (std::max)(vb_last, target.slot);
+				break;
+			case ResourceCopyTargetType::INDEX_BUFFER:
+				check_ib = true;
+				break;
+			default:
+				break;
+			}
+		}
+
+		ID3D11ShaderResourceView* views[3][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+		for (int stage = 0; stage < 3; ++stage) {
+			if (first[stage] == UINT_MAX)
+				continue;
+			const UINT count = last[stage] - first[stage] + 1;
+			ID3D11ShaderResourceView** stage_views = &views[stage][first[stage]];
+			switch (stage) {
+			case 0: state->mOrigContext1->PSGetShaderResources(first[stage], count, stage_views); break;
+			case 1: state->mOrigContext1->VSGetShaderResources(first[stage], count, stage_views); break;
+			case 2: state->mOrigContext1->CSGetShaderResources(first[stage], count, stage_views); break;
+			}
+		}
+
+		ID3D11Buffer* vertex_buffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		UINT vertex_strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		UINT vertex_offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		if (vb_first != UINT_MAX)
+			state->mOrigContext1->IAGetVertexBuffers(vb_first, vb_last - vb_first + 1,
+				&vertex_buffers[vb_first], &vertex_strides[vb_first], &vertex_offsets[vb_first]);
+
+		ID3D11Buffer* index_buffer = nullptr;
+		DXGI_FORMAT index_format = DXGI_FORMAT_UNKNOWN;
+		UINT index_offset = 0;
+		if (check_ib)
+			state->mOrigContext1->IAGetIndexBuffer(&index_buffer, &index_format, &index_offset);
+
+		for (size_t i = 0; i < targets.size(); ++i) {
+			const auto& target = targets[i]->target;
+			AutoCheckBinding& entry = entries[i];
+			switch (target.type) {
+			case ResourceCopyTargetType::SHADER_RESOURCE: {
+				const int stage = AutoCheckShaderStageIndex(target.shader_type);
+				if (stage < 0 || target.slot < first[stage] || target.slot > last[stage])
+					continue;
+				entry.view = views[stage][target.slot];
+				break;
+			}
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+				if (target.slot < vb_first || target.slot > vb_last)
+					continue;
+				entry.buffer = vertex_buffers[target.slot];
+				entry.stride = vertex_strides[target.slot];
+				entry.offset = vertex_offsets[target.slot];
+				break;
+			case ResourceCopyTargetType::INDEX_BUFFER:
+				entry.buffer = index_buffer;
+				entry.format = index_format;
+				entry.offset = index_offset;
+				break;
+			default:
+				break;
+			}
+		}
+
+		for (int stage = 0; stage < 3; ++stage) {
+			if (first[stage] == UINT_MAX)
+				continue;
+			for (UINT slot = first[stage]; slot <= last[stage]; ++slot)
+				if (views[stage][slot])
+					views[stage][slot]->Release();
+		}
+		if (vb_first != UINT_MAX) {
+			for (UINT slot = vb_first; slot <= vb_last; ++slot)
+				if (vertex_buffers[slot])
+					vertex_buffers[slot]->Release();
+		}
+		if (index_buffer)
+			index_buffer->Release();
+	}
+};
+
+// Query exactly one slot immediately before it is consumed. Used after any
+// earlier target in the same adjacent run may have changed the bindings.
+void FetchCurrentAutoCheckBinding(CommandListState* state, const ResourceCopyTarget& target, AutoCheckBinding* binding)
+{
+	*binding = AutoCheckBinding();
+	if (!state || !state->mOrigContext1)
+		return;
+
+	switch (target.type) {
+	case ResourceCopyTargetType::SHADER_RESOURCE: {
+		ID3D11ShaderResourceView* view = nullptr;
+		switch (target.shader_type) {
+		case L'p': state->mOrigContext1->PSGetShaderResources(target.slot, 1, &view); break;
+		case L'v': state->mOrigContext1->VSGetShaderResources(target.slot, 1, &view); break;
+		case L'c': state->mOrigContext1->CSGetShaderResources(target.slot, 1, &view); break;
+		default: return;
+		}
+		binding->view.Attach(view);
+		break;
+	}
+	case ResourceCopyTargetType::VERTEX_BUFFER: {
+		ID3D11Buffer* buffer = nullptr;
+		state->mOrigContext1->IAGetVertexBuffers(target.slot, 1, &buffer, &binding->stride, &binding->offset);
+		binding->buffer.Attach(buffer);
+		break;
+	}
+	case ResourceCopyTargetType::INDEX_BUFFER: {
+		ID3D11Buffer* buffer = nullptr;
+		state->mOrigContext1->IAGetIndexBuffer(&buffer, &binding->format, &binding->offset);
+		binding->buffer.Attach(buffer);
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+} // namespace
+
+void AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
+{
+	if (!state || targets.empty() || state->aborted)
+		return;
+
+	// This command replaces an adjacent run of implicit checktextureoverride
+	// commands, so it runs under exactly the same ShaderOverride/ShaderRegex
+	// gating and at the same command-list position as the first check.
+	CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+		return;
+
+	AutoCheckBindingCache cache;
+	cache.Prefetch(state, targets);
+	bool dirty = false;
+
+	for (size_t i = 0; i < targets.size() && !state->aborted; ++i) {
+		CheckTextureOverrideCommand& check = *targets[i];
+		CheckTextureStateScope restore(*state);
+		AutoCheckBinding current;
+		AutoCheckBinding* binding = &cache.entries[i];
+		if (dirty) {
+			FetchCurrentAutoCheckBinding(state, check.target, &current);
+			binding = &current;
+		}
+
+		Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+		UINT stride = 0, offset = 0;
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+		switch (check.target.type) {
+		case ResourceCopyTargetType::SHADER_RESOURCE:
+			if (!binding->view)
+				continue;
+			binding->view->GetResource(resource.GetAddressOf());
+			break;
+		case ResourceCopyTargetType::VERTEX_BUFFER:
+			if (!binding->buffer)
+				continue;
+			resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
+			stride = binding->stride;
+			offset = binding->offset;
+			break;
+		case ResourceCopyTargetType::INDEX_BUFFER:
+			if (!binding->buffer)
+				continue;
+			resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
+			format = binding->format;
+			offset = binding->offset;
+			break;
+		default:
+			continue;
+		}
+		if (!resource)
+			continue;
+
+		ResourceCopyTarget target = check.target;
+		state->this_target = &target;
+
+		TextureOverrideMatches matches;
+		FindTextureOverridesForBoundResource(target.type, resource.Get(), state->mHackerContext,
+			stride, offset, format, state->call_info, &matches);
+
+		if (!matches.empty()) {
+			for (auto* match : matches) {
+				if (state->aborted)
+					break;
+				_RunCommandList(state->post ? &match->post_command_list : &match->command_list, state);
+			}
+			// The TO lists may have changed any later slot; re-query those
+			// immediately before their own check instead of using the snapshot.
+			dirty = true;
+		}
+	}
+}
+
+void AutoCheckTextureOverrideCommand::run(CommandListState* state)
+{
+	AutoCheckTextureOverrides(state, targets);
+}
+
+void MergeAutoCheckTextureOverrides(CommandList* command_list)
+{
+	if (!command_list || G->auto_check_texture_slots.empty())
+		return;
+
+	auto& commands = command_list->commands;
+	size_t i = 0;
+	while (i < commands.size()) {
+		auto first = std::dynamic_pointer_cast<CheckTextureOverrideCommand>(commands[i]);
+		if (!first || first->run_pre_and_post_together || !IsAutoCheckTextureSlotCovered(first->target)) {
+			++i;
+			continue;
+		}
+
+		std::vector<std::shared_ptr<CheckTextureOverrideCommand>> group;
+		group.push_back(first);
+		size_t end = i + 1;
+		while (end < commands.size()) {
+			auto next = std::dynamic_pointer_cast<CheckTextureOverrideCommand>(commands[end]);
+			if (!next || next->run_pre_and_post_together || !IsAutoCheckTextureSlotCovered(next->target))
+				break;
+			group.push_back(next);
+			++end;
+		}
+
+		if (group.size() < 2) {
+			++i;
+			continue;
+		}
+
+		auto batch = std::make_shared<AutoCheckTextureOverrideCommand>();
+		batch->ini_line = first->ini_line;
+		batch->targets = std::move(group);
+		commands[i] = batch;
+		commands.erase(commands.begin() + i + 1, commands.begin() + end);
+		++i;
+	}
+}
+
+static bool AutoCheckTargetMatchesSlot(const ResourceCopyTarget& target, const AutoCheckTextureSlot& slot)
+{
+	if (target.IsRange() || target.slot_expression || target.custom_resource_pool ||
+		target.pool_dynamic_index_expression ||
+		target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
+		return false;
+	if (target.type != slot.type || target.slot != slot.slot)
+		return false;
+	return target.type != ResourceCopyTargetType::SHADER_RESOURCE || target.shader_type == slot.shader_type;
+}
+
+static void WarnUnusedAutoCheckTextureSlots()
+{
+	if (G->auto_check_texture_slots.empty())
+		return;
+
+	for (const auto& slot : G->auto_check_texture_slots) {
+		bool found = false;
+		for (CommandList* command_list : registered_command_lists) {
+			for (const auto& command : command_list->commands) {
+				if (auto* check = dynamic_cast<CheckTextureOverrideCommand*>(command.get())) {
+					found = AutoCheckTargetMatchesSlot(check->target, slot);
+				} else if (auto* batch = dynamic_cast<AutoCheckTextureOverrideCommand*>(command.get())) {
+					for (const auto& target : batch->targets)
+						if (AutoCheckTargetMatchesSlot(target->target, slot)) {
+							found = true;
+							break;
+						}
+				}
+				if (found)
+					break;
+			}
+			if (found)
+				break;
+		}
+		if (!found) {
+			LogOverlayW(LOG_WARNING,
+				L"auto_check_texture_slots: no checktextureoverride found for type=%u slot=%u; slot not auto-accelerated\n",
+				static_cast<unsigned>(slot.type), slot.slot);
+		}
+	}
+}
 
 void CheckTextureOverrideCommand::run(CommandListState* state)
 {
@@ -9890,6 +10253,91 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 	throw(std::range_error("Bad 3DMigoto ResourceCopyTarget"));
 }
 
+void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Resource* resource,
+		HackerContext* hacker_context, UINT stride, UINT offset, DXGI_FORMAT format,
+		DrawCallInfo* call_info, TextureOverrideMatches* matches)
+{
+	if (!resource || !matches)
+		return;
+
+	// For vertex and index buffers the game may pack multiple meshes into
+	// one buffer and bind them at different offsets. In that case the base
+	// resource hash alone is not enough - we must use the same region data hash
+	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in
+	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
+	// That way the hash the user copies from the overlay matches the one looked up
+	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
+	if (G->track_region_hashes)
+	{
+		// Region hashing is only applicable to vertex/index buffers where offsets define subregions of a shared resource.
+		UINT region_offset = 0, region_size = 0;
+		switch (type) {
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+				region_offset = GetVertexBufferRegionOffset(stride, call_info, offset);
+				region_size = GetVertexBufferRegionSize(stride, call_info);
+				break;
+
+			case ResourceCopyTargetType::INDEX_BUFFER:
+				region_offset = GetIndexBufferRegionOffset(format, call_info, offset);
+				region_size = GetIndexBufferRegionSize(format, call_info);
+				break;
+		}
+
+		// Originally, 3dmigoto has 2 methods of TextureOverride matching:
+		// 1. Hash Matching - prefilter by hash, filter by call_info: stored in G->mTextureOverrideMap (hash -> vector<TextureOverride>).
+		// 2. Fuzzy Matching - prefilter by match options, filter by call_info: stored in G->mFuzzyTextureOverrides (set<FuzzyMatchResourceDesc, FuzzyMatchResourceDescLess>).
+		// Those methods cannot be used for SAME TextureOverride - if hash is defined, fuzzy match options will be ignored by INI parser.
+		if (!region_size)
+		{
+			// Resource isn't index or vertex buffer, or region size cannot be computed.
+			// Fallback to original behavior.
+			// Run Hash Matching and Fuzzy Matching.
+			find_texture_overrides_for_resource(resource, matches, call_info);
+		}
+		else
+		{
+			// For region hashes we need another method - prefilter by call_info, filter by hash.
+			// This path has higher CPU cost than Hash Matching, but it's still WAY cheaper than to region-hash every IB or VB.
+
+			// Prefilter TextureOverride sections from G->mTextureOverrideMap by call_info.
+			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(call_info);
+
+			uint32_t region_hash = 0;
+
+			// Filter prefiltering results by hash.
+			if (draw_info_matches) {
+				Profiling::State profiling_state;
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::start(&profiling_state);
+
+				// Calculate region hash.
+				region_hash = GetRegionHash(hacker_context, (ID3D11Buffer*)resource, region_offset, region_size);
+
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+
+				// Run Hash Matching.
+				if (region_hash) {
+					// By region hash.
+					find_texture_overrides_by_hash_from_fuzzy_matches(region_hash, draw_info_matches, matches, call_info);
+				} else {
+					// By full resource hash.
+					find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(resource, draw_info_matches, matches, call_info);
+				}
+			}
+
+			// Fuzzy candidates depend on the resource description, not the
+			// selected region. Reuse only the cache's fuzzy list here; exact
+			// matching above uses region_hash, not the cached whole-resource hash.
+			find_fuzzy_texture_overrides_for_resource(resource, matches, call_info);
+		}
+	}
+	else
+	{
+		find_texture_overrides_for_resource(resource, matches, call_info);
+	}
+}
+
 void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *resource_found, TextureOverrideMatches *matches)
 {
 	ID3D11View *view = NULL;
@@ -9904,84 +10352,8 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	if (!resource)
 		return;
 
-	// For vertex and index buffers the game may pack multiple meshes into
-	// one buffer and bind them at different offsets. In that case the base
-	// resource hash alone is not enough - we must use the same region data hash
-	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in
-	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
-	// That way the hash the user copies from the overlay matches the one looked up
-	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
-	if (G->track_region_hashes)
-	{
-		// Region hashing is only applicable to vertex/index buffers where offsets define subregions of a shared resource.
-		UINT region_offset = 0, region_size = 0;
-		switch (this->type) {
-			case ResourceCopyTargetType::VERTEX_BUFFER:
-				region_offset = GetVertexBufferRegionOffset(stride, state->call_info, offset);
-				region_size = GetVertexBufferRegionSize(stride, state->call_info);
-				break;
-
-			case ResourceCopyTargetType::INDEX_BUFFER:
-				region_offset = GetIndexBufferRegionOffset(format, state->call_info, offset);
-				region_size = GetIndexBufferRegionSize(format, state->call_info);
-				break;
-		}
-
-		// Originally, 3dmigoto has 2 methods of TextureOverride matching:
-		// 1. Hash Matching - prefilter by hash, filter by call_info: stored in G->mTextureOverrideMap (hash -> vector<TextureOverride>).
-		// 2. Fuzzy Matching - prefilter by match options, filter by call_info: stored in G->mFuzzyTextureOverrides (set<FuzzyMatchResourceDesc, FuzzyMatchResourceDescLess>).
-		// Those methods cannot be used for SAME TextureOverride - if hash is defined, fuzzy match options will be ignored by INI parser.
-		if (!region_size)
-		{
-			// Resource isn't index or vertex buffer, or region size cannot be computed.
-			// Fallback to original behavior.
-			// Run Hash Matching and Fuzzy Matching.
-			find_texture_overrides_for_resource(resource, matches, state->call_info);
-		}
-		else
-		{
-			// For region hashes we need another method - prefilter by call_info, filter by hash.
-			// This path has higher CPU cost than Hash Matching, but it's still WAY cheaper than to region-hash every IB or VB.
-
-			// Prefilter TextureOverride sections from G->mTextureOverrideMap by call_info.
-			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(state->call_info);
-
-			uint32_t region_hash = 0;
-
-			// Filter prefiltering results by hash.
-			if (draw_info_matches) {
-				Profiling::State profiling_state;
-				if (Profiling::mode == Profiling::Mode::SUMMARY)
-					Profiling::start(&profiling_state);
-
-				// Calculate region hash.
-				region_hash = GetRegionHash(state->mHackerContext, (ID3D11Buffer*)resource, region_offset, region_size);
-
-				if (Profiling::mode == Profiling::Mode::SUMMARY)
-					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
-
-				// Run Hash Matching.
-				if (region_hash) {
-					// By region hash.
-					find_texture_overrides_by_hash_from_fuzzy_matches(region_hash, draw_info_matches, matches, state->call_info);
-				} else {
-					// By full resource hash.
-					find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(resource, draw_info_matches, matches, state->call_info);
-				}
-			}
-
-			// Fuzzy candidates depend on the resource description, not the
-			// selected region. Reuse only the cache's fuzzy list here; exact
-			// matching above uses region_hash, not the cached whole-resource hash.
-			find_fuzzy_texture_overrides_for_resource(resource, matches, state->call_info);
-		}
-	}
-	else
-	{
-		find_texture_overrides_for_resource(resource, matches, state->call_info);
-	}
-
-	//COMMAND_LIST_LOG(state, "  found texture hash = %08llx\n", hash);
+	FindTextureOverridesForBoundResource(this->type, resource, state->mHackerContext,
+		stride, offset, format, state->call_info, matches);
 
 	resource->Release();
 	if (view)

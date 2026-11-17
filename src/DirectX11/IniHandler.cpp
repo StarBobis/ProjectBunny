@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdint>
+#include <cwctype>
 #include <iterator>
 #include <share.h>
 #include <string>
@@ -4843,6 +4845,153 @@ static void ParseDepthTextureParameter(const wchar_t *value, const wchar_t *key,
 	component = start[length - 1];
 }
 
+static bool ParseAutoCheckSlotIndex(const std::wstring& text, unsigned* value)
+{
+	if (!value || text.empty())
+		return false;
+
+	uint64_t parsed = 0;
+	for (const wchar_t c : text) {
+		if (c < L'0' || c > L'9')
+			return false;
+		parsed = parsed * 10 + static_cast<unsigned>(c - L'0');
+		if (parsed > UINT_MAX)
+			return false;
+	}
+
+	*value = static_cast<unsigned>(parsed);
+	return true;
+}
+
+static bool ParseAutoCheckSlotRange(const std::wstring& text, unsigned limit, unsigned* first, unsigned* last)
+{
+	const size_t colon = text.find(L':');
+	if (colon == std::wstring::npos)
+		return false;
+
+	unsigned start = 0, end = 0;
+	if (!ParseAutoCheckSlotIndex(text.substr(0, colon), &start) ||
+	    !ParseAutoCheckSlotIndex(text.substr(colon + 1), &end))
+		return false;
+	if (start > end || end >= limit)
+		return false;
+
+	*first = start;
+	*last = end;
+	return true;
+}
+
+static void AppendAutoCheckSlot(std::vector<AutoCheckTextureSlot>* slots, ResourceCopyTargetType type,
+		wchar_t shader_type, unsigned slot)
+{
+	for (const auto& existing : *slots) {
+		if (existing.type == type && existing.slot == slot &&
+		    (type != ResourceCopyTargetType::SHADER_RESOURCE || existing.shader_type == shader_type))
+			return;
+	}
+	AutoCheckTextureSlot entry;
+	entry.type = type;
+	entry.shader_type = shader_type;
+	entry.slot = slot;
+	slots->push_back(entry);
+}
+
+static bool ParseAutoCheckTextureSlotToken(const std::wstring& token, std::vector<AutoCheckTextureSlot>* slots)
+{
+	std::wstring lower = token;
+	std::transform(lower.begin(), lower.end(), lower.begin(), towlower);
+
+	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
+	wchar_t shader_type = L'\0';
+	unsigned limit = 0;
+	size_t pos = 0;
+
+	if (lower.compare(0, 3, L"ps-") == 0) {
+		type = ResourceCopyTargetType::SHADER_RESOURCE;
+		shader_type = L'p';
+		limit = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 3;
+	} else if (lower.compare(0, 3, L"vs-") == 0) {
+		type = ResourceCopyTargetType::SHADER_RESOURCE;
+		shader_type = L'v';
+		limit = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 3;
+	} else if (lower.compare(0, 3, L"cs-") == 0) {
+		type = ResourceCopyTargetType::SHADER_RESOURCE;
+		shader_type = L'c';
+		limit = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 3;
+	} else if (lower.compare(0, 2, L"vb") == 0) {
+		type = ResourceCopyTargetType::VERTEX_BUFFER;
+		limit = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 2;
+	} else if (lower == L"ib") {
+		AppendAutoCheckSlot(slots, ResourceCopyTargetType::INDEX_BUFFER, L'\0', 0);
+		return true;
+	} else {
+		return false;
+	}
+
+	if (pos >= lower.size())
+		return false;
+
+	// Shader resources spell the pipeline target as ps-tN / ps-t[a:b],
+	// vs-tN / vs-t[a:b], cs-tN / cs-t[a:b]. Consume the 't' first so the
+	// bracket check below applies to the slot index, not to the stage letter.
+	if (type == ResourceCopyTargetType::SHADER_RESOURCE) {
+		if (lower[pos] != L't')
+			return false;
+		++pos;
+		if (pos >= lower.size())
+			return false;
+	}
+
+	if (lower[pos] == L'[') {
+		if (lower.back() != L']' || lower.size() < pos + 3)
+			return false;
+		unsigned first = 0, last = 0;
+		if (!ParseAutoCheckSlotRange(lower.substr(pos + 1, lower.size() - pos - 2), limit, &first, &last))
+			return false;
+		for (unsigned slot = first; slot <= last; ++slot)
+			AppendAutoCheckSlot(slots, type, shader_type, slot);
+		return true;
+	}
+
+	unsigned slot = 0;
+	if (!ParseAutoCheckSlotIndex(lower.substr(pos), &slot) || slot >= limit)
+		return false;
+	AppendAutoCheckSlot(slots, type, shader_type, slot);
+	return true;
+}
+
+bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheckTextureSlot>* slots)
+{
+	if (!slots)
+		return false;
+
+	std::vector<AutoCheckTextureSlot> parsed;
+	size_t pos = 0;
+	while (pos < value.size()) {
+		while (pos < value.size() && iswspace(value[pos]))
+			++pos;
+		if (pos >= value.size())
+			break;
+
+		const size_t start = pos;
+		while (pos < value.size() && !iswspace(value[pos]))
+			++pos;
+		const std::wstring token = value.substr(start, pos - start);
+		if (!ParseAutoCheckTextureSlotToken(token, &parsed)) {
+			IniWarningW(L"Invalid auto_check_texture_slots entry \"%ls\"\n - [Rendering]\n", token.c_str());
+			slots->clear();
+			return false;
+		}
+	}
+
+	slots->swap(parsed);
+	return true;
+}
+
 void LoadConfigFile()
 {
     EarlyConfigRegistries previous_registries;
@@ -5079,6 +5228,12 @@ void LoadConfigFile()
     InvalidateResourceDataCaches();
     InvalidateTextureMatchSnapshots();
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
+	// Rebuild on every load; empty/absent keeps the native batch check disabled.
+	G->auto_check_texture_slots.clear();
+	if (const wstring* auto_check_slots = GetIniWstring(L"Rendering", L"auto_check_texture_slots")) {
+		LogInfo("  auto_check_texture_slots=%S\n", auto_check_slots->c_str());
+		ParseAutoCheckTextureSlots(*auto_check_slots, &G->auto_check_texture_slots);
+	}
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);
 	G->disassemble_undecipherable_custom_data = GetIniBool(L"Rendering", L"disassemble_undecipherable_custom_data", false, NULL);

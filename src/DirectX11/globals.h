@@ -411,6 +411,16 @@ static EnumName_t<const wchar_t*, InputDisableScope> InputDisableScopeNames[] = 
     {NULL, InputDisableScope::INVALID}
 };
 
+// A statically configured texture/buffer slot checked automatically by
+// [Rendering] auto_check_texture_slots. shader_type is 'p', 'v' or 'c' for
+// shader resources and '\0' for vertex/index buffers.
+struct AutoCheckTextureSlot
+{
+	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
+	unsigned slot = 0;
+	wchar_t shader_type = L'\0';
+};
+
 struct Globals
 {
 	bool gInitialized;
@@ -599,6 +609,11 @@ struct Globals
 	ShaderOverrideMap mShaderOverrideMap;
 	TextureOverrideMap mTextureOverrideMap;
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
+
+	// Rebuilt by every config load. Empty (the default) disables the native
+	// per-draw texture override check and keeps the legacy checktextureoverride
+	// path byte-for-byte unchanged.
+	std::vector<AutoCheckTextureSlot> auto_check_texture_slots;
 
 	std::unordered_map<UINT64, ShaderModelCacheEntry> mShaderModelCache;
 
