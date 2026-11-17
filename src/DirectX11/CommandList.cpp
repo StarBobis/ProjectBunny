@@ -1199,6 +1199,57 @@ bool IsAutoCheckTextureSlotCovered(const ResourceCopyTarget& target)
     return false;
 }
 
+bool DrawHasTextureOverride(ID3D11DeviceContext1* context, DrawCallInfo* call_info)
+{
+	if (!context || !call_info || call_info->type == DrawCall::Invalid ||
+		call_info->type == DrawCall::Dispatch || call_info->type == DrawCall::DispatchIndirect)
+		return false;
+	CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+	if (G->mTextureOverrideMap.empty())
+		return false;
+	// A region hash can differ from the resource hash. Keep draws with a
+	// matching region rule eligible without reading back or hashing buffers.
+	if (G->track_region_hashes) {
+		if (auto* candidates = get_fuzzy_matches_by_draw_info(call_info))
+			if (!candidates->empty())
+				return true;
+	}
+	auto matches_hash = [&](ID3D11Resource* resource) {
+		if (!resource)
+			return false;
+		uint32_t hash;
+		{
+			CriticalSectionLockGuard resources_lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+			auto info = G->mResources.find(resource);
+			if (info == G->mResources.end())
+				return false;
+			hash = info->second.hash;
+		}
+		return HasTextureOverrideForHash(hash, call_info);
+	};
+
+	Microsoft::WRL::ComPtr<ID3D11Buffer> index;
+	context->IAGetIndexBuffer(index.GetAddressOf(), nullptr, nullptr);
+	if (matches_hash(index.Get()))
+		return true;
+	ID3D11Buffer* raw_buffers[3] = {};
+	context->IAGetVertexBuffers(0, 3, raw_buffers, nullptr, nullptr);
+	Microsoft::WRL::ComPtr<ID3D11Buffer> buffers[3];
+	for (size_t i = 0; i < 3; ++i)
+		buffers[i].Attach(raw_buffers[i]);
+	for (const auto& buffer : buffers)
+		if (matches_hash(buffer.Get()))
+			return true;
+	// Texture-only mods enter through the legacy global PS-t0 check rather
+	// than an IB/VB override. Preserve that entry without testing fuzzy rules.
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+	context->PSGetShaderResources(0, 1, view.GetAddressOf());
+	Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+	if (view)
+		view->GetResource(resource.GetAddressOf());
+	return matches_hash(resource.Get());
+}
+
 static uint64_t AutoCheckTextureSlotKey(const ResourceCopyTarget& target)
 {
     uint64_t key = static_cast<uint64_t>(static_cast<uint32_t>(target.type)) << 32;
@@ -4109,6 +4160,14 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			if (state->call_info)
 				return (float)state->call_info->type;
 			return 0;
+		case ParamOverrideType::DRAW_HAS_OVERRIDE:
+			if (state->mHackerContext) {
+				const auto& scopes = state->mHackerContext->auto_check_texture_scopes;
+				for (auto it = scopes.rbegin(); it != scopes.rend(); ++it)
+					if (it->call_info == state->call_info)
+						return it->draw_has_override;
+			}
+			return DrawHasTextureOverride(state->mOrigContext1, state->call_info);
 		case ParamOverrideType::CURSOR_VISIBLE:
 			UpdateCursorInfo(state);
 			return !!(state->cursor_info.flags & CURSOR_SHOWING);
@@ -5996,8 +6055,11 @@ bool AssignmentCommand::optimise(HackerDevice *device)
 
 static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope *scope)
 {
-	if (scope)
+	if (scope) {
+		if (type == ParamOverrideType::DRAW_HAS_OVERRIDE)
+			G->draw_has_override_used = true;
 		return true;
+	}
 
 	// List of operand types allowed outside of a command list, e.g. in a
 	// [Key] / [Preset] section

@@ -5038,6 +5038,7 @@ void LoadConfigFile()
 	LogInfo("  log_level=%d\n", static_cast<int>(gLogVerbosity));
 
 	ParseIniFile(iniFile);
+	G->draw_has_override_used = false;
 	InsertBuiltInIniSections();
 
 

@@ -82,6 +82,7 @@ struct AutoCheckTextureDrawScope
 	// modify the live DrawCallInfo (e.g. VertexLimitRaise / count replacement);
 	// candidate gating and batch matching must use these original six fields.
 	DrawCallInfo original_call_info;
+	bool draw_has_override = false;
 	std::set<uint64_t> checked_slots;
 	std::set<uint64_t> auto_pass_slots;
 };

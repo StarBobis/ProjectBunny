@@ -2051,6 +2051,17 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
     return &candidates;
 }
 
+bool HasTextureOverrideForHash(uint32_t hash, DrawCallInfo* call_info)
+{
+    auto matches = G->mTextureOverrideMap.find(hash);
+    if (matches == G->mTextureOverrideMap.end())
+        return false;
+    for (auto& match : matches->second)
+        if (matches_draw_info(&match, call_info))
+            return true;
+    return false;
+}
+
 bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_info, bool region_hash_possible)
 {
     if (!resource)

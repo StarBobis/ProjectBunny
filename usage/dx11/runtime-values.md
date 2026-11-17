@@ -15,6 +15,7 @@
 | `thread_group_count_x/y/z` | 当前 dispatch 线程组数，各项写完整前缀 |
 | `indirect_offset` | 间接调用参数偏移 |
 | `draw_type` | 当前调用类型 |
+| `DRAW_HAS_OVERRIDE` | draw 开始时，IB、VB0–VB2 或 PS-t0 是否命中已加载的精确 TO 哈希与绘制范围 |
 | `scissor_left/top/right/bottom` | 裁剪矩形边界，各项写完整前缀 |
 | `rt_width`、`rt_height` | 当前渲染目标尺寸 |
 | `res_width`、`res_height` | 配置所用分辨率 |
@@ -47,3 +48,22 @@ endif
 ```
 
 计数用于限定执行频率，不是跨运行的对象标识。资源信息见[元数据](./metadata)。
+
+## 先按模组哈希筛选绘制
+
+全局 ShaderRegex 调用的检查列表可以先用 `DRAW_HAS_OVERRIDE` 筛选，再执行逐槽检查：
+
+```ini
+[CommandListSkin]
+if $costume_mods && DRAW_HAS_OVERRIDE
+    checktextureoverride = ps-t0
+    checktextureoverride = vb0
+    checktextureoverride = vb1
+    checktextureoverride = vb2
+    checktextureoverride = ib
+endif
+```
+
+条件直接检查已记录的资源哈希与 TO 的 `match_*` 绘制条件，不执行 TO 命令、不扫描模糊描述规则，也不重新计算资源哈希。IB/VB 入口保留几何模组，PS-t0 入口保留从该槽触发的纯贴图模组。其他槽位或仅有模糊规则的模组需要自己的入口，不应仅依赖这个条件。
+
+pre/post 使用同一个 draw 开始时的判断，模组随后替换 IB/VB 或修改绘制数量不会改变本次 post 的判断。每次配置重载读取新的 TO 表。开启区域哈希时，有相同绘制数量候选的 draw 会保守放行，再由原有检查确认区域哈希。

@@ -981,6 +981,8 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
 // resource hash cannot prove absence of a region-hash candidate, so the caller
 // is conservatively told to run the full path.
 bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_info, bool region_hash_possible);
+// Caller holds G; checks exact hash/draw rules without fuzzy scans or allocations.
+bool HasTextureOverrideForHash(uint32_t hash, DrawCallInfo* call_info);
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 // Takes G->mCriticalSection before mResourcesLock; call before old maps die.
 void InvalidateTextureOverrideCandidates();

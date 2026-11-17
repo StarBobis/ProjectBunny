@@ -2066,6 +2066,127 @@ void test_dx11_auto_texture_check_regression()
         "auto-tex A.4: a matching fuzzy override is not falsely skipped by the hash-only cache");
 }
 
+void test_dx11_mod_draw_filter_regression()
+{
+    using namespace dx11_slot_test;
+    AuditConfigScope config;
+    BatchDevice device;
+    D3D11_BUFFER_DESC buffer_desc{};
+    buffer_desc.ByteWidth = 256;
+    buffer_desc.BindFlags = D3D11_BIND_INDEX_BUFFER | D3D11_BIND_VERTEX_BUFFER;
+    ComPtr<ID3D11Buffer> index;
+    require_batch(SUCCEEDED(device.device->CreateBuffer(&buffer_desc, nullptr, &index)), "mod-draw: tracked IB");
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = desc.Height = 8;
+    desc.ArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> texture;
+    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &texture)), "mod-draw: tracked texture");
+    auto view = srv(device, texture.Get());
+    auto set_hash = [](ID3D11Resource* resource, uint32_t hash) {
+        CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        CriticalSectionLockGuard resources_lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        auto found = G->mResources.find(resource);
+        require_batch(found != G->mResources.end(), "mod-draw: resource tracked");
+        found->second.hash = hash;
+        found->second.texture_override_hash_valid = false;
+    };
+    set_hash(index.Get(), 0x9040e2c4);
+    set_hash(texture.Get(), 0x5a17c0de);
+    ID3D11ShaderResourceView* bound = view.Get();
+    device.context->PSSetShaderResources(1, 1, &bound);
+
+    const std::string body =
+        "global $draw_gate_hits=0\nglobal $draw_gate_posts=0\n"
+        "[ShaderOverrideDrawGate]\nhash=0000000000000000\nrun=CommandListDrawGate\n"
+        "[CommandListDrawGate]\nif CONDITION\nchecktextureoverride=ps-t1\nendif\nhandling=skip\n"
+        "[TextureOverrideDrawAnchor]\nhash=9040e2c4\nmatch_first_index=0\nmatch_index_count=6\n"
+        "[TextureOverrideDrawPayload]\nhash=5a17c0de\n"
+        "$draw_gate_hits=$draw_gate_hits+1\nib=null\npost $draw_gate_posts=$draw_gate_posts+1\n"
+        "[TextureOverrideFuzzyGate]\nmatch_type=Texture2D\nmatch_width=8\n";
+    for (unsigned sample = 0; sample < 3; ++sample) {
+        for (bool filtered : {false, true}) {
+            std::string text = body;
+            text.replace(text.find("CONDITION"), 9, filtered ? "draw_has_override" : "1");
+            config.load(text.c_str(), 0, true);
+            require_batch(G->draw_has_override_used == filtered,
+                "mod-draw: actual config parser enables filter and reload clears it");
+            Profiling::mode = Profiling::Mode::SUMMARY;
+            Profiling::texture_override_candidates_lookup_overhead.clear();
+            LARGE_INTEGER frequency{}, begin{}, end{};
+            QueryPerformanceFrequency(&frequency);
+            QueryPerformanceCounter(&begin);
+            for (unsigned i = 0; i < 2000; ++i) {
+                device.context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R16_UINT, 0);
+                device.wrapper->DrawIndexed(6, i < 20 ? 0 : 6, 0);
+                require_batch(device.wrapper->auto_check_texture_scopes.empty(), "mod-draw: scope released after draw");
+            }
+            QueryPerformanceCounter(&end);
+            const unsigned expected = filtered ? 40 : 4000; // Null VS and PS both use hash zero.
+            require_batch(command_list_globals.at(L"$draw_gate_hits").fval == expected &&
+                command_list_globals.at(L"$draw_gate_posts").fval == expected,
+                "mod-draw: only 20 matched draws reach real pre/post texture commands");
+            require_batch(Profiling::texture_override_candidates_lookup_overhead.count == expected * 2,
+                "mod-draw: rejected draws perform no full candidate lookup, even with fuzzy TOs");
+            std::printf("MOD_DRAW_PERF={\"filtered\":%s,\"sample\":%u,\"draws\":2000,\"matchedDraws\":%u,\"fullLookups\":%u,\"nsPerDraw\":%.3f}\n",
+                filtered ? "true" : "false", sample, filtered ? 20 : 2000,
+                Profiling::texture_override_candidates_lookup_overhead.count,
+                double(end.QuadPart - begin.QuadPart) * 1e9 / frequency.QuadPart / 2000);
+        }
+    }
+
+    DrawCallInfo info(DrawCall::DrawIndexed, 0, 6, 1, 0, 0, 0, nullptr, 0);
+    device.context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R16_UINT, 0);
+    require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: matching exact IB");
+    info.FirstIndex = 6;
+    require_batch(!DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: wrong draw range rejected");
+    device.context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+    require_batch(!DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: unbound IB rejected");
+    device.context->PSSetShaderResources(0, 1, &bound);
+    require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: texture-only PS-t0 mod preserved");
+    ID3D11ShaderResourceView* empty = nullptr;
+    device.context->PSSetShaderResources(0, 1, &empty);
+    const UINT stride = 4, offset = 0;
+    ID3D11Buffer* vb = index.Get();
+    info.FirstIndex = 0;
+    for (UINT slot = 0; slot < 3; ++slot) {
+        device.context->IASetVertexBuffers(slot, 1, &vb, &stride, &offset);
+        require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: each VB-only anchor preserved");
+        ID3D11Buffer* unbound = nullptr;
+        device.context->IASetVertexBuffers(slot, 1, &unbound, &stride, &offset);
+    }
+    device.context->IASetVertexBuffers(2, 1, &vb, &stride, &offset);
+    set_hash(index.Get(), 0x9040e2c5);
+    require_batch(!DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: changed resource hash is observed");
+    set_hash(index.Get(), 0x9040e2c4);
+    device.wrapper->auto_check_texture_scopes.emplace_back();
+    auto& snapshot = device.wrapper->auto_check_texture_scopes.back();
+    snapshot.call_info = &info;
+    snapshot.original_call_info = info;
+    snapshot.draw_has_override = true;
+    CommandListScope scope;
+    const std::wstring expression_text = L"draw_has_override";
+    CommandListExpression expression;
+    require_batch(expression.parse(&expression_text, nullptr, &scope) && !expression.static_evaluate(nullptr),
+        "mod-draw: expression remains dynamic");
+    info.FirstIndex = 6;
+    vb = nullptr;
+    device.context->IASetVertexBuffers(2, 1, &vb, &stride, &offset);
+    device.state.call_info = &info;
+    device.state.post = true;
+    require_batch(expression.evaluate(&device.state) == 1,
+        "mod-draw: post uses original draw decision after binding/count changes");
+    device.wrapper->auto_check_texture_scopes.pop_back();
+    G->track_region_hashes = true;
+    G->mTextureOverrideDrawIndexMap[6].push_back({0x9040e2c4, &G->mTextureOverrideMap.at(0x9040e2c4).front()});
+    require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: region rules pass conservatively");
+    G->track_region_hashes = false;
+    config.load("", 0, true);
+    Profiling::mode = Profiling::Mode::NONE;
+    clear_command_list_profiling();
+}
+
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
     {"F-003b", test_persist_write_failure_regression},
@@ -2178,6 +2299,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-293", test_dx11_hunting_shader_selection_regression},
     {"P-01", test_dx11_ini_lookup_performance},
     {"P-AUTO-TEX", test_dx11_auto_texture_check_regression},
+    {"P-MOD-DRAW", test_dx11_mod_draw_filter_regression},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
     {"F-190", test_dx11_lock_name_concurrency_regression},
