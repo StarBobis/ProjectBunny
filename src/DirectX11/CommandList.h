@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <tuple>
 #include <unordered_map>
@@ -60,6 +61,7 @@ struct ShaderResourceBatchStats {
 	unsigned om_uav_probes = 0;
 	unsigned compute_ref_hits = 0, literal_dispatches = 0;
 	unsigned graphics_ref_hits = 0;
+	unsigned alias_metadata_hits = 0;
 };
 
 class CustomShaderStateScope;
@@ -598,6 +600,17 @@ struct ResourceOriginalMetadata {
 
 class CustomResource
 {
+    struct AliasMetadata {
+        using Fields = std::tuple<UINT, UINT, UINT, DXGI_FORMAT>;
+        // The owning CustomResource keeps both objects alive.
+        ID3D11Resource* resource = nullptr;
+        ID3D11View* view = nullptr;
+        Fields input, normalized;
+        bool view_checked = false;
+        bool view_matches = false;
+    } alias_metadata;
+    std::atomic_flag alias_metadata_in_use = ATOMIC_FLAG_INIT;
+    std::atomic<bool> alias_metadata_invalidated{false};
 public:
 	wstring name;
 
@@ -672,6 +685,9 @@ public:
 	void OverrideTexDesc(D3D11_TEXTURE2D_DESC *desc);
 	void OverrideTexDesc(D3D11_TEXTURE3D_DESC *desc);
 	void OverrideOutOfBandInfo(DXGI_FORMAT *format, UINT *stride);
+	void InvalidateAliasMetadata() { alias_metadata_invalidated.store(true, std::memory_order_release); }
+	bool ResolveAliasMetadata(ID3D11Resource* source, ID3D11View* source_view, UINT* stride, UINT* offset,
+		UINT* size, DXGI_FORMAT* format, bool* view_matches, ShaderResourceBatchStats* stats);
 	void ResetRuntimeState();
 	void CopyMetadataFrom(const CustomResource& src);
 	void expire(ID3D11Device *mOrigDevice1, ID3D11DeviceContext *mOrigContext1);

@@ -358,6 +358,78 @@ void pool_srv_writeback(BatchDevice& device, Registry& registry)
             "range writeback: preserve the hole and publish successful writes on both sides");
     device.context->ClearState();
 }
+
+void material_alias_metadata(BatchDevice& device, Registry& registry)
+{
+    auto ordinary = texture(device, 0x31527394u);
+    auto& source = registry.resource(L"resourcealias_source", device, ordinary.Get());
+    auto& diffuse = registry.resource(L"resourcealias_diffuse", device);
+    auto& fx = registry.resource(L"resourcealias_fx", device);
+    CommandList first, second;
+    append(first, L"resourcealias_diffuse", L"ref resourcealias_source");
+    append(second, L"resourcealias_fx", L"ref resourcealias_source");
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.resource == ordinary.Get() &&
+        diffuse.format == DXGI_FORMAT_R8G8B8A8_UNORM && !diffuse.view,
+        "material alias: cold metadata resolves the native texture format without an explicit view");
+    source.match_dhash = 0x123456789abcdef0ull;
+    source.match_dhash_set = true;
+    require_batch(execute(second, device).alias_metadata_hits == 1 && fx.resource == ordinary.Get() &&
+        fx.format == diffuse.format && fx.match_dhash == source.match_dhash && fx.match_dhash_set,
+        "material alias: another alias reuses descriptors and receives the live match metadata");
+
+    D3D11_TEXTURE2D_DESC desc{};
+    ordinary->GetDesc(&desc);
+    desc.MipLevels = 2;
+    ComPtr<ID3D11Texture2D> mipped;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&desc, nullptr, &mipped)),
+        "material alias: create native texture with two mips");
+    auto whole_view = srv(device, mipped.Get());
+    D3D11_SHADER_RESOURCE_VIEW_DESC mip_desc{};
+    mip_desc.Format = desc.Format;
+    mip_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    mip_desc.Texture2D.MipLevels = mip_desc.Texture2D.MostDetailedMip = 1;
+    ComPtr<ID3D11ShaderResourceView> second_mip;
+    require_batch(SUCCEEDED(device.native->CreateShaderResourceView(mipped.Get(), &mip_desc, &second_mip)),
+        "material alias: create a distinct mip view");
+    assign(device, &source, mipped.Get(), whole_view.Get());
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.view == whole_view.Get(),
+        "material alias: source resource change invalidates the metadata");
+    require_batch(execute(second, device).alias_metadata_hits == 1 && fx.view == whole_view.Get(),
+        "material alias: validated source view is reused across aliases");
+    assign(device, &source, mipped.Get(), second_mip.Get());
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.view == second_mip.Get(),
+        "material alias: changing the view on the same resource preserves the new mip");
+    assign(device, &source, nullptr);
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.is_null,
+        "material alias: null source still clears the alias's visible value");
+
+    auto buffer = tracked_buffer(device, 392);
+    assign(device, &source, buffer.Get(), nullptr, 16, 64, DXGI_FORMAT_R32_UINT);
+    execute(first, device);
+    const auto prior_hash = GetRegionHash(device.wrapper.get(), buffer.Get(), 0, 16, &diffuse);
+    require_batch(prior_hash != 0, "material alias: the tracked buffer alias captures a real snapshot");
+
+    UINT changed[16];
+    std::fill_n(changed, 16, 777u);
+    device.wrapper->UpdateSubresource(buffer.Get(), 0, nullptr, changed, 0, 0);
+    const auto new_hash = GetRegionHash(device.wrapper.get(), buffer.Get(), 16, 16);
+    require_batch(new_hash && new_hash != prior_hash && execute(first, device).alias_metadata_hits == 1 &&
+        GetRegionHash(device.wrapper.get(), buffer.Get(), 0, 16, &diffuse) == new_hash,
+        "material alias: a descriptor hit still refreshes the tracked buffer snapshot after a GPU write");
+
+    source.offset = 32;
+    fx.override_format = DXGI_FORMAT_R32_FLOAT;
+    fx.override_stride = 8;
+    require_batch(execute(second, device).alias_metadata_hits == 0 && fx.offset == 32 &&
+        fx.format == DXGI_FORMAT_R32_FLOAT && fx.stride == 8,
+        "material alias: offset and destination overrides take precedence over the previous metadata");
+    fx.max_copies_per_frame = 1;
+    fx.frame_no = G->frame_no;
+    fx.copies_this_frame = 1;
+    source.offset = 0;
+    require_batch(execute(second, device).alias_metadata_hits == 0 && fx.offset == 32,
+        "material alias: quota still rejects the assignment before metadata resolution");
+}
 } // namespace
 
 void test_dx11_slot_range_regression()
@@ -397,5 +469,6 @@ void test_dx11_slot_range_regression()
     all_copy_options(device, registry);
     fetch_metadata(device, registry);
     pool_srv_writeback(device, registry);
+    material_alias_metadata(device, registry);
 
 }

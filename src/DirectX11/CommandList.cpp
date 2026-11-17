@@ -6869,6 +6869,7 @@ void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 	// won't overwrite it:
 	if (resource || view)
 		return;
+	InvalidateAliasMetadata();
 
 	Profiling::resources_created++;
 
@@ -7291,6 +7292,7 @@ void CustomResource::OverrideOutOfBandInfo(DXGI_FORMAT *format, UINT *stride)
 
 void CustomResource::ResetRuntimeState()
 {
+	InvalidateAliasMetadata();
 	handle_info.reset();
 	stride = offset = buf_size = source_stride = 0;
     buf_size_is_length = false;
@@ -10654,6 +10656,7 @@ void ResourceCopyTarget::SetResource(
 		// AddRef() and Release(), and definitely don't Release()
 		// before AddRef()
 		if (custom_resource->view != view) {
+			custom_resource->InvalidateAliasMetadata();
 			if (custom_resource->view)
 				custom_resource->view->Release();
 			custom_resource->view = view;
@@ -10662,6 +10665,7 @@ void ResourceCopyTarget::SetResource(
 		}
 
 		if (custom_resource->resource != res) {
+			custom_resource->InvalidateAliasMetadata();
 			if (custom_resource->resource)
 				custom_resource->resource->Release();
 			custom_resource->resource = res;
@@ -12900,6 +12904,43 @@ static ResourceCopyTargetType EquivTarget(ResourceCopyTargetType type)
 	return type;
 }
 
+bool CustomResource::ResolveAliasMetadata(ID3D11Resource* source, ID3D11View* source_view, UINT* stride, UINT* offset,
+    UINT* size, DXGI_FORMAT* format, bool* view_matches, ShaderResourceBatchStats* stats)
+{
+    if (resource != source || view != source_view || alias_metadata_in_use.test_and_set(std::memory_order_acquire))
+        return false;
+    const auto release_cache = [](std::atomic_flag* in_use) { in_use->clear(std::memory_order_release); };
+    const std::unique_ptr<std::atomic_flag, decltype(release_cache)> guard(&alias_metadata_in_use, release_cache);
+    if (alias_metadata_invalidated.load(std::memory_order_acquire) &&
+        alias_metadata_invalidated.exchange(false, std::memory_order_acquire))
+        alias_metadata.resource = nullptr;
+
+    const auto input = std::make_tuple(*stride, *offset, *size, *format);
+    const bool same_binding = alias_metadata.resource == source && alias_metadata.view == source_view;
+    if (same_binding && alias_metadata.input == input) {
+        std::tie(*stride, *offset, *size, *format) = alias_metadata.normalized;
+        if (stats)
+            ++stats->alias_metadata_hits;
+    } else {
+        FillInMissingInfo(ResourceCopyTargetType::CUSTOM_RESOURCE, source, source_view, stride, offset, size, format);
+        alias_metadata.input = input;
+        alias_metadata.normalized = std::make_tuple(*stride, *offset, *size, *format);
+        alias_metadata.resource = source;
+        alias_metadata.view = source_view;
+        if (!same_binding)
+            alias_metadata.view_checked = false;
+    }
+
+    if (view_matches) {
+        if (!alias_metadata.view_checked) {
+            alias_metadata.view_matches = source_view && ViewMatchesResource(source_view, source);
+            alias_metadata.view_checked = true;
+        }
+        *view_matches = alias_metadata.view_matches;
+    }
+    return true;
+}
+
 static void PublishResourceBinding(ResourceCopyTarget& destination, CommandListState* state,
     ID3D11Resource* resource, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT size,
     DeferredBinding* deferred, bool size_is_length = false, ResourceOriginalMetadata original_metadata = {},
@@ -12996,14 +13037,17 @@ void ResourceCopyOperation::CopyResourceToResource(
     // Cache selection, descriptor recreation and publication must address the
     // same element. Freeze only this invocation, after source preflight.
     ResourceCopyTarget resolved_destination;
+    CustomResource* dst_custom_resource = nullptr;
     if (effective_destination->type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
-        CustomResource* selected = effective_destination->GetCustomResource(state, true);
-        if (!selected) return;
-        resolved_destination = *effective_destination;
-        resolved_destination.SetCustomResource(selected);
-        resolved_destination.custom_resource_pool = nullptr;
-        resolved_destination.pool_dynamic_index_expression.reset();
-        effective_destination = &resolved_destination;
+        dst_custom_resource = effective_destination->GetCustomResource(state, true);
+        if (!dst_custom_resource) return;
+        if (effective_destination->custom_resource_pool) {
+            resolved_destination = *effective_destination;
+            resolved_destination.SetCustomResource(dst_custom_resource);
+            resolved_destination.custom_resource_pool = nullptr;
+            resolved_destination.pool_dynamic_index_expression.reset();
+            effective_destination = &resolved_destination;
+        }
     }
     ResourceCopyTarget& dst = *effective_destination;
     if (!src_resource) {
@@ -13011,21 +13055,17 @@ void ResourceCopyOperation::CopyResourceToResource(
         PublishResourceBinding(dst, state, nullptr, nullptr, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred);
         return;
     }
-	CustomResource* dst_custom_resource = nullptr;
-
 	ID3D11Resource** pp_cached_resource = &cached_resource;
 	ID3D11Device** pp_cached_device = NULL;
 	ResourcePool* p_resource_pool = &resource_pool;
 	ID3D11View** pp_cached_view = &cached_view;
 
-	if (dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+	if (dst_custom_resource) {
 		// If we're copying to a custom resource, use the resource &
 		// view in the CustomResource directly as the cache instead of
 		// the cache in the ResourceCopyOperation. This will reduce the
 		// number of extra resources we have floating around if copying
 		// something to a single custom resource from multiple shaders.
-		dst_custom_resource = dst.GetCustomResource(state, true);
-
 		pp_cached_resource = &dst_custom_resource->resource;
 		pp_cached_device = &dst_custom_resource->device;
 		p_resource_pool = &dst_custom_resource->resource_pool;
@@ -13055,9 +13095,23 @@ void ResourceCopyOperation::CopyResourceToResource(
         (dst_custom_resource && (preserve_source_view || (!(options & ResourceCopyOptions::COPY_MASK) && src_view)) &&
             (dst_custom_resource->override_format != static_cast<DXGI_FORMAT>(-1) || dst_custom_resource->override_stride != -1));
 	bool buffer_cannot_bind_om_target = false;
-	FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format,
-		plain_shader_ref && dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && !deferred ?
-		&buffer_cannot_bind_om_target : nullptr);
+    bool alias_metadata_resolved = false;
+    bool alias_view_matches = false;
+    if (dst_custom_resource && options == ResourceCopyOptions::REFERENCE && !selected_window &&
+        src.type == ResourceCopyTargetType::CUSTOM_RESOURCE && !src.custom_resource_pool && !preserve_source_view &&
+        src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE && !G->analyse_frame) {
+        if (auto* source = src.GetCustomResource(nullptr)) {
+            const bool check_view = src_view && dst_custom_resource->override_format == static_cast<DXGI_FORMAT>(-1) &&
+                dst_custom_resource->override_stride == -1;
+            alias_metadata_resolved = source->ResolveAliasMetadata(src_resource, src_view, &stride, &offset,
+                &buf_src_size, &format, check_view ? &alias_view_matches : nullptr, state->slot_batch_stats);
+        }
+    }
+    if (!alias_metadata_resolved) {
+        FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format,
+            plain_shader_ref && dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && !deferred ?
+            &buffer_cannot_bind_om_target : nullptr);
+    }
 	if (selected_window) {
 		offset = selected_offset;
 		buf_src_size = selected_size;
@@ -13082,6 +13136,8 @@ void ResourceCopyOperation::CopyResourceToResource(
 
 
     if (options & ResourceCopyOptions::COPY_MASK) {
+        if (dst_custom_resource)
+            dst_custom_resource->InvalidateAliasMetadata();
         ResourceCopyTarget copy_source = src;
         if (source_size_is_length) copy_source.evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE_REGION;
         if (!RecreateCompatibleResource(&ini_line, &copy_source, &dst, src_resource, pp_cached_resource,
@@ -13092,6 +13148,8 @@ void ResourceCopyOperation::CopyResourceToResource(
     }
     // Commit metadata and cached-view changes only after acquisition succeeds.
     if (discard_cached_view && *pp_cached_view) {
+        if (dst_custom_resource)
+            dst_custom_resource->InvalidateAliasMetadata();
         (*pp_cached_view)->Release();
         *pp_cached_view = nullptr;
     }
@@ -13137,11 +13195,17 @@ void ResourceCopyOperation::CopyResourceToResource(
         const bool accepts_source_view = !dst_custom_resource ||
             (dst_custom_resource->override_format == static_cast<DXGI_FORMAT>(-1) &&
              dst_custom_resource->override_stride == -1);
-        if (!selected_window && accepts_source_view)
-            dst_view = UsableRefView(&dst, state, src_view, dst_resource);
+        if (!selected_window && accepts_source_view) {
+            if (alias_metadata_resolved)
+                dst_view = alias_view_matches ? src_view : nullptr;
+            else
+                dst_view = UsableRefView(&dst, state, src_view, dst_resource);
+        }
         if (!dst_view && *pp_cached_view) {
             dst_view = UsableRefView(&dst, state, *pp_cached_view, dst_resource);
             if (!dst_view) {
+                if (dst_custom_resource)
+                    dst_custom_resource->InvalidateAliasMetadata();
                 (*pp_cached_view)->Release(); *pp_cached_view = nullptr;
             }
         }
@@ -13200,6 +13264,8 @@ out_release:
 
 	if ((options & ResourceCopyOptions::NO_VIEW_CACHE || src.forbid_view_cache) && *pp_cached_view)
 	{
+		if (dst_custom_resource)
+			dst_custom_resource->InvalidateAliasMetadata();
 		(*pp_cached_view)->Release();
 		*pp_cached_view = NULL;
 	}
