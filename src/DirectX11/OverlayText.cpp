@@ -116,25 +116,28 @@ void OverlayTextFont::SetViewport(unsigned newWidth, unsigned newHeight)
     width = newWidth; height = newHeight;
 }
 
-OverlayTextFont::Entry& OverlayTextFont::Get(const wchar_t* text)
+OverlayTextFont::Entry& OverlayTextFont::Get(const wchar_t* text, bool wrap)
 {
-    const std::wstring key = text ? text : L"";
+    std::wstring key = text ? text : L"";
+    const auto length = static_cast<int>(key.size());
+    // Inputs are NUL-terminated. An extra code unit distinguishes cache layouts.
+    if (!wrap) key.push_back(L'\0');
     auto found = entries.find(key);
     if (found != entries.end()) {
         ages.splice(ages.end(), ages, found->second.age);
         return found->second;
     }
     GdiTextSurface surface(family.c_str(), fontHeight, bold);
-    const UINT flags = DT_WORDBREAK | DT_NOPREFIX | DT_EDITCONTROL | DT_EXPANDTABS;
+    const UINT flags = (wrap ? DT_WORDBREAK : 0) | DT_NOPREFIX | DT_EDITCONTROL | DT_EXPANDTABS;
     RECT measured = {0, 0, static_cast<LONG>(width > 4 ? width - 4 : 1), 0};
-    if (!key.empty() && !DrawTextW(surface.dc, key.c_str(), static_cast<int>(key.size()), &measured, flags | DT_CALCRECT))
+    if (length && !DrawTextW(surface.dc, key.c_str(), length, &measured, flags | DT_CALCRECT))
         throw std::runtime_error("Overlay GDI text measurement failed");
     const UINT pixelsWide = (std::max)(1u, (std::min)(width, static_cast<UINT>((std::max)(0L, measured.right)) + 4));
     const UINT pixelsHigh = (std::max)(1u, (std::min)(height, static_cast<UINT>((std::max)(0L, measured.bottom)) + 4));
     surface.CreateBitmap(pixelsWide, pixelsHigh);
     RECT bounds = {2, 2, static_cast<LONG>(pixelsWide > 2 ? pixelsWide - 2 : pixelsWide), static_cast<LONG>(pixelsHigh)};
-    if (!key.empty() && pixelsWide > 4 && pixelsHigh > 4 &&
-        !DrawTextW(surface.dc, key.c_str(), static_cast<int>(key.size()), &bounds, flags))
+    if (length && pixelsWide > 4 && pixelsHigh > 4 &&
+        !DrawTextW(surface.dc, key.c_str(), length, &bounds, flags))
         throw std::runtime_error("Overlay GDI text drawing failed");
     if (!GdiFlush()) throw std::runtime_error("Overlay GDI flush failed");
     std::vector<uint8_t> pixels(static_cast<size_t>(pixelsWide) * pixelsHigh * 4);
@@ -168,17 +171,17 @@ OverlayTextFont::Entry& OverlayTextFont::Get(const wchar_t* text)
     } catch (...) { ages.pop_back(); throw; }
 }
 
-DirectX::XMVECTOR OverlayTextFont::MeasureString(const wchar_t* text)
+DirectX::XMVECTOR OverlayTextFont::MeasureString(const wchar_t* text, bool wrap)
 {
     std::lock_guard<std::mutex> guard(mutex);
-    const auto& entry = Get(text);
+    const auto& entry = Get(text, wrap);
     return DirectX::XMVectorSet(entry.size.x, entry.size.y, 0, 0);
 }
 
 void OverlayTextFont::DrawString(DirectX::SpriteBatch* batch, const wchar_t* text,
-    const DirectX::XMFLOAT2& position, DirectX::FXMVECTOR color)
+    const DirectX::XMFLOAT2& position, DirectX::FXMVECTOR color, bool wrap)
 {
     std::lock_guard<std::mutex> guard(mutex);
-    auto& entry = Get(text);
+    auto& entry = Get(text, wrap);
     batch->Draw(entry.texture.Get(), position, nullptr, color);
 }

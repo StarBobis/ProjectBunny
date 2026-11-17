@@ -102,6 +102,41 @@ void ClearBackbuffer(BatchDevice& device, IDXGISwapChain* chain)
     const float clear[] = { 0.025f, 0.035f, 0.06f, 1 };
     device.context->ClearRenderTargetView(view.Get(), clear);
 }
+
+void TestLongProfilingReport(BatchDevice& device, HWND window)
+{
+    auto chain = CreateTestChain(device, window, DXGI_FORMAT_R8G8B8A8_UNORM);
+    Overlay overlay(device.device, device.wrapper.get(), chain.Get());
+    ClearNotices();
+    const auto mode = Profiling::mode.load();
+    const auto freeze = Profiling::freeze;
+    auto previous = std::move(Profiling::text);
+    std::wstring report = L"Performance Monitor (Top Commands):\n";
+    for (unsigned i = 0; i < 512; ++i) {
+        report += L"2265 6856.00us 0.067851 | 75 639.00us 0.006319 [ShaderOverride\\Mods\\新建文件夹\\";
+        report += std::to_wstring(i);
+        report += L"\\角色替换与纹理覆盖测试\\角色替换与纹理覆盖测试.ini\\DragViewportLayoutProbe] run = commandlist\n";
+    }
+    Profiling::text = report;
+    Profiling::mode = Profiling::Mode::TOP_COMMANDS;
+    Profiling::freeze = true;
+    ClearBackbuffer(device, chain.Get());
+    const auto start = std::chrono::steady_clock::now();
+    overlay.DrawOverlay();
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("Top Commands WARP, 512 UTF-16 rows: first DrawOverlay %.3f ms\n", elapsed);
+    require_batch(Profiling::text == report, "overlay: full frozen report remains available for logging");
+    const auto rendered = overlay.mFontProfiling->Rasterizations();
+    require_batch(rendered == 1, "overlay: profiling text was rasterized");
+    overlay.DrawOverlay();
+    require_batch(overlay.mFontProfiling->Rasterizations() == rendered, "overlay: stable profiling text reuses the raster");
+    overlay.mFontProfiling->MeasureString(report.c_str(), false);
+    require_batch(overlay.mFontProfiling->Rasterizations() == rendered + 1,
+        "overlay: a long ranking must not be sent in full to the font renderer");
+    Profiling::mode = mode;
+    Profiling::freeze = freeze;
+    Profiling::text = std::move(previous);
+}
 }
 
 void test_dx11_overlay_text_regression()
@@ -231,6 +266,8 @@ void test_dx11_overlay_text_regression()
         ++G->frame_no; ClearNotices();
         overlay.DrawOverlay();
     }
+    TestLongProfilingReport(device, window.window);
+
     // Separate renderer lifetime and device recreation.
     {
         BatchDevice replacement;

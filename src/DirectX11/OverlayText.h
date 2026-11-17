@@ -33,13 +33,13 @@ class OverlayTextFont {
     size_t cachedBytes = 0;
     size_t rasterizations = 0;
     unsigned width = 1920, height = 1024;
-    Entry& Get(const wchar_t* text);
+    Entry& Get(const wchar_t* text, bool wrap);
 public:
     OverlayTextFont(ID3D11Device* device, const wchar_t* family, float size, bool bold = false);
     void SetViewport(unsigned width, unsigned height);
-    DirectX::XMVECTOR MeasureString(const wchar_t* text);
+    DirectX::XMVECTOR MeasureString(const wchar_t* text, bool wrap = true);
     void DrawString(DirectX::SpriteBatch* batch, const wchar_t* text,
-        const DirectX::XMFLOAT2& position, DirectX::FXMVECTOR color);
+        const DirectX::XMFLOAT2& position, DirectX::FXMVECTOR color, bool wrap = true);
     size_t CacheBytes() const { std::lock_guard<std::mutex> guard(mutex); return cachedBytes; }
     size_t CacheEntries() const { std::lock_guard<std::mutex> guard(mutex); return entries.size(); }
     size_t Rasterizations() const { std::lock_guard<std::mutex> guard(mutex); return rasterizations; }

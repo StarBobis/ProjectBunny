@@ -18,8 +18,10 @@
 #include "HackerDevice.h"
 #include "HackerContext.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <atomic>
+#include <string_view>
 
 #define MAX_SIMULTANEOUS_NOTICES 10
 
@@ -737,16 +739,51 @@ void Overlay::DrawNotices(float *y)
 
 }
 
-void Overlay::DrawProfiling(float *y)
+static constexpr size_t maxProfilingRows = 48;
+
+static std::wstring ProfilingReportPreview(std::wstring_view report)
 {
-	Vector2 strSize;
+	constexpr size_t maxLineLength = 240;
+	std::wstring visible;
+	for (size_t row = 0; row < maxProfilingRows && !report.empty(); ++row) {
+		const auto newline = report.find(L'\n');
+		auto line = report.substr(0, newline);
+		if (row) visible.push_back(L'\n');
+		if (line.size() > maxLineLength) {
+			line = line.substr(0, maxLineLength - 1);
+			if (line.back() >= 0xd800 && line.back() <= 0xdbff) line.remove_suffix(1);
+			visible.append(line);
+			visible.push_back(L'\x2026');
+		} else {
+			visible.append(line);
+		}
+		if (newline == std::wstring_view::npos) break;
+		report.remove_prefix(newline + 1);
+	}
+	return visible;
+}
 
-	Profiling::update_txt();
+void Overlay::DrawProfiling(float y, std::wstring& visible, bool wrap)
+{
+	if (!wrap) {
+		constexpr float rowHeight = 18.0f;
+		const float rowsOnScreen = (static_cast<float>(mResolution.y) - y) / rowHeight;
+		const auto rows = static_cast<size_t>((std::clamp)(rowsOnScreen, 0.0f, static_cast<float>(maxProfilingRows)));
+		if (!rows) return;
+		size_t line = 0;
+		for (size_t row = 0; row < rows; ++row) {
+			line = visible.find(L'\n', line);
+			if (line == std::wstring::npos) break;
+			++line;
+		}
+		if (line != std::wstring::npos) visible.resize(line - 1);
+	}
+	if (visible.empty()) return;
 
-	strSize = mFontProfiling->MeasureString(Profiling::text.c_str());
-	DrawRectangle(0, *y, strSize.x + 3, strSize.y, 0, 0, 0, 0.75);
+	Vector2 strSize = mFontProfiling->MeasureString(visible.c_str(), wrap);
+	DrawRectangle(0, y, strSize.x + 3, strSize.y, 0, 0, 0, 0.75);
 
-	mFontProfiling->DrawString(mSpriteBatch.get(), Profiling::text.c_str(), Vector2(0, *y), DirectX::Colors::Goldenrod);
+	mFontProfiling->DrawString(mSpriteBatch.get(), visible.c_str(), Vector2(0, y), DirectX::Colors::Goldenrod, wrap);
 }
 
 static void CreateInfoString(wchar_t* info)
@@ -759,6 +796,21 @@ static void CreateInfoString(wchar_t* info)
 
 void Overlay::DrawOverlay(void)
 {
+	std::wstring profilingText;
+	bool wrapProfilingText = true;
+	if (Profiling::mode != Profiling::Mode::NONE) {
+		// A command list can draw the overlay while holding the global lock.
+		// Take the snapshot before acquiring drawMutex to keep that lock order.
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+		const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+		if (mode != Profiling::Mode::NONE) {
+			Profiling::update_txt();
+			wrapProfilingText = mode != Profiling::Mode::TOP_COMMANDS && mode != Profiling::Mode::TOP_COMMAND_LISTS;
+			// DrawTextW measures its entire input before clipping the texture.
+			profilingText = wrapProfilingText ? Profiling::text : ProfilingReportPreview(Profiling::text);
+		}
+	}
+
     std::lock_guard<std::mutex> drawGuard(drawMutex);
 	Profiling::State profiling_state;
 	HRESULT hr;
@@ -808,8 +860,8 @@ void Overlay::DrawOverlay(void)
 			if (has_notice)
 				DrawNotices(&y);
 
-			if (Profiling::mode != Profiling::Mode::NONE)
-				DrawProfiling(&y);
+			if (!profilingText.empty())
+				DrawProfiling(y, profilingText, wrapProfilingText);
 		}
 		mSpriteBatch->End();
 	}
