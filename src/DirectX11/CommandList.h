@@ -63,6 +63,7 @@ struct ShaderResourceBatchStats {
 	unsigned literal_indexed_draws = 0;
 	unsigned graphics_ref_hits = 0;
 	unsigned alias_metadata_hits = 0;
+	unsigned store_readback_maps = 0, store_readback_bytes = 0;
 };
 
 class CustomShaderStateScope;
@@ -1355,6 +1356,7 @@ private:
 };
 
 void merge_shader_resource_batches(CommandList* command_list);
+void merge_store_readbacks(CommandList* command_list);
 
 // Cache entries are leased exclusively to one invocation. No command retains
 // a temporary state/sink; driver calls happen outside the cache mutex.
@@ -1886,6 +1888,8 @@ public:
 	void run(CommandListState*) override;
 };
 
+struct StoreReadbackPair;
+
 class StoreCommand : public CommandListCommand {
 public:
 	ResourceCopyTarget src;
@@ -1896,6 +1900,7 @@ public:
 	wstring ini_section;
 
 	void run(CommandListState*) override;
+	void RunWithReadback(CommandListState*, StoreReadbackPair*);
 	void SetOutputValue(CommandListState*, float);
 };
 
