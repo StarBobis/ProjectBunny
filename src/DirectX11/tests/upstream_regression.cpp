@@ -986,8 +986,11 @@ int main(int argc, char** argv)
         return run_dx11_initialization_gate_case(argv[2], argv[3]);
     const char* audit_item = nullptr;
     if (argc == 3 && !std::strcmp(argv[1], "--audit-item")) audit_item = argv[2];
-    else if (!(argc == 1 || (argc == 2 && !std::strcmp(argv[1], "--full")))) {
-        std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN]\n", stderr);
+    else if (!(argc == 1 || (argc == 2 &&
+        (!std::strcmp(argv[1], "--full") || !std::strcmp(argv[1], "--texture-match-hooked") ||
+         !std::strcmp(argv[1], "--texture-match") || !std::strcmp(argv[1], "--overlay-text") ||
+         !std::strcmp(argv[1], "--shader-regex-exclusions"))))) {
+        std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN | --texture-match | --texture-match-hooked | --overlay-text | --shader-regex-exclusions]\n", stderr);
         return EXIT_FAILURE;
     }
     RegressionTlsScope runtime_tls;

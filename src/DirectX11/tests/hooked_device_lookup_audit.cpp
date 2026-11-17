@@ -3,6 +3,10 @@
 #include "hook_install_audit_support.h"
 #include "../DLLMainHook.h"
 
+// This copy uses a fake hook manager. Never expose it as the real entry points
+// used by HackerDevice and native integration tests in the same executable.
+#define hook_device audit_install_hook_device
+#define lookup_hooked_device audit_lookup_hooked_device
 #undef InitializeCriticalSectionPretty
 #define InitializeCriticalSectionPretty dx11_hook_install_audit::install_gate_enter
 #define LeaveCriticalSection dx11_hook_lookup_audit::leave_and_pause

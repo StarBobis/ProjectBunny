@@ -209,9 +209,14 @@ if(BUILD_TESTING)
     list(APPEND DX11_REGRESSION_SOURCES tests/hacker_device_audit_regression.cpp)
     set_source_files_properties(tests/hacker_device_audit_regression.cpp PROPERTIES
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/HackerDevice.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)HookedContext\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/hooked_context_native_regression.cpp)
+    set_source_files_properties(tests/hooked_context_native_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/HookedContext.cpp")
     foreach(component Context Device)
         string(TOLOWER "${component}" component_lower)
-        list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)Hooked${component}\\.cpp$")
+        # Keep real hooks for native WARP integration. The deterministic audit
+        # copies use distinct entry points and cannot replace production hooks.
         list(APPEND DX11_REGRESSION_SOURCES "tests/hooked_${component_lower}_lookup_audit.cpp")
         set_source_files_properties("tests/hooked_${component_lower}_lookup_audit.cpp" PROPERTIES
             OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Hooked${component}.cpp")
@@ -371,8 +376,16 @@ if(BUILD_TESTING)
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/DX11Version.cpp")
     target_include_directories(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,INCLUDE_DIRECTORIES>>)
+    add_executable(dx11_loader_test_host "${CMAKE_SOURCE_DIR}/模拟环境/src/dx11_sim_host.cpp")
+    target_compile_features(dx11_loader_test_host PRIVATE cxx_std_17)
+    set_target_msvc_options(dx11_loader_test_host)
+    set_target_common_definitions(dx11_loader_test_host)
+    target_link_libraries(dx11_loader_test_host PRIVATE user32)
+    add_dependencies(dx11_upstream_regression dx11_loader_test_host)
     target_compile_definitions(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,COMPILE_DEFINITIONS>>
+        DX11_LOADER_TEST_HOST="$<TARGET_FILE:dx11_loader_test_host>"
+        DX11_LOADER_TEST_DLL="$<TARGET_FILE:DirectX11>"
         F281_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/f281"
         F126_FIXTURE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/f126/F-126-vs3-dcl-c0.txt")
     target_link_libraries(dx11_upstream_regression PRIVATE

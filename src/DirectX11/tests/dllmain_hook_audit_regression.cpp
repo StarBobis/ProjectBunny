@@ -132,7 +132,7 @@ class LoaderInputFixture {
     LoaderImportScope<decltype(&HeapAlloc)> allocate{__imp_HeapAlloc, loader_allocate};
     LoaderImportScope<decltype(&HeapFree)> free{__imp_HeapFree, loader_free};
 public:
-    std::filesystem::path repository, directory, path, proxy, profile_directory, profile_host;
+    std::filesystem::path directory, path, proxy, profile_directory, profile_host;
     HMODULE owner = GetModuleHandleW(L"kernel32.dll");
     std::string executable_name;
     LoaderInputFixture()
@@ -141,12 +141,9 @@ public:
         require_batch(owner && GetModuleFileNameW(nullptr, executable, MAX_PATH) &&
             GetModuleFileNameW(owner, module, MAX_PATH), "F163: real executable/module path identities");
         executable_name = std::filesystem::path(executable).filename().u8string();
-        repository = std::filesystem::canonical(executable).parent_path();
-        while (!std::filesystem::exists(repository / L"AGENTS.md")) {
-            require_batch(repository.parent_path() != repository, "F163: find fixture workspace");
-            repository = repository.parent_path();
-        }
-        const auto build = std::filesystem::canonical(repository / L"模拟环境" / L"build");
+        // Stay inside the regression process's owned directory. CMake supplies
+        // the real component paths; no separate simulator build is required.
+        const auto build = std::filesystem::canonical(executable).parent_path();
         directory = build / (L"F163-loader-" + std::to_wstring(GetCurrentProcessId()));
         require_batch(directory.is_absolute() && std::filesystem::create_directory(directory) &&
             std::filesystem::canonical(directory).parent_path() == build, "F163: exclusive absolute fixture path stays in this worktree's build");
@@ -232,9 +229,8 @@ public:
     }
     void components()
     {
-        const auto build = repository / L"模拟环境" / L"build";
-        const auto host = build / L"tools" / L"dx11_sim_host.exe";
-        const auto candidate = build / L"candidate" / L"src" / L"DirectX11" / L"d3d11.dll";
+        const auto host = std::filesystem::u8path(DX11_LOADER_TEST_HOST);
+        const auto candidate = std::filesystem::u8path(DX11_LOADER_TEST_DLL);
         require_batch(CopyFileW(candidate.c_str(), proxy.c_str(), TRUE) != FALSE,
             "F163: copy the actual built production DLL into the owned outside-directory fixture");
         component_case(host, L"loader-size-rejection");

@@ -231,6 +231,7 @@ void test_parser_failures(ID3DBlob* code)
 }
 
 class BindingEnvironment {
+    ShaderMap saved_shaders;
     UINT hunting = G->hunting;
     ShaderHashType hash_type = G->shader_hash_type;
     bool export_shaders = G->EXPORT_SHADERS, export_fixed = G->EXPORT_FIXED,
@@ -256,9 +257,13 @@ public:
         G->shader_hash_type = ShaderHashType::FNV;
         G->EXPORT_SHADERS = G->EXPORT_FIXED = G->EXPORT_BINARY = G->CACHE_SHADERS = false;
         G->EXPORT_HLSL = 0;
+        // Shader handles from earlier cases may have been released and reused.
+        // Keep this fixture's raw native shaders outside any prior registry.
+        saved_shaders.swap(G->mShaders);
     }
     ~BindingEnvironment()
     {
+        saved_shaders.swap(G->mShaders);
         G->hunting = hunting;
         G->shader_hash_type = hash_type;
         G->EXPORT_SHADERS = export_shaders;
