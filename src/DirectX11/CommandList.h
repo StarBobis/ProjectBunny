@@ -864,7 +864,8 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 
     RESOURCE_ORIGINAL_FORMAT = 0x04000000,
     RESOURCE_HAMMING_DISTANCE = 0x08000000,
-	RESOURCE_MASK          = 0x0c7e01ff,
+    RESOURCE_TO_CANDIDATE = 0x10000000,
+	RESOURCE_MASK          = 0x1c7e01ff,
 
 	// POOL
 	POOL_IDENTITY          = 0b00000000000000000000001000000000,
@@ -907,6 +908,7 @@ static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopy
 	{L"ResourceBindFlags", ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS},
     {L"ResourceOriginalFormat", ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT},
     {L"ResourceHammingDistance", ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE},
+    {L"ResourceTOCandidate", ResourceCopyTargetEvaluationMode::RESOURCE_TO_CANDIDATE},
 
 	{L"PoolIdentity", ResourceCopyTargetEvaluationMode::POOL_IDENTITY},
 	{L"PoolSize", ResourceCopyTargetEvaluationMode::POOL_SIZE},
@@ -1116,6 +1118,7 @@ public:
 	float GetResourceArray(CommandListState* state);
 	float GetResourceMips(CommandListState* state);
 	float GetResourceHammingDistance(CommandListState* state);
+	float GetResourceTOCandidate(CommandListState* state);
 	D3D11_BIND_FLAG GetResourceBindFlags(CommandListState* state);
 	float GetPoolElementLastFrame(CommandListState* state);
 
@@ -1156,10 +1159,6 @@ void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Res
 // True when `target` is a plain static slot covered by the current
 // auto_check_texture_slots configuration. Used by the config-time merge pass.
 bool IsAutoCheckTextureSlotCovered(const ResourceCopyTarget& target);
-
-// Exact mod hashes on the original draw's IB/VB0-2 or PS-t0. Fuzzy texture
-// rules do not qualify an otherwise unrelated draw.
-bool DrawHasTextureOverride(ID3D11DeviceContext1* context, DrawCallInfo* call_info);
 
 enum class ResourceCopyOptions {
 	INVALID         = 0,
@@ -1525,7 +1524,6 @@ enum class ParamOverrideType {
 	THREAD_GROUP_COUNT_Z,
 	INDIRECT_OFFSET,
 	DRAW_TYPE,
-	DRAW_HAS_OVERRIDE,
 	CURSOR_VISIBLE,
 	CURSOR_SCREEN_X, // Cursor in screen coordinates in pixels
 	CURSOR_SCREEN_Y,
@@ -1570,7 +1568,6 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"thread_group_count_z", ParamOverrideType::THREAD_GROUP_COUNT_Z},
 	{L"indirect_offset", ParamOverrideType::INDIRECT_OFFSET},
 	{L"draw_type", ParamOverrideType::DRAW_TYPE},
-	{L"draw_has_override", ParamOverrideType::DRAW_HAS_OVERRIDE},
 	{L"cursor_showing", ParamOverrideType::CURSOR_VISIBLE},
 	{L"cursor_screen_x", ParamOverrideType::CURSOR_SCREEN_X},
 	{L"cursor_screen_y", ParamOverrideType::CURSOR_SCREEN_Y},

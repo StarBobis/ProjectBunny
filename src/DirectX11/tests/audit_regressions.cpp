@@ -2066,126 +2066,302 @@ void test_dx11_auto_texture_check_regression()
         "auto-tex A.4: a matching fuzzy override is not falsely skipped by the hash-only cache");
 }
 
-void test_dx11_mod_draw_filter_regression()
+extern "C" size_t dx11_audit_context1_vtable_entries(void);
+extern "C" size_t dx11_candidate_ps_get_slot(void);
+extern "C" size_t dx11_candidate_vb_get_slot(void);
+extern "C" size_t dx11_candidate_ib_get_slot(void);
+
+namespace {
+// Observe native binding queries without replacing their results or semantics.
+class CandidateBindingSpy {
+    using PSGet = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, UINT, UINT, ID3D11ShaderResourceView**);
+    using VBGet = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, UINT, UINT, ID3D11Buffer**, UINT*, UINT*);
+    using IBGet = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11Buffer**, DXGI_FORMAT*, UINT*);
+    ID3D11DeviceContext1* context;
+    void** original;
+    std::vector<void*> table;
+    static thread_local CandidateBindingSpy* active;
+    static void STDMETHODCALLTYPE ps(ID3D11DeviceContext1* self, UINT first, UINT count, ID3D11ShaderResourceView** views)
+    {
+        ++active->ps_calls; active->ps_first = first; active->ps_count = count;
+        reinterpret_cast<PSGet>(active->original[dx11_candidate_ps_get_slot()])(self, first, count, views);
+    }
+    static void STDMETHODCALLTYPE vb(ID3D11DeviceContext1* self, UINT first, UINT count, ID3D11Buffer** buffers, UINT* strides, UINT* offsets)
+    {
+        ++active->vb_calls;
+        reinterpret_cast<VBGet>(active->original[dx11_candidate_vb_get_slot()])(self, first, count, buffers, strides, offsets);
+    }
+    static void STDMETHODCALLTYPE ib(ID3D11DeviceContext1* self, ID3D11Buffer** buffer, DXGI_FORMAT* format, UINT* offset)
+    {
+        ++active->ib_calls;
+        reinterpret_cast<IBGet>(active->original[dx11_candidate_ib_get_slot()])(self, buffer, format, offset);
+    }
+public:
+    unsigned ps_calls = 0, vb_calls = 0, ib_calls = 0, ps_first = 0, ps_count = 0;
+    explicit CandidateBindingSpy(ID3D11DeviceContext1* value) : context(value), original(*reinterpret_cast<void***>(value)),
+        table(original, original + dx11_audit_context1_vtable_entries())
+    {
+        dx11_slot_test::require_batch(!active, "candidate: one native spy per thread");
+        table[dx11_candidate_ps_get_slot()] = reinterpret_cast<void*>(&ps);
+        table[dx11_candidate_vb_get_slot()] = reinterpret_cast<void*>(&vb);
+        table[dx11_candidate_ib_get_slot()] = reinterpret_cast<void*>(&ib);
+        active = this;
+        *reinterpret_cast<void***>(context) = table.data();
+    }
+    ~CandidateBindingSpy() { *reinterpret_cast<void***>(context) = original; active = nullptr; }
+};
+thread_local CandidateBindingSpy* CandidateBindingSpy::active = nullptr;
+
+struct CandidatePerfWorkload {
+    const char* name;
+    unsigned matches;
+    bool has_rules, range_miss, fuzzy;
+};
+constexpr CandidatePerfWorkload candidate_workloads[] = {
+    {"hash_miss", 0, true, false, false},
+    {"sparse_hash", 20, true, false, false},
+    {"all_hit", 2000, true, false, false},
+    {"no_rules", 0, false, false, false},
+    {"range_miss", 0, true, true, false},
+    {"sparse_with_fuzzy", 20, true, false, true},
+};
+}
+
+
+void test_dx11_to_candidate_regression()
 {
     using namespace dx11_slot_test;
     AuditConfigScope config;
     BatchDevice device;
+    DrawCallInfo info(DrawCall::DrawIndexed, 9, 6, 3, 2, 0, 4, nullptr, 0);
+    device.state.call_info = &info;
     D3D11_BUFFER_DESC buffer_desc{};
     buffer_desc.ByteWidth = 256;
     buffer_desc.BindFlags = D3D11_BIND_INDEX_BUFFER | D3D11_BIND_VERTEX_BUFFER;
-    ComPtr<ID3D11Buffer> index;
-    require_batch(SUCCEEDED(device.device->CreateBuffer(&buffer_desc, nullptr, &index)), "mod-draw: tracked IB");
+    ComPtr<ID3D11Buffer> buffer;
+    require_batch(SUCCEEDED(device.device->CreateBuffer(&buffer_desc, nullptr, &buffer)), "candidate: tracked buffer");
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = desc.Height = 8;
     desc.ArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     ComPtr<ID3D11Texture2D> texture;
-    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &texture)), "mod-draw: tracked texture");
+    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &texture)), "candidate: tracked texture");
     auto view = srv(device, texture.Get());
     auto set_hash = [](ID3D11Resource* resource, uint32_t hash) {
         CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
         CriticalSectionLockGuard resources_lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
         auto found = G->mResources.find(resource);
-        require_batch(found != G->mResources.end(), "mod-draw: resource tracked");
+        require_batch(found != G->mResources.end(), "candidate: registered resource");
         found->second.hash = hash;
-        found->second.texture_override_hash_valid = false;
     };
-    set_hash(index.Get(), 0x9040e2c4);
     set_hash(texture.Get(), 0x5a17c0de);
-    ID3D11ShaderResourceView* bound = view.Get();
-    device.context->PSSetShaderResources(1, 1, &bound);
+    set_hash(buffer.Get(), 0x9040e2c4);
+    const char* exact =
+        "global $candidate_commands=0\nglobal $candidate_slot=127\n"
+        "[TextureOverrideCandidateTexture]\nhash=5a17c0de\nfilter_index=0\n"
+        "match_index_count=6\nmatch_first_index=0\nmatch_vertex_count=9\n"
+        "match_first_vertex=2\nmatch_instance_count=3\nmatch_first_instance=4\n"
+        "$candidate_commands=$candidate_commands+1\npost $candidate_commands=$candidate_commands+1\n"
+        "[TextureOverrideCandidateBuffer]\nhash=9040e2c4\nmatch_first_index=0\n";
+    config.load(exact, 0, true);
+    CommandListScope scope;
+    const std::wstring ini_namespace;
+    auto evaluate = [&](const std::wstring& text) {
+        CommandListExpression expression;
+        if (!expression.parse(&text, &ini_namespace, &scope))
+            throw std::runtime_error("candidate: parse resource expression " + std::string(text.begin(), text.end()));
+        require_batch(!expression.static_evaluate(nullptr), "candidate: query is dynamic");
+        return expression.evaluate(&device.state);
+    };
+    for (const wchar_t stage : {L'p', L'v', L'c', L'h', L'd', L'g'}) {
+        set_slot(device, stage, 127, view.Get());
+        const std::wstring target = std::wstring(1, stage) + L"s-t127";
+        require_batch(evaluate(target + L"->tocandidate") == 1, "candidate: any shader stage/slot can be selected");
+        set_slot(device, stage, 127, nullptr);
+        require_batch(evaluate(target + L"->tocandidate") == 0, "candidate: unbound slot");
+    }
+    set_slot(device, L'p', 127, view.Get());
+    require_batch(evaluate(L"ps-t127") == 0 && evaluate(L"ps-t127->tocandidate") == 1,
+        "candidate: membership is independent of filter_index zero");
+    const ULONG view_refs = view->AddRef(); view->Release();
+    for (unsigned i = 0; i < 3; ++i) evaluate(L"ps-t127->tocandidate");
+    const ULONG final_view_refs = view->AddRef(); view->Release();
+    require_batch(view_refs == final_view_refs, "candidate: repeated queries balance native view references");
+    require_batch(evaluate(L"ps-t[$candidate_slot]->tocandidate") == 1, "candidate: dynamic slot selection");
+    command_list_globals.at(L"$candidate_slot").fval = 128;
+    require_batch(evaluate(L"ps-t[$candidate_slot]->tocandidate") == 0, "candidate: invalid dynamic slot fails closed");
+    for (auto field : {&DrawCallInfo::IndexCount, &DrawCallInfo::FirstIndex, &DrawCallInfo::VertexCount,
+        &DrawCallInfo::FirstVertex, &DrawCallInfo::InstanceCount, &DrawCallInfo::FirstInstance}) {
+        const UINT saved = info.*field;
+        ++(info.*field);
+        require_batch(evaluate(L"ps-t127->tocandidate") == 0, "candidate: all six draw restrictions apply");
+        info.*field = saved;
+    }
+    device.state.post = true;
+    set_slot(device, L'p', 127, nullptr);
+    require_batch(evaluate(L"ps-t127->tocandidate") == 0, "candidate: post observes current bindings");
+    set_slot(device, L'p', 127, view.Get());
+    require_batch(evaluate(L"ps-t127->tocandidate") == 1, "candidate: post query can be independently true");
+    device.state.post = false;
+    ID3D11Buffer* vertex = buffer.Get();
+    const UINT stride = 4, offset = 0;
+    device.context->IASetVertexBuffers(7, 1, &vertex, &stride, &offset);
+    device.context->IASetIndexBuffer(buffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+    require_batch(evaluate(L"vb7->tocandidate || ps-t127->tocandidate") == 1 && evaluate(L"ib->tocandidate") == 1,
+        "candidate: INI chooses buffer slots and combines conditions");
+    Registry registry;
+    registry.resource(L"resourcecandidatequery", device, texture.Get());
+    require_batch(evaluate(L"resourcecandidatequery->width") == 8, "candidate: native custom-resource fixture");
+    require_batch(evaluate(L"resourcecandidatequery->tocandidate") == 1, "candidate: explicit custom resource");
+    require_batch(command_list_globals.at(L"$candidate_commands").fval == 0, "candidate: queries execute no pre/post TO command");
+    set_hash(texture.Get(), 0x5a17c0df);
+    require_batch(evaluate(L"ps-t127->tocandidate") == 0, "candidate: changed hash invalidates cached match");
+    set_hash(texture.Get(), 0x5a17c0de);
+    require_batch(evaluate(L"ps-t127->tocandidate") == 1, "candidate: returning hash recomputes match");
 
-    const std::string body =
-        "global $draw_gate_hits=0\nglobal $draw_gate_posts=0\n"
-        "[ShaderOverrideDrawGate]\nhash=0000000000000000\nrun=CommandListDrawGate\n"
-        "[CommandListDrawGate]\nif CONDITION\nchecktextureoverride=ps-t1\nendif\nhandling=skip\n"
-        "[TextureOverrideDrawAnchor]\nhash=9040e2c4\nmatch_first_index=0\nmatch_index_count=6\n"
-        "[TextureOverrideDrawPayload]\nhash=5a17c0de\n"
-        "$draw_gate_hits=$draw_gate_hits+1\nib=null\npost $draw_gate_posts=$draw_gate_posts+1\n"
-        "[TextureOverrideFuzzyGate]\nmatch_type=Texture2D\nmatch_width=8\n";
-    for (unsigned sample = 0; sample < 3; ++sample) {
-        for (bool filtered : {false, true}) {
-            std::string text = body;
-            text.replace(text.find("CONDITION"), 9, filtered ? "draw_has_override" : "1");
-            config.load(text.c_str(), 0, true);
-            require_batch(G->draw_has_override_used == filtered,
-                "mod-draw: actual config parser enables filter and reload clears it");
-            Profiling::mode = Profiling::Mode::SUMMARY;
-            Profiling::texture_override_candidates_lookup_overhead.clear();
-            LARGE_INTEGER frequency{}, begin{}, end{};
-            QueryPerformanceFrequency(&frequency);
-            QueryPerformanceCounter(&begin);
-            for (unsigned i = 0; i < 2000; ++i) {
-                device.context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R16_UINT, 0);
-                device.wrapper->DrawIndexed(6, i < 20 ? 0 : 6, 0);
-                require_batch(device.wrapper->auto_check_texture_scopes.empty(), "mod-draw: scope released after draw");
+    const char* fuzzy =
+        "global $candidate_commands=0\n[TextureOverrideCandidateFuzzy]\n"
+        "match_type=Texture2D\nmatch_width=res_width\nmatch_height=8\nmatch_index_count=6\n"
+        "$candidate_commands=$candidate_commands+1\n";
+    config.load(fuzzy, 0, true);
+    const auto resolution = G->mResolutionInfo;
+    G->mResolutionInfo.width = 8;
+    require_batch(evaluate(L"ps-t127->tocandidate") == 1, "candidate: fuzzy-only TO is not suppressed");
+    G->mResolutionInfo.width = 16;
+    require_batch(evaluate(L"ps-t127->tocandidate") == 0, "candidate: dynamic resolution mismatch");
+    G->mResolutionInfo.width = 8;
+    info.IndexCount = 7;
+    require_batch(evaluate(L"ps-t127->tocandidate") == 0, "candidate: fuzzy draw restrictions");
+    info.IndexCount = 6;
+    require_batch(command_list_globals.at(L"$candidate_commands").fval == 0, "candidate: fuzzy query has no command side effects");
+    G->mResolutionInfo = resolution;
+    config.load("[TextureOverrideRegionCandidate]\nhash=12345678\nmatch_index_count=6\n", 0, true);
+    require_batch(evaluate(L"ib->tocandidate") == 0, "candidate: whole-resource hash miss without region tracking");
+    G->track_region_hashes = true;
+    require_batch(evaluate(L"ib->tocandidate") == 1 && evaluate(L"vb7->tocandidate") == 1,
+        "candidate: regional buffer checks conservatively need full matching");
+    ResourceCopyTarget current_target;
+    current_target.type = ResourceCopyTargetType::VERTEX_BUFFER;
+    current_target.slot = 7;
+    device.state.this_target = &current_target;
+    require_batch(evaluate(L"this->tocandidate") == 1 && device.state.this_target == &current_target,
+        "candidate: this preserves the selected buffer's regional semantics without changing it");
+    device.state.this_target = nullptr;
+    require_batch(evaluate(L"ps-t127->tocandidate") == 0,
+        "candidate: region tracking does not broaden shader resource queries");
+    config.load("", 0, true);
+    require_batch(evaluate(L"ib->tocandidate") == 0 && evaluate(L"ps-t127->tocandidate") == 0,
+        "candidate: reload removes retired exact/fuzzy candidates");
+    config.load("[ShaderOverrideNoCandidateCall]\nhash=0000000000000000\nhandling=skip\n"
+        "[TextureOverrideCandidateSpy]\nhash=5a17c0de\n"
+        "[CommandListUnusedCandidate]\nif ps-t127->tocandidate\nx=1\nendif\n", 0, true);
+    {
+        CandidateBindingSpy spy(device.context.Get());
+        device.wrapper->DrawIndexed(6, 0, 0);
+        require_batch(spy.ps_calls == 0 && spy.vb_calls == 0 && spy.ib_calls == 0,
+            "candidate: an unused INI query causes no binding scan at draw start");
+        require_batch(evaluate(L"ps-t127->tocandidate") == 1 && spy.ps_calls == 1 &&
+            spy.ps_first == 127 && spy.ps_count == 1 && spy.vb_calls == 0 && spy.ib_calls == 0,
+            "candidate: an evaluated query reads only its specified target");
+    }
+    config.load("", 0, true);
+    const std::wstring removed_keyword = L"draw_has_override";
+    CommandListExpression removed;
+    require_batch(!removed.parse(&removed_keyword, &ini_namespace, &scope), "candidate: fixed draw-wide predicate is removed");
+    Profiling::mode = Profiling::Mode::NONE;
+    clear_command_list_profiling();
+}
+
+void test_dx11_to_candidate_performance()
+{
+    using namespace dx11_slot_test;
+    AuditConfigScope config;
+    BatchDevice device;
+    D3D11_BUFFER_DESC bytes{};
+    bytes.ByteWidth = 256;
+    bytes.BindFlags = D3D11_BIND_INDEX_BUFFER | D3D11_BIND_VERTEX_BUFFER;
+    ComPtr<ID3D11Buffer> buffer;
+    require_batch(SUCCEEDED(device.device->CreateBuffer(&bytes, nullptr, &buffer)), "candidate perf: real tracked buffer");
+    ComPtr<ID3D11Buffer> miss_buffer;
+    require_batch(SUCCEEDED(device.device->CreateBuffer(&bytes, nullptr, &miss_buffer)), "candidate perf: nonmatching tracked buffer");
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = desc.Height = 8;
+    desc.ArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> texture;
+    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &texture)), "candidate perf: real tracked texture");
+    auto view = srv(device, texture.Get());
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        G->mResources.at(buffer.Get()).hash = 0x9040e2c4;
+        G->mResources.at(miss_buffer.Get()).hash = 0xdeadc0de;
+        G->mResources.at(texture.Get()).hash = 0x5a17c0de;
+    }
+    ID3D11Buffer* vb = buffer.Get();
+    const UINT stride = 4, offset = 0;
+    device.context->IASetVertexBuffers(7, 1, &vb, &stride, &offset);
+    device.context->IASetIndexBuffer(buffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+    set_slot(device, L'p', 127, view.Get());
+    set_slot(device, L'v', 37, view.Get());
+    set_slot(device, L'g', 13, view.Get());
+    const char* names[] = {"direct", "existing_filter", "candidate_one", "candidate_three", "candidate_all"};
+    const char* conditions[] = {"1", "ib", "ib->tocandidate",
+        "ib->tocandidate || vs-t37->tocandidate || ps-t127->tocandidate",
+        "ib->tocandidate || vb7->tocandidate || ps-t127->tocandidate || vs-t37->tocandidate || gs-t13->tocandidate"};
+    const unsigned policies = static_cast<unsigned>(ARRAYSIZE(names));
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
+    for (const auto& workload : candidate_workloads) {
+        const unsigned hits = workload.matches;
+        for (bool summary : {false, true}) {
+            for (unsigned sample = 0; sample < 5; ++sample) {
+                for (unsigned order = 0; order < policies; ++order) {
+                    const unsigned variant = sample % 2 ? policies - 1 - order : order;
+                    const std::string text =
+                        "global $candidate_hits=0\nglobal $candidate_posts=0\n"
+                        "[ShaderOverrideCandidatePerf]\nhash=0000000000000000\nrun=CommandListCandidatePerf\n"
+                        "[CommandListCandidatePerf]\nif " + std::string(conditions[variant]) + "\n"
+                        "checktextureoverride=ib\nchecktextureoverride=vb7\nchecktextureoverride=ps-t127\n"
+                        "checktextureoverride=vs-t37\nchecktextureoverride=gs-t13\nendif\nhandling=skip\n" +
+                        (!workload.has_rules ? std::string() :
+                        "[TextureOverrideCandidatePerf]\nhash=9040e2c4\nmatch_first_index=0\nmatch_index_count=6\n"
+                        "$candidate_hits=$candidate_hits+1\npost $candidate_posts=$candidate_posts+1\n") +
+                        (workload.fuzzy ? "[TextureOverrideCandidatePerfFuzzy]\nmatch_type=Texture2D\nmatch_width=16\n" : "");
+                    config.load(text.c_str(), 0, true);
+                    Profiling::mode = summary ? Profiling::Mode::SUMMARY : Profiling::Mode::NONE;
+                    auto draw = [&](unsigned i) {
+                        ID3D11Buffer* current = workload.range_miss || i < hits || !workload.has_rules ? buffer.Get() : miss_buffer.Get();
+                        device.context->IASetIndexBuffer(current, DXGI_FORMAT_R16_UINT, 0);
+                        device.context->IASetVertexBuffers(7, 1, &current, &stride, &offset);
+                        device.wrapper->DrawIndexed(6, workload.range_miss ? 6 : 0, 0);
+                    };
+                    for (unsigned i = 0; i < 128; ++i) draw(i);
+                    command_list_globals.at(L"$candidate_hits").fval = 0;
+                    command_list_globals.at(L"$candidate_posts").fval = 0;
+                    Profiling::texture_override_candidates_lookup_overhead.clear();
+                    LARGE_INTEGER begin{}, end{};
+                    QueryPerformanceCounter(&begin);
+                    for (unsigned i = 0; i < 2000; ++i)
+                        draw(i);
+                    QueryPerformanceCounter(&end);
+                    require_batch(command_list_globals.at(L"$candidate_hits").fval == hits * 4 &&
+                        command_list_globals.at(L"$candidate_posts").fval == hits * 4,
+                        "candidate perf: all policies preserve identical TO command execution");
+                    std::printf("TO_CANDIDATE_PERF={\"scenario\":\"%s\",\"matchedDraws\":%u,\"policy\":\"%s\",\"summary\":%s,\"sample\":%u,\"draws\":2000,\"nsPerDraw\":%.3f,\"fullLookups\":%u}\n",
+                        workload.name, hits, names[variant], summary ? "true" : "false", sample,
+                        double(end.QuadPart - begin.QuadPart) * 1e9 / frequency.QuadPart / 2000,
+                        Profiling::texture_override_candidates_lookup_overhead.count);
+                }
             }
-            QueryPerformanceCounter(&end);
-            const unsigned expected = filtered ? 40 : 4000; // Null VS and PS both use hash zero.
-            require_batch(command_list_globals.at(L"$draw_gate_hits").fval == expected &&
-                command_list_globals.at(L"$draw_gate_posts").fval == expected,
-                "mod-draw: only 20 matched draws reach real pre/post texture commands");
-            require_batch(Profiling::texture_override_candidates_lookup_overhead.count == expected * 2,
-                "mod-draw: rejected draws perform no full candidate lookup, even with fuzzy TOs");
-            std::printf("MOD_DRAW_PERF={\"filtered\":%s,\"sample\":%u,\"draws\":2000,\"matchedDraws\":%u,\"fullLookups\":%u,\"nsPerDraw\":%.3f}\n",
-                filtered ? "true" : "false", sample, filtered ? 20 : 2000,
-                Profiling::texture_override_candidates_lookup_overhead.count,
-                double(end.QuadPart - begin.QuadPart) * 1e9 / frequency.QuadPart / 2000);
         }
     }
-
-    DrawCallInfo info(DrawCall::DrawIndexed, 0, 6, 1, 0, 0, 0, nullptr, 0);
-    device.context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R16_UINT, 0);
-    require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: matching exact IB");
-    info.FirstIndex = 6;
-    require_batch(!DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: wrong draw range rejected");
-    device.context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
-    require_batch(!DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: unbound IB rejected");
-    device.context->PSSetShaderResources(0, 1, &bound);
-    require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: texture-only PS-t0 mod preserved");
-    ID3D11ShaderResourceView* empty = nullptr;
-    device.context->PSSetShaderResources(0, 1, &empty);
-    const UINT stride = 4, offset = 0;
-    ID3D11Buffer* vb = index.Get();
-    info.FirstIndex = 0;
-    for (UINT slot = 0; slot < 3; ++slot) {
-        device.context->IASetVertexBuffers(slot, 1, &vb, &stride, &offset);
-        require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: each VB-only anchor preserved");
-        ID3D11Buffer* unbound = nullptr;
-        device.context->IASetVertexBuffers(slot, 1, &unbound, &stride, &offset);
-    }
-    device.context->IASetVertexBuffers(2, 1, &vb, &stride, &offset);
-    set_hash(index.Get(), 0x9040e2c5);
-    require_batch(!DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: changed resource hash is observed");
-    set_hash(index.Get(), 0x9040e2c4);
-    device.wrapper->auto_check_texture_scopes.emplace_back();
-    auto& snapshot = device.wrapper->auto_check_texture_scopes.back();
-    snapshot.call_info = &info;
-    snapshot.original_call_info = info;
-    snapshot.draw_has_override = true;
-    CommandListScope scope;
-    const std::wstring expression_text = L"draw_has_override";
-    CommandListExpression expression;
-    require_batch(expression.parse(&expression_text, nullptr, &scope) && !expression.static_evaluate(nullptr),
-        "mod-draw: expression remains dynamic");
-    info.FirstIndex = 6;
-    vb = nullptr;
-    device.context->IASetVertexBuffers(2, 1, &vb, &stride, &offset);
-    device.state.call_info = &info;
-    device.state.post = true;
-    require_batch(expression.evaluate(&device.state) == 1,
-        "mod-draw: post uses original draw decision after binding/count changes");
-    device.wrapper->auto_check_texture_scopes.pop_back();
-    G->track_region_hashes = true;
-    G->mTextureOverrideDrawIndexMap[6].push_back({0x9040e2c4, &G->mTextureOverrideMap.at(0x9040e2c4).front()});
-    require_batch(DrawHasTextureOverride(device.context.Get(), &info), "mod-draw: region rules pass conservatively");
-    G->track_region_hashes = false;
     config.load("", 0, true);
     Profiling::mode = Profiling::Mode::NONE;
     clear_command_list_profiling();
 }
+
 
 struct AuditCase { const char* id; void (*run)(); };
 const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression},
@@ -2299,7 +2475,8 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-293", test_dx11_hunting_shader_selection_regression},
     {"P-01", test_dx11_ini_lookup_performance},
     {"P-AUTO-TEX", test_dx11_auto_texture_check_regression},
-    {"P-MOD-DRAW", test_dx11_mod_draw_filter_regression},
+    {"P-TO-CANDIDATE", test_dx11_to_candidate_regression},
+    {"P-TO-CANDIDATE-PERF", test_dx11_to_candidate_performance},
 #ifdef DX11_AUDIT_ASAN_LOCKS
     {"F-115", test_dx11_lock_cleanup_regression},
     {"F-190", test_dx11_lock_name_concurrency_regression},

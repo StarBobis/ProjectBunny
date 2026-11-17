@@ -27,6 +27,7 @@ $size = vb0->Size
 | `Size` | 缓冲字节大小；CB 槽报告活动窗口 |
 | `Stride` | 字节步长 |
 | `SourceStride` | 填充自定义资源时的源步长，不用于普通管线槽 |
+| `TOCandidate` | 指定目标的 TO 候选查询，返回 0/1；见 [TextureOverride](./texture-overrides#按目标查询候选) |
 
 绘制内 VB/IB 的 Offset 包含当前 draw 的首顶点/首索引贡献；绘制外只含绑定偏移。自定义资源显式覆盖字段可优先于实际分配信息。
 

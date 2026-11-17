@@ -614,7 +614,6 @@ struct Globals
 	// per-draw texture override check and keeps the legacy checktextureoverride
 	// path byte-for-byte unchanged.
 	std::vector<AutoCheckTextureSlot> auto_check_texture_slots;
-	bool draw_has_override_used = false;
 
 	// Parallel to auto_check_texture_slots: 1 when at least one
 	// checktextureoverride for that slot exists in the loaded command lists.

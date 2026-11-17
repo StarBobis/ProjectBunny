@@ -30,3 +30,15 @@ size_t dx11_audit_report_live_device_slot(void)
 {
     return offsetof(ID3D11DebugVtbl, ReportLiveDeviceObjects) / sizeof(void*);
 }
+size_t dx11_candidate_ps_get_slot(void)
+{
+    return offsetof(ID3D11DeviceContext1Vtbl, PSGetShaderResources) / sizeof(void*);
+}
+size_t dx11_candidate_vb_get_slot(void)
+{
+    return offsetof(ID3D11DeviceContext1Vtbl, IAGetVertexBuffers) / sizeof(void*);
+}
+size_t dx11_candidate_ib_get_slot(void)
+{
+    return offsetof(ID3D11DeviceContext1Vtbl, IAGetIndexBuffer) / sizeof(void*);
+}

@@ -871,7 +871,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	AdvanceTextureMatchCall();
 	draw_number++;
 
-	if (!G->auto_check_texture_slots.empty() || G->draw_has_override_used) {
+	if (!G->auto_check_texture_slots.empty()) {
 		auto_check_texture_scopes.emplace_back();
 		auto_check_texture_scopes.back().call_info = &data.call_info;
 		auto_check_texture_scopes.back().original_call_info = data.call_info;
@@ -892,10 +892,6 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		}
 		b.is_explicit = false;
 	}
-
-	if (G->draw_has_override_used)
-		auto_check_texture_scopes.back().draw_has_override =
-			DrawHasTextureOverride(mOrigContext1, &data.call_info);
 
 	// If we are not hunting shaders, we should skip all of this shader management for a performance bump.
 	if (G->hunting == HUNTING_MODE_ENABLED)
