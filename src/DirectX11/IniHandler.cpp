@@ -4964,7 +4964,8 @@ static bool ParseAutoCheckTextureSlotToken(const std::wstring& token, std::vecto
 	return true;
 }
 
-bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheckTextureSlot>* slots)
+static bool ParseConfiguredTextureSlots(const wchar_t* setting, const std::wstring& value,
+		std::vector<AutoCheckTextureSlot>* slots)
 {
 	if (!slots)
 		return false;
@@ -4982,7 +4983,7 @@ bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheck
 			++pos;
 		const std::wstring token = value.substr(start, pos - start);
 		if (!ParseAutoCheckTextureSlotToken(token, &parsed)) {
-			IniWarningW(L"Invalid auto_check_texture_slots entry \"%ls\"\n - [Rendering]\n", token.c_str());
+			IniWarningW(L"Invalid %ls entry \"%ls\"\n - [Rendering]\n", setting, token.c_str());
 			slots->clear();
 			return false;
 		}
@@ -4990,6 +4991,34 @@ bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheck
 
 	slots->swap(parsed);
 	return true;
+}
+
+bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheckTextureSlot>* slots)
+{
+	return ParseConfiguredTextureSlots(L"auto_check_texture_slots", value, slots);
+}
+
+static void LoadDrawOverrideSlots()
+{
+	auto& ranges = G->draw_override_slot_ranges;
+	ranges.clear();
+	const auto* value = GetIniWstring(L"Rendering", L"draw_has_override_slots");
+	if (!value)
+		return;
+	std::vector<AutoCheckTextureSlot> slots;
+	if (!ParseConfiguredTextureSlots(L"draw_has_override_slots", *value, &slots))
+		return;
+	for (const auto& slot : slots) {
+		if (!ranges.empty()) {
+			auto& last = ranges.back();
+			if (slot.type == last.first.type && slot.shader_type == last.first.shader_type &&
+				slot.slot == last.first.slot + last.count) {
+				++last.count;
+				continue;
+			}
+		}
+		ranges.push_back({slot, 1});
+	}
 }
 
 void LoadConfigFile()
@@ -5230,6 +5259,7 @@ void LoadConfigFile()
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	// Rebuild on every load; empty/absent keeps the native batch check disabled.
 	G->auto_check_texture_slots.clear();
+	LoadDrawOverrideSlots();
 	G->auto_check_texture_slot_has_check.clear();
 	++G->auto_check_texture_slots_generation;
 	if (const wstring* auto_check_slots = GetIniWstring(L"Rendering", L"auto_check_texture_slots")) {

@@ -421,6 +421,12 @@ struct AutoCheckTextureSlot
 	wchar_t shader_type = L'\0';
 };
 
+struct DrawOverrideSlotRange
+{
+	AutoCheckTextureSlot first;
+	unsigned count;
+};
+
 struct Globals
 {
 	bool gInitialized;
@@ -614,6 +620,8 @@ struct Globals
 	// per-draw texture override check and keeps the legacy checktextureoverride
 	// path byte-for-byte unchanged.
 	std::vector<AutoCheckTextureSlot> auto_check_texture_slots;
+	// Read only when the draw predicate is first evaluated. G protects reload.
+	std::vector<DrawOverrideSlotRange> draw_override_slot_ranges;
 
 	// Parallel to auto_check_texture_slots: 1 when at least one
 	// checktextureoverride for that slot exists in the loaded command lists.

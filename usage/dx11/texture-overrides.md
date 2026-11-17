@@ -74,3 +74,73 @@ filename = diffuse.dds
 ```
 
 替换两个 Hash。`this` 指被检查的那一项；不能在无匹配上下文时假设它代表 `ps-t0`。
+
+## 按目标查询候选
+
+普通表达式 `ps-t7` 已经会匹配该槽的 TextureOverride，并返回命中的 `filter_index`；未设置时返回 1，无匹配时返回 0。它不执行 TO 命令。需要区分“命中了 `filter_index = 0`”与“无候选”，或希望先使用候选缓存时，可以查询 `ps-t7->TOCandidate`。
+
+`目标->TOCandidate` 只查询写出的目标，返回 0 或 1，不执行 TO 的 pre/post 命令。目标可以是任意支持的管线槽、动态槽或自定义资源。DLL 不选择槽位组合，也不会因为某个配置引用了该属性而在每次 draw 开始时扫描槽位。
+
+`this->TOCandidate` 沿用当前选中目标的语义，包括 VB/IB 的区域处理。自定义资源沿用现有资源求值行为，可能触发惰性创建或过期处理；这些成本也属于查询成本。
+
+| 情况 | 查询语义 |
+| --- | --- |
+| 精确匹配 | 使用资源当前已记录的完整哈希，并检查当前绘制的六项 `match_*` 条件；不重新计算内容哈希 |
+| 模糊匹配 | 检查资源描述与当前绘制条件，包括动态分辨率；仅有模糊规则也可以返回 1 |
+| `filter_index` | 不参与布尔结果；命中 `filter_index = 0` 也返回 1 |
+| 区域哈希 | 开启 `track_region_hashes` 时，VB/IB 只要存在 TO 规则就保守返回候选；返回 1 不证明区域哈希命中，后续仍需正式检查 |
+| 空目标、未跟踪资源或无规则 | 返回 0；区域哈希保守分支仍按上一行处理已绑定的 VB/IB |
+
+INI 决定选哪些槽以及如何组合。下面只演示一个配置选择的两个入口，不是完整的绘制适用性判断：
+
+```ini
+[CommandListCheckSelected]
+if $enabled
+    if vb7->TOCandidate || vs-t37->TOCandidate
+        checktextureoverride = vb7
+        checktextureoverride = vs-t37
+    endif
+endif
+```
+
+先声明 `$enabled`。如果模组还依赖其他入口，必须在自己的 INI 中加入相应条件；一个目标返回 0 不代表整个 draw 没有适用的 TO。
+
+查询在表达式执行的位置读取当前绑定与绘制参数，pre/post 会分别求值，没有隐式的跨阶段快照。前置命令若修改绑定或数量，后置结果可以不同；需要恢复的命令不能依赖这个条件仍为真。配置应明确安排保存、恢复和后置检查，并验证嵌套调用。
+
+现有 `&&`、`||` 会求值两侧。需要避免禁用时查询或按顺序提前结束查询时，使用外层 `if` 或 `elif`，不要假设表达式短路。候选查询本身也有获取绑定、引用计数、锁和缓存查询成本；是否比直接检查更快，应测量包含这些成本的完整命令路径。
+
+## 旧配置兼容
+
+原有 `if $costume_mods`、`checktextureoverride`、`pre`/`post` 和资源筛选表达式继续按原有流程执行。没有使用 `->TOCandidate` 的旧配置不会自动增加候选查询，也不会同时启动另一套检查列表。
+
+新配置只在执行到 `->TOCandidate` 时查询指定目标。候选为假时，由 INI 的 `if` 跳过后面的正式检查；为真时，仍调用原有 `checktextureoverride` 完成匹配并执行 TO 命令。候选查询自身不执行这些命令，复用执行逻辑不会让同一条命令额外运行一遍。
+
+新版 INI 中的 `->TOCandidate` 和下述 `DRAW_HAS_OVERRIDE` 需要配套 DLL。
+
+## 配置整组绘制筛选
+
+在加载器 `d3dx.ini` 的 `[Rendering]` 中指定要查询的槽位：
+
+```ini
+[Rendering]
+draw_has_override_slots = ib vb[0:2] ps-t0
+```
+
+支持 `ib`、`vbN` 和 `ps-tN`、`vs-tN`、`cs-tN`。`vb[0:2]`、`ps-t[0:3]` 等范围包含两个端点，相邻且同阶段的槽位可一次读取。列表按配置顺序查询，有候选时跳过之后的组。设置留空、缺省或格式无效时，`DRAW_HAS_OVERRIDE` 放行原有检查。
+
+```ini
+[CommandListSkin]
+if $costume_mods
+    if DRAW_HAS_OVERRIDE
+        checktextureoverride = ps-t0
+        checktextureoverride = vb0
+        checktextureoverride = vb1
+        checktextureoverride = vb2
+        checktextureoverride = ib
+    endif
+endif
+```
+
+槽位组应覆盖检查列表中的触发入口。每个 draw 第一次执行该条件时，DLL 读取此时的绑定和绘制参数，检查精确与模糊候选。后续 pre/post 读取同一个结果。启用区域跟踪时，已绑定的 VB/IB 可能保守放行。候选只决定是否进入检查，后续 `checktextureoverride` 仍根据当前绑定执行。
+
+后续命令改变绑定时，整组结果仍来自首次求值。需要按当前位置重新判断时，用 `目标->TOCandidate`。后置恢复和无条件重置放在整组判断外。本设置独立于 `auto_check_texture_slots`，无需启用自动检查。

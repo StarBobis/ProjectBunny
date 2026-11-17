@@ -1209,6 +1209,78 @@ static uint64_t AutoCheckTextureSlotKey(const ResourceCopyTarget& target)
 
 namespace {
 
+template<typename T, size_t Capacity>
+class DrawOverrideBindings {
+	const unsigned count;
+public:
+	T* values[Capacity];
+	explicit DrawOverrideBindings(unsigned count) : count(count)
+	{
+		std::fill_n(values, count, nullptr);
+	}
+	~DrawOverrideBindings()
+	{
+		for (unsigned i = 0; i < count; ++i)
+			if (values[i]) values[i]->Release();
+	}
+};
+
+// Caller holds G for the slot configuration and TextureOverride candidates.
+bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info,
+		const DrawOverrideSlotRange& range)
+{
+	const auto& first = range.first;
+	if (first.type == ResourceCopyTargetType::INDEX_BUFFER) {
+		Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+		context->IAGetIndexBuffer(buffer.GetAddressOf(), nullptr, nullptr);
+		return HasTextureOverrideCandidate(buffer.Get(), info, G->track_region_hashes);
+	}
+	if (first.type == ResourceCopyTargetType::VERTEX_BUFFER) {
+		DrawOverrideBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+		context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
+		for (unsigned i = 0; i < range.count; ++i)
+			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
+				return true;
+		return false;
+	}
+	DrawOverrideBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+	switch (first.shader_type) {
+	case L'p': context->PSGetShaderResources(first.slot, range.count, bindings.values); break;
+	case L'v': context->VSGetShaderResources(first.slot, range.count, bindings.values); break;
+	case L'c': context->CSGetShaderResources(first.slot, range.count, bindings.values); break;
+	default: return true;
+	}
+	for (unsigned i = 0; i < range.count; ++i) {
+		if (!bindings.values[i]) continue;
+		Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+		bindings.values[i]->GetResource(resource.GetAddressOf());
+		if (HasTextureOverrideCandidate(resource.Get(), info, false))
+			return true;
+	}
+	return false;
+}
+
+bool DrawHasConfiguredOverride(CommandListState* state)
+{
+	auto* info = state->call_info;
+	if (!info || !state->mOrigContext1 || info->type == DrawCall::Invalid ||
+		info->type == DrawCall::Dispatch || info->type == DrawCall::DispatchIndirect)
+		return true;
+	if (info->override_candidate != DrawOverrideCandidate::Unqueried)
+		return info->override_candidate == DrawOverrideCandidate::Possible;
+
+	CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+	const auto& ranges = G->draw_override_slot_ranges;
+	// An absent or invalid setting preserves the direct-check route.
+	const bool possible = ranges.empty() ||
+		((!G->mTextureOverrideMap.empty() || !G->mFuzzyTextureOverrides.empty()) &&
+		 std::any_of(ranges.begin(), ranges.end(), [&](const DrawOverrideSlotRange& range) {
+			return DrawOverrideRangeMayMatch(state->mOrigContext1, info, range);
+		}));
+	info->override_candidate = possible ? DrawOverrideCandidate::Possible : DrawOverrideCandidate::Miss;
+	return possible;
+}
+
 int AutoCheckShaderStageIndex(wchar_t shader_type)
 {
 	switch (shader_type) {
@@ -3418,6 +3490,8 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 
 		case ResourceCopyTargetEvaluationMode::RESOURCE_SPATIAL_HASH:
 			return texture_filter_target.GetResourceSpatialHash(state);
+		case ResourceCopyTargetEvaluationMode::RESOURCE_TO_CANDIDATE:
+			return texture_filter_target.GetResourceTOCandidate(state);
 
 		case ResourceCopyTargetEvaluationMode::RESOURCE_SOURCE_STRIDE:
 		{
@@ -4109,6 +4183,8 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			if (state->call_info)
 				return (float)state->call_info->type;
 			return 0;
+		case ParamOverrideType::DRAW_HAS_OVERRIDE:
+			return DrawHasConfiguredOverride(state);
 		case ParamOverrideType::CURSOR_VISIBLE:
 			UpdateCursorInfo(state);
 			return !!(state->cursor_info.flags & CURSOR_SHOWING);
@@ -8356,6 +8432,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::Unsigned, // Z Byte Offset
 			MemberArg::Type::Float     // Cell Size
 		}} },
+        { L"->tocandidate", 13, ResourceCopyTargetEvaluationMode::RESOURCE_TO_CANDIDATE },
 		{ L"->sourcestride",  14, ResourceCopyTargetEvaluationMode::RESOURCE_SOURCE_STRIDE },
 		{ L"->elementformat", 15, ResourceCopyTargetEvaluationMode::LAYOUT_ELEMENT_FORMAT, {{
 			MemberArg::Type::String, MemberArg::Type::Unsigned
@@ -10444,7 +10521,7 @@ void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Res
 			// Resource isn't index or vertex buffer, or region size cannot be computed.
 			// Fallback to original behavior.
 			// Run Hash Matching and Fuzzy Matching.
-			find_texture_overrides_for_resource(resource, matches, call_info);
+			find_texture_overrides_for_retained_resource(resource, matches, call_info);
 		}
 		else
 		{
@@ -10486,7 +10563,7 @@ void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Res
 	}
 	else
 	{
-		find_texture_overrides_for_resource(resource, matches, call_info);
+		find_texture_overrides_for_retained_resource(resource, matches, call_info);
 	}
 }
 
@@ -10510,6 +10587,28 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	resource->Release();
 	if (view)
 		view->Release();
+}
+
+float ResourceCopyTarget::GetResourceTOCandidate(CommandListState* state)
+{
+    if (!state)
+        return 0;
+    CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    if (type == ResourceCopyTargetType::THIS_RESOURCE && state->this_target &&
+        state->this_target->type != ResourceCopyTargetType::THIS_RESOURCE)
+        return state->this_target->GetResourceTOCandidate(state);
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceTOCandidate);
+    if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+        return 0;
+    Microsoft::WRL::ComPtr<ID3D11View> view;
+    Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+    resource.Attach(GetResource(state, view.GetAddressOf(), nullptr, nullptr, nullptr, nullptr));
+    // A whole-buffer hash cannot exclude a match against a selected region.
+    // Return a conservative candidate instead of reading back/hashing data.
+    const bool region_possible = G->track_region_hashes &&
+        (type == ResourceCopyTargetType::VERTEX_BUFFER || type == ResourceCopyTargetType::INDEX_BUFFER);
+    return HasTextureOverrideCandidate(resource.Get(), state->call_info, region_possible);
 }
 
 float ResourceCopyTarget::GetResourceId(CommandListState* state)

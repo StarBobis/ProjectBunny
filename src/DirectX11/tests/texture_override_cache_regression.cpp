@@ -275,8 +275,11 @@ void verify_tracking_lifetime(CacheDevice& device, CacheConfiguration& config)
     check(custom.ParseTarget(name.c_str(), false, &ns, nullptr), "parse actual custom target");
     custom.SetResource(&state, tracked.Get(), nullptr, 0, 0, device.desc.Format, 0);
     TextureOverrideMatches matches;
-    custom.FindTextureOverrides(&state, nullptr, &matches);
-    check(matches.empty(), "actual custom target referencing untracked resource does not fabricate candidates");
+    {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        custom.FindTextureOverrides(&state, nullptr, &matches);
+        check(matches.empty(), "actual custom target referencing untracked resource does not fabricate candidates");
+    }
     customResources.erase(name); tracked.Reset();
     ComPtr<ID3D11Texture2D> fresh;
     check(SUCCEEDED(device.device->CreateTexture2D(&device.desc, nullptr, &fresh)), "create fresh wrapper resource after tracked cache destruction");

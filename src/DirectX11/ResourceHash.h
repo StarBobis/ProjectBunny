@@ -464,8 +464,6 @@ struct ResourceHandleInfo
     uint32_t texture_override_hash = 0;
     UINT texture_override_resolution_width = 0, texture_override_resolution_height = 0;
     TextureOverrideCandidates texture_override_candidates;
-    bool has_override_candidate = false;
-    bool has_override_candidate_valid = false;
 
 	// CPU-side copy of the resource data captured via hooks or staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
@@ -961,6 +959,8 @@ void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverride
 // The resource handle is AddRef'd for the lookup only, not for the config
 // nodes, so the caller's G must still cover consumption.
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
+// The caller already holds a resource reference and G through consumption of matches.
+void find_texture_overrides_for_retained_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 
 void find_texture_overrides_by_hash_from_fuzzy_matches(uint32_t hash, TextureOverrideFuzzyMatches* fuzzy_matches, TextureOverrideMatches* matches, DrawCallInfo* call_info);
