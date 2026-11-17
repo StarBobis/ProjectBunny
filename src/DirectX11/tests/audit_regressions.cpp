@@ -1510,6 +1510,10 @@ private:
 class AutoTextureTestScope {
 public:
     std::vector<AutoCheckTextureSlot> saved_slots = G->auto_check_texture_slots;
+    std::vector<uint8_t> saved_has_check = G->auto_check_texture_slot_has_check;
+    uint64_t saved_slots_generation = G->auto_check_texture_slots_generation;
+    uint64_t saved_coverage_generation = G->auto_check_texture_coverage_generation;
+    uint64_t saved_full_pass_count = G->auto_check_texture_full_pass_count;
     TextureOverrideMap saved_map;
     FuzzyTextureOverrides saved_fuzzy;
     decltype(G->mTextureOverrideDrawIndexMap) saved_index_map;
@@ -1524,12 +1528,17 @@ public:
         saved_index_map.swap(G->mTextureOverrideDrawIndexMap);
         saved_vertex_map.swap(G->mTextureOverrideDrawVertexMap);
         G->auto_check_texture_slots.clear();
+        G->auto_check_texture_slot_has_check.clear();
         Profiling::mode = Profiling::Mode::NONE;
         InvalidateTextureOverrideCandidates();
     }
     ~AutoTextureTestScope()
     {
         G->auto_check_texture_slots = saved_slots;
+        G->auto_check_texture_slot_has_check = saved_has_check;
+        G->auto_check_texture_slots_generation = saved_slots_generation;
+        G->auto_check_texture_coverage_generation = saved_coverage_generation;
+        G->auto_check_texture_full_pass_count = saved_full_pass_count;
         Profiling::mode = saved_mode;
         InvalidateTextureOverrideCandidates();
         G->mTextureOverrideMap.swap(saved_map);
@@ -1679,13 +1688,14 @@ void test_dx11_auto_texture_check_regression()
 
     const uint32_t hash0 = 0x5a17c0de;
     const uint32_t hash1 = 0x5a17c0df;
-    auto set_hash = [&](ID3D11Texture2D* texture, uint32_t hash) {
+    auto set_hash = [&](ID3D11Resource* resource, uint32_t hash) {
         CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
         CriticalSectionLockGuard resources_lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
-        auto found = G->mResources.find(texture);
-        require_batch(found != G->mResources.end(), "auto-tex: wrapper texture is registered in mResources");
+        auto found = G->mResources.find(resource);
+        require_batch(found != G->mResources.end(), "auto-tex: wrapper resource is registered in mResources");
         found->second.hash = hash;
         found->second.texture_override_candidates_valid = false;
+        found->second.has_override_candidate_valid = false;
     };
     set_hash(texture0.Get(), hash0);
     set_hash(texture1.Get(), hash1);
@@ -1711,6 +1721,59 @@ void test_dx11_auto_texture_check_regression()
     }
     InvalidateTextureOverrideCandidates();
 
+    // Replacement mode with zero check commands: coverage is all zero, and
+    // the real independent entry must still run pre and post TO lists.
+    {
+        auto saved_registered = registered_command_lists;
+        registered_command_lists.clear();
+        BuildAutoCheckSlotCoverage();
+        registered_command_lists = saved_registered;
+    }
+    require_batch(G->auto_check_texture_slot_has_check.size() == G->auto_check_texture_slots.size(),
+        "auto-tex: coverage vector matches configured slots");
+    for (uint8_t has_check : G->auto_check_texture_slot_has_check)
+        require_batch(!has_check, "auto-tex: no command-list check means fallback slot");
+
+    DrawCallInfo fallback_info;
+    CommandListState fallback_state;
+    fallback_state.mHackerDevice = device.device;
+    fallback_state.mHackerContext = device.wrapper.get();
+    fallback_state.mOrigDevice1 = device.native.Get();
+    fallback_state.mOrigContext1 = device.context.Get();
+    fallback_state.call_info = &fallback_info;
+    order.clear();
+    this_slots.clear();
+    AutoCheckTextureOverridesIndependent(&fallback_state, false);
+    require_batch(order == std::vector<int>({10, 20, 11, 21}) &&
+        this_slots == std::vector<unsigned>({0}),
+        "auto-tex: independent pass triggers pre/post TOs and this with zero check commands");
+
+    // Old check + auto both present: the independent pass must skip slots that
+    // already have a merged check; the merged command then runs each TO once.
+    {
+        auto saved_registered = registered_command_lists;
+        registered_command_lists.clear();
+        registered_command_lists.push_back(&command_list);
+        BuildAutoCheckSlotCoverage();
+        registered_command_lists = saved_registered;
+    }
+    require_batch(G->auto_check_texture_slot_has_check.size() == G->auto_check_texture_slots.size() &&
+        G->auto_check_texture_slot_has_check[0] && G->auto_check_texture_slot_has_check[1],
+        "auto-tex: merged checks mark their slots as covered");
+
+    DrawCallInfo exclusion_info;
+    CommandListState exclusion_state;
+    exclusion_state.mHackerDevice = device.device;
+    exclusion_state.mHackerContext = device.wrapper.get();
+    exclusion_state.mOrigDevice1 = device.native.Get();
+    exclusion_state.mOrigContext1 = device.context.Get();
+    exclusion_state.call_info = &exclusion_info;
+    order.clear();
+    this_slots.clear();
+    AutoCheckTextureOverridesIndependent(&exclusion_state, false);
+    require_batch(order.empty() && this_slots.empty(),
+        "auto-tex: independent pass skips slots that already have a check command");
+
     DrawCallInfo call_info;
     CommandListState state;
     state.mHackerDevice = device.device;
@@ -1729,6 +1792,177 @@ void test_dx11_auto_texture_check_regression()
     require_batch(order == std::vector<int>({10, 20, 11, 21}),
         "auto-tex: batch executes post lists only in the post phase, in target order");
 
+    // A.4: 2000 draws, 20 candidate resources, 1980 no-candidate resources.
+    // The whole batch must be skipped for the no-candidate draws; the
+    // per-resource candidate cache is invalidated on reload and recomputed for
+    // a new resource.
+    const uint32_t hash_a4 = 0x5a17c0e0;
+    const uint32_t hash_none = 0x5a17c0e1;
+    std::vector<ComPtr<ID3D11Texture2D>> a4_textures(21);
+    std::vector<ComPtr<ID3D11ShaderResourceView>> a4_views(21);
+    for (int i = 0; i < 21; ++i) {
+        require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &a4_textures[i])),
+            "auto-tex A.4: create candidate/non-candidate texture");
+        require_batch(SUCCEEDED(device.native->CreateShaderResourceView(a4_textures[i].Get(), nullptr, &a4_views[i])),
+            "auto-tex A.4: create candidate/non-candidate view");
+        set_hash(a4_textures[i].Get(), i < 20 ? hash_a4 : hash_none);
+    }
+    {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        auto& list = G->mTextureOverrideMap[hash_a4];
+        list.emplace_back();
+        list.back().ini_section = L"AutoTextureCheckAuditA4";
+        list.back().command_list.commands.push_back(std::make_shared<AutoTextureOrderCommand>(order, 40));
+        list.back().post_command_list.commands.push_back(std::make_shared<AutoTextureOrderCommand>(order, 41));
+    }
+    InvalidateTextureOverrideCandidates();
+
+    auto a4_check = std::make_shared<CheckTextureOverrideCommand>();
+    a4_check->target.type = ResourceCopyTargetType::SHADER_RESOURCE;
+    a4_check->target.shader_type = L'p';
+    a4_check->target.slot = 0;
+    std::vector<std::shared_ptr<CheckTextureOverrideCommand>> a4_targets{a4_check};
+    DrawCallInfo a4_call_info;
+    CommandListState a4_state;
+    a4_state.mHackerDevice = device.device;
+    a4_state.mHackerContext = device.wrapper.get();
+    a4_state.mOrigDevice1 = device.native.Get();
+    a4_state.mOrigContext1 = device.context.Get();
+    a4_state.call_info = &a4_call_info;
+    a4_state.post = false;
+
+    order.clear();
+    G->auto_check_texture_full_pass_count = 0;
+    for (int i = 0; i < 2000; ++i) {
+        ID3D11ShaderResourceView* a4_view = a4_views[i < 20 ? i : 20].Get();
+        device.context->PSSetShaderResources(0, 1, &a4_view);
+        AutoCheckTextureOverrides(&a4_state, a4_targets);
+    }
+    require_batch(order.size() == 20 && G->auto_check_texture_full_pass_count == 20,
+        "auto-tex A.4: only 20 candidate draws run the batch; 1980 no-candidate draws skip");
+
+    // Cache invalidation: add a TO for the formerly no-candidate hash, then
+    // invalidate candidates; the next draw must recompute and run.
+    {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        auto& list = G->mTextureOverrideMap[hash_none];
+        list.emplace_back();
+        list.back().ini_section = L"AutoTextureCheckAuditA4Late";
+        list.back().command_list.commands.push_back(std::make_shared<AutoTextureOrderCommand>(order, 50));
+    }
+    InvalidateTextureOverrideCandidates();
+    ID3D11ShaderResourceView* none_view = a4_views[20].Get();
+    device.context->PSSetShaderResources(0, 1, &none_view);
+    order.clear();
+    AutoCheckTextureOverrides(&a4_state, a4_targets);
+    require_batch(order == std::vector<int>({50}),
+        "auto-tex A.4: reload/invalidate recomputes the resource candidate cache");
+
+    // A new resource with the same hash must not inherit a stale negative flag.
+    ComPtr<ID3D11Texture2D> fresh_none;
+    ComPtr<ID3D11ShaderResourceView> fresh_none_view;
+    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &fresh_none)) &&
+        SUCCEEDED(device.native->CreateShaderResourceView(fresh_none.Get(), nullptr, &fresh_none_view)),
+        "auto-tex A.4: create fresh resource");
+    set_hash(fresh_none.Get(), hash_none);
+    ID3D11ShaderResourceView* fresh_bound = fresh_none_view.Get();
+    device.context->PSSetShaderResources(0, 1, &fresh_bound);
+    order.clear();
+    AutoCheckTextureOverrides(&a4_state, a4_targets);
+    require_batch(order == std::vector<int>({50}),
+        "auto-tex A.4: a new resource computes its candidate flag from scratch");
+
+    // A.4 IB: reuse the mod's IB hash + match_first_index judgment. 20 draws
+    // with FirstIndex matching run the full pass; 1980 with a different
+    // FirstIndex must be skipped even though the IB hash is in the same table.
+    const uint32_t ib_hash = 0x9040e2c4;
+    const uint32_t ib_hash_none = 0x9040e2c5;
+    ComPtr<ID3D11Buffer> ib_buffer, ib_buffer_none;
+    D3D11_BUFFER_DESC ib_desc = {};
+    ib_desc.ByteWidth = 1024;
+    ib_desc.Usage = D3D11_USAGE_DEFAULT;
+    ib_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    require_batch(SUCCEEDED(device.device->CreateBuffer(&ib_desc, nullptr, &ib_buffer)) &&
+        SUCCEEDED(device.device->CreateBuffer(&ib_desc, nullptr, &ib_buffer_none)),
+        "auto-tex A.4: create tracked index buffers");
+    set_hash(ib_buffer.Get(), ib_hash);
+    set_hash(ib_buffer_none.Get(), ib_hash_none);
+    device.context->IASetIndexBuffer(ib_buffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+    {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        auto& list = G->mTextureOverrideMap[ib_hash];
+        list.emplace_back();
+        TextureOverride& to = list.back();
+        to.ini_section = L"AutoTextureCheckAuditIB";
+        to.has_draw_context_match = true;
+        to.match_index_count.op = FuzzyMatchOp::EQUAL;
+        to.match_index_count.val = 6;
+        to.match_index_count.mask = 0xffffffff;
+        to.match_first_index.op = FuzzyMatchOp::EQUAL;
+        to.match_first_index.val = 0;
+        to.match_first_index.mask = 0xffffffff;
+        to.command_list.commands.push_back(std::make_shared<AutoTextureOrderCommand>(order, 70));
+        to.post_command_list.commands.push_back(std::make_shared<AutoTextureOrderCommand>(order, 71));
+    }
+    InvalidateTextureOverrideCandidates();
+
+    auto ib_check = std::make_shared<CheckTextureOverrideCommand>();
+    ib_check->target.type = ResourceCopyTargetType::INDEX_BUFFER;
+    ib_check->target.slot = 0;
+    std::vector<std::shared_ptr<CheckTextureOverrideCommand>> ib_targets{ib_check};
+    DrawCallInfo ib_call_info(DrawCall::DrawIndexed, 0, 6, 0, 0, 0, 0, nullptr, 0);
+    CommandListState ib_state;
+    ib_state.mHackerDevice = device.device;
+    ib_state.mHackerContext = device.wrapper.get();
+    ib_state.mOrigDevice1 = device.native.Get();
+    ib_state.mOrigContext1 = device.context.Get();
+    ib_state.call_info = &ib_call_info;
+    ib_state.post = false;
+    const bool saved_region_hashes = G->track_region_hashes;
+    G->track_region_hashes = false;
+    order.clear();
+    G->auto_check_texture_full_pass_count = 0;
+    for (int i = 0; i < 2000; ++i) {
+        device.context->IASetIndexBuffer(i < 20 ? ib_buffer.Get() : ib_buffer_none.Get(),
+            DXGI_FORMAT_R16_UINT, 0);
+        ib_call_info.FirstIndex = 0;
+        AutoCheckTextureOverrides(&ib_state, ib_targets);
+    }
+    require_batch(order.size() == 20 && G->auto_check_texture_full_pass_count == 20,
+        "auto-tex A.4 IB: 20 hash hits run the batch; 1980 no-candidate IBs skip");
+
+    // The same candidate IB hash with a different match_first_index must still
+    // skip (the mod's LOD sections rely on this exact filter).
+    device.context->IASetIndexBuffer(ib_buffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+    ib_call_info.FirstIndex = 1;
+    AutoCheckTextureOverrides(&ib_state, ib_targets);
+    require_batch(order.size() == 20 && G->auto_check_texture_full_pass_count == 20,
+        "auto-tex A.4 IB: hash hit with mismatched match_first_index is skipped");
+
+    // VertexLimitRaise / count replacement changes the live call_info. The
+    // candidate gate and batch matching must use the draw-start snapshot.
+    ib_call_info.FirstIndex = 0;
+    ib_call_info.IndexCount = 6;
+    device.wrapper->auto_check_texture_scopes.emplace_back();
+    {
+        AutoCheckTextureDrawScope& scope = device.wrapper->auto_check_texture_scopes.back();
+        scope.call_info = &ib_call_info;
+        scope.original_call_info = ib_call_info;
+    }
+    ib_call_info.IndexCount = 9999; // simulate VertexLimitRaise/replacement
+    device.context->IASetIndexBuffer(ib_buffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+    order.clear();
+    AutoCheckTextureOverrides(&ib_state, ib_targets);
+    require_batch(order == std::vector<int>({70}),
+        "auto-tex A.4 IB: candidate gate uses original IndexCount snapshot after VertexLimitRaise");
+    device.wrapper->auto_check_texture_scopes.pop_back();
+    ib_call_info.IndexCount = 6;
+    ib_call_info.FirstIndex = 0;
+    G->track_region_hashes = saved_region_hashes;
+
+    device.context->PSSetShaderResources(0, 1, &bound0);
+    device.context->PSSetShaderResources(1, 1, &bound1);
+
     // Make TO0's pre list rebind PS1 to texture0. The batch must re-query the
     // next target instead of matching the stale prefetch snapshot.
     {
@@ -1744,23 +1978,7 @@ void test_dx11_auto_texture_check_regression()
         this_slots == std::vector<unsigned>({0, 1}),
         "auto-tex: after a TO rebinds a later slot, the batch re-queries it in-lock and matches the current binding");
 
-    // cs-tN: the same merged batch/entry runs in a compute dispatch context;
-    // no BeforeDraw-only hook is involved.
-    CommandList cs_list;
-    auto cs_check0 = std::make_shared<CheckTextureOverrideCommand>();
-    cs_check0->target.type = ResourceCopyTargetType::SHADER_RESOURCE;
-    cs_check0->target.shader_type = L'c';
-    cs_check0->target.slot = 0;
-    auto cs_check1 = std::make_shared<CheckTextureOverrideCommand>();
-    cs_check1->target.type = ResourceCopyTargetType::SHADER_RESOURCE;
-    cs_check1->target.shader_type = L'c';
-    cs_check1->target.slot = 1;
-    cs_list.commands.push_back(cs_check0);
-    cs_list.commands.push_back(cs_check1);
-    MergeAutoCheckTextureOverrides(&cs_list);
-    auto* cs_batch = dynamic_cast<AutoCheckTextureOverrideCommand*>(cs_list.commands.front().get());
-    require_batch(cs_batch && cs_batch->targets.size() == 2,
-        "auto-tex: adjacent covered cs-tN checks merge for compute dispatch");
+    // cs-tN replacement mode and merged mode both use the dispatch context.
     ID3D11ShaderResourceView* cs_bound0 = view0.Get();
     ID3D11ShaderResourceView* cs_bound1 = view1.Get();
     device.context->CSSetShaderResources(0, 1, &cs_bound0);
@@ -1776,9 +1994,75 @@ void test_dx11_auto_texture_check_regression()
     cs_state.call_info = &dispatch_info;
     order.clear();
     this_slots.clear();
+    AutoCheckTextureOverridesIndependent(&cs_state, true);
+    require_batch(order == std::vector<int>({10, 20, 11, 21}) &&
+        this_slots == std::vector<unsigned>({0}),
+        "auto-tex: dispatch independent pass triggers cs-tN pre/post with zero check commands");
+
+    CommandList cs_list;
+    auto cs_check0 = std::make_shared<CheckTextureOverrideCommand>();
+    cs_check0->target.type = ResourceCopyTargetType::SHADER_RESOURCE;
+    cs_check0->target.shader_type = L'c';
+    cs_check0->target.slot = 0;
+    auto cs_check1 = std::make_shared<CheckTextureOverrideCommand>();
+    cs_check1->target.type = ResourceCopyTargetType::SHADER_RESOURCE;
+    cs_check1->target.shader_type = L'c';
+    cs_check1->target.slot = 1;
+    cs_list.commands.push_back(cs_check0);
+    cs_list.commands.push_back(cs_check1);
+    MergeAutoCheckTextureOverrides(&cs_list);
+    auto* cs_batch = dynamic_cast<AutoCheckTextureOverrideCommand*>(cs_list.commands.front().get());
+    require_batch(cs_batch && cs_batch->targets.size() == 2,
+        "auto-tex: adjacent covered cs-tN checks merge for compute dispatch");
+    order.clear();
+    this_slots.clear();
     AutoCheckTextureOverrides(&cs_state, cs_batch->targets);
     require_batch(order == std::vector<int>({10, 20}) && this_slots == std::vector<unsigned>({0}),
-        "auto-tex: cs-tN batch runs from a dispatch call context and preserves target order");
+        "auto-tex: merged cs-tN batch runs from a dispatch call context and preserves target order");
+
+    // A.4 fuzzy: a fuzzy matcher that matches the descriptor must prevent a
+    // false negative whole-batch skip.
+    ID3D11ShaderResourceView* null_views[2] = {nullptr, nullptr};
+    device.context->CSSetShaderResources(0, 2, null_views);
+    ID3D11ShaderResourceView* null_ps1 = nullptr;
+    device.context->PSSetShaderResources(1, 1, &null_ps1);
+
+    const uint32_t hash_fuzzy = 0x5a17c0e2;
+    ComPtr<ID3D11Texture2D> fuzzy_texture;
+    ComPtr<ID3D11ShaderResourceView> fuzzy_view;
+    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &fuzzy_texture)) &&
+        SUCCEEDED(device.native->CreateShaderResourceView(fuzzy_texture.Get(), nullptr, &fuzzy_view)),
+        "auto-tex A.4: create fuzzy-only resource");
+    set_hash(fuzzy_texture.Get(), hash_fuzzy);
+    ID3D11ShaderResourceView* fuzzy_bound = fuzzy_view.Get();
+    device.context->PSSetShaderResources(0, 1, &fuzzy_bound);
+
+    auto fuzzy_matcher = std::make_shared<FuzzyMatchResourceDesc>(L"AutoTextureCheckAuditFuzzy");
+    fuzzy_matcher->texture_override->command_list.commands.push_back(
+        std::make_shared<AutoTextureOrderCommand>(order, 60));
+    fuzzy_matcher->texture_override->post_command_list.commands.push_back(
+        std::make_shared<AutoTextureOrderCommand>(order, 61));
+    G->mFuzzyTextureOverrides.insert(fuzzy_matcher);
+    InvalidateTextureOverrideCandidates();
+
+    auto saved_registered = registered_command_lists;
+    registered_command_lists.clear();
+    BuildAutoCheckSlotCoverage();
+    registered_command_lists = std::move(saved_registered);
+
+    DrawCallInfo fuzzy_call_info;
+    CommandListState fuzzy_state;
+    fuzzy_state.mHackerDevice = device.device;
+    fuzzy_state.mHackerContext = device.wrapper.get();
+    fuzzy_state.mOrigDevice1 = device.native.Get();
+    fuzzy_state.mOrigContext1 = device.context.Get();
+    fuzzy_state.call_info = &fuzzy_call_info;
+    fuzzy_state.post = false;
+    order.clear();
+    this_slots.clear();
+    AutoCheckTextureOverridesIndependent(&fuzzy_state, false);
+    require_batch(order == std::vector<int>({60, 61}),
+        "auto-tex A.4: a matching fuzzy override is not falsely skipped by the hash-only cache");
 }
 
 struct AuditCase { const char* id; void (*run)(); };

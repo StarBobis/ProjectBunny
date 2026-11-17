@@ -346,7 +346,6 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 		res->Release();
 }
 
-static void WarnUnusedAutoCheckTextureSlots();
 
 void optimise_command_lists(HackerDevice *device)
 {
@@ -419,7 +418,7 @@ void optimise_command_lists(HackerDevice *device)
 	for (CommandList* command_list : registered_command_lists)
 		MergeAutoCheckTextureOverrides(command_list);
 
-	WarnUnusedAutoCheckTextureSlots();
+	BuildAutoCheckSlotCoverage();
 
 	for (CommandList* command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
@@ -1200,6 +1199,14 @@ bool IsAutoCheckTextureSlotCovered(const ResourceCopyTarget& target)
     return false;
 }
 
+static uint64_t AutoCheckTextureSlotKey(const ResourceCopyTarget& target)
+{
+    uint64_t key = static_cast<uint64_t>(static_cast<uint32_t>(target.type)) << 32;
+    key |= static_cast<uint64_t>(static_cast<uint16_t>(target.shader_type)) << 16;
+    key |= target.slot;
+    return key;
+}
+
 namespace {
 
 int AutoCheckShaderStageIndex(wchar_t shader_type)
@@ -1212,9 +1219,27 @@ int AutoCheckShaderStageIndex(wchar_t shader_type)
 	}
 }
 
+// Use the immutable draw-start snapshot for candidate filtering and batch
+// matching. Command lists may rewrite the live DrawCallInfo (VertexLimitRaise,
+// count replacement, etc.); the original six counts must still decide whether
+// a TextureOverride matches.
+const DrawCallInfo* AutoCheckMatchingCallInfo(CommandListState* state)
+{
+	if (!state)
+		return nullptr;
+	if (state->mHackerContext) {
+		auto& scopes = state->mHackerContext->auto_check_texture_scopes;
+		for (auto it = scopes.rbegin(); it != scopes.rend(); ++it)
+			if (it->call_info == state->call_info)
+				return &it->original_call_info;
+	}
+	return state->call_info;
+}
+
 struct AutoCheckBinding {
 	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
 	Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+	Microsoft::WRL::ComPtr<ID3D11Resource> resource;
 	UINT stride = 0, offset = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
@@ -1296,17 +1321,23 @@ public:
 				if (stage < 0 || target.slot < first[stage] || target.slot > last[stage])
 					continue;
 				entry.view = views[stage][target.slot];
+				if (entry.view)
+					entry.view->GetResource(entry.resource.GetAddressOf());
 				break;
 			}
 			case ResourceCopyTargetType::VERTEX_BUFFER:
 				if (target.slot < vb_first || target.slot > vb_last)
 					continue;
 				entry.buffer = vertex_buffers[target.slot];
+				if (entry.buffer)
+					entry.resource = static_cast<ID3D11Resource*>(entry.buffer.Get());
 				entry.stride = vertex_strides[target.slot];
 				entry.offset = vertex_offsets[target.slot];
 				break;
 			case ResourceCopyTargetType::INDEX_BUFFER:
 				entry.buffer = index_buffer;
+				if (entry.buffer)
+					entry.resource = static_cast<ID3D11Resource*>(entry.buffer.Get());
 				entry.format = index_format;
 				entry.offset = index_offset;
 				break;
@@ -1350,18 +1381,24 @@ void FetchCurrentAutoCheckBinding(CommandListState* state, const ResourceCopyTar
 		default: return;
 		}
 		binding->view.Attach(view);
+		if (binding->view)
+			binding->view->GetResource(binding->resource.GetAddressOf());
 		break;
 	}
 	case ResourceCopyTargetType::VERTEX_BUFFER: {
 		ID3D11Buffer* buffer = nullptr;
 		state->mOrigContext1->IAGetVertexBuffers(target.slot, 1, &buffer, &binding->stride, &binding->offset);
 		binding->buffer.Attach(buffer);
+		if (binding->buffer)
+			binding->resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
 		break;
 	}
 	case ResourceCopyTargetType::INDEX_BUFFER: {
 		ID3D11Buffer* buffer = nullptr;
 		state->mOrigContext1->IAGetIndexBuffer(&buffer, &binding->format, &binding->offset);
 		binding->buffer.Attach(buffer);
+		if (binding->buffer)
+			binding->resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
 		break;
 	}
 	default:
@@ -1371,21 +1408,52 @@ void FetchCurrentAutoCheckBinding(CommandListState* state, const ResourceCopyTar
 
 } // namespace
 
-void AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
+bool AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
 {
 	if (!state || targets.empty() || state->aborted)
-		return;
+		return false;
+	// Copy immediately: a TO command list may issue a nested draw/dispatch that
+	// pushes to the scope vector and reallocates it. The batch must keep using
+	// the same immutable draw-start counts for every target.
+	const DrawCallInfo* matched_call_info = AutoCheckMatchingCallInfo(state);
+	DrawCallInfo matching_snapshot;
+	if (matched_call_info)
+		matching_snapshot = *matched_call_info;
+	const DrawCallInfo* matching_call_info = matched_call_info ? &matching_snapshot : nullptr;
 
 	// This command replaces an adjacent run of implicit checktextureoverride
 	// commands, so it runs under exactly the same ShaderOverride/ShaderRegex
 	// gating and at the same command-list position as the first check.
 	CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
-		return;
+		return false;
 
 	AutoCheckBindingCache cache;
 	cache.Prefetch(state, targets);
+
+	// A.4: before doing any per-slot candidate lookup or TO command-list work,
+	// check whether any bound resource has a hash/fuzzy candidate at all. This
+	// is the whole-batch skip for the common no-candidate draw. The per-resource
+	// candidate cache is invalidated on reload/resource recreation.
+	bool any_candidate = false;
+	for (size_t i = 0; i < cache.entries.size(); ++i) {
+		const AutoCheckBinding& entry = cache.entries[i];
+		if (!entry.resource)
+			continue;
+		const ResourceCopyTargetType type = targets[i]->target.type;
+		const bool region_possible = G->track_region_hashes &&
+			(type == ResourceCopyTargetType::VERTEX_BUFFER || type == ResourceCopyTargetType::INDEX_BUFFER);
+		if (HasTextureOverrideCandidate(entry.resource.Get(), const_cast<DrawCallInfo*>(matching_call_info), region_possible)) {
+			any_candidate = true;
+			break;
+		}
+	}
+	if (!any_candidate)
+		return false;
+	++G->auto_check_texture_full_pass_count;
+
 	bool dirty = false;
+	bool executed = false;
 
 	for (size_t i = 0; i < targets.size() && !state->aborted; ++i) {
 		CheckTextureOverrideCommand& check = *targets[i];
@@ -1397,41 +1465,32 @@ void AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::s
 			binding = &current;
 		}
 
-		Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+		if (!binding->resource)
+			continue;
+
 		UINT stride = 0, offset = 0;
 		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 		switch (check.target.type) {
 		case ResourceCopyTargetType::SHADER_RESOURCE:
-			if (!binding->view)
-				continue;
-			binding->view->GetResource(resource.GetAddressOf());
 			break;
 		case ResourceCopyTargetType::VERTEX_BUFFER:
-			if (!binding->buffer)
-				continue;
-			resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
 			stride = binding->stride;
 			offset = binding->offset;
 			break;
 		case ResourceCopyTargetType::INDEX_BUFFER:
-			if (!binding->buffer)
-				continue;
-			resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
 			format = binding->format;
 			offset = binding->offset;
 			break;
 		default:
 			continue;
 		}
-		if (!resource)
-			continue;
 
 		ResourceCopyTarget target = check.target;
 		state->this_target = &target;
 
 		TextureOverrideMatches matches;
-		FindTextureOverridesForBoundResource(target.type, resource.Get(), state->mHackerContext,
-			stride, offset, format, state->call_info, &matches);
+		FindTextureOverridesForBoundResource(target.type, binding->resource.Get(), state->mHackerContext,
+			stride, offset, format, const_cast<DrawCallInfo*>(matching_call_info), &matches);
 
 		if (!matches.empty()) {
 			for (auto* match : matches) {
@@ -1439,16 +1498,93 @@ void AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::s
 					break;
 				_RunCommandList(state->post ? &match->post_command_list : &match->command_list, state);
 			}
+			executed = true;
 			// The TO lists may have changed any later slot; re-query those
 			// immediately before their own check instead of using the snapshot.
 			dirty = true;
 		}
 	}
+	return executed;
 }
 
 void AutoCheckTextureOverrideCommand::run(CommandListState* state)
 {
 	AutoCheckTextureOverrides(state, targets);
+}
+
+void FinishAutoCheckCommandListState(CommandListState* state, const wchar_t* ini_section)
+{
+	if (!state)
+		return;
+	// This pass is a pre-phase execution point: RunCommandListComplete would
+	// apply all deferred layouts and flush IniParams here.
+	if (!state->post && !state->input_layout_overrides.empty())
+		UpdateInputLayout(ini_section, state);
+	CommandListFlushState(state);
+}
+
+void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch)
+{
+	if (!state || G->auto_check_texture_slots.empty())
+		return;
+	// Coverage is computed together with the config-time merge. If it is not
+	// available (e.g. command lists were not optimised), do not run: letting
+	// this pass run on slots that also have checks would double-run them.
+	if (G->auto_check_texture_slot_has_check.size() != G->auto_check_texture_slots.size())
+		return;
+	if (G->auto_check_texture_coverage_generation != G->auto_check_texture_slots_generation)
+		return;
+
+	AutoCheckTextureDrawScope* scope = nullptr;
+	if (state->mHackerContext && !state->mHackerContext->auto_check_texture_scopes.empty()) {
+		AutoCheckTextureDrawScope& top = state->mHackerContext->auto_check_texture_scopes.back();
+		if (top.call_info == state->call_info)
+			scope = &top;
+	}
+
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> targets;
+	std::vector<uint64_t> processed_keys;
+	for (size_t i = 0; i < G->auto_check_texture_slots.size(); ++i) {
+		if (G->auto_check_texture_slot_has_check[i])
+			continue;
+		const AutoCheckTextureSlot& slot = G->auto_check_texture_slots[i];
+		if (dispatch && (slot.type != ResourceCopyTargetType::SHADER_RESOURCE || slot.shader_type != L'c'))
+			continue;
+		auto check = std::make_shared<CheckTextureOverrideCommand>();
+		check->target.type = slot.type;
+		check->target.shader_type = slot.shader_type;
+		check->target.slot = slot.slot;
+		const uint64_t key = AutoCheckTextureSlotKey(check->target);
+		// A dynamic/unregistered checktextureoverride may already have run for
+		// this draw before the pass. In that case let the original path own the
+		// slot instead of running it twice.
+		if (scope && scope->checked_slots.count(key))
+			continue;
+		targets.push_back(check);
+		processed_keys.push_back(key);
+	}
+	if (targets.empty())
+		return;
+
+	// Claim these slots before executing any TO list. A nested
+	// checktextureoverride inside a TO list must not run them again.
+	if (scope)
+		for (uint64_t key : processed_keys)
+			scope->auto_pass_slots.insert(key);
+
+	// Replacement semantics: no original check command exists for these slots,
+	// so run both phases at this call site (pre list first, then post list).
+	state->post = false;
+	const bool ran_pre = AutoCheckTextureOverrides(state, targets);
+	state->post = true;
+	const bool ran_post = AutoCheckTextureOverrides(state, targets);
+	state->post = false;
+	// If A.4 skipped the whole batch (no candidate at all), release the claims
+	// so a later dynamic/unregistered check for the same slot still runs.
+	if (scope && !ran_pre && !ran_post)
+		for (uint64_t key : processed_keys)
+			scope->auto_pass_slots.erase(key);
+	FinishAutoCheckCommandListState(state, L"auto_check_texture_slots");
 }
 
 void MergeAutoCheckTextureOverrides(CommandList* command_list)
@@ -1501,12 +1637,15 @@ static bool AutoCheckTargetMatchesSlot(const ResourceCopyTarget& target, const A
 	return target.type != ResourceCopyTargetType::SHADER_RESOURCE || target.shader_type == slot.shader_type;
 }
 
-static void WarnUnusedAutoCheckTextureSlots()
+void BuildAutoCheckSlotCoverage()
 {
+	G->auto_check_texture_slot_has_check.assign(G->auto_check_texture_slots.size(), 0);
+	G->auto_check_texture_coverage_generation = G->auto_check_texture_slots_generation;
 	if (G->auto_check_texture_slots.empty())
 		return;
 
-	for (const auto& slot : G->auto_check_texture_slots) {
+	for (size_t i = 0; i < G->auto_check_texture_slots.size(); ++i) {
+		const AutoCheckTextureSlot& slot = G->auto_check_texture_slots[i];
 		bool found = false;
 		for (CommandList* command_list : registered_command_lists) {
 			for (const auto& command : command_list->commands) {
@@ -1525,11 +1664,7 @@ static void WarnUnusedAutoCheckTextureSlots()
 			if (found)
 				break;
 		}
-		if (!found) {
-			LogOverlayW(LOG_WARNING,
-				L"auto_check_texture_slots: no checktextureoverride found for type=%u slot=%u; slot not auto-accelerated\n",
-				static_cast<unsigned>(slot.type), slot.slot);
-		}
+		G->auto_check_texture_slot_has_check[i] = found ? 1 : 0;
 	}
 }
 
@@ -1537,6 +1672,18 @@ void CheckTextureOverrideCommand::run(CommandListState* state)
 {
     if (!state) return;
     CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    // Per-draw mutual exclusion with the replacement pass. A pass-processed
+    // slot must not run its TO lists again from a later/duplicate check; a
+    // check that runs before the pass is recorded so the pass skips it.
+    if (state->mHackerContext && IsAutoCheckTextureSlotCovered(target)) {
+        auto& scopes = state->mHackerContext->auto_check_texture_scopes;
+        if (!scopes.empty() && scopes.back().call_info == state->call_info) {
+            const uint64_t key = AutoCheckTextureSlotKey(target);
+            if (scopes.back().auto_pass_slots.count(key))
+                return;
+            scopes.back().checked_slots.insert(key);
+        }
+    }
     // Keep every TextureOverride* in `matches` inside this guard: reload
     // clears the config map under the same lock, so consumption must finish
     // before the guard is released.

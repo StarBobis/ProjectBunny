@@ -871,6 +871,12 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	AdvanceTextureMatchCall();
 	draw_number++;
 
+	if (!G->auto_check_texture_slots.empty()) {
+		auto_check_texture_scopes.emplace_back();
+		auto_check_texture_scopes.back().call_info = &data.call_info;
+		auto_check_texture_scopes.back().original_call_info = data.call_info;
+	}
+
 	Profiling::State profiling_state;
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
@@ -1078,11 +1084,55 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		}
 	}
 
+	// Replacement-mode pass for configured slots that have no
+	// checktextureoverride in the loaded command lists. Existing checks keep
+	// their original positions and gate; this only covers the gaps.
+	if (!G->auto_check_texture_slots.empty() && !data.call_info.skip)
+		AutoCheckTextureOverridesIndependent(data);
+
 	OverrideInputLayout();
 
 out_profile:
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::draw_overhead);
+}
+
+void HackerContext::AutoCheckTextureOverridesIndependent(DrawContext& data)
+{
+	if (G->auto_check_texture_slots.empty() || !mHackerDevice || !mOrigContext1)
+		return;
+	if (G->auto_check_texture_slot_has_check.size() != G->auto_check_texture_slots.size())
+		return;
+
+	CommandListState state;
+	state.mHackerDevice = mHackerDevice;
+	state.mHackerContext = this;
+	state.mOrigDevice1 = mHackerDevice->GetPassThroughOrigDevice1();
+	state.mOrigContext1 = mOrigContext1;
+	state.call_info = &data.call_info;
+	state.resource = data.call_info.indirect_buffer ?
+		reinterpret_cast<ID3D11Resource**>(data.call_info.indirect_buffer) : nullptr;
+	state.post = false;
+	::AutoCheckTextureOverridesIndependent(&state, false);
+}
+
+void HackerContext::AutoCheckTextureOverridesIndependent(DispatchContext* context)
+{
+	if (!context || G->auto_check_texture_slots.empty() || !mHackerDevice || !mOrigContext1)
+		return;
+	if (G->auto_check_texture_slot_has_check.size() != G->auto_check_texture_slots.size())
+		return;
+
+	CommandListState state;
+	state.mHackerDevice = mHackerDevice;
+	state.mHackerContext = this;
+	state.mOrigDevice1 = mHackerDevice->GetPassThroughOrigDevice1();
+	state.mOrigContext1 = mOrigContext1;
+	state.call_info = &context->call_info;
+	state.resource = context->call_info.indirect_buffer ?
+		reinterpret_cast<ID3D11Resource**>(context->call_info.indirect_buffer) : nullptr;
+	state.post = false;
+	::AutoCheckTextureOverridesIndependent(&state, true);
 }
 
 void HackerContext::AfterDraw(DrawContext &data)
@@ -1119,6 +1169,10 @@ void HackerContext::AfterDraw(DrawContext &data)
 
 	RestoreInputLayout();
     textureOverrideCache.Clear();
+
+	if (!auto_check_texture_scopes.empty() &&
+	    auto_check_texture_scopes.back().call_info == &data.call_info)
+		auto_check_texture_scopes.pop_back();
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::draw_overhead);
@@ -1799,6 +1853,12 @@ bool HackerContext::BeforeDispatch(DispatchContext *context)
 	AdvanceTextureMatchCall();
 	dispatch_number++;
 
+	if (!G->auto_check_texture_slots.empty()) {
+		auto_check_texture_scopes.emplace_back();
+		auto_check_texture_scopes.back().call_info = &context->call_info;
+		auto_check_texture_scopes.back().original_call_info = context->call_info;
+	}
+
 	if (G->hunting == HUNTING_MODE_ENABLED) {
 		if (G->DumpUsage)
 			RecordComputeShaderStats();
@@ -1826,11 +1886,14 @@ bool HackerContext::BeforeDispatch(DispatchContext *context)
 			// compute shaders. The main thing we care
 			// about is the command list, so just run that:
 			RunCommandList(mHackerDevice, this, &i->second.command_list, &context->call_info, false);
-			return !context->call_info.skip;
 		}
 	}
 
-	return true;
+	// Replacement-mode pass for cs-tN slots with no check command.
+	if (!G->auto_check_texture_slots.empty() && !context->call_info.skip)
+		AutoCheckTextureOverridesIndependent(context);
+
+	return !context->call_info.skip;
 }
 
 void HackerContext::AfterDispatch(DispatchContext *context)
@@ -1838,6 +1901,10 @@ void HackerContext::AfterDispatch(DispatchContext *context)
 	if (context->post_commands)
 		RunCommandList(mHackerDevice, this, context->post_commands, &context->call_info, true);
     textureOverrideCache.Clear();
+
+	if (!auto_check_texture_scopes.empty() &&
+	    auto_check_texture_scopes.back().call_info == &context->call_info)
+		auto_check_texture_scopes.pop_back();
 }
 
 STDMETHODIMP_(void) HackerContext::Dispatch(THIS_

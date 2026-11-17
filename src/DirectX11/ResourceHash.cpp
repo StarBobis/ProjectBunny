@@ -1989,6 +1989,7 @@ void InvalidateTextureOverrideCandidates()
     for (auto& entry : G->mResources) {
         auto& info = entry.second;
         info.texture_override_candidates_valid = info.texture_override_hash_valid = false;
+        info.has_override_candidate_valid = false;
         info.texture_override_candidates.hash_matches = nullptr;
         info.texture_override_candidates.fuzzy_matches.clear();
     }
@@ -2043,7 +2044,52 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
         info->texture_override_hash = hash;
         info->texture_override_hash_valid = true;
     }
+    info->has_override_candidate = candidates.hash_matches != nullptr || !candidates.fuzzy_matches.empty();
+    info->has_override_candidate_valid = true;
     return &candidates;
+}
+
+bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_info, bool region_hash_possible)
+{
+    if (!resource)
+        return false;
+    if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+        return false;
+    if (region_hash_possible)
+        return true;
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        auto found = G->mResources.find(resource);
+        if (found == G->mResources.end())
+            return false;
+        const ResourceHandleInfo& info = found->second;
+        if (info.has_override_candidate_valid &&
+            info.texture_override_candidates_valid &&
+            info.texture_override_hash_valid &&
+            info.texture_override_hash == info.hash &&
+            info.texture_override_resolution_width == G->mResolutionInfo.width &&
+            info.texture_override_resolution_height == G->mResolutionInfo.height &&
+            !info.has_override_candidate)
+            return false;
+    }
+
+    TextureOverrideCandidates* candidates = get_texture_override_candidates(resource);
+    if (!candidates)
+        return false;
+
+    if (candidates->hash_matches) {
+        for (auto& match : *candidates->hash_matches)
+            if (matches_draw_info(&match, call_info))
+                return true;
+    }
+    for (const auto& candidate : candidates->fuzzy_matches) {
+        if (candidate.dynamic_matcher &&
+            !MatchesResourceDescriptor(*candidate.dynamic_matcher, candidates->descriptor))
+            continue;
+        if (matches_draw_info(candidate.texture_override, call_info))
+            return true;
+    }
+    return false;
 }
 
 static void AppendFuzzyCandidates(const TextureOverrideCandidates& candidates, TextureOverrideMatches* matches, DrawCallInfo* call_info)

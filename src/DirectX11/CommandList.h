@@ -1765,8 +1765,20 @@ public:
 
 // Executes one merged adjacent run. Public so the regression host can call the
 // real batch entry without building a full ShaderOverride chain.
-void AutoCheckTextureOverrides(CommandListState* state,
+bool AutoCheckTextureOverrides(CommandListState* state,
 		const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets);
+
+// Replacement-mode pass for configured slots that have no checktextureoverride
+// in the loaded command lists. Runs both pre and post TO lists at the call
+// site; `dispatch` filters to cs-tN slots. Covered-by-check slots are skipped.
+void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch);
+
+// Fills auto_check_texture_slot_has_check after command lists are optimised.
+// Public for regression tests.
+void BuildAutoCheckSlotCoverage();
+
+// RunCommandListComplete-style finish for a directly executed state.
+void FinishAutoCheckCommandListState(CommandListState* state, const wchar_t* ini_section);
 
 // Merges adjacent covered static checktextureoverride commands inside one
 // command list. Called by optimise_command_lists; public for regression tests.

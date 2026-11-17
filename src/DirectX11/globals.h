@@ -615,6 +615,19 @@ struct Globals
 	// path byte-for-byte unchanged.
 	std::vector<AutoCheckTextureSlot> auto_check_texture_slots;
 
+	// Parallel to auto_check_texture_slots: 1 when at least one
+	// checktextureoverride for that slot exists in the loaded command lists.
+	// Slots with 0 are handled by the independent BeforeDraw/BeforeDispatch
+	// pass; slots with 1 keep the original check path, so the two paths never
+	// cover the same slot and cannot double-run a TextureOverride.
+	std::vector<uint8_t> auto_check_texture_slot_has_check;
+
+	// Diagnostic/test counter: number of times the batch passed the A.4
+	// candidate gate and entered per-slot matching. Not reset on reload.
+	uint64_t auto_check_texture_full_pass_count = 0;
+	uint64_t auto_check_texture_slots_generation = 0;
+	uint64_t auto_check_texture_coverage_generation = ~0ull;
+
 	std::unordered_map<UINT64, ShaderModelCacheEntry> mShaderModelCache;
 
 	std::mutex mShaderBindingsMutex;

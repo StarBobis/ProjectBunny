@@ -464,6 +464,8 @@ struct ResourceHandleInfo
     uint32_t texture_override_hash = 0;
     UINT texture_override_resolution_width = 0, texture_override_resolution_height = 0;
     TextureOverrideCandidates texture_override_candidates;
+    bool has_override_candidate = false;
+    bool has_override_candidate_valid = false;
 
 	// CPU-side copy of the resource data captured via hooks or staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
@@ -972,6 +974,13 @@ void ClearRegionHashesGlobalCache();
 // reference must cover the whole candidate use, and returned pointers must
 // be consumed before unlocking. Untracked resources return nullptr.
 TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resource);
+// A.4 gate: true if the resource has a hash candidate that matches the current
+// draw (match_first_index etc.) or a fuzzy candidate matching its descriptor.
+// Caller must hold G->mCriticalSection and a live resource reference. Uses the
+// per-resource candidate cache. If region_hash_possible is set, the whole-
+// resource hash cannot prove absence of a region-hash candidate, so the caller
+// is conservatively told to run the full path.
+bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_info, bool region_hash_possible);
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 // Takes G->mCriticalSection before mResourcesLock; call before old maps die.
 void InvalidateTextureOverrideCandidates();

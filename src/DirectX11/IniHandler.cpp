@@ -5230,6 +5230,8 @@ void LoadConfigFile()
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	// Rebuild on every load; empty/absent keeps the native batch check disabled.
 	G->auto_check_texture_slots.clear();
+	G->auto_check_texture_slot_has_check.clear();
+	++G->auto_check_texture_slots_generation;
 	if (const wstring* auto_check_slots = GetIniWstring(L"Rendering", L"auto_check_texture_slots")) {
 		LogInfo("  auto_check_texture_slots=%S\n", auto_check_slots->c_str());
 		ParseAutoCheckTextureSlots(*auto_check_slots, &G->auto_check_texture_slots);
