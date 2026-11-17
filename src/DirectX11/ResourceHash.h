@@ -1008,3 +1008,6 @@ struct TextureUploadStateSnapshot {
 };
 bool GetTextureUploadStateSnapshot(ID3D11Resource*, TextureUploadStateSnapshot&);
 void InvalidateTextureUploadStates();
+
+// Zero hashes only match zero hashes; otherwise use the 64-bit bit distance.
+unsigned HammingDistance(uint64_t a, uint64_t b);

@@ -1137,6 +1137,10 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 	if (!wcsncmp(key, L"commandlist", 11))
 		return ParseCopyCommandListCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
+    if (!wcscmp(key, L"run") && *val == L"snapshotoriginaltextures")
+        return AddCommandToList(new SnapshotOriginalTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
+    if (!wcscmp(key, L"run") && *val == L"restoreoriginaltextures")
+        return AddCommandToList(new RestoreOriginalTexturesOperation(), explicit_command_list, post_command_list, NULL, NULL, section, key, val);
 	return ParseDrawCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 }
 
@@ -2912,8 +2916,8 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 
         case ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT: {
             const auto* resource = texture_filter_target.GetCustomResource(state);
-            return !resource || resource->original_format == static_cast<DXGI_FORMAT>(-1) ? -1.0f :
-                static_cast<float>(resource->original_format);
+            return !resource || resource->match_format == static_cast<DXGI_FORMAT>(-1) ? -1.0f :
+                static_cast<float>(resource->match_format);
         }
 
 		case ResourceCopyTargetEvaluationMode::POOL_INDEX:
@@ -5867,8 +5871,8 @@ CustomResource::CustomResource() :
 	offset(0),
 	buf_size(0),
 	format(DXGI_FORMAT_UNKNOWN),
-    original_format(static_cast<DXGI_FORMAT>(-1)),
-    original_dhash(0),
+    match_format(static_cast<DXGI_FORMAT>(-1)),
+    match_dhash(0),
 	source_stride(0),
 	max_copies_per_frame(0),
 	frame_no(0),
@@ -6454,8 +6458,11 @@ void CustomResource::CopyMetadataFrom(const CustomResource& src)
     // Only declaration/config metadata is copied. Keep runtime buf_size and
     // its count/extent discriminator together, just like resource and offset.
 	max_copies_per_frame = src.max_copies_per_frame;
-    original_format = src.original_format;
-    original_dhash = src.original_dhash;
+    match_format = src.match_format;
+    match_dhash = src.match_dhash;
+    match_confidence = src.match_confidence;
+    match_dhash_set = src.match_dhash_set;
+    match_format_valid = src.match_format_valid;
 
 	filename = src.filename;
 
@@ -7753,6 +7760,7 @@ bool ShaderTarget::ParseTarget(const wchar_t* target, bool is_source, const wstr
     wstring temp_target;
     if (ParseTargetMember(target, length, temp_target, ini_namespace, scope) == IniParserResult::SYNTAX_ERROR)
         return false;
+    if (is_source && evaluation_mode == ShaderTargetEvaluationMode::MATCH_TEXTURES) return false;
     return ParseShaderPipelineSlot(target, length, is_source) == IniParserResult::TOKEN_FOUND;
 }
 
@@ -7787,6 +7795,7 @@ IniParserResult ShaderTarget::ParseTargetMember(
         { L"->cb_slot_count",  15, ShaderTargetEvaluationMode::DCL_CB_SLOT_COUNT },
         { L"->cb_first_slot",  15, ShaderTargetEvaluationMode::DCL_CB_FIRST_SLOT },
         { L"->srv_last_slot",  15, ShaderTargetEvaluationMode::DCL_SRV_LAST_SLOT },
+        { L"->matchtextures", 15, ShaderTargetEvaluationMode::MATCH_TEXTURES, {{ MemberArg::Type::Resource }} },
         { L"->srv_slot_count", 16, ShaderTargetEvaluationMode::DCL_SRV_SLOT_COUNT },
         { L"->srv_first_slot", 16, ShaderTargetEvaluationMode::DCL_SRV_FIRST_SLOT },
 	};
@@ -7840,6 +7849,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::String, MemberArg::Type::Unsigned
 		}} },
         { L"->originalformat", 16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
+        { L"->getmatchformat", 16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
         { L"->hammingdistance", 17, ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE, {{
             MemberArg::Type::Resource,
         }} },
@@ -8721,6 +8731,30 @@ static bool parse_resource_copy_target_source(const wchar_t* section, const wstr
 static CommandListCommand* parse_slot_range_operation(const wchar_t* section, ResourceCopyTarget& dst,
     ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* commands, const wstring* ini_namespace);
 
+static CommandListCommand* parse_texture_override_operation(const wchar_t* section, ShaderTarget& shader,
+    ResourceCopyTarget& source, ResourceCopyOptions options, CommandList* list, const wstring* ini_namespace)
+{
+    if (shader.shader_type != L'p' || shader.evaluation_mode != ShaderTargetEvaluationMode::MATCH_TEXTURES ||
+        !shader.member_args[0].resource) return nullptr;
+    ResourceCopyTarget filter = *shader.member_args[0].resource;
+    if (filter.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
+        filter.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE || !filter.GetCustomResource(nullptr, true)) return nullptr;
+    ResourceCopyTarget destination;
+    destination.type = ResourceCopyTargetType::SHADER_RESOURCE;
+    destination.shader_type = L'p';
+    destination.max_slot = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+    // Reuse local source flags/validation without storing any runtime pool selection.
+    std::unique_ptr<CommandListCommand> base(parse_resource_copy_operation(section, destination, source, options, list, ini_namespace));
+    auto* copy = dynamic_cast<ResourceCopyOperation*>(base.get());
+    if (!copy) return nullptr;
+    auto operation = std::make_unique<TextureOverrideOperation>();
+    operation->src = std::move(copy->src);
+    operation->dst = std::move(copy->dst);
+    operation->options = copy->options;
+    operation->match_resource = std::move(shader.member_args[0].resource);
+    return operation.release();
+}
+
 bool ParseCommandListResourceCopyTargetDirective(
 	const wchar_t *section, const wchar_t *key, wstring *val, CommandList *command_list, const wstring *ini_namespace
 )
@@ -8730,6 +8764,19 @@ bool ParseCommandListResourceCopyTargetDirective(
 	ResourceCopyTarget dst = ResourceCopyTarget();
 
 	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope, true, true)) {
+        ShaderTarget shader;
+        if (shader.ParseTarget(key, false, ini_namespace, command_list->scope) &&
+            shader.evaluation_mode == ShaderTargetEvaluationMode::MATCH_TEXTURES) {
+            ResourceCopyTarget source;
+            ResourceCopyOptions options = ResourceCopyOptions::INVALID;
+            if (!parse_resource_copy_target_source(section, *val, source, options, command_list, ini_namespace, key)) return false;
+            std::unique_ptr<CommandListCommand> operation(parse_texture_override_operation(section, shader, source, options, command_list, ini_namespace));
+            if (!operation) return false;
+            operation->ini_line = L"[" + wstring(section) + L"] " + key + L" = " + *val;
+            command_list->commands.emplace_back(std::move(operation));
+            return true;
+        }
+
 		// Missing persistent pool slots must survive a cold start without their mod.
 		if (key && key[0] == L'$')
 			PreserveUserConfigVariable(section, key, *val, ini_namespace);
@@ -9403,8 +9450,11 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
             if (size_is_length) *size_is_length = custom_resource->buf_size_is_length;
             if (source_original_stride) *source_original_stride = custom_resource->source_stride;
             if (original_metadata) {
-                original_metadata->format = custom_resource->original_format;
-                original_metadata->dhash = custom_resource->original_dhash;
+                original_metadata->format = custom_resource->match_format;
+                original_metadata->dhash = custom_resource->match_dhash;
+                original_metadata->confidence = custom_resource->match_confidence;
+                original_metadata->dhash_set = custom_resource->match_dhash_set;
+                original_metadata->format_valid = custom_resource->match_format_valid;
             }
 
 			if (custom_resource->is_null) {
@@ -9719,8 +9769,11 @@ void ResourceCopyTarget::SetResource(
 		}
 		custom_resource->is_null = false;
         if (original_metadata) {
-            custom_resource->original_format = original_metadata->format;
-            custom_resource->original_dhash = original_metadata->dhash;
+            custom_resource->match_format = original_metadata->format;
+            custom_resource->match_dhash = original_metadata->dhash;
+            custom_resource->match_confidence = original_metadata->confidence;
+            custom_resource->match_dhash_set = original_metadata->dhash_set;
+            custom_resource->match_format_valid = original_metadata->format_valid;
         }
 
 		// If we are passed our own resource (might happen if the
@@ -10253,11 +10306,8 @@ float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
     ResourceCopyTarget reference = *member_args[0].resource;
     const auto* custom = reference.GetCustomResource(state);
     if (!custom) return ResourcePropertyResult::UNKNOWN;
-    const uint64_t reference_hash = custom->original_dhash;
-    if ((hash == 0) != (reference_hash == 0)) return 64.0f;
-    unsigned distance = 0;
-    for (uint64_t bits = hash ^ reference_hash; bits; bits &= bits - 1) ++distance;
-    return static_cast<float>(distance);
+    const uint64_t reference_hash = custom->match_dhash;
+    return static_cast<float>(HammingDistance(reference_hash, hash));
 }
 
 D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState* state)

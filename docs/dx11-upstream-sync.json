@@ -5263,35 +5263,60 @@
     },
     {
       "sha": "4b29e9b326f3d034c62805eb33407dc2b063944c",
-      "status": "pending",
       "subject": "Moved `HammingDistance()` helper to ResourceHash",
-      "review": {
-        "status": "pending",
-        "reason": "Observed during the user-authorized DX11 repair run. Requires per-commit inspection/adaptation/validation; not copied or synchronized into this repair checkpoint.",
-        "files": "not inspected yet",
-        "validation": "not run"
+      "status": "validated",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/ResourceHash.h"
+      ],
+      "adaptation": "Moved the portable 64-bit HammingDistance implementation into ResourceHash and reused it from the existing getter. Preserved zero/nonzero guard and C++17; no new CPU instruction requirement.",
+      "validation": {
+        "commands": "powershell -NoProfile -ExecutionPolicy Bypass -File build/run-upstream-validation.ps1; ctest --test-dir build/dx11-dump-validation --output-on-failure",
+        "result": "PASS: DX11 Release DLL and production regression executable build; all 5 CTest entries passed. Shared helper boundaries/symmetry/zero guard plus real getter/config/GPU tests passed.",
+        "runtime": "Pure helper relocation is validated by production tests; no new game-side behavior introduced."
       }
     },
     {
       "sha": "1231d8dd1c1bf902ee948dd2944a1e963acc3148",
-      "status": "pending",
       "subject": "Renamed Resource section's  `original_format` to `match_format`, `original_dhash` to `match_dhash`",
-      "review": {
-        "status": "pending",
-        "reason": "Observed during the user-authorized DX11 repair run. Requires per-commit inspection/adaptation/validation; not copied or synchronized into this repair checkpoint.",
-        "files": "not inspected yet",
-        "validation": "not run"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/IniHandler.cpp"
+      ],
+      "adaptation": "Renamed internal CustomResource fields to match_format/match_dhash. Added new INI names and ->getmatchformat; retained original_format/original_dhash and ->originalformat aliases. New names take precedence. Preserved exact uint64 and local metadata propagation through copy/ref/pools/THIS/ranges. Explicit empty new match keys remain invalid rather than reviving valid legacy aliases.",
+      "validation": {
+        "commands": "powershell -NoProfile -ExecutionPolicy Bypass -File build/run-upstream-validation.ps1; ctest --test-dir build/dx11-dump-validation --output-on-failure",
+        "result": "PASS: DX11 Release build and all 5 CTest entries, including actual INI new/legacy names, precedence, malformed/overflow and member getters plus production resource-copy/pool metadata regression.",
+        "runtime": "pending: target game configuration/runtime verification; synchronized position not advanced."
       }
     },
     {
       "sha": "b0bff3fa56ab14487a35f2fc96e126e04aa89441",
-      "status": "pending",
       "subject": "Added INI syntax for dHash-based pixel-shader texture slot overrides",
-      "review": {
-        "status": "pending",
-        "reason": "Observed during the user-authorized DX11 repair run. Requires per-commit inspection/adaptation/validation; not copied or synchronized into this repair checkpoint.",
-        "files": "not inspected yet",
-        "validation": "not run"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/TextureMatch.cpp",
+        "src/DirectX11/TextureMatch.h",
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/HackerContext.cpp",
+        "src/DirectX11/HackerContext.h",
+        "src/DirectX11/IniHandler.cpp",
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/CMakeLists.txt",
+        "src/DirectX11/tests/texture_match_regression.cpp",
+        "src/DirectX11/tests/original_resource_metadata_regression.cpp",
+        "src/DirectX11/tests/slot_range_test_support.h",
+        "usage/dx11/resources.md"
+      ],
+      "adaptation": "Implemented PS MatchTextures and pre snapshot/post restore through local parser/copy publication. Preserved CMake/C++17 and immutable member syntax. Fixed upstream confidence clamp (was always 1), missing/zero hash distinction, omitted/invalid format distinction, exact/null SRV restoration and call/frame/reload/context lifecycle. Context-owned ComPtr snapshots clear after draw/dispatch, reset/ClearState/destruction. Config epoch invalidates stale snapshots. Retained local typeid batch exclusion rather than redundant IsBatchable virtual. Deferred publication records priority only after valid binding. dHash device checks use canonical COM identity under native hooks. Matching follows config lifetime lock order.",
+      "validation": {
+        "commands": "MSVC x64 CMake Release BUILD_TESTING=ON; cmake --build build/dx11-dump-validation --target dx11_upstream_regression --parallel 6; ctest --test-dir build/dx11-dump-validation --output-on-failure",
+        "result": "PASS: DX11 DLL and regression build; all 7 CTest entries passed (23.55 seconds). Actual INI confidence/default/clamp/NaN/empty-new-key precedence and ref/copy/copy_desc metadata tests; real WARP sparse PS matching, automatic/explicit snapshot, equal-best and strict candidate priority, confidence boundary, format/missing hash/source failure, exact/null/high-slot restore, copy/ref, call reset/reload/ClearState, public draw/post and dispatch lifetime, empty/unbound shaders and deferred-context rejection. Separate native-hook process exercises same matching and trampoline COM identity; proxy loading/Present/resize regression passes.",
+        "runtime": "pending: target-game validation of new matching and renamed INI metadata; no game deployment performed in this sync task."
       }
     }
   ],

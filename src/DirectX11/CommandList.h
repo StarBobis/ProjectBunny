@@ -15,6 +15,7 @@
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
+#include "TextureMatch.h"
 
 // Used to prevent typos leading to infinite recursion (or at least overflowing
 // the real stack) due to a section running itself or a circular reference. 64
@@ -561,6 +562,9 @@ class CustomResourcePool;
 struct ResourceOriginalMetadata {
     DXGI_FORMAT format = static_cast<DXGI_FORMAT>(-1);
     UINT64 dhash = 0;
+    float confidence = 0.75f;
+    bool dhash_set = false;
+    bool format_valid = true;
 };
 
 class CustomResource
@@ -583,8 +587,11 @@ public:
 	UINT buf_size;
     bool buf_size_is_length = false; // Explicit captured Region count; legacy metadata remains an extent.
 	DXGI_FORMAT format;
-    DXGI_FORMAT original_format;
-    UINT64 original_dhash;
+    DXGI_FORMAT match_format;
+    UINT64 match_dhash;
+    float match_confidence = 0.75f;
+    bool match_dhash_set = false;
+    bool match_format_valid = true;
 
 	UINT source_stride;
 
@@ -1017,6 +1024,7 @@ enum class ShaderTargetEvaluationMode : uint32_t {
     DCL_SRV_SLOT_COUNT = 0x00000800,
     DCL_SRV_FIRST_SLOT = 0x00001000,
     DCL_SRV_LAST_SLOT  = 0x00002000,
+    MATCH_TEXTURES = 0x00400000,
 };
 SENSIBLE_ENUM(ShaderTargetEvaluationMode);
 //static EnumName_t<const wchar_t*, ShaderTargetEvaluationMode> ShaderTargetEvaluationModeNames[] = {
@@ -1222,6 +1230,20 @@ public:
 	virtual void RunWithBinding(CommandListState*, DeferredBinding* deferred);
 	virtual const ResourceCopyTarget& BatchTarget(BatchDirection direction) const;
 	virtual void RunWithSource(CommandListState*, ID3D11Resource*, ID3D11View*);
+};
+
+class SnapshotOriginalTexturesOperation : public CommandListCommand {
+public:
+    void run(CommandListState* state) override;
+};
+class RestoreOriginalTexturesOperation : public CommandListCommand {
+public:
+    void run(CommandListState* state) override;
+};
+class TextureOverrideOperation : public ResourceCopyOperation {
+public:
+    std::shared_ptr<const ResourceCopyTarget> match_resource;
+    void run(CommandListState* state) override;
 };
 
 class ShaderResourceBatch : public CommandListCommand {

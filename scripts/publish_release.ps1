@@ -263,6 +263,20 @@ Write-Host "===== Publishing $tag to $releaseRepoUrl =====" -ForegroundColor Cya
 # the version never requires touching this switch.
 $releaseBody = "ProjectBunny $tag - DirectX 11 + DirectX 12, Release x64."
 switch ($tag) {
+    'v1.3.19' {
+        $releaseBody = @'
+DX11 更新：
+- 屏幕通知、错误、Hunting 和统计支持 UTF-8/中文路径，使用 GDI Unicode 遮罩和现有 D3D11 合成，不新增静态 DLL 依赖；移除 SpriteFont 字库依赖。
+- 修复 hook=all 下内部设备获取路径导致包装 InputLayout 进入原生调用链的问题，保留游戏侧 GetDevice 身份和引用计数语义。
+- ShaderRegex 支持重复填写 exclude_hash，每行一个 Shader Hash；排除发生在 Shader 处理阶段。
+- VB TXT 仅保留 [0]～[10] 的 11 个样例及布局说明，BUF 仍完整保存。依赖完整 VB TXT 的导入工具应改用支持 BUF 的流程。
+- 同步上游 4b29e9b3、1231d8dd、b0bff3fa：共享 HammingDistance，新增 match_format/match_dhash、->getmatchformat 及 PS dHash 贴图槽位匹配。
+- 新增 ps->MatchTextures(ResourceFilter) = ref ResourceReplacement、run = SnapshotOriginalTextures 和 run = RestoreOriginalTextures。修正置信度钳制并补齐快照失效、空槽位恢复和候选优先级处理。
+- 保留 original_format/original_dhash 与 ->originalformat 旧语法；新键优先。
+
+验证：DX11 Release 构建、全部 7 项 CTest 通过，包含真实 WARP、原生 Hook、DLL 加载、Present/缩放、中文渲染、INI 和贴图匹配回归。中文 GDI 版本已由用户在 Naraka 验证；新增 dHash 匹配功能尚待目标游戏验证。DX12 保持现有功能和标准。
+'@
+    }
     'v1.3.18' {
         $releaseBody = @'
 DX11 F8 帧分析修复与优化：

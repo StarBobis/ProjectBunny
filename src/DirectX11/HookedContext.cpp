@@ -45,6 +45,7 @@
 #include <unordered_map>
 
 #include "HookedContext.h"
+#include "HookedDevice.h"
 #include "DLLMainHook.h"
 #include "log.h"
 #include "lock.h"
@@ -2844,7 +2845,12 @@ static void STDMETHODCALLTYPE TrampolineGetDevice(ID3D11DeviceContext1 *This,
 		__out  ID3D11Device **ppDevice)
 {
 	HookDebug("TrampolineContext::GetDevice()\n");
-	return orig_vtable.GetDevice(((ID3D11DeviceContext1Trampoline*)This)->orig_this, ppDevice);
+	orig_vtable.GetDevice(((ID3D11DeviceContext1Trampoline*)This)->orig_this, ppDevice);
+    // Toolkits call context->GetDevice to create their input layouts. Returning
+    // a hooked native device here re-wraps those layouts, which a trampoline
+    // context then submits directly to the runtime as invalid native objects.
+    // The original call already supplied the reference transferred to the view.
+    if (ppDevice && *ppDevice) *ppDevice = get_passthrough_device_view(*ppDevice);
 }
 static HRESULT STDMETHODCALLTYPE TrampolineGetPrivateData(ID3D11DeviceContext1 *This,
 		/* [annotation] */

@@ -142,6 +142,8 @@ private:
 	ID3D11InputLayout* mOriginalInputLayout = nullptr;
 	HackerInputLayout* mOverrideInputLayout = nullptr;
 	bool mInputLayoutOverrideActive = false;
+    TextureOverrideCache textureOverrideCache;
+    uint64_t textureMatchCall = 0;
 	void ResetTrackedInputLayout();
 
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
@@ -257,7 +259,10 @@ public:
 	// follow the original context's single-threaded access requirements.
 	unsigned GetDrawNumber() const { return draw_number; }
 	unsigned GetDispatchNumber() const { return dispatch_number; }
-	void ResetCallCounters() { draw_number = 0; dispatch_number = 0; }
+	void ResetCallCounters() { draw_number = 0; dispatch_number = 0; AdvanceTextureMatchCall(); }
+    uint64_t GetTextureMatchCall() const { return textureMatchCall; }
+    void AdvanceTextureMatchCall() { textureOverrideCache.Clear(); ++textureMatchCall; }
+    TextureOverrideCache& GetTextureOverrideCache() { return textureOverrideCache; }
 
 	ID3D11Buffer* GetReadbackBuffer(UINT size);
 

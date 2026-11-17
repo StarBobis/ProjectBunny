@@ -76,14 +76,14 @@ void test_dx11_round5_assignment_regression()
     ComPtr<ID3D11ShaderResourceView> old_view;
     require_batch(SUCCEEDED(device.native->CreateShaderResourceView(old_buffer.Get(),&desc,&old_view)),"round5: real old view");
     auto& source=registry.resource(L"resourceround5source",device,new_buffer.Get(),DXGI_FORMAT_R32_FLOAT,4,128);
-    source.source_stride=8; source.original_format=DXGI_FORMAT_R32_FLOAT; source.original_dhash=12345;
+    source.source_stride=8; source.match_format=DXGI_FORMAT_R32_FLOAT; source.match_dhash=12345;
     bool all_preserved=true,all_retried=true;
     for (bool copy_desc : {false,true}) {
         const std::wstring name=copy_desc?L"resourceround5desc":L"resourceround5copy";
         auto& destination=registry.resource(name,device,old_buffer.Get(),DXGI_FORMAT_R16_UINT,2,64);
         destination.bind_flags=static_cast<D3D11_BIND_FLAG>(D3D11_BIND_VERTEX_BUFFER|D3D11_BIND_SHADER_RESOURCE);
         destination.view=old_view.Get(); old_view->AddRef();
-        destination.source_stride=7; destination.original_format=DXGI_FORMAT_R16_UINT; destination.original_dhash=67890;
+        destination.source_stride=7; destination.match_format=DXGI_FORMAT_R16_UINT; destination.match_dhash=67890;
         destination.SetHandleInfo(old_buffer.Get(),0,64);
         auto* snapshot=destination.GetHandleInfo();
         require_batch(snapshot && snapshot->GetCachedData(),"round5: actual captured CPU snapshot");
@@ -98,8 +98,8 @@ void test_dx11_round5_assignment_regression()
         require_batch(failures==before+1,"round5: valid descriptor creation received exactly one E_OUTOFMEMORY");
         const bool preserved=destination.is_null && destination.resource==old_buffer.Get() && destination.view==old_view.Get() &&
             destination.stride==2 && destination.source_stride==7 && destination.offset==0 && destination.buf_size==64 &&
-            destination.format==DXGI_FORMAT_R16_UINT && destination.original_format==DXGI_FORMAT_R16_UINT &&
-            destination.original_dhash==67890 && destination.GetHandleInfo()==snapshot &&
+            destination.format==DXGI_FORMAT_R16_UINT && destination.match_format==DXGI_FORMAT_R16_UINT &&
+            destination.match_dhash==67890 && destination.GetHandleInfo()==snapshot &&
             std::memcmp(snapshot->GetCachedData(),captured.data(),64)==0 && destination.resource_pool.cache.size()==cache_size;
         std::fprintf(stderr,"round5 valid OOM %ls: state_preserved=%d\n",copy_desc?L"copy_desc":L"copy",preserved);
         all_preserved &= preserved;
@@ -107,7 +107,7 @@ void test_dx11_round5_assignment_regression()
         D3D11_BUFFER_DESC allocation{};
         if (destination.resource) static_cast<ID3D11Buffer*>(destination.resource)->GetDesc(&allocation);
         const bool retried=!destination.is_null && destination.resource!=old_buffer.Get() && allocation.ByteWidth==128 &&
-            destination.original_dhash==12345 && destination.source_stride==8;
+            destination.match_dhash==12345 && destination.source_stride==8;
         std::fprintf(stderr,"round5 valid OOM %ls: same_descriptor_retry=%d width=%u\n",copy_desc?L"copy_desc":L"copy",retried,allocation.ByteWidth);
         all_retried &= retried;
     }

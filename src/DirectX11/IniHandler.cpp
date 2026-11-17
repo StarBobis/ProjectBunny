@@ -146,6 +146,9 @@ static bool whitelisted_duplicate_key(const wchar_t *section, const wchar_t *key
 			return true;
 	}
 
+	if (!_wcsnicmp(section, L"ShaderRegex", 11) && !_wcsicmp(key, L"exclude_hash"))
+		return true;
+
 	if (!_wcsicmp(section, L"include"))
 		return true;
 
@@ -588,7 +591,11 @@ static void ParseIniKeyValLine(wstring *wline, wstring *section,
 			val = wline->substr(first);
 		else {
 			IniWarningW(L"No value found for: \"%ls\"\n - [%ls] @ [%ls]\n", wline->c_str(), section->c_str(), ini_namespace->c_str());
-			return;
+            // Retain explicit empty new match keys as invalid values. Otherwise
+            // alias fallback could silently revive an older, valid declaration.
+            if (_wcsnicmp(section->c_str(), L"Resource", 8) ||
+                (_wcsicmp(key.c_str(), L"match_format") && _wcsicmp(key.c_str(), L"match_dhash")))
+                return;
 		}
 
 		if (warn_duplicates == 2) {
@@ -2400,14 +2407,28 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
-    if (GetIniString(section_name, L"original_format", nullptr, setting, MAX_PATH)) {
-        custom_resource->original_format = ParseFormatString(setting, true);
-        if (custom_resource->original_format == static_cast<DXGI_FORMAT>(-1))
-            IniWarningW(L"Unknown original_format \"%ls\"\n - [%ls]\n", setting, section_name);
+    std::string match_format_probe;
+    const wchar_t* match_format_key = GetIniString(section_name, L"match_format", nullptr, &match_format_probe)
+        ? L"match_format" : L"original_format";
+    if (GetIniString(section_name, match_format_key, nullptr, &match_format_probe)) {
+        GetIniString(section_name, match_format_key, nullptr, setting, MAX_PATH);
+        custom_resource->match_format = ParseFormatString(setting, true);
+        custom_resource->match_format_valid = custom_resource->match_format != static_cast<DXGI_FORMAT>(-1);
+        if (custom_resource->match_format == static_cast<DXGI_FORMAT>(-1))
+            IniWarningW(L"Unknown %ls \"%ls\"\n - [%ls]\n", match_format_key, setting, section_name);
         else
-            LogInfo("  original_format=%s\n", TexFormatStr(custom_resource->original_format));
+            LogInfo("  %S=%s\n", match_format_key, TexFormatStr(custom_resource->match_format));
     }
-    custom_resource->original_dhash = GetIniHash(section_name, L"original_dhash", 0, nullptr);
+    std::string match_hash;
+    const wchar_t* match_hash_key = GetIniString(section_name, L"match_dhash", nullptr, &match_hash)
+        ? L"match_dhash" : L"original_dhash";
+    custom_resource->match_dhash = GetIniHash(section_name, match_hash_key, 0, &custom_resource->match_dhash_set);
+    custom_resource->match_confidence = GetIniFloat(section_name, L"match_confidence", 0.75f, nullptr);
+    if (!std::isfinite(custom_resource->match_confidence)) {
+        IniWarningW(L"Invalid match_confidence; using 0.75\n - [%ls]\n", section_name);
+        custom_resource->match_confidence = 0.75f;
+    }
+    custom_resource->match_confidence = (std::max)(0.0f, (std::min)(1.0f, custom_resource->match_confidence));
 
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space",
 		CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
@@ -2635,7 +2656,7 @@ static void ParseCommandList(const wchar_t *id,
 				// allowed duplicate keys *except for these
 				// whitelisted entries*, so check for
 				// duplicates here:
-				if (whitelisted_keys.count(key->c_str())) {
+				if (whitelisted_keys.count(key->c_str()) && !whitelisted_duplicate_key(id, key->c_str())) {
 					IniWarningW(L"Duplicate non-command list key found: %ls\n - [%ls]\n", key->c_str(), id);
 				}
 				whitelisted_keys.insert(key->c_str());
@@ -3006,6 +3027,7 @@ static uint32_t hash_ini_section(uint32_t hash, const wstring *sname)
 // List of keys in [ShaderRegex] sections that are processed in this
 // function. Used by ParseCommandList to find any unrecognised lines.
 wchar_t *ShaderRegexIniKeys[] = {
+	L"exclude_hash",
 	L"shader_model",
 	L"temps",
 	L"filter_index",
@@ -3023,6 +3045,14 @@ static bool parse_shader_regex_section_main(const std::wstring *section_id, Shad
 		return false;
 	}
 	regex_group->shader_models = vec_to_set(split_string(&setting, ' '));
+
+    for (const auto& value : GetIniStringMultipleKeys(section_id->c_str(), L"exclude_hash")) {
+        if (!regex_group->add_excluded_hash(value)) {
+            IniWarningW(L"Invalid ShaderRegex exclude_hash=%ls\n - [%ls]\n", value.c_str(), section_id->c_str());
+            return false;
+        }
+        LogInfo("  exclude_hash=%S\n", value.c_str());
+    }
 
 	if (GetIniStringAndLog(section_id->c_str(), L"temps", NULL, &setting))
 		regex_group->temp_regs = vec_to_set(split_string(&setting, ' '));
@@ -5047,6 +5077,7 @@ void LoadConfigFile()
     G->cache_resource_data.store(data_cache_flags, std::memory_order_relaxed);
     // Policies belong to this load, not the prior configuration or its snapshots.
     InvalidateResourceDataCaches();
+    InvalidateTextureMatchSnapshots();
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);

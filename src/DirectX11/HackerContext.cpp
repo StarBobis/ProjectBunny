@@ -109,6 +109,7 @@ HRESULT HackerContext::ComputeDHash(ID3D11Texture2D* texture, UINT mipLevel, DXG
 
 HackerContext::~HackerContext()
 {
+    textureOverrideCache.Clear();
 	ResetTrackedInputLayout();
     for (auto& resource : mMappedResources)
         for (auto& subresource : resource.second)
@@ -867,6 +868,7 @@ void HackerContext::RestoreInputLayout()
 
 void HackerContext::BeforeDraw(DrawContext &data)
 {
+	AdvanceTextureMatchCall();
 	draw_number++;
 
 	Profiling::State profiling_state;
@@ -1116,6 +1118,7 @@ void HackerContext::AfterDraw(DrawContext &data)
 	}
 
 	RestoreInputLayout();
+    textureOverrideCache.Clear();
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::draw_overhead);
@@ -1244,6 +1247,8 @@ STDMETHODIMP_(void) HackerContext::GetDevice(THIS_
 	// Return our wrapped device though.
 	if (!(G->enable_hooks & EnableHooks::DEVICE))
 		*ppDevice = mHackerDevice;
+    else
+        *ppDevice = mHackerDevice->GetPossiblyHookedOrigDevice1();
 }
 
 STDMETHODIMP HackerContext::GetPrivateData(THIS_
@@ -1791,6 +1796,7 @@ STDMETHODIMP_(void) HackerContext::SOSetTargets(THIS_
 
 bool HackerContext::BeforeDispatch(DispatchContext *context)
 {
+	AdvanceTextureMatchCall();
 	dispatch_number++;
 
 	if (G->hunting == HUNTING_MODE_ENABLED) {
@@ -1831,6 +1837,7 @@ void HackerContext::AfterDispatch(DispatchContext *context)
 {
 	if (context->post_commands)
 		RunCommandList(mHackerDevice, this, context->post_commands, &context->call_info, true);
+    textureOverrideCache.Clear();
 }
 
 STDMETHODIMP_(void) HackerContext::Dispatch(THIS_
@@ -2930,6 +2937,7 @@ STDMETHODIMP_(void) HackerContext::CSGetConstantBuffers(THIS_
 
 STDMETHODIMP_(void) HackerContext::ClearState(THIS)
 {
+    AdvanceTextureMatchCall();
 	ResetTrackedInputLayout();
 	 mOrigContext1->ClearState();
 

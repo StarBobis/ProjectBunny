@@ -4,6 +4,7 @@
 #include "Override.h"
 #include "ExpressionFunctions.h"
 #include "Logging.h"
+#include "ResourceHash.h"
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -120,8 +121,8 @@ float distance(BatchDevice& device, const std::wstring& source, const std::wstri
 
 void exercise_hamming(BatchDevice& device, HammingFiles& files, ID3D11Texture2D* texture, uint64_t hash)
 {
-    require_batch(customResources.at(L"resourcehammingsame").original_dhash == hash &&
-        customResources.at(L"resourcehammingmaximum").original_dhash == UINT64_MAX,
+    require_batch(customResources.at(L"resourcehammingsame").match_dhash == hash &&
+        customResources.at(L"resourcehammingmaximum").match_dhash == UINT64_MAX,
         "Hamming: actual INI retains complete uint64 reference hashes including maximum");
     Registry registry;
     registry.resource(L"resourcehammingsource", device, texture);
@@ -219,7 +220,7 @@ void exercise_hamming(BatchDevice& device, HammingFiles& files, ID3D11Texture2D*
         target.GetResourceHammingDistance(&device.state) == 3,
         "Hamming: failed parses do not allocate reference slots/register locals or mutate existing shared targets");
     require_batch(customResources.at(L"resourcehammingsame").resource == nullptr &&
-        customResources.at(L"resourcehammingsame").original_dhash == hash,
+        customResources.at(L"resourcehammingsame").match_dhash == hash,
         "Hamming: reference is declaration metadata and is never substantiated or GPU-hashed");
     device.context->ClearState();
 }
@@ -227,6 +228,10 @@ void exercise_hamming(BatchDevice& device, HammingFiles& files, ID3D11Texture2D*
 
 void test_dx11_hamming_distance_regression()
 {
+    require_batch(HammingDistance(0, 0) == 0 && HammingDistance(0, 1) == 64 &&
+        HammingDistance(1, 0) == 64 && HammingDistance(1, 3) == 1 &&
+        HammingDistance(0xaaaaaaaaaaaaaaaaULL, 0x5555555555555555ULL) == 64,
+        "shared HammingDistance preserves zero guard, symmetry and 64-bit boundaries");
     ResourceCopyTarget missing_state;
     require_batch(missing_state.GetResourceHammingDistance(nullptr) == -2,
         "Hamming: missing command state reports missing resource without dereferencing it");
