@@ -1435,17 +1435,22 @@ bool AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::s
 	// check whether any bound resource has a hash/fuzzy candidate at all. This
 	// is the whole-batch skip for the common no-candidate draw. The per-resource
 	// candidate cache is invalidated on reload/resource recreation.
-	bool any_candidate = false;
-	for (size_t i = 0; i < cache.entries.size(); ++i) {
-		const AutoCheckBinding& entry = cache.entries[i];
-		if (!entry.resource)
-			continue;
-		const ResourceCopyTargetType type = targets[i]->target.type;
-		const bool region_possible = G->track_region_hashes &&
-			(type == ResourceCopyTargetType::VERTEX_BUFFER || type == ResourceCopyTargetType::INDEX_BUFFER);
-		if (HasTextureOverrideCandidate(entry.resource.Get(), const_cast<DrawCallInfo*>(matching_call_info), region_possible)) {
-			any_candidate = true;
-			break;
+	// Fuzzy overrides are conservatively allowed through: a hash-only negative
+	// cache must never suppress a fuzzy candidate.
+	bool any_candidate = !G->mFuzzyTextureOverrides.empty();
+	if (!any_candidate) {
+		for (size_t i = 0; i < cache.entries.size(); ++i) {
+			const AutoCheckBinding& entry = cache.entries[i];
+			if (!entry.resource)
+				continue;
+			const ResourceCopyTargetType type = targets[i]->target.type;
+			const bool region_possible = G->track_region_hashes &&
+				(type == ResourceCopyTargetType::VERTEX_BUFFER || type == ResourceCopyTargetType::INDEX_BUFFER);
+			if (HasTextureOverrideCandidate(entry.resource.Get(),
+				const_cast<DrawCallInfo*>(matching_call_info), region_possible)) {
+				any_candidate = true;
+				break;
+			}
 		}
 	}
 	if (!any_candidate)

@@ -1959,6 +1959,7 @@ void test_dx11_auto_texture_check_regression()
     ib_call_info.IndexCount = 6;
     ib_call_info.FirstIndex = 0;
     G->track_region_hashes = saved_region_hashes;
+    device.context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
 
     device.context->PSSetShaderResources(0, 1, &bound0);
     device.context->PSSetShaderResources(1, 1, &bound1);

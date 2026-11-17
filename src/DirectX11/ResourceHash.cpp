@@ -2044,7 +2044,9 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
         info->texture_override_hash = hash;
         info->texture_override_hash_valid = true;
     }
-    info->has_override_candidate = candidates.hash_matches != nullptr || !candidates.fuzzy_matches.empty();
+    info->has_override_candidate = candidates.hash_matches != nullptr ||
+        !candidates.fuzzy_matches.empty() ||
+        !G->mFuzzyTextureOverrides.empty();
     info->has_override_candidate_valid = true;
     return &candidates;
 }
@@ -2057,13 +2059,16 @@ bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_in
         return false;
     if (region_hash_possible)
         return true;
+    const bool fuzzy_possible = !G->mFuzzyTextureOverrides.empty();
     {
         CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
         auto found = G->mResources.find(resource);
         if (found == G->mResources.end())
             return false;
         const ResourceHandleInfo& info = found->second;
-        if (info.has_override_candidate_valid &&
+        // Never let a hash-only negative cache suppress fuzzy overrides.
+        if (!fuzzy_possible &&
+            info.has_override_candidate_valid &&
             info.texture_override_candidates_valid &&
             info.texture_override_hash_valid &&
             info.texture_override_hash == info.hash &&
@@ -2083,10 +2088,9 @@ bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_in
                 return true;
     }
     for (const auto& candidate : candidates->fuzzy_matches) {
-        if (candidate.dynamic_matcher &&
-            !MatchesResourceDescriptor(*candidate.dynamic_matcher, candidates->descriptor))
-            continue;
-        if (matches_draw_info(candidate.texture_override, call_info))
+        if ((!candidate.dynamic_matcher ||
+             MatchesResourceDescriptor(*candidate.dynamic_matcher, candidates->descriptor)) &&
+            matches_draw_info(candidate.texture_override, call_info))
             return true;
     }
     return false;
