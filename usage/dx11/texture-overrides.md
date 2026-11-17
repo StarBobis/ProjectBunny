@@ -115,4 +115,32 @@ endif
 
 新配置只在执行到 `->TOCandidate` 时查询指定目标。候选为假时，由 INI 的 `if` 跳过后面的正式检查；为真时，仍调用原有 `checktextureoverride` 完成匹配并执行 TO 命令。候选查询自身不执行这些命令，复用执行逻辑不会让同一条命令额外运行一遍。
 
-`DRAW_HAS_OVERRIDE` 不属于兼容的原版语法，使用该实验条件的配置需要迁移。新版 INI 中的 `->TOCandidate` 也需要支持该属性的 DLL；旧 DLL 不能解析新属性。
+新版 INI 中的 `->TOCandidate` 和下述 `DRAW_HAS_OVERRIDE` 需要配套 DLL。
+
+## 配置整组绘制筛选
+
+在加载器 `d3dx.ini` 的 `[Rendering]` 中指定要查询的槽位：
+
+```ini
+[Rendering]
+draw_has_override_slots = ib vb[0:2] ps-t0
+```
+
+支持 `ib`、`vbN` 和 `ps-tN`、`vs-tN`、`cs-tN`。`vb[0:2]`、`ps-t[0:3]` 等范围包含两个端点，相邻且同阶段的槽位可一次读取。列表按配置顺序查询，有候选时跳过之后的组。设置留空、缺省或格式无效时，`DRAW_HAS_OVERRIDE` 放行原有检查。
+
+```ini
+[CommandListSkin]
+if $costume_mods
+    if DRAW_HAS_OVERRIDE
+        checktextureoverride = ps-t0
+        checktextureoverride = vb0
+        checktextureoverride = vb1
+        checktextureoverride = vb2
+        checktextureoverride = ib
+    endif
+endif
+```
+
+槽位组应覆盖检查列表中的触发入口。每个 draw 第一次执行该条件时，DLL 读取此时的绑定和绘制参数，检查精确与模糊候选。后续 pre/post 读取同一个结果。启用区域跟踪时，已绑定的 VB/IB 可能保守放行。候选只决定是否进入检查，后续 `checktextureoverride` 仍根据当前绑定执行。
+
+后续命令改变绑定时，整组结果仍来自首次求值。需要按当前位置重新判断时，用 `目标->TOCandidate`。后置恢复和无条件重置放在整组判断外。本设置独立于 `auto_check_texture_slots`，无需启用自动检查。

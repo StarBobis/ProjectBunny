@@ -1989,7 +1989,6 @@ void InvalidateTextureOverrideCandidates()
     for (auto& entry : G->mResources) {
         auto& info = entry.second;
         info.texture_override_candidates_valid = info.texture_override_hash_valid = false;
-        info.has_override_candidate_valid = false;
         info.texture_override_candidates.hash_matches = nullptr;
         info.texture_override_candidates.fuzzy_matches.clear();
     }
@@ -2044,10 +2043,6 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
         info->texture_override_hash = hash;
         info->texture_override_hash_valid = true;
     }
-    info->has_override_candidate = candidates.hash_matches != nullptr ||
-        !candidates.fuzzy_matches.empty() ||
-        !G->mFuzzyTextureOverrides.empty();
-    info->has_override_candidate_valid = true;
     return &candidates;
 }
 
@@ -2059,25 +2054,8 @@ bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_in
         return false;
     if (region_hash_possible)
         return true;
-    const bool fuzzy_possible = !G->mFuzzyTextureOverrides.empty();
-    {
-        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
-        auto found = G->mResources.find(resource);
-        if (found == G->mResources.end())
-            return false;
-        const ResourceHandleInfo& info = found->second;
-        // Never let a hash-only negative cache suppress fuzzy overrides.
-        if (!fuzzy_possible &&
-            info.has_override_candidate_valid &&
-            info.texture_override_candidates_valid &&
-            info.texture_override_hash_valid &&
-            info.texture_override_hash == info.hash &&
-            info.texture_override_resolution_width == G->mResolutionInfo.width &&
-            info.texture_override_resolution_height == G->mResolutionInfo.height &&
-            !info.has_override_candidate)
-            return false;
-    }
-
+    // The cache already records misses as a null hash list and an empty fuzzy
+    // list. Resolve both with one tracked-resource lookup.
     TextureOverrideCandidates* candidates = get_texture_override_candidates(resource);
     if (!candidates)
         return false;
@@ -2121,14 +2099,9 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, Texture
     sample.Finish(matches->size() > before);
 }
 
-// This overload holds G only while collecting. The caller must still hold G
-// when it consumes `matches`; the ComPtr below keeps the resource alive for
-// the lookup, not the returned config nodes.
-void find_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
+void find_texture_overrides_for_retained_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
 {
     if (!resource || !matches) return;
-    Microsoft::WRL::ComPtr<ID3D11Resource> lifetime(resource);
-    CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
     if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty()) return;
     Profiling::Sample sample(Profiling::texture_override_candidates_lookup_overhead);
     const size_t before = matches->size();
@@ -2139,6 +2112,14 @@ void find_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverri
         AppendFuzzyCandidates(*candidates, matches, call_info);
     }
     sample.Finish(matches->size() > before);
+}
+
+void find_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
+{
+    if (!resource || !matches) return;
+    Microsoft::WRL::ComPtr<ID3D11Resource> lifetime(resource);
+    CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    find_texture_overrides_for_retained_resource(resource, matches, call_info);
 }
 
 bool TextureOverrideLess(const struct TextureOverride &lhs, const struct TextureOverride &rhs)

@@ -1100,6 +1100,7 @@ public:
 			DXGI_FORMAT format,
 			UINT buf_size, bool size_is_length=false, const ResourceOriginalMetadata* original_metadata=nullptr);
 
+	// Caller holds G across lookup and consumption of the matches.
 	void FindTextureOverrides(
 			CommandListState *state,
 			bool *resource_found,
@@ -1524,6 +1525,7 @@ enum class ParamOverrideType {
 	THREAD_GROUP_COUNT_Z,
 	INDIRECT_OFFSET,
 	DRAW_TYPE,
+	DRAW_HAS_OVERRIDE,
 	CURSOR_VISIBLE,
 	CURSOR_SCREEN_X, // Cursor in screen coordinates in pixels
 	CURSOR_SCREEN_Y,
@@ -1568,6 +1570,7 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"thread_group_count_z", ParamOverrideType::THREAD_GROUP_COUNT_Z},
 	{L"indirect_offset", ParamOverrideType::INDIRECT_OFFSET},
 	{L"draw_type", ParamOverrideType::DRAW_TYPE},
+	{L"draw_has_override", ParamOverrideType::DRAW_HAS_OVERRIDE},
 	{L"cursor_showing", ParamOverrideType::CURSOR_VISIBLE},
 	{L"cursor_screen_x", ParamOverrideType::CURSOR_SCREEN_X},
 	{L"cursor_screen_y", ParamOverrideType::CURSOR_SCREEN_Y},

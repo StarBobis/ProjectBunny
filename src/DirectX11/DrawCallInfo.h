@@ -17,6 +17,8 @@ enum class DrawCall {
 	DispatchIndirect             = 9,
 };
 
+enum class DrawOverrideCandidate : unsigned char { Unqueried, Miss, Possible };
+
 struct DrawCallInfo
 {
 	DrawCall type;
@@ -29,6 +31,7 @@ struct DrawCallInfo
 	UINT args_offset;
 
 	bool skip, hunting_skip;
+	DrawOverrideCandidate override_candidate = DrawOverrideCandidate::Unqueried;
 
 	DrawCallInfo() :
 		type(DrawCall::Invalid),
