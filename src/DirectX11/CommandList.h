@@ -57,6 +57,8 @@ struct ShaderResourceBatchStats {
 	unsigned uav_get_calls = 0, uav_set_calls = 0;
 };
 
+class CustomShaderViewportScope;
+
 class CommandListState {
 public:
 	HackerDevice *mHackerDevice;
@@ -103,6 +105,7 @@ public:
 	LARGE_INTEGER profiling_time_recursive;
 	// Optional per-invocation diagnostics, updated next to actual API calls.
 	ShaderResourceBatchStats* slot_batch_stats = nullptr;
+	CustomShaderViewportScope* viewport_scope = nullptr;
 
 	// Anything that needs to be updated at the end of the command list:
 	bool update_params;
@@ -337,6 +340,26 @@ static EnumName_t<const wchar_t *, D3DCompileFlags> D3DCompileFlagNames[] = {
 
 class CustomShader
 {
+	template<class State>
+	struct MergedStateSource {
+		Microsoft::WRL::ComPtr<ID3D11Device> device;
+		Microsoft::WRL::ComPtr<State> source;
+
+		bool matches(ID3D11Device* candidate_device, State* candidate_source) const
+		{
+			return device.Get() == candidate_device && source.Get() == candidate_source;
+		}
+
+		void remember(ID3D11Device* used_device, State* used_source, State* result)
+		{
+			device = result ? used_device : nullptr;
+			source = result ? used_source : nullptr;
+		}
+	};
+	MergedStateSource<ID3D11BlendState> merged_blend_source;
+	MergedStateSource<ID3D11DepthStencilState> merged_depth_source;
+	MergedStateSource<ID3D11RasterizerState> merged_rs_source;
+
 public:
 	bool vs_override, hs_override, ds_override, gs_override, ps_override, cs_override;
 	D3DCompileFlags compile_flags;

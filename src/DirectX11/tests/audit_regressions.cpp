@@ -1508,10 +1508,26 @@ private:
     ID3D11ShaderResourceView* view;
 };
 
+class CheckViewportWidthCommand : public CommandListCommand {
+    float width;
+public:
+    explicit CheckViewportWidthCommand(float width) : width(width) {}
+    void run(CommandListState* state) override
+    {
+        D3D11_VIEWPORT viewport{};
+        UINT count = 1;
+        state->mOrigContext1->RSGetViewports(&count, &viewport);
+        dx11_slot_test::require_batch(count == 1 && viewport.Width == width,
+            "custom shader: expected viewport width is visible in its calling scope");
+    }
+};
+
 class AutoTextureTestScope {
 public:
     std::vector<AutoCheckTextureSlot> saved_slots = G->auto_check_texture_slots;
     std::vector<uint8_t> saved_has_check = G->auto_check_texture_slot_has_check;
+    decltype(G->auto_check_graphics_targets) saved_graphics_targets;
+    decltype(G->auto_check_compute_targets) saved_compute_targets;
     uint64_t saved_slots_generation = G->auto_check_texture_slots_generation;
     uint64_t saved_coverage_generation = G->auto_check_texture_coverage_generation;
     uint64_t saved_full_pass_count = G->auto_check_texture_full_pass_count;
@@ -1530,6 +1546,8 @@ public:
         saved_vertex_map.swap(G->mTextureOverrideDrawVertexMap);
         G->auto_check_texture_slots.clear();
         G->auto_check_texture_slot_has_check.clear();
+        saved_graphics_targets.swap(G->auto_check_graphics_targets);
+        saved_compute_targets.swap(G->auto_check_compute_targets);
         Profiling::mode = Profiling::Mode::NONE;
         InvalidateTextureOverrideCandidates();
     }
@@ -1537,6 +1555,8 @@ public:
     {
         G->auto_check_texture_slots = saved_slots;
         G->auto_check_texture_slot_has_check = saved_has_check;
+        saved_graphics_targets.swap(G->auto_check_graphics_targets);
+        saved_compute_targets.swap(G->auto_check_compute_targets);
         G->auto_check_texture_slots_generation = saved_slots_generation;
         G->auto_check_texture_coverage_generation = saved_coverage_generation;
         G->auto_check_texture_full_pass_count = saved_full_pass_count;
@@ -1791,6 +1811,96 @@ void test_dx11_auto_texture_check_regression()
     AutoCheckTextureOverrides(&state, batch->targets);
     require_batch(order == std::vector<int>({10, 20, 11, 21}),
         "auto-tex: batch executes post lists only in the post phase, in target order");
+
+    // Exercise config-time batching with AutoCheck disabled and the real direct
+    // execution path. Matching the first slot can change the second binding.
+    {
+        auto saved_slots = std::move(G->auto_check_texture_slots);
+        auto saved_coverage = std::move(G->auto_check_texture_slot_has_check);
+        auto saved_graphics = std::move(G->auto_check_graphics_targets);
+        auto saved_compute = std::move(G->auto_check_compute_targets);
+        auto saved_registered = std::move(registered_command_lists);
+        CommandList direct;
+        direct.commands = {check0, check1};
+        registered_command_lists.push_back(&direct);
+        optimise_command_lists(device.device);
+        registered_command_lists = std::move(saved_registered);
+        G->auto_check_texture_slots = std::move(saved_slots);
+        G->auto_check_texture_slot_has_check = std::move(saved_coverage);
+        G->auto_check_graphics_targets = std::move(saved_graphics);
+        G->auto_check_compute_targets = std::move(saved_compute);
+        require_batch(direct.commands.size() == 1, "direct checks: adjacent static PS slots are merged");
+
+        order.clear();
+        this_slots.clear();
+        state.post = false;
+        direct.commands.front()->run(&state);
+        state.post = true;
+        direct.commands.front()->run(&state);
+        require_batch(order == std::vector<int>({10, 20, 11, 21}) && this_slots == std::vector<unsigned>({0}),
+            "direct checks: preserve pre/post order and this");
+
+        auto& pre = G->mTextureOverrideMap[hash0].front().command_list.commands;
+        pre.push_back(std::make_shared<AutoTextureBindCommand>(1, nullptr));
+        order.clear();
+        this_slots.clear();
+        state.post = false;
+        direct.commands.front()->run(&state);
+        require_batch(order == std::vector<int>({10}), "direct checks: do not use a prefetched view after a TO rebinds it");
+        pre.pop_back();
+        device.context->PSSetShaderResources(1, 1, &bound1);
+
+        ID3D11ShaderResourceView* empty[] = {nullptr, nullptr};
+        device.context->PSSetShaderResources(0, 2, empty);
+        ShaderResourceBatchStats stats;
+        state.slot_batch_stats = &stats;
+        order.clear();
+        direct.commands.front()->run(&state);
+        require_batch(order.empty() && stats.get_calls == 1, "direct checks: two empty slots use one binding query");
+        state.slot_batch_stats = nullptr;
+        device.context->PSSetShaderResources(0, 1, &bound0);
+        device.context->PSSetShaderResources(1, 1, &bound1);
+    }
+
+    {
+        // Execute the real set_viewport copy through a nested CustomShader.
+        // The child must restore its parent's viewport and the caller's must
+        // also survive the outer call, which does not change it directly.
+        CustomShader outer, inner;
+        D3D11_VIEWPORT original{3.0f, 7.0f, 96.0f, 48.0f, 0.1f, 0.8f};
+        device.context->RSSetViewports(1, &original);
+        auto copy = std::make_shared<ResourceCopyOperation>();
+        copy->src = check0->target;
+        copy->dst = check0->target;
+        copy->dst.slot = 2;
+        copy->options = ResourceCopyOptions::REFERENCE;
+        copy->options |= ResourceCopyOptions::SET_VIEWPORT;
+        inner.command_list.commands = {copy, std::make_shared<CheckViewportWidthCommand>(8.0f)};
+        auto run_inner = std::make_shared<RunCustomShaderCommand>();
+        run_inner->custom_shader = &inner;
+        outer.command_list.commands = {run_inner, std::make_shared<CheckViewportWidthCommand>(96.0f)};
+        RunCustomShaderCommand run_outer;
+        run_outer.custom_shader = &outer;
+        run_outer.run(&state);
+        D3D11_VIEWPORT after{};
+        UINT count = 1;
+        device.context->RSGetViewports(&count, &after);
+        require_batch(count == 1 && !std::memcmp(&original, &after, sizeof(after)),
+            "custom shader: caller's full viewport is restored");
+
+        // The immutable merge source can be unchanged while associated dynamic
+        // blend parameters are different for each draw.
+        inner.blend_override = 2;
+        std::memset(&inner.blend_mask, 0xff, sizeof(inner.blend_mask));
+        FLOAT first[] = {0.0f, 0.25f, 0.5f, 0.75f};
+        FLOAT second[] = {1.0f, 0.75f, 0.5f, 0.25f};
+        inner.merge_blend_states(nullptr, first, 0x55, device.native.Get());
+        auto* blend_state = inner.blend_state;
+        inner.merge_blend_states(nullptr, second, 0xaa, device.native.Get());
+        require_batch(blend_state && inner.blend_state == blend_state && inner.blend_sample_mask == 0xaa &&
+            !std::memcmp(inner.blend_factor, second, sizeof(second)),
+            "custom shader: a repeated merge refreshes dynamic blend parameters");
+    }
 
     // A.4: 2000 draws, 20 candidate resources, 1980 no-candidate resources.
     // The whole batch must be skipped for the no-candidate draws; the

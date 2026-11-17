@@ -620,6 +620,8 @@ struct Globals
 	// per-draw texture override check and keeps the legacy checktextureoverride
 	// path byte-for-byte unchanged.
 	std::vector<AutoCheckTextureSlot> auto_check_texture_slots;
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> auto_check_graphics_targets;
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> auto_check_compute_targets;
 	// Read only when the draw predicate is first evaluated. G protects reload.
 	std::vector<DrawOverrideSlotRange> draw_override_slot_ranges;
 

@@ -1090,7 +1090,7 @@ void check_dx11_decompiler_lifetime(const void* bytecode,size_t bytecodeSize,con
 namespace {
 std::string read_f104_fixture(const char* name)
 {
-    std::ifstream input(std::string(F281_FIXTURE_DIR) + "/" + name, std::ios::binary);
+    std::ifstream input(std::filesystem::u8path(F281_FIXTURE_DIR) / name, std::ios::binary);
     check_literal_audit(input.good(), "F104: open the checked-in native fixture");
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
@@ -1637,7 +1637,7 @@ void test_dx11_decompiler_negative_literal_regression()
         return;
     }
     const auto read_fixture = [](const std::string& name) {
-        std::ifstream input(std::string(F281_FIXTURE_DIR) + "/" + name, std::ios::binary);
+        std::ifstream input(std::filesystem::u8path(F281_FIXTURE_DIR) / name, std::ios::binary);
         check_literal_audit(input.good(), "F281: open the checked-in native fixture");
         return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     };

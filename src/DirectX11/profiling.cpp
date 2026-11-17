@@ -18,6 +18,9 @@ namespace Profiling {
 	Overhead overlay_overhead;
 	Overhead draw_overhead;
 	Overhead map_overhead;
+	Overhead pipeline_invalidation_overhead;
+	Overhead readback_map_overhead;
+	Overhead iniparams_upload_overhead;
 	Overhead hash_tracking_overhead;
 	Overhead region_tracking_overhead;
 	Overhead stat_overhead;
@@ -256,6 +259,9 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 			    L"   Draw call overhead: %7.2fus/frame ~%ffps\n"
 			    L"  Command lists total: %7.2fus/frame ~%ffps\n"
 			    L"   Map/Unmap overhead: %7.2fus/frame ~%ffps\n"
+			    L" Pipeline cache invalidation: %7.2fus/frame\n"
+			    L" Blocking readback Map: %7.2fus/frame\n"
+			    L"      IniParams upload: %7.2fus/frame\n"
 			    L"track_texture_updates: %7.2fus/frame ~%ffps\n"
 		        L"  track_region_hashes: %7.2fus/frame ~%ffps\n"
 			    L"  dump_usage overhead: %7.2fus/frame ~%ffps\n"
@@ -276,6 +282,9 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 
 			    (float)map_overhead.QuadPart / frames,
 			    60.0 * map_overhead.QuadPart / collection_duration.QuadPart,
+			    1e6 * Profiling::pipeline_invalidation_overhead.cpu.QuadPart / freq.QuadPart / frames,
+			    1e6 * Profiling::readback_map_overhead.cpu.QuadPart / freq.QuadPart / frames,
+			    1e6 * Profiling::iniparams_upload_overhead.cpu.QuadPart / freq.QuadPart / frames,
 
 			    (float)hash_tracking_overhead.QuadPart / frames,
 			    60.0 * hash_tracking_overhead.QuadPart / collection_duration.QuadPart,
@@ -541,6 +550,9 @@ void Profiling::clear()
 	overlay_overhead.clear();
 	draw_overhead.clear();
 	map_overhead.clear();
+	pipeline_invalidation_overhead.clear();
+	readback_map_overhead.clear();
+	iniparams_upload_overhead.clear();
 	hash_tracking_overhead.clear();
 	region_tracking_overhead.clear();
 	stat_overhead.clear();

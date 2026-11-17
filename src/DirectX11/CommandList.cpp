@@ -132,11 +132,10 @@ public:
     ~CommandListDepthScope() { --depth; }
 };
 
-static void _RunCommandList(CommandList *command_list, CommandListState *state, bool recursive=true)
+static void _RunResolvedCommandList(CommandList *command_list, CommandListState *state, bool recursive)
 {
 	CommandList::Commands::iterator i;
 	command_list_profiling_state profiling_state;
-	command_list = command_list->ResolveCommandList();
 
 	if (state->command_list_depth >= MAX_COMMAND_LIST_RECURSION) {
 		LogOverlayW(LOG_WARNING, L"Command list recursion limit exceeded! Circular reference?\n - [%ls]\n", command_list->ini_section.c_str());
@@ -167,6 +166,11 @@ static void _RunCommandList(CommandList *command_list, CommandListState *state, 
 		state->recursion--;
 		COMMAND_LIST_LOG(state, "}\n");
 	}
+}
+
+static void _RunCommandList(CommandList *command_list, CommandListState *state, bool recursive=true)
+{
+	_RunResolvedCommandList(command_list->ResolveCommandList(), state, recursive);
 }
 
 static bool MatchesInputLayoutOverride(const D3D11_INPUT_ELEMENT_DESC& element,
@@ -265,6 +269,7 @@ static void CommandListFlushState(CommandListState *state)
 	HRESULT hr;
 
 	if (state->update_params && state->mHackerDevice->mIniTexture) {
+		Profiling::Sample sample(Profiling::iniparams_upload_overhead, false);
 		hr = state->mOrigContext1->Map(state->mHackerDevice->mIniTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
 		if (FAILED(hr)) {
 			LogInfo("CommandListFlushState: Map failed\n");
@@ -285,6 +290,10 @@ static void RunCommandListComplete(HackerDevice *mHackerDevice,
 		ID3D11View *view,
 		bool post)
 {
+	CommandList* resolved = command_list->ResolveCommandList();
+	if (resolved->commands.empty())
+		return;
+
 	CommandListState state;
 	state.mHackerDevice = mHackerDevice;
 	state.mHackerContext = mHackerContext;
@@ -296,7 +305,7 @@ static void RunCommandListComplete(HackerDevice *mHackerDevice,
 	state.view = view;
 	state.post = post;
 
-	_RunCommandList(command_list, &state);
+	_RunResolvedCommandList(resolved, &state, true);
 	// Commands collect changes during execution. BeforeDraw applies the deferred
 	// result after all native-draw pre command lists have completed.
 	if (!post && !state.input_layout_overrides.empty())
@@ -346,6 +355,10 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 		res->Release();
 }
 
+
+static void MergeDirectTextureChecks(CommandList* command_list);
+static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
+		ID3D11ShaderResourceView** views);
 
 void optimise_command_lists(HackerDevice *device)
 {
@@ -415,8 +428,12 @@ void optimise_command_lists(HackerDevice *device)
 		// nice if this sort of thing worked more generally.
 	} while (making_progress);
 
-	for (CommandList* command_list : registered_command_lists)
-		MergeAutoCheckTextureOverrides(command_list);
+	for (CommandList* command_list : registered_command_lists) {
+		if (G->auto_check_texture_slots.empty())
+			MergeDirectTextureChecks(command_list);
+		else
+			MergeAutoCheckTextureOverrides(command_list);
+	}
 
 	BuildAutoCheckSlotCoverage();
 
@@ -1211,18 +1228,20 @@ namespace {
 
 template<typename T, size_t Capacity>
 class DrawOverrideBindings {
-	const unsigned count;
+	unsigned count;
 public:
 	T* values[Capacity];
 	explicit DrawOverrideBindings(unsigned count) : count(count)
 	{
 		std::fill_n(values, count, nullptr);
 	}
-	~DrawOverrideBindings()
+	void clear()
 	{
 		for (unsigned i = 0; i < count; ++i)
 			if (values[i]) values[i]->Release();
+		count = 0;
 	}
+	~DrawOverrideBindings() { clear(); }
 };
 
 // Caller holds G for the slot configuration and TextureOverride candidates.
@@ -1480,6 +1499,106 @@ void FetchCurrentAutoCheckBinding(CommandListState* state, const ResourceCopyTar
 
 } // namespace
 
+namespace {
+
+class DirectTextureCheckBatch final : public CommandListCommand {
+public:
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> checks;
+
+	void run(CommandListState* state) override
+	{
+		if (!state || state->aborted)
+			return;
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+		if (G->analyse_frame || Profiling::mode == Profiling::Mode::TOP_COMMANDS) {
+			RunChecks(state, 0);
+			return;
+		}
+		if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+			return;
+
+		const auto count = static_cast<unsigned>(checks.size());
+		DrawOverrideBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(count);
+		const auto& first = checks.front()->target;
+		GetShaderResourcesBatch(state, first.shader_type, first.slot, count, bindings.values);
+		for (unsigned i = 0; i < count; ++i) {
+			if (!bindings.values[i])
+				continue;
+			Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+			bindings.values[i]->GetResource(resource.GetAddressOf());
+			TextureOverrideMatches matches;
+			FindTextureOverridesForBoundResource(first.type, resource.Get(), state->mHackerContext,
+				0, 0, DXGI_FORMAT_UNKNOWN, state->call_info, &matches);
+			if (matches.empty())
+				continue;
+
+			// Release all prefetched bindings before executing commands that can change them.
+			resource.Reset();
+			bindings.clear();
+			{
+				CheckTextureStateScope restore(*state);
+				ResourceCopyTarget current = checks[i]->target;
+				state->this_target = &current;
+				for (auto* match : matches)
+					_RunCommandList(state->post ? &match->post_command_list : &match->command_list, state);
+			}
+			RunChecks(state, i + 1);
+			return;
+		}
+	}
+
+private:
+	void RunChecks(CommandListState* state, size_t first)
+	{
+		for (size_t i = first; i < checks.size() && !state->aborted; ++i) {
+			command_list_profiling_state sample;
+			profile_command_list_cmd_start(checks[i].get(), &sample);
+			checks[i]->run(state);
+			profile_command_list_cmd_end(checks[i].get(), state, &sample);
+		}
+	}
+};
+
+} // namespace
+
+static CheckTextureOverrideCommand* GetStaticTextureCheck(const std::shared_ptr<CommandListCommand>& command)
+{
+	auto* check = dynamic_cast<CheckTextureOverrideCommand*>(command.get());
+	if (!check || check->run_pre_and_post_together)
+		return nullptr;
+	const auto& target = check->target;
+	if (target.type != ResourceCopyTargetType::SHADER_RESOURCE ||
+		target.IsRange() || target.slot_expression || target.slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT)
+		return nullptr;
+	return check;
+}
+
+static void MergeDirectTextureChecks(CommandList* command_list)
+{
+	auto& commands = command_list->commands;
+	for (size_t index = 0; index + 1 < commands.size(); ++index) {
+		const auto* first = GetStaticTextureCheck(commands[index]);
+		if (!first)
+			continue;
+		size_t end = index + 1;
+		for (; end < commands.size(); ++end) {
+			const auto* next = GetStaticTextureCheck(commands[end]);
+			if (!next || next->target.shader_type != first->target.shader_type ||
+				next->target.slot != first->target.slot + end - index)
+				break;
+		}
+		if (end == index + 1)
+			continue;
+		auto batch = std::make_shared<DirectTextureCheckBatch>();
+		batch->ini_line = first->ini_line + L" (adjacent texture checks)";
+		batch->checks.reserve(end - index);
+		for (size_t i = index; i < end; ++i)
+			batch->checks.push_back(std::static_pointer_cast<CheckTextureOverrideCommand>(commands[i]));
+		commands[index] = std::move(batch);
+		commands.erase(commands.begin() + index + 1, commands.begin() + end);
+	}
+}
+
 bool AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
 {
 	if (!state || targets.empty() || state->aborted)
@@ -1573,12 +1692,11 @@ bool AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::s
 			for (auto* match : matches) {
 				if (state->aborted)
 					break;
-				_RunCommandList(state->post ? &match->post_command_list : &match->command_list, state);
+				auto* list = (state->post ? match->post_command_list : match->command_list).ResolveCommandList();
+				dirty |= !list->commands.empty();
+				_RunResolvedCommandList(list, state, true);
 			}
 			executed = true;
-			// The TO lists may have changed any later slot; re-query those
-			// immediately before their own check instead of using the snapshot.
-			dirty = true;
 		}
 	}
 	return executed;
@@ -1600,10 +1718,19 @@ void FinishAutoCheckCommandListState(CommandListState* state, const wchar_t* ini
 	CommandListFlushState(state);
 }
 
+static AutoCheckTextureDrawScope* GetAutoCheckDrawScope(CommandListState* state)
+{
+	if (!state->mHackerContext || state->mHackerContext->auto_check_texture_scopes.empty())
+		return nullptr;
+	auto& top = state->mHackerContext->auto_check_texture_scopes.back();
+	return top.call_info == state->call_info ? &top : nullptr;
+}
+
 void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch)
 {
-	if (!state || G->auto_check_texture_slots.empty())
+	if (!state)
 		return;
+	CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	// Coverage is computed together with the config-time merge. If it is not
 	// available (e.g. command lists were not optimised), do not run: letting
 	// this pass run on slots that also have checks would double-run them.
@@ -1612,42 +1739,25 @@ void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch
 	if (G->auto_check_texture_coverage_generation != G->auto_check_texture_slots_generation)
 		return;
 
-	AutoCheckTextureDrawScope* scope = nullptr;
-	if (state->mHackerContext && !state->mHackerContext->auto_check_texture_scopes.empty()) {
-		AutoCheckTextureDrawScope& top = state->mHackerContext->auto_check_texture_scopes.back();
-		if (top.call_info == state->call_info)
-			scope = &top;
+	const auto& plan = dispatch ? G->auto_check_compute_targets : G->auto_check_graphics_targets;
+	if (plan.empty())
+		return;
+	auto* scope = GetAutoCheckDrawScope(state);
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> remaining;
+	if (scope && !scope->checked_slots.empty()) {
+		for (const auto& target : plan)
+			if (!scope->checked_slots.count(AutoCheckTextureSlotKey(target->target)))
+				remaining.push_back(target);
 	}
-
-	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> targets;
-	std::vector<uint64_t> processed_keys;
-	for (size_t i = 0; i < G->auto_check_texture_slots.size(); ++i) {
-		if (G->auto_check_texture_slot_has_check[i])
-			continue;
-		const AutoCheckTextureSlot& slot = G->auto_check_texture_slots[i];
-		if (dispatch && (slot.type != ResourceCopyTargetType::SHADER_RESOURCE || slot.shader_type != L'c'))
-			continue;
-		auto check = std::make_shared<CheckTextureOverrideCommand>();
-		check->target.type = slot.type;
-		check->target.shader_type = slot.shader_type;
-		check->target.slot = slot.slot;
-		const uint64_t key = AutoCheckTextureSlotKey(check->target);
-		// A dynamic/unregistered checktextureoverride may already have run for
-		// this draw before the pass. In that case let the original path own the
-		// slot instead of running it twice.
-		if (scope && scope->checked_slots.count(key))
-			continue;
-		targets.push_back(check);
-		processed_keys.push_back(key);
-	}
+	const auto& targets = scope && !scope->checked_slots.empty() ? remaining : plan;
 	if (targets.empty())
 		return;
 
 	// Claim these slots before executing any TO list. A nested
 	// checktextureoverride inside a TO list must not run them again.
 	if (scope)
-		for (uint64_t key : processed_keys)
-			scope->auto_pass_slots.insert(key);
+		for (const auto& target : targets)
+			scope->auto_pass_slots.insert(AutoCheckTextureSlotKey(target->target));
 
 	// Replacement semantics: no original check command exists for these slots,
 	// so run both phases at this call site (pre list first, then post list).
@@ -1658,9 +1768,12 @@ void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch
 	state->post = false;
 	// If A.4 skipped the whole batch (no candidate at all), release the claims
 	// so a later dynamic/unregistered check for the same slot still runs.
-	if (scope && !ran_pre && !ran_post)
-		for (uint64_t key : processed_keys)
-			scope->auto_pass_slots.erase(key);
+	if (!ran_pre && !ran_post) {
+		// Nested draws can grow the scope vector while the lists are running.
+		if (auto* active_scope = GetAutoCheckDrawScope(state))
+			for (const auto& target : targets)
+				active_scope->auto_pass_slots.erase(AutoCheckTextureSlotKey(target->target));
+	}
 	FinishAutoCheckCommandListState(state, L"auto_check_texture_slots");
 }
 
@@ -1716,6 +1829,8 @@ static bool AutoCheckTargetMatchesSlot(const ResourceCopyTarget& target, const A
 
 void BuildAutoCheckSlotCoverage()
 {
+	G->auto_check_graphics_targets.clear();
+	G->auto_check_compute_targets.clear();
 	G->auto_check_texture_slot_has_check.assign(G->auto_check_texture_slots.size(), 0);
 	G->auto_check_texture_coverage_generation = G->auto_check_texture_slots_generation;
 	if (G->auto_check_texture_slots.empty())
@@ -1742,6 +1857,15 @@ void BuildAutoCheckSlotCoverage()
 				break;
 		}
 		G->auto_check_texture_slot_has_check[i] = found ? 1 : 0;
+		if (!found) {
+			auto check = std::make_shared<CheckTextureOverrideCommand>();
+			check->target.type = slot.type;
+			check->target.shader_type = slot.shader_type;
+			check->target.slot = slot.slot;
+			G->auto_check_graphics_targets.push_back(check);
+			if (slot.type == ResourceCopyTargetType::SHADER_RESOURCE && slot.shader_type == L'c')
+				G->auto_check_compute_targets.push_back(std::move(check));
+		}
 	}
 }
 
@@ -2309,7 +2433,10 @@ void StoreCommand::run(CommandListState* state)
 	box.bottom = box.back = 1;
 	state->mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, resource.Get(), 0, &box);
 	D3D11_MAPPED_SUBRESOURCE mapped = {};
-	if (FAILED(state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+	Profiling::Sample sample(Profiling::readback_map_overhead, false);
+	const HRESULT result = state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+	sample.Finish(false);
+	if (FAILED(result)) {
         SetOutputValue(state, 0.0f);
         return;
     }
@@ -2995,16 +3122,22 @@ static void memcpy_masked_merge(void *dest, void *src, void *mask, size_t n)
 
 void CustomShader::merge_blend_states(ID3D11BlendState *src_state, FLOAT src_blend_factor[4], UINT src_sample_mask, ID3D11Device *mOrigDevice1)
 {
-	D3D11_BLEND_DESC src_desc;
-	int i;
-
 	if (blend_override != 2)
+		return;
+
+	for (int i = 0; i < 4; i++) {
+		if (blend_factor_merge_mask[i])
+			blend_factor[i] = src_blend_factor[i];
+	}
+	blend_sample_mask = blend_sample_mask & ~blend_sample_mask_merge_mask | src_sample_mask & blend_sample_mask_merge_mask;
+	if (blend_state && merged_blend_source.matches(mOrigDevice1, src_state))
 		return;
 
 	if (blend_state)
 		blend_state->Release();
 	blend_state = NULL;
 
+	D3D11_BLEND_DESC src_desc{};
 	if (src_state) {
 		src_state->GetDesc(&src_desc);
 	} else {
@@ -3013,7 +3146,7 @@ void CustomShader::merge_blend_states(ID3D11BlendState *src_state, FLOAT src_ble
 		// work as expected:
 		src_desc.AlphaToCoverageEnable = FALSE;
 		src_desc.IndependentBlendEnable = FALSE;
-		for (i = 0; i < 8; i++) {
+		for (int i = 0; i < 8; i++) {
 			src_desc.RenderTarget[i].BlendEnable = FALSE;
 			src_desc.RenderTarget[i].SrcBlend = D3D11_BLEND_ONE;
 			src_desc.RenderTarget[i].DestBlend = D3D11_BLEND_ZERO;
@@ -3026,27 +3159,24 @@ void CustomShader::merge_blend_states(ID3D11BlendState *src_state, FLOAT src_ble
 	}
 
 	memcpy_masked_merge(&blend_desc, &src_desc, &blend_mask, sizeof(D3D11_BLEND_DESC));
-
-	for (i = 0; i < 4; i++) {
-		if (blend_factor_merge_mask[i])
-			blend_factor[i] = src_blend_factor[i];
-	}
-	blend_sample_mask = blend_sample_mask & ~blend_sample_mask_merge_mask | src_sample_mask & blend_sample_mask_merge_mask;
-
 	mOrigDevice1->CreateBlendState(&blend_desc, &blend_state);
+	merged_blend_source.remember(mOrigDevice1, src_state, blend_state);
 }
 
 void CustomShader::merge_depth_stencil_states(ID3D11DepthStencilState *src_state, UINT src_stencil_ref, ID3D11Device *mOrigDevice1)
 {
-	D3D11_DEPTH_STENCIL_DESC src_desc;
-
 	if (depth_stencil_override != 2)
+		return;
+
+	stencil_ref = stencil_ref & ~stencil_ref_mask | src_stencil_ref & stencil_ref_mask;
+	if (depth_stencil_state && merged_depth_source.matches(mOrigDevice1, src_state))
 		return;
 
 	if (depth_stencil_state)
 		depth_stencil_state->Release();
 	depth_stencil_state = NULL;
 
+	D3D11_DEPTH_STENCIL_DESC src_desc{};
 	if (src_state) {
 		src_state->GetDesc(&src_desc);
 	} else {
@@ -3070,22 +3200,23 @@ void CustomShader::merge_depth_stencil_states(ID3D11DepthStencilState *src_state
 	}
 
 	memcpy_masked_merge(&depth_stencil_desc, &src_desc, &depth_stencil_mask, sizeof(D3D11_DEPTH_STENCIL_DESC));
-	stencil_ref = stencil_ref & ~stencil_ref_mask | src_stencil_ref & stencil_ref_mask;
-
 	mOrigDevice1->CreateDepthStencilState(&depth_stencil_desc, &depth_stencil_state);
+	merged_depth_source.remember(mOrigDevice1, src_state, depth_stencil_state);
 }
 
 void CustomShader::merge_rasterizer_states(ID3D11RasterizerState *src_state, ID3D11Device *mOrigDevice1)
 {
-	D3D11_RASTERIZER_DESC src_desc;
-
 	if (rs_override != 2)
+		return;
+
+	if (rs_state && merged_rs_source.matches(mOrigDevice1, src_state))
 		return;
 
 	if (rs_state)
 		rs_state->Release();
 	rs_state = NULL;
 
+	D3D11_RASTERIZER_DESC src_desc{};
 	if (src_state) {
 		src_state->GetDesc(&src_desc);
 	} else {
@@ -3107,6 +3238,7 @@ void CustomShader::merge_rasterizer_states(ID3D11RasterizerState *src_state, ID3
 	memcpy_masked_merge(&rs_desc, &src_desc, &rs_mask, sizeof(D3D11_RASTERIZER_DESC));
 
 	mOrigDevice1->CreateRasterizerState(&rs_desc, &rs_state);
+	merged_rs_source.remember(mOrigDevice1, src_state, rs_state);
 }
 
 struct saved_shader_inst
@@ -3129,6 +3261,43 @@ struct saved_shader_inst
 	}
 };
 
+class CustomShaderViewportScope {
+	CommandListState* state;
+	CustomShaderViewportScope* previous;
+	UINT count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+	D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+	bool captured = false;
+
+public:
+	explicit CustomShaderViewportScope(CommandListState* state)
+		: state(state), previous(state->viewport_scope)
+	{
+		state->viewport_scope = this;
+	}
+
+	void Capture()
+	{
+		if (captured)
+			return;
+		state->mOrigContext1->RSGetViewports(&count, viewports);
+		captured = true;
+	}
+
+	void Restore()
+	{
+		if (captured) {
+			state->mOrigContext1->RSSetViewports(count, viewports);
+			captured = false;
+		}
+	}
+
+	~CustomShaderViewportScope()
+	{
+		Restore();
+		state->viewport_scope = previous;
+	}
+};
+
 void RunCustomShaderCommand::run(CommandListState *state)
 {
 	ID3D11Device *mOrigDevice1 = state->mOrigDevice1;
@@ -3142,8 +3311,6 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	ID3D11BlendState *saved_blend = NULL;
 	ID3D11DepthStencilState *saved_depth_stencil = NULL;
 	ID3D11RasterizerState *saved_rs = NULL;
-	UINT num_viewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-	D3D11_VIEWPORT saved_viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
 	FLOAT saved_blend_factor[4];
 	UINT saved_sample_mask;
 	UINT saved_stencil_ref;
@@ -3230,11 +3397,8 @@ void RunCustomShaderCommand::run(CommandListState *state)
 		mOrigContext1->PSGetSamplers(0, num_sampler, saved_sampler_states);
 		mOrigContext1->PSSetSamplers(0, 1, &custom_shader->sampler_state); //just one slot for the moment TODO: allow more via *.ini file
 	}
-	// We save off the viewports unconditionally for now. We could
-	// potentially skip this by flagging if a command list may alter them,
-	// but that probably wouldn't buy us anything:
-	mOrigContext1->RSGetViewports(&num_viewports, saved_viewports);
-	// Likewise, save off all RTVs, UAVs and DSVs unconditionally:
+	CustomShaderViewportScope viewport_scope(state);
+	// Save all RTVs, UAVs and DSVs for the command lists below.
 	save_om_state(state->mOrigContext1, &om_state);
 
 	// Run the command lists. This should generally include a draw or
@@ -3272,7 +3436,7 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	if (custom_shader->sampler_override)
 		mOrigContext1->PSSetSamplers(0, num_sampler, saved_sampler_states);
 
-	mOrigContext1->RSSetViewports(num_viewports, saved_viewports);
+	viewport_scope.Restore();
 	restore_om_state(mOrigContext1, &om_state);
 
 	if (saved_vs)
@@ -12256,6 +12420,8 @@ static void SetViewportFromResource(CommandListState *state, ID3D11Resource *res
 			viewport.Height = (float)tex3d_desc.Height;
 	}
 
+	if (state->viewport_scope)
+		state->viewport_scope->Capture();
 	state->mOrigContext1->RSSetViewports(1, &viewport);
 }
 
