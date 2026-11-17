@@ -505,6 +505,11 @@ void graphics_reference_reuse(BatchDevice& device, BatchAliases& aliases, ID3D11
     set_slot(device, L'p', 5, foreign.Get());
     require_batch(execute(pixel, device).graphics_ref_hits == 1 && get_slot(device, L'p', 5).Get() == original.Get(),
         "graphics ref: a warm hit still restores the binding overwritten between calls");
+    G->mod_runtime_optimizations = false;
+    const auto legacy = execute(pixel, device);
+    G->mod_runtime_optimizations = true;
+    require_batch(legacy.graphics_ref_hits == 0 && get_slot(device, L'p', 5).Get() == original.Get(),
+        "runtime optimizations: legacy SRV validation publishes the same native view");
 
     set_source(b);
     require_batch(execute(pixel, device).graphics_ref_hits == 0 && bound_resource(device, L'p', 5).Get() == b,

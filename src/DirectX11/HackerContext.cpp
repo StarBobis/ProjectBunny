@@ -596,7 +596,7 @@ template <class ID3D11Shader,
 void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 hash, wchar_t *shader_type,
 		ShaderRegexCheck& check, uint64_t generation)
 {
-	if (check.processed_shader == shader && check.generation == generation)
+	if (check.processed_shader == shader && check.generation == generation && G->ModRuntimeOptimizationsEnabled())
 		return;
 
 	ID3D11Shader *orig_shader = NULL, *patched_shader = NULL;
@@ -870,13 +870,15 @@ void HackerContext::RestoreInputLayout()
 
 ShaderOverride* HackerContext::FindDrawShaderOverride(uint64_t hash, ShaderOverrideMiss& miss)
 {
-	const auto generation = G->shader_override_generation.load(std::memory_order_acquire);
-	if (miss.hash == hash && miss.generation == generation)
+	const bool cache_enabled = G->ModRuntimeOptimizationsEnabled();
+	const auto generation = cache_enabled ? G->shader_override_generation.load(std::memory_order_acquire) : 0;
+	if (cache_enabled && miss.hash == hash && miss.generation == generation)
 		return nullptr;
 	auto override = lookup_shaderoverride(hash);
 	if (override != G->mShaderOverrideMap.end())
 		return &override->second;
-	miss = {hash, generation};
+	if (cache_enabled)
+		miss = {hash, generation};
 	return nullptr;
 }
 

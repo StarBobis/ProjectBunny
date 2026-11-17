@@ -1278,6 +1278,7 @@ class ResourceCopyOperation : public CommandListCommand {
 	ID3D11Resource* shader_ref_resource = nullptr;
 	ID3D11Device1* shader_ref_device = nullptr;
 	ResourceCopyTargetType shader_ref_type = ResourceCopyTargetType::EMPTY;
+	std::tuple<UINT, UINT, DXGI_FORMAT, UINT> shader_ref_input{};
 	UINT compute_ref_om_uav_slots = 0;
 	ID3D11View* cached_view = nullptr;
 public:

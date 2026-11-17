@@ -225,9 +225,11 @@ static void test_draw_indexed_literal_args(CallCounterDevice& fixture)
     positive->run(&state);
     start.fval = 4;
     dynamic->run(&state);
+    G->mod_runtime_optimizations = false;
     negative->run(&state);
-    require_call_counter(stats.literal_indexed_draws == 3 && Profiling::injected_draw_calls == before + 5,
-        "indexed literals: submissions are preserved and only the literal executions hit the fast path");
+    G->mod_runtime_optimizations = true;
+    require_call_counter(stats.literal_indexed_draws == 2 && Profiling::injected_draw_calls == before + 5,
+        "indexed literals: submissions are preserved with dynamic arguments and with the fast path disabled");
     Profiling::injected_draw_calls = before;
 
     context->SOSetTargets(0, nullptr, nullptr);

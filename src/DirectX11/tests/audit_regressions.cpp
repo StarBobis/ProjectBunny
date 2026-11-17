@@ -427,6 +427,7 @@ class AuditConfigScope {
     std::wstring old_user = G->user_config;
     int old_dirty = G->user_config_dirty;
     bool old_automatic = G->clear_unknown_settings, old_clear = G->clear_saved_persist_vars;
+    bool old_mod_runtime_optimizations = G->ModRuntimeOptimizationsEnabled();
     int old_hunting = G->hunting;
     std::wstring old_shader_path = G->SHADER_PATH, old_shader_cache = G->SHADER_CACHE_PATH;
 public:
@@ -455,15 +456,18 @@ public:
         G->gShowWarnings = old_warnings; G->gConfigInitialized = old_initialized;
         G->user_config = old_user; G->user_config_dirty = old_dirty;
         G->clear_unknown_settings = old_automatic; G->clear_saved_persist_vars = old_clear;
+        G->mod_runtime_optimizations = old_mod_runtime_optimizations;
         G->hunting = old_hunting;
         wcscpy_s(G->SHADER_PATH, MAX_PATH, old_shader_path.c_str()); wcscpy_s(G->SHADER_CACHE_PATH, MAX_PATH, old_shader_cache.c_str());
         DeleteFileW(config.c_str()); DeleteFileW(settings.c_str());
     }
-    void load(const char* constants, int hunting = 0, bool eager = false, const char* include_lines = "")
+    void load(const char* constants, int hunting = 0, bool eager = false, const char* include_lines = "",
+        const char* rendering_lines = "")
     {
         std::ofstream output(config, std::ios::binary | std::ios::trunc);
         output << "[Logging]\ncalls=0\nshow_warnings=0\n[System]\nskip_early_includes_load=0\n";
         if (eager) output << "config_initialization_delay=-1\n";
+        if (*rendering_lines) output << "[Rendering]\n" << rendering_lines;
         output << "[Hunting]\nhunting=" << hunting << "\n[Include]\nuser_config=" << settings.filename().string() << "\n" << include_lines << "[Constants]\n" << constants;
         output.close(); require_batch(output.good(), "audit config: write complete production INI");
         WritePrivateProfileStringW(nullptr, nullptr, nullptr, config.c_str());
@@ -476,11 +480,13 @@ void test_f114()
     AuditConfigScope config;
     std::fputs("F114: load all-flag Constants declarations without a variable name\n", stderr); std::fflush(stderr);
     config.load("global=1\nglobal persist=2\nGLOBAL LOCKED=3\nglobal persist\n"
-        "global $audit_valid=7\nglobal persist $audit_persist=9\n");
+        "global $audit_valid=7\nglobal persist $audit_persist=9\n", 0, false, "", "mod_runtime_optimizations=0\n");
+    require_batch(!G->ModRuntimeOptimizationsEnabled(), "runtime optimizations: main INI can select the original paths");
     require_batch(command_list_globals.size() == 2 && command_list_globals.at(L"$audit_valid").fval == 7 &&
         command_list_globals.at(L"$audit_persist").fval == 9 && persistent_variables.size() == 1,
         "F114: reject missing names and continue parsing valid ordinary/persistent declarations");
     config.load("global $audit_valid=11\n");
+    require_batch(G->ModRuntimeOptimizationsEnabled(), "runtime optimizations: removing the setting restores the default on reload");
     require_batch(command_list_globals.size() == 1 && command_list_globals.at(L"$audit_valid").fval == 11 &&
         persistent_variables.empty(), "F114: corrected config reload replaces declarations normally");
 }
@@ -2028,6 +2034,14 @@ void test_dx11_auto_texture_check_regression()
     require_batch(order == std::vector<int>({10, 20, 11, 21}) &&
         this_slots == std::vector<unsigned>({0}),
         "auto-tex: independent pass triggers pre/post TOs and this with zero check commands");
+    order.clear();
+    this_slots.clear();
+    G->mod_runtime_optimizations = false;
+    AutoCheckTextureOverridesIndependent(&fallback_state, false);
+    G->mod_runtime_optimizations = true;
+    require_batch(order == std::vector<int>({10, 20, 11, 21}) &&
+        this_slots == std::vector<unsigned>({0}),
+        "runtime optimizations: legacy target selection preserves auto-check order and this");
 
     // Old check + auto both present: the independent pass must skip slots that
     // already have a merged check; the merged command then runs each TO once.
@@ -2118,6 +2132,11 @@ void test_dx11_auto_texture_check_regression()
         order.clear();
         direct.commands.front()->run(&state);
         require_batch(order.empty() && stats.get_calls == 1, "direct checks: two empty slots use one binding query");
+        G->mod_runtime_optimizations = false;
+        direct.commands.front()->run(&state);
+        G->mod_runtime_optimizations = true;
+        require_batch(order.empty() && stats.get_calls == 1,
+            "runtime optimizations: disabling the batch runs the original checks individually");
         state.slot_batch_stats = nullptr;
         device.context->PSSetShaderResources(0, 1, &bound0);
         device.context->PSSetShaderResources(1, 1, &bound1);
@@ -2186,6 +2205,12 @@ void test_dx11_auto_texture_check_regression()
         run_outer.run(&state);
         require_batch(stats.om_saves == 0 && stats.om_restores == 0,
             "custom shader: a null compute UAV bind needs no OM snapshot");
+        G->mod_runtime_optimizations = false;
+        run_outer.run(&state);
+        G->mod_runtime_optimizations = true;
+        require_batch(stats.om_saves == 1 && stats.om_restores == 1 && stats.om_uav_probes == 0,
+            "runtime optimizations: disabling lazy OM uses the original save and restore");
+        stats = {};
 
         auto clear_output = std::make_shared<ResourceCopyOperation>();
         clear_output->src.type = ResourceCopyTargetType::EMPTY;

@@ -345,6 +345,16 @@ void pool_srv_writeback(BatchDevice& device, Registry& registry)
         require_batch(get_slot(device, L'p', i).Get() == original[i],
             "range writeback: preserve the exact saved view or explicitly clear a null slot");
     require_batch(get_slot(device, L'p', 19).Get() == b_view.Get(), "range writeback: slots outside the range stay bound");
+    for (UINT i = 0; i < 19; ++i)
+        set_slot(device, L'p', i, b_view.Get());
+    G->mod_runtime_optimizations = false;
+    const auto legacy = execute(restore, device);
+    G->mod_runtime_optimizations = true;
+    require_batch(legacy.get_calls == 2 && legacy.srv_slots_read == 19 && legacy.set_calls == 2,
+        "runtime optimizations: legacy range path reads the complete original bindings");
+    for (UINT i = 0; i < 19; ++i)
+        require_batch(get_slot(device, L'p', i).Get() == original[i],
+            "runtime optimizations: legacy and optimized range writeback bind the same views");
 
     for (UINT i = 0; i < 10; ++i)
         set_slot(device, L'p', i, b_view.Get());
@@ -416,6 +426,12 @@ void material_alias_metadata(BatchDevice& device, Registry& registry)
     require_batch(new_hash && new_hash != prior_hash && execute(first, device).alias_metadata_hits == 1 &&
         GetRegionHash(device.wrapper.get(), buffer.Get(), 0, 16, &diffuse) == new_hash,
         "material alias: a descriptor hit still refreshes the tracked buffer snapshot after a GPU write");
+    G->mod_runtime_optimizations = false;
+    const auto legacy = execute(first, device);
+    G->mod_runtime_optimizations = true;
+    require_batch(legacy.alias_metadata_hits == 0 && diffuse.resource == buffer.Get() &&
+        GetRegionHash(device.wrapper.get(), buffer.Get(), 0, 16, &diffuse) == new_hash,
+        "runtime optimizations: legacy alias resolution preserves the current regional hash");
 
     source.offset = 32;
     fx.override_format = DXGI_FORMAT_R32_FLOAT;
