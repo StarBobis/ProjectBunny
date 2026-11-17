@@ -12558,8 +12558,8 @@ void ResourceCopyOperation::ClearCachedView()
 	if (cached_view)
 		cached_view->Release();
 	cached_view = nullptr;
-	compute_ref_resource = nullptr;
-	compute_ref_device = nullptr;
+	shader_ref_resource = nullptr;
+	shader_ref_device = nullptr;
 	compute_ref_om_uav_slots = 0;
 }
 
@@ -12953,25 +12953,29 @@ void ResourceCopyOperation::CopyResourceToResource(
 	CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination, DeferredBinding* deferred, bool preserve_source_view, bool source_size_is_length, UINT source_original_stride, ResourceOriginalMetadata original_metadata
 )
 {
-	const bool plain_compute_ref = dst.shader_type == L'c' &&
-		(dst.type == ResourceCopyTargetType::SHADER_RESOURCE || dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW) &&
+	const bool plain_shader_ref = (dst.type == ResourceCopyTargetType::SHADER_RESOURCE ||
+		(dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && dst.shader_type == L'c')) &&
 		!destination && (!deferred || deferred->view_only) &&
 		options == ResourceCopyOptions::REFERENCE && src.type == ResourceCopyTargetType::CUSTOM_RESOURCE &&
 		src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE && !src.custom_resource_pool &&
 		!src.forbid_view_cache && dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE &&
 		!dst.slot_expression && !src_view && !preserve_source_view && !source_size_is_length && !G->analyse_frame;
-	// The cold path already validated this view. A scalar CS bind consumes
-	// the view directly and does not need the resource's CPU metadata.
-	if (plain_compute_ref && src_resource && cached_view && compute_ref_resource == src_resource &&
-		compute_ref_device == state->mOrigDevice1 && compute_ref_type == dst.type) {
+	// The shader slot consumes the validated view directly. The native bind
+	// still runs so other commands or the game can change the slot in between.
+	if (plain_shader_ref && src_resource && cached_view && shader_ref_resource == src_resource &&
+		shader_ref_device == state->mOrigDevice1 && shader_ref_type == dst.type) {
 		++Profiling::resource_reference_copies;
-		if (state->slot_batch_stats)
-			++state->slot_batch_stats->compute_ref_hits;
+		if (auto* stats = state->slot_batch_stats) {
+			if (dst.shader_type == L'c')
+				++stats->compute_ref_hits;
+			else
+				++stats->graphics_ref_hits;
+		}
 		PublishResourceBinding(dst, state, src_resource, cached_view, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred,
 			false, {}, compute_ref_om_uav_slots);
 		return;
 	}
-	compute_ref_resource = nullptr;
+	shader_ref_resource = nullptr;
 
 	ResourceCopyTarget* effective_destination = destination ? destination : &this->dst;
     if (effective_destination->type == ResourceCopyTargetType::THIS_RESOURCE && state->this_target) {
@@ -13052,7 +13056,7 @@ void ResourceCopyOperation::CopyResourceToResource(
             (dst_custom_resource->override_format != static_cast<DXGI_FORMAT>(-1) || dst_custom_resource->override_stride != -1));
 	bool buffer_cannot_bind_om_target = false;
 	FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format,
-		plain_compute_ref && dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && !deferred ?
+		plain_shader_ref && dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && !deferred ?
 		&buffer_cannot_bind_om_target : nullptr);
 	if (selected_window) {
 		offset = selected_offset;
@@ -13175,15 +13179,15 @@ void ResourceCopyOperation::CopyResourceToResource(
 	}
 
 	UINT compute_om_uav_slots = 0;
-	if (plain_compute_ref && dst_view && dst_view == cached_view) {
+	if (plain_shader_ref && dst_view && dst_view == cached_view) {
 		if (buffer_cannot_bind_om_target) {
 			const auto level = state->mOrigDevice1->GetFeatureLevel();
 			if (level >= D3D_FEATURE_LEVEL_11_0)
 				compute_om_uav_slots = level >= D3D_FEATURE_LEVEL_11_1 ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
 		}
-		compute_ref_resource = dst_resource;
-		compute_ref_device = state->mOrigDevice1;
-		compute_ref_type = dst.type;
+		shader_ref_resource = dst_resource;
+		shader_ref_device = state->mOrigDevice1;
+		shader_ref_type = dst.type;
 		compute_ref_om_uav_slots = compute_om_uav_slots;
 	}
 	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred,

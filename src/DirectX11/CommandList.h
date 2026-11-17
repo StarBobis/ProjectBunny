@@ -59,6 +59,7 @@ struct ShaderResourceBatchStats {
 	unsigned om_saves = 0, om_restores = 0;
 	unsigned om_uav_probes = 0;
 	unsigned compute_ref_hits = 0, literal_dispatches = 0;
+	unsigned graphics_ref_hits = 0;
 };
 
 class CustomShaderStateScope;
@@ -1257,9 +1258,9 @@ enum class BatchDirection { Bind, Fetch };
 
 class ResourceCopyOperation : public CommandListCommand {
 	// The operation's owned cached_view keeps the referenced resource alive.
-	ID3D11Resource* compute_ref_resource = nullptr;
-	ID3D11Device1* compute_ref_device = nullptr;
-	ResourceCopyTargetType compute_ref_type = ResourceCopyTargetType::EMPTY;
+	ID3D11Resource* shader_ref_resource = nullptr;
+	ID3D11Device1* shader_ref_device = nullptr;
+	ResourceCopyTargetType shader_ref_type = ResourceCopyTargetType::EMPTY;
 	UINT compute_ref_om_uav_slots = 0;
 	ID3D11View* cached_view = nullptr;
 public:
