@@ -56,6 +56,7 @@ struct ShaderResourceBatchStats {
 	unsigned cb_get_calls = 0, cb_set_calls = 0, cb1_set_calls = 0;
 	unsigned uav_get_calls = 0, uav_set_calls = 0;
 	unsigned om_saves = 0, om_restores = 0;
+	unsigned compute_ref_hits = 0, literal_dispatches = 0;
 };
 
 class CustomShaderStateScope;
@@ -1244,6 +1245,7 @@ struct DeferredBinding {
 	UINT stride = 0, offset = 0, size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	bool assigned = false;
+	bool view_only = false;
     bool size_is_length = false;
     ResourceOriginalMetadata original_metadata;
 };
@@ -1251,6 +1253,11 @@ struct DeferredBinding {
 enum class BatchDirection { Bind, Fetch };
 
 class ResourceCopyOperation : public CommandListCommand {
+	// The operation's owned cached_view keeps the referenced resource alive.
+	ID3D11Resource* compute_ref_resource = nullptr;
+	ID3D11Device1* compute_ref_device = nullptr;
+	ResourceCopyTargetType compute_ref_type = ResourceCopyTargetType::EMPTY;
+	ID3D11View* cached_view = nullptr;
 public:
 	ResourceCopyTarget src;
 	ResourceCopyTarget dst;
@@ -1258,11 +1265,11 @@ public:
 
 	ID3D11Resource *cached_resource;
 	ResourcePool resource_pool;
-	ID3D11View *cached_view;
     bool cached_source_size_is_length = false;
 
 	ResourceCopyOperation();
 	~ResourceCopyOperation();
+	void ClearCachedView();
 
 	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr, bool preserve_source_view = false, bool source_size_is_length = false, UINT source_original_stride = 0, ResourceOriginalMetadata original_metadata = {});
 	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool source_size_is_length = false, UINT source_original_stride = 0, ResourceOriginalMetadata original_metadata = {});
@@ -1834,6 +1841,8 @@ enum class DrawCommandType {
 };
 
 class DrawCommand : public CommandListCommand {
+	std::array<INT, 3> literal_dispatch_args{};
+	bool has_literal_dispatch_args = false;
 public:
 	wstring ini_section;
 	DrawCommandType type;
@@ -1850,6 +1859,7 @@ public:
 		ID3D11Buffer *pBufferForArgs,
 		UINT AlignedByteOffsetForArgs));
 	inline void eval_args(int nargs, INT result[5], CommandListState *state);
+	bool optimise(HackerDevice* device) override;
 	void run(CommandListState*) override;
 };
 

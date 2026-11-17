@@ -1550,6 +1550,166 @@ public:
     }
 };
 
+static dx11_slot_test::ComPtr<ID3D11Buffer> CreateComputeTestBuffer(dx11_slot_test::BatchDevice& device,
+    UINT flags, const std::array<UINT, 4>& data, bool structured = false)
+{
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = sizeof(data);
+    desc.BindFlags = flags;
+    if (structured) {
+        desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        desc.StructureByteStride = sizeof(UINT);
+    }
+    D3D11_SUBRESOURCE_DATA initial{};
+    initial.pSysMem = data.data();
+    dx11_slot_test::ComPtr<ID3D11Buffer> buffer;
+    dx11_slot_test::require_batch(SUCCEEDED(device.native->CreateBuffer(&desc, &initial, &buffer)),
+        "compute ref: create native buffer");
+    return buffer;
+}
+
+static std::array<UINT, 4> ReadComputeTestBuffer(dx11_slot_test::BatchDevice& device, ID3D11Buffer* source)
+{
+    std::array<UINT, 4> result{};
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = sizeof(result);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    dx11_slot_test::ComPtr<ID3D11Buffer> staging;
+    dx11_slot_test::require_batch(SUCCEEDED(device.native->CreateBuffer(&desc, nullptr, &staging)),
+        "compute ref: allocate native readback buffer");
+    device.context->CopyResource(staging.Get(), source);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    dx11_slot_test::require_batch(SUCCEEDED(device.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)),
+        "compute ref: read GPU dispatch results");
+    std::memcpy(result.data(), mapped.pData, sizeof(result));
+    device.context->Unmap(staging.Get(), 0);
+    return result;
+}
+
+static void test_compute_references()
+{
+    using namespace dx11_slot_test;
+    BatchDevice device;
+    auto input_buffer = CreateComputeTestBuffer(device, D3D11_BIND_SHADER_RESOURCE, {5, 8, 11, 13});
+    auto first_output = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {});
+    auto second_output = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {});
+    CustomResource input, output;
+    const auto set_resource = [&](CustomResource& target, ID3D11Buffer* buffer, DXGI_FORMAT format) {
+        if (target.resource) target.resource->Release();
+        target.resource = buffer;
+        buffer->AddRef();
+        target.device = device.native.Get();
+        target.is_null = false;
+        target.format = format;
+        target.buf_size = 4 * sizeof(UINT);
+        target.stride = sizeof(UINT);
+    };
+    set_resource(input, input_buffer.Get(), DXGI_FORMAT_R32_UINT);
+    set_resource(output, first_output.Get(), DXGI_FORMAT_R32_UINT);
+
+    const auto bind = [](ResourceCopyTargetType type, unsigned slot, CustomResource* source) {
+        auto operation = std::make_shared<ResourceCopyOperation>();
+        operation->dst.type = type;
+        operation->dst.shader_type = L'c';
+        operation->dst.slot = slot;
+        operation->options = ResourceCopyOptions::REFERENCE;
+        operation->src.type = source ? ResourceCopyTargetType::CUSTOM_RESOURCE : ResourceCopyTargetType::EMPTY;
+        if (source) operation->src.SetCustomResource(source);
+        return operation;
+    };
+    auto input_ref = bind(ResourceCopyTargetType::SHADER_RESOURCE, 0, &input);
+    auto output_ref = bind(ResourceCopyTargetType::UNORDERED_ACCESS_VIEW, 0, &output);
+    auto unbind_output = bind(ResourceCopyTargetType::UNORDERED_ACCESS_VIEW, 0, nullptr);
+
+    auto dispatch = std::make_shared<DrawCommand>();
+    dispatch->type = DrawCommandType::DISPATCH;
+    const std::wstring two = L"2", one = L"1", runtime_count = L"draw_number + 1", ini_namespace;
+    CommandListScope scope;
+    require_batch(dispatch->args[0].parse(&two, &ini_namespace, &scope) &&
+        dispatch->args[1].parse(&one, &ini_namespace, &scope) && dispatch->args[2].parse(&one, &ini_namespace, &scope) &&
+        dispatch->optimise(device.device), "compute ref: specialise a literal dispatch");
+
+    const char source[] = "Buffer<uint> src : register(t0); RWBuffer<uint> dst : register(u0);"
+        "[numthreads(1,1,1)] void main(uint3 id : SV_DispatchThreadID) { dst[id.x] += src[id.x]; }";
+    ComPtr<ID3DBlob> bytecode;
+    CustomShader shader;
+    require_batch(SUCCEEDED(D3DCompile(source, sizeof(source), nullptr, nullptr, nullptr,
+        "main", "cs_5_0", 0, 0, &bytecode, nullptr)) && SUCCEEDED(device.native->CreateComputeShader(
+            bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &shader.cs)),
+        "compute ref: create actual compute shader");
+    shader.cs_override = true;
+    shader.substantiated = true;
+    shader.command_list.commands = {input_ref, bind(ResourceCopyTargetType::SHADER_RESOURCE, 1, nullptr),
+        output_ref, dispatch, unbind_output};
+    merge_shader_resource_batches(&shader.command_list);
+    RunCustomShaderCommand run;
+    run.custom_shader = &shader;
+    ShaderResourceBatchStats stats;
+    device.state.slot_batch_stats = &stats;
+
+    run.run(&device.state);
+    require_batch(stats.compute_ref_hits == 0 && stats.literal_dispatches == 1 && stats.set_calls == 1,
+        "compute ref: cold path builds the views and batches the SRV slots");
+    run.run(&device.state);
+    require_batch(stats.compute_ref_hits == 2 && stats.literal_dispatches == 2 && stats.om_saves == 2 &&
+        stats.om_restores == 2 && ReadComputeTestBuffer(device, first_output.Get()) == std::array<UINT, 4>{10, 16, 0, 0},
+        "compute ref: warm SRV/UAV reuse still dispatches twice and preserves OM protection");
+
+    set_resource(output, second_output.Get(), DXGI_FORMAT_R32_UINT);
+    require_batch(dispatch->args[0].parse(&runtime_count, &ini_namespace, &scope) && !dispatch->optimise(device.device),
+        "compute ref: runtime dispatch expressions stay dynamic");
+    run.run(&device.state);
+    require_batch(stats.compute_ref_hits == 3 && stats.literal_dispatches == 2 &&
+        ReadComputeTestBuffer(device, first_output.Get()) == std::array<UINT, 4>{10, 16, 0, 0} &&
+        ReadComputeTestBuffer(device, second_output.Get()) == std::array<UINT, 4>{5, 0, 0, 0},
+        "compute ref: replacement UAV bypasses the cache and dynamic dispatch uses its runtime count");
+
+    output.is_null = true;
+    output_ref->run(&device.state);
+    ComPtr<ID3D11UnorderedAccessView> bound;
+    device.context->CSGetUnorderedAccessViews(0, 1, bound.GetAddressOf());
+    require_batch(!bound && stats.compute_ref_hits == 3, "compute ref: a null source unbinds the slot");
+
+    auto dual_bind_buffer = CreateComputeTestBuffer(device, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, {});
+    set_resource(output, dual_bind_buffer.Get(), DXGI_FORMAT_R32_UINT);
+    output_ref->run(&device.state);
+    output_ref->run(&device.state);
+    const unsigned hits_before_target_switch = stats.compute_ref_hits;
+    unbind_output->run(&device.state);
+    output_ref->dst.type = ResourceCopyTargetType::SHADER_RESOURCE;
+    output_ref->run(&device.state);
+    ComPtr<ID3D11ShaderResourceView> switched_view;
+    device.context->CSGetShaderResources(0, 1, switched_view.GetAddressOf());
+    require_batch(switched_view && stats.compute_ref_hits == hits_before_target_switch,
+        "compute ref: changing the destination kind does not reuse a UAV as an SRV");
+    output_ref->dst.type = ResourceCopyTargetType::UNORDERED_ACCESS_VIEW;
+
+    auto counter_buffer = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {}, true);
+    auto count_buffer = CreateComputeTestBuffer(device, 0, {});
+    set_resource(output, counter_buffer.Get(), DXGI_FORMAT_UNKNOWN);
+    D3D11_UNORDERED_ACCESS_VIEW_DESC counter_desc{};
+    counter_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+    counter_desc.Buffer.NumElements = 4;
+    counter_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_COUNTER;
+    ComPtr<ID3D11UnorderedAccessView> counter_view;
+    require_batch(SUCCEEDED(device.native->CreateUnorderedAccessView(counter_buffer.Get(), &counter_desc, &counter_view)),
+        "compute ref: create a counter UAV");
+    output.view = counter_view.Get();
+    output.view->AddRef();
+    auto* raw_counter = counter_view.Get();
+    UINT initial_count = 7;
+    device.context->CSSetUnorderedAccessViews(0, 1, &raw_counter, &initial_count);
+    unbind_output->run(&device.state);
+    output_ref->run(&device.state);
+    output_ref->run(&device.state);
+    device.context->CopyStructureCount(count_buffer.Get(), 0, counter_view.Get());
+    require_batch(ReadComputeTestBuffer(device, count_buffer.Get())[0] == 7 &&
+        stats.compute_ref_hits == hits_before_target_switch,
+        "compute ref: an explicit counter view keeps its identity and hidden count across binds");
+    device.state.slot_batch_stats = nullptr;
+}
+
 class AutoTextureTestScope {
 public:
     std::vector<AutoCheckTextureSlot> saved_slots = G->auto_check_texture_slots;
@@ -1601,6 +1761,8 @@ public:
 void test_dx11_auto_texture_check_regression()
 {
     using namespace dx11_slot_test;
+
+    test_compute_references();
 
     // Configuration parsing, inclusive range expansion, aliases and rejection.
     std::vector<AutoCheckTextureSlot> slots;
