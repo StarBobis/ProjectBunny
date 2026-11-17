@@ -8,6 +8,7 @@
 #include "Nektra/NktHookLib.h"
 #include "util_min.h"
 #include "crc32c.h"
+#include "bounded_path_format.h"
 
 #include <d3dcompiler.h>
 
@@ -54,7 +55,8 @@ public:
 	{
 		D3D12ProcessGateDecision decision;
 		if (!ReadPaths(module, &decision)) {
-			CopyReason(&decision, L"path discovery failed");
+			if (decision.reason[0] == L'\0')
+				CopyReason(&decision, L"path discovery failed");
 			return decision;
 		}
 
@@ -89,27 +91,47 @@ public:
 	{
 		wchar_t *moduleBase = nullptr;
 		wchar_t *processBase = nullptr;
+		DWORD moduleLength = 0;
+		DWORD processLength = 0;
 
 		if (!decision)
 			return false;
-		if (!GetModuleFileNameW(module, decision->modulePath, MAX_PATH))
+		// F-200 #8: GetModuleFileNameW returns nSize when the full path does not
+		// fit; the buffer then holds a truncated path. Treat that as a failed
+		// path discovery so the gate rejects the process instead of comparing
+		// directories/configured targets from a different path.
+		moduleLength = GetModuleFileNameW(module, decision->modulePath, MAX_PATH);
+		if (moduleLength == 0 || moduleLength >= static_cast<DWORD>(MAX_PATH)) {
+			CopyReason(decision, L"module path discovery failed (missing or too long)");
 			return false;
-		if (!GetModuleFileNameW(nullptr, decision->processPath, MAX_PATH))
+		}
+		processLength = GetModuleFileNameW(nullptr, decision->processPath, MAX_PATH);
+		if (processLength == 0 || processLength >= static_cast<DWORD>(MAX_PATH)) {
+			CopyReason(decision, L"process path discovery failed (missing or too long)");
 			return false;
+		}
 
-		wcsncpy_s(decision->moduleDirectory, MAX_PATH, decision->modulePath, _TRUNCATE);
-		wcsncpy_s(decision->processDirectory, MAX_PATH, decision->processPath, _TRUNCATE);
+		if (!CopyPathBounded(decision->moduleDirectory, MAX_PATH, decision->modulePath) ||
+			!CopyPathBounded(decision->processDirectory, MAX_PATH, decision->processPath)) {
+			CopyReason(decision, L"module directory copy failed (too long)");
+			return false;
+		}
 
 		moduleBase = wcsrchr(decision->moduleDirectory, L'\\');
 		processBase = wcsrchr(decision->processDirectory, L'\\');
-		if (!moduleBase || !processBase)
+		if (!moduleBase || !processBase) {
+			CopyReason(decision, L"module directory has no separator");
 			return false;
+		}
 
 		*moduleBase = L'\0';
 		*processBase = L'\0';
 
-		wcsncpy_s(decision->configPath, MAX_PATH, decision->moduleDirectory, _TRUNCATE);
-		PathAppendW(decision->configPath, L"d3dx.ini");
+		if (!CopyPathBounded(decision->configPath, MAX_PATH, decision->moduleDirectory) ||
+			!PathAppendBounded(decision->configPath, MAX_PATH, L"d3dx.ini")) {
+			CopyReason(decision, L"config path discovery failed (too long)");
+			return false;
+		}
 		return true;
 	}
 

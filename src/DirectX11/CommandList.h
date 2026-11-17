@@ -29,6 +29,7 @@
 class HackerDevice;
 class HackerContext;
 class CommandListExpression;
+class CommandList;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
 
@@ -625,6 +626,8 @@ public:
 	float width_multiply;
 	float height_multiply;
 
+	// Owned malloc snapshot. CopyMetadataFrom deep-copies it so no two
+	// CustomResources ever share this pointer; the destructor always frees it.
 	void *initial_data;
 	size_t initial_data_size;
 
@@ -1141,6 +1144,18 @@ private:
 	float pool_static_index = 0.0f;
 	bool pool_index_is_static = false;
 };
+
+// Shared by ResourceCopyTarget::FindTextureOverrides and the
+// auto_check_texture_slots batch path so both use identical region/fuzzy
+// matching. The caller must hold G->mCriticalSection, keep `resource` alive,
+// and consume the returned pointers before releasing it.
+void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Resource* resource,
+		HackerContext* hacker_context, UINT stride, UINT offset, DXGI_FORMAT format,
+		DrawCallInfo* call_info, TextureOverrideMatches* matches);
+
+// True when `target` is a plain static slot covered by the current
+// auto_check_texture_slots configuration. Used by the config-time merge pass.
+bool IsAutoCheckTextureSlotCovered(const ResourceCopyTarget& target);
 
 enum class ResourceCopyOptions {
 	INVALID         = 0,
@@ -1736,6 +1751,38 @@ public:
 	void run(CommandListState*) override;
 	bool noop(bool post, bool ignore_cto_pre, bool ignore_cto_post) override;
 };
+
+// Created at config load by MergeAutoCheckTextureOverrides: owns an adjacent
+// run of static CheckTextureOverrideCommands and executes them at the first
+// check's original command-list position. The implicit pre/post phase is
+// preserved via CommandListState::post; no separate per-draw pass is used.
+class AutoCheckTextureOverrideCommand : public CommandListCommand {
+public:
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> targets;
+
+	void run(CommandListState*) override;
+};
+
+// Executes one merged adjacent run. Public so the regression host can call the
+// real batch entry without building a full ShaderOverride chain.
+bool AutoCheckTextureOverrides(CommandListState* state,
+		const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets);
+
+// Replacement-mode pass for configured slots that have no checktextureoverride
+// in the loaded command lists. Runs both pre and post TO lists at the call
+// site; `dispatch` filters to cs-tN slots. Covered-by-check slots are skipped.
+void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch);
+
+// Fills auto_check_texture_slot_has_check after command lists are optimised.
+// Public for regression tests.
+void BuildAutoCheckSlotCoverage();
+
+// RunCommandListComplete-style finish for a directly executed state.
+void FinishAutoCheckCommandListState(CommandListState* state, const wchar_t* ini_section);
+
+// Merges adjacent covered static checktextureoverride commands inside one
+// command list. Called by optimise_command_lists; public for regression tests.
+void MergeAutoCheckTextureOverrides(CommandList* command_list);
 
 enum class DrawCommandType {
 	INVALID,

@@ -1,0 +1,573 @@
+{
+  "id": "P-01",
+  "status": "validated-in-simulator",
+  "disposition": "repaired",
+  "summary": "同次INI解析复用已取值，避免重复查找，无跨重载缓存；默认/空/别名/整数/表达式/namespace/枚举/告警语义通过。无ASan同机9对与正式配置路径3对测量结果一致，后者局部中位数下降25%-46%；专项与全流程通过，不外推总重载或FPS。",
+  "utc": "2026-11-15T08:35:07.5313259Z",
+  "buildHead": "ab6451ec498e030d9541735d8619b2796c49ebc0",
+  "candidateSha256": "63897AFC15C0D29CF1024F0EA14887B428BBE1844CF7B2C1FE9F522378AC8372",
+  "fullReport": "build\\f\\cea3981fe072\\results.json",
+  "fullReportSha256": "2BDEA8FE15D2D55E6CA30C397E0A35EC2C49D4FCE625B51595FAB76F45CB5632",
+  "checks": [
+    {
+      "name": "special",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 1863,
+        "message": ""
+      }
+    },
+    {
+      "name": "business",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 15206,
+        "message": ""
+      }
+    },
+    {
+      "name": "offline-shader-tool",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 40,
+        "message": ""
+      }
+    },
+    {
+      "name": "legacy-version",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 35,
+        "message": ""
+      }
+    },
+    {
+      "name": "version-generator",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 13958,
+        "message": ""
+      }
+    },
+    {
+      "name": "proxy-components",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 1627,
+        "message": ""
+      }
+    },
+    {
+      "name": "actual-dll-integration",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 24093,
+        "message": ""
+      }
+    }
+  ],
+  "integrationCases": [
+    {
+      "id": "native-capabilities",
+      "status": "PASS"
+    },
+    {
+      "id": "native-buffer",
+      "status": "PASS"
+    },
+    {
+      "id": "native-texture",
+      "status": "PASS"
+    },
+    {
+      "id": "native-deferred",
+      "status": "PASS"
+    },
+    {
+      "id": "native-swapchain",
+      "status": "PASS"
+    },
+    {
+      "id": "native-swapchain-qi",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-capabilities",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-buffer",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-texture",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-deferred",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-swapchain",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-swapchain-qi",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-constants-missing-name",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-kmt-binding",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-injected-device-failure",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-wrapper",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-native-control",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-hook-all",
+      "status": "PASS"
+    },
+    {
+      "id": "candidate-smoke-denied-qi",
+      "status": "PASS"
+    }
+  ],
+  "targetGameValidated": false,
+  "commitLookup": "git log --fixed-strings --grep=P-01",
+  "buildInfoSnapshot": "build\\f\\cea3981fe072\\build-info.json",
+  "buildInfoSha256": "65A926A23A2BF6CDC453870B589BC49D93C41C9D13EA1CA76AA07D8AA4F6B0A5",
+  "builtProducts": [
+    {
+      "path": "src\\DirectX11\\d3d11.dll",
+      "sha256": "63897AFC15C0D29CF1024F0EA14887B428BBE1844CF7B2C1FE9F522378AC8372"
+    },
+    {
+      "path": "src\\DirectX11\\dx11_upstream_regression.exe",
+      "sha256": "388C78AE6E2D9F27E1F3F4B6F377661765BE3C86A5CADDD0B2F07ADA7974A9E6"
+    },
+    {
+      "path": "src\\DirectX11\\Release\\dx11_legacy_version_regression.exe",
+      "sha256": "260F72DC55B6E439CFDD5557C0009658CBDA0840EB8E7A4F2DEB07464316E240"
+    },
+    {
+      "path": "src\\D3D_Shaders\\D3D_Shaders.exe",
+      "sha256": "9A4676AA51344B51BE1299F793996DF370DEF95EE1128DE554662311984D37F6"
+    },
+    {
+      "path": "src\\DirectX11\\clang_rt.asan_dynamic-x86_64.dll",
+      "sha256": "7C4FA25B4A3123F2B698D9429B9CA9933C87AC4B7F1A5F5AD33772BDE231401E"
+    },
+    {
+      "path": "src\\DirectXGI\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69"
+    },
+    {
+      "path": "src\\D3DCompiler_46\\d3dcompiler_47.dll",
+      "sha256": "DE121D80736C1020C0515E8A91A1C91BADF4F307DE7D58413893FDD3876F9285"
+    },
+    {
+      "path": "audit\\compiler_audit_asan.dll",
+      "sha256": "3A24196C238E8CF5708EF591A755D97CA4FE598805F68A63587859727E50161C"
+    }
+  ],
+  "proxyComponentCases": [
+    {
+      "id": "native-compiler",
+      "status": "PASS",
+      "input": "C:\\WINDOWS\\system32\\d3dcompiler_47.dll",
+      "sha256": "8C6D644F86724B542A490EB4F2BFDFAD759998B9A3C51FA46EB5DFC5460ED9D7",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 79,
+        "message": ""
+      }
+    },
+    {
+      "id": "native-dxgi",
+      "status": "PASS",
+      "input": "C:\\WINDOWS\\system32\\dxgi.dll",
+      "sha256": "5B93ACCDC90BB3A90ABE9B3060078044A9F9EE0063681C6B2BB695BC3131AA72",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 49,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-normal",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\compiler-normal\\d3dcompiler_47.dll",
+      "sha256": "DE121D80736C1020C0515E8A91A1C91BADF4F307DE7D58413893FDD3876F9285",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 52,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-disabled",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\compiler-disabled\\d3dcompiler_47.dll",
+      "sha256": "DE121D80736C1020C0515E8A91A1C91BADF4F307DE7D58413893FDD3876F9285",
+      "loggingCalls": 0,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 48,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-blocked",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\compiler-blocked\\d3dcompiler_47.dll",
+      "sha256": "DE121D80736C1020C0515E8A91A1C91BADF4F307DE7D58413893FDD3876F9285",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 50,
+        "message": ""
+      }
+    },
+    {
+      "id": "dxgi-normal",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\dxgi-normal\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 57,
+        "message": ""
+      }
+    },
+    {
+      "id": "dxgi-disabled",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\dxgi-disabled\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69",
+      "loggingCalls": 0,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 51,
+        "message": ""
+      }
+    },
+    {
+      "id": "dxgi-blocked",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\dxgi-blocked\\dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69",
+      "loggingCalls": 1,
+      "unbuffered": 1,
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 55,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-asan-export",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\compiler-ownership\\compiler_audit_asan.dll",
+      "sha256": "3A24196C238E8CF5708EF591A755D97CA4FE598805F68A63587859727E50161C",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 164,
+        "message": ""
+      }
+    },
+    {
+      "id": "compiler-asan-replacement",
+      "status": "PASS",
+      "input": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\c\\044fd687c3f7\\compiler-ownership\\compiler_audit_asan.dll",
+      "sha256": "3A24196C238E8CF5708EF591A755D97CA4FE598805F68A63587859727E50161C",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 175,
+        "message": ""
+      }
+    }
+  ],
+  "compilerProviderMode": "System D3DCompiler_47 copied under the declared legacy _46_org dependency name; public API compatibility coverage, not original 46/private export certification",
+  "performanceEvidence": {
+    "scope": "Same-host plain Release/C++17 production getter microbenchmarks, no ASan allocator; synthetic missing-heavy and numeric-dense options. Not whole reload, game FPS or statistical certification.",
+    "measurementReport": "build\\perf\\p01-7eb435b0e0\\results.json",
+    "measurementSha256": "5F666260955CA4528B9EB67372048F273DBCBA1D612E835B48ECBFA93D83D962",
+    "directEntrySummary": [
+      {
+        "name": "numeric-dense-enum-synthetic",
+        "baseline": {
+          "samplesNs": [
+            4536.362,
+            4593.955,
+            4728.074,
+            4807.157,
+            4811.7,
+            4858.56,
+            4907.637,
+            4911.933,
+            5485.876
+          ],
+          "medianNs": 4811.7,
+          "minNs": 4536.362,
+          "maxNs": 5485.876
+        },
+        "candidate": {
+          "samplesNs": [
+            2826.343,
+            2831.635,
+            2849.48,
+            2854.936,
+            2871.917,
+            2915.775,
+            2924.321,
+            2929.541,
+            2966.054
+          ],
+          "medianNs": 2871.917,
+          "minNs": 2826.343,
+          "maxNs": 2966.054
+        },
+        "medianReductionPercent": 40.31388074900762
+      },
+      {
+        "name": "missing-heavy-enum-synthetic",
+        "baseline": {
+          "samplesNs": [
+            927.088,
+            942.376,
+            945.798,
+            951.378,
+            985.317,
+            996.438,
+            1005.255,
+            1020.42,
+            1113.643
+          ],
+          "medianNs": 985.317,
+          "minNs": 927.088,
+          "maxNs": 1113.643
+        },
+        "candidate": {
+          "samplesNs": [
+            686.511,
+            707.778,
+            710.203,
+            717.489,
+            734.885,
+            745.177,
+            746.102,
+            758.871,
+            773.483
+          ],
+          "medianNs": 734.885,
+          "minNs": 686.511,
+          "maxNs": 773.483
+        },
+        "medianReductionPercent": 25.416388837298047
+      },
+      {
+        "name": "numeric-bool-int-micro",
+        "baseline": {
+          "samplesNs": [
+            669.014,
+            684.801,
+            696.511,
+            702.551,
+            713.191,
+            715.292,
+            719.115,
+            730.089,
+            775.199
+          ],
+          "medianNs": 713.191,
+          "minNs": 669.014,
+          "maxNs": 775.199
+        },
+        "candidate": {
+          "samplesNs": [
+            358.948,
+            359.771,
+            370.6,
+            373.116,
+            376.265,
+            377.365,
+            384.331,
+            384.444,
+            385.266
+          ],
+          "medianNs": 376.265,
+          "minNs": 358.948,
+          "maxNs": 385.266
+        },
+        "medianReductionPercent": 47.24204315533988
+      }
+    ],
+    "sourceDifferences": [
+      "src\\DirectX11\\IniHandler.cpp"
+    ],
+    "baselineSnapshot": {
+      "directory": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\perf\\p01-baseline",
+      "info": {
+        "item": "P-01",
+        "files": [
+          {
+            "name": "dx11_upstream_regression.exe",
+            "sha256": "67BD5772FCD05E053DEEF481F406427A4F0512FB4F69F90C7C9CA2358C85B7F5"
+          },
+          {
+            "name": "d3d11.dll",
+            "sha256": "09273DDEB827F98C47C0112A93575091EC3B7F9E9F019480B81E5740D541E59C"
+          },
+          {
+            "name": "wic-regression.png",
+            "sha256": "5BFEE856575E32E7A71DF2533827AF0EF4935F98FD75FDAAC46497A4816FA984"
+          }
+        ],
+        "buildInfoSha256": "204465DBEA1504CA225FEB1A0B09C5F29F287185CD3C1093AB6AFF2702F331EF"
+      }
+    },
+    "candidateSnapshot": {
+      "directory": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\perf\\p01-candidate",
+      "info": {
+        "files": [
+          {
+            "name": "dx11_upstream_regression.exe",
+            "sha256": "6C69F14B2E1DFBF4D815A7A49775A4001BD8B215243D7DDA768CE524296E6135"
+          },
+          {
+            "name": "d3d11.dll",
+            "sha256": "CB9B6A0EAA3AC33EED8291C80D11D67E36DAFD56D8D107B835575F7A676B3E87"
+          },
+          {
+            "name": "wic-regression.png",
+            "sha256": "5BFEE856575E32E7A71DF2533827AF0EF4935F98FD75FDAAC46497A4816FA984"
+          }
+        ],
+        "item": "P-01",
+        "buildInfoSha256": "3897711DA3D5C1683218FDD37B3E911EFDF22ED77F93EF3A64616ABB8591AC28"
+      }
+    },
+    "productionConfigurationReport": "build\\perf\\p01-config-49e3f9b8eb\\results.json",
+    "productionConfigurationReportSha256": "252F596E41169ACFAFE1DA432726DC78C047754E297738A1EF257CB0FDD22FA0",
+    "productionConfigurationSummary": [
+      {
+        "name": "numeric-bool-int-micro",
+        "baseline": {
+          "samplesNs": [
+            1658.499,
+            1686.45,
+            1852.252
+          ],
+          "medianNs": 1686.45,
+          "minNs": 1658.499,
+          "maxNs": 1852.252
+        },
+        "candidate": {
+          "samplesNs": [
+            848.323,
+            913.758,
+            920.267
+          ],
+          "medianNs": 913.758,
+          "minNs": 848.323,
+          "maxNs": 920.267
+        },
+        "medianReductionPercent": 45.81766432446855
+      },
+      {
+        "name": "numeric-dense-enum-synthetic",
+        "baseline": {
+          "samplesNs": [
+            7080.948,
+            7377.676,
+            8025.903
+          ],
+          "medianNs": 7377.676,
+          "minNs": 7080.948,
+          "maxNs": 8025.903
+        },
+        "candidate": {
+          "samplesNs": [
+            4178.167,
+            4292.485,
+            4415.609
+          ],
+          "medianNs": 4292.485,
+          "minNs": 4178.167,
+          "maxNs": 4415.609
+        },
+        "medianReductionPercent": 41.81792477739604
+      },
+      {
+        "name": "missing-heavy-enum-synthetic",
+        "baseline": {
+          "samplesNs": [
+            1586.681,
+            1639.214,
+            1679.863
+          ],
+          "medianNs": 1639.214,
+          "minNs": 1586.681,
+          "maxNs": 1679.863
+        },
+        "candidate": {
+          "samplesNs": [
+            1193.916,
+            1228.562,
+            1239.054
+          ],
+          "medianNs": 1228.562,
+          "minNs": 1193.916,
+          "maxNs": 1239.054
+        },
+        "medianReductionPercent": 25.05176261305724
+      }
+    ],
+    "confirmationRunnerArchive": "validation/P-01-config-confirmation.ps1.txt",
+    "confirmationRunnerSha256": "6484FEE7F9FF62E3706A8CBC3382281727317A7B2A2D885D9A55AB776FF63F50",
+    "reproduceConfirmation": "Copy the archived runner to build/perf/P01-confirm-config.ps1, then execute it with the frozen p01-baseline/p01-candidate directories present."
+  }
+}

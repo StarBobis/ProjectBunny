@@ -25,6 +25,7 @@
 
 #include <Windows.h>
 #include <stdio.h>
+#include <wchar.h>
 #include <Shlobj.h>
 #include <dxgi1_2.h>
 
@@ -78,7 +79,7 @@ void InitializeDLL()
 		// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy
 		// to open active files.
 		int unbuffered = -1;
-		if (GetPrivateProfileInt(L"Logging", L"unbuffered", 0, dir))
+		if (LogFile && GetPrivateProfileInt(L"Logging", L"unbuffered", 0, dir))
 		{
 			unbuffered = setvbuf(LogFile, NULL, _IONBF, 0);
 			LogInfo("  unbuffered=1  return: %d\n", unbuffered);
@@ -278,43 +279,97 @@ typedef HRESULT(WINAPI *tCreateDXGIFactory2)(UINT Flags, REFIID riid, void **ppF
 static tCreateDXGIFactory2 _CreateDXGIFactory2 = nullptr;
 
 
-static void InitDXGI()
+static bool g_dxgiReady = false;
+static DWORD g_dxgiLoadError = ERROR_SUCCESS;
+static INIT_ONCE g_dxgiInitOnce = INIT_ONCE_STATIC_INIT;
+
+// The forwarders are defined below; their addresses are the only reliable way
+// to recognize that System32\dxgi.dll resolved back to this very module.
+HRESULT WINAPI CreateDXGIFactory(REFIID riid, void **ppFactory);
+HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory);
+
+static HRESULT DxgiInitFailure()
 {
-	if (hDXGI) return;
+	return HRESULT_FROM_WIN32(g_dxgiLoadError ? g_dxgiLoadError : ERROR_MOD_NOT_FOUND);
+}
+
+static BOOL CALLBACK InitDXGICallback(PINIT_ONCE, PVOID, PVOID*)
+{
 	InitializeDLL();
 
 	// It's OK to get the system dxgi.dll here, as most games do not ship with
 	// a dxgi.dll.  This might interfere with other modding tools though.
-	wchar_t sysDir[MAX_PATH];
-	SHGetFolderPath(0, CSIDL_SYSTEM, 0, SHGFP_TYPE_CURRENT, sysDir);
-	wcscat(sysDir, L"\\dxgi.dll");
-	hDXGI = LoadLibrary(sysDir);	
-    if (hDXGI == NULL)
-    {
-        LogInfo("\n *** LoadLibrary on System32 dxgi.dll failed *** \n\n");
-        
-        return;
-    }
+	wchar_t sysDir[MAX_PATH] = {};
+	HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_SYSTEM, nullptr, SHGFP_TYPE_CURRENT, sysDir);
+	if (FAILED(hr))
+	{
+		g_dxgiLoadError = ERROR_PATH_NOT_FOUND;
+		LogInfo("\n *** cannot locate System32: hr=%08x ***\n\n", hr);
+		return TRUE;
+	}
+	if (wcscat_s(sysDir, L"\\dxgi.dll") != 0)
+	{
+		g_dxgiLoadError = ERROR_BUFFER_OVERFLOW;
+		LogInfo("\n *** System32 path too long ***\n\n");
+		return TRUE;
+	}
 
-	_D3DKMTQueryAdapterInfo = (tD3DKMTQueryAdapterInfo) GetProcAddress(hDXGI, "D3DKMTQueryAdapterInfo");
-	_OpenAdapter10 = (tOpenAdapter10) GetProcAddress(hDXGI, "OpenAdapter10");
-	_OpenAdapter10_2 = (tOpenAdapter10_2) GetProcAddress(hDXGI, "OpenAdapter10_2");
-	_D3DKMTGetDeviceState = (tD3DKMTGetDeviceState) GetProcAddress(hDXGI, "D3DKMTGetDeviceState");
-	_D3DKMTOpenAdapterFromHdc = (tD3DKMTOpenAdapterFromHdc) GetProcAddress(hDXGI, "D3DKMTOpenAdapterFromHdc");
-	_D3DKMTOpenResource = (tD3DKMTOpenResource) GetProcAddress(hDXGI, "D3DKMTOpenResource");
-	_D3DKMTQueryResourceInfo = (tD3DKMTQueryResourceInfo) GetProcAddress(hDXGI, "D3DKMTQueryResourceInfo");
-	_DXGIDumpJournal = (tDXGIDumpJournal) GetProcAddress(hDXGI, "DXGIDumpJournal");
-	_DXGID3D10CreateDevice = (tDXGID3D10CreateDevice) GetProcAddress(hDXGI, "DXGID3D10CreateDevice");
-	_DXGID3D10CreateLayeredDevice = (tDXGID3D10CreateLayeredDevice) GetProcAddress(hDXGI, "DXGID3D10CreateLayeredDevice");
-	_DXGID3D10RegisterLayers = (tDXGID3D10RegisterLayers) GetProcAddress(hDXGI, "DXGID3D10RegisterLayers");
-	_DXGIReportAdapterConfiguration = (tDXGIReportAdapterConfiguration) GetProcAddress(hDXGI, "DXGIReportAdapterConfiguration");
-	_CreateDXGIFactory = (tCreateDXGIFactory) GetProcAddress(hDXGI, "CreateDXGIFactory");
-	_CreateDXGIFactory1 = (tCreateDXGIFactory1) GetProcAddress(hDXGI, "CreateDXGIFactory1");
+	HMODULE module = LoadLibraryW(sysDir);
+	if (module == nullptr)
+	{
+		g_dxgiLoadError = GetLastError();
+		LogInfo("\n *** LoadLibrary on %ls failed: %lu ***\n\n", sysDir, g_dxgiLoadError);
+		return TRUE;
+	}
+
+	tCreateDXGIFactory create = (tCreateDXGIFactory) GetProcAddress(module, "CreateDXGIFactory");
+	tCreateDXGIFactory1 create1 = (tCreateDXGIFactory1) GetProcAddress(module, "CreateDXGIFactory1");
+
+	// System32\dxgi.dll resolving back to this module means the proxy itself was
+	// installed there.  Continuing would call our own export recursively until
+	// the stack overflows, so fail deterministically instead.  System32
+	// deployment remains unsupported; the module reference is intentionally kept.
+	if (create == &CreateDXGIFactory || create1 == &CreateDXGIFactory1)
+	{
+		g_dxgiLoadError = ERROR_NOT_SUPPORTED;
+		LogInfo("\n *** refusing to chain dxgi to itself: %ls ***\n\n", sysDir);
+		return TRUE;
+	}
+
+	_D3DKMTQueryAdapterInfo = (tD3DKMTQueryAdapterInfo) GetProcAddress(module, "D3DKMTQueryAdapterInfo");
+	_OpenAdapter10 = (tOpenAdapter10) GetProcAddress(module, "OpenAdapter10");
+	_OpenAdapter10_2 = (tOpenAdapter10_2) GetProcAddress(module, "OpenAdapter10_2");
+	_D3DKMTGetDeviceState = (tD3DKMTGetDeviceState) GetProcAddress(module, "D3DKMTGetDeviceState");
+	_D3DKMTOpenAdapterFromHdc = (tD3DKMTOpenAdapterFromHdc) GetProcAddress(module, "D3DKMTOpenAdapterFromHdc");
+	_D3DKMTOpenResource = (tD3DKMTOpenResource) GetProcAddress(module, "D3DKMTOpenResource");
+	_D3DKMTQueryResourceInfo = (tD3DKMTQueryResourceInfo) GetProcAddress(module, "D3DKMTQueryResourceInfo");
+	_DXGIDumpJournal = (tDXGIDumpJournal) GetProcAddress(module, "DXGIDumpJournal");
+	_DXGID3D10CreateDevice = (tDXGID3D10CreateDevice) GetProcAddress(module, "DXGID3D10CreateDevice");
+	_DXGID3D10CreateLayeredDevice = (tDXGID3D10CreateLayeredDevice) GetProcAddress(module, "DXGID3D10CreateLayeredDevice");
+	_DXGID3D10RegisterLayers = (tDXGID3D10RegisterLayers) GetProcAddress(module, "DXGID3D10RegisterLayers");
+	_DXGIReportAdapterConfiguration = (tDXGIReportAdapterConfiguration) GetProcAddress(module, "DXGIReportAdapterConfiguration");
 
 	// 8.1 and above, implemented in Win10 version of dxgi.dll
-	_CreateDXGIFactory2 = (tCreateDXGIFactory2) GetProcAddress(hDXGI, "CreateDXGIFactory2");
+	_CreateDXGIFactory2 = (tCreateDXGIFactory2) GetProcAddress(module, "CreateDXGIFactory2");
 
-	LogInfo("DXGI GetProcAddress for CreateDXGIFactory2: %p \n\n", _CreateDXGIFactory2);
+	_CreateDXGIFactory = create;
+	_CreateDXGIFactory1 = create1;
+
+	// Publish only after the whole table is filled.  Failure is a latched
+	// terminal state: every failure branch above returns TRUE from this
+	// callback, so InitOnce never retries and never logs twice.  If a future
+	// product needs to support late injection, return FALSE on failure to let
+	// InitOnce retry; that tradeoff is intentionally not taken here.
+	hDXGI = module;
+	g_dxgiReady = true;
+	LogInfo("DXGI chained to %ls (%p); CreateDXGIFactory2=%p\n\n", sysDir, hDXGI, _CreateDXGIFactory2);
+	return TRUE;
+}
+
+static bool InitDXGI()
+{
+	InitOnceExecuteOnce(&g_dxgiInitOnce, InitDXGICallback, nullptr, nullptr);
+	return g_dxgiReady;
 }
 
 
@@ -339,32 +394,36 @@ std::string UUIDtoString(REFIID id)
 
 HRESULT WINAPI D3DKMTQueryAdapterInfo(_D3DKMT_QUERYADAPTERINFO *info)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_D3DKMTQueryAdapterInfo == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_D3DKMTQueryAdapterInfo)(info);
 }
 
 HRESULT WINAPI OpenAdapter10(struct D3D10DDIARG_OPENADAPTER *adapter)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_OpenAdapter10 == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_OpenAdapter10)(adapter);
 }
 
 HRESULT WINAPI OpenAdapter10_2(struct D3D10DDIARG_OPENADAPTER *adapter)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_OpenAdapter10_2 == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_OpenAdapter10_2)(adapter);
 }
 
 void WINAPI DXGIDumpJournal(void (__stdcall *function)(const char *))
 {
-	InitDXGI();
+	if (!InitDXGI() || _DXGIDumpJournal == nullptr) return;
 	(*_DXGIDumpJournal)(function);
 }
 
 HRESULT WINAPI DXGID3D10CreateDevice(HMODULE d3d10core, IDXGIFactory *factory,
 	IDXGIAdapter *adapter, UINT flags, void *unknown0, void **device)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_DXGID3D10CreateDevice == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_DXGID3D10CreateDevice)(d3d10core, factory, adapter, flags, unknown0, device);
 }
 
@@ -373,25 +432,29 @@ HRESULT WINAPI DXGID3D10CreateDevice(HMODULE d3d10core, IDXGIFactory *factory,
 // internet can say, but this one is missing any interface info, and probably will not work.
 HRESULT WINAPI DXGID3D10CreateLayeredDevice(int a, int b, int c, int d, int e)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_DXGID3D10CreateLayeredDevice == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_DXGID3D10CreateLayeredDevice)(a, b, c, d, e);
 }
 
 HRESULT WINAPI DXGID3D10GetLayeredDeviceSize(const void *pLayers, UINT NumLayers)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_DXGID3D10GetLayeredDeviceSize == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_DXGID3D10GetLayeredDeviceSize)(pLayers, NumLayers);
 }
 
 HRESULT WINAPI DXGID3D10RegisterLayers(const struct dxgi_device_layer *layers, UINT layer_count)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_DXGID3D10RegisterLayers == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_DXGID3D10RegisterLayers)(layers, layer_count);
 }
 
 HRESULT WINAPI DXGIReportAdapterConfiguration(int a)
 {
-	InitDXGI();
+	if (!InitDXGI()) return DxgiInitFailure();
+	if (_DXGIReportAdapterConfiguration == nullptr) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 	return (*_DXGIReportAdapterConfiguration)(a);
 }
 
@@ -400,23 +463,43 @@ HRESULT WINAPI DXGIReportAdapterConfiguration(int a)
 
 HRESULT WINAPI CreateDXGIFactory(REFIID riid, void **ppFactory)
 {
-	InitDXGI();
+	if (!InitDXGI())
+	{
+		if (ppFactory) *ppFactory = nullptr;
+		return DxgiInitFailure();
+	}
+	if (_CreateDXGIFactory == nullptr)
+	{
+		if (ppFactory) *ppFactory = nullptr;
+		return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+	}
+
 	LogInfo("DXGI CreateDXGIFactory(%s) called \n", UUIDtoString(riid).c_str());
 
 	HRESULT hr = (*_CreateDXGIFactory)(riid, ppFactory);
 
-	LogInfo("  return: %x, factory = %p \n", hr, *ppFactory);
+	LogInfo("  return: %x, factory = %p \n", hr, ppFactory ? *ppFactory : nullptr);
 	return hr;
 }
 
 HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory)
 {
-	InitDXGI();
+	if (!InitDXGI())
+	{
+		if (ppFactory) *ppFactory = nullptr;
+		return DxgiInitFailure();
+	}
+	if (_CreateDXGIFactory1 == nullptr)
+	{
+		if (ppFactory) *ppFactory = nullptr;
+		return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+	}
+
 	LogInfo("DXGI CreateDXGIFactory1(%s) called \n", UUIDtoString(riid).c_str());
 
 	HRESULT hr = (*_CreateDXGIFactory1)(riid, ppFactory);
 
-	LogInfo("  return: %x, factory = %p \n", hr, *ppFactory);
+	LogInfo("  return: %x, factory = %p \n", hr, ppFactory ? *ppFactory : nullptr);
 	return hr;
 }
 
@@ -428,7 +511,12 @@ HRESULT WINAPI CreateDXGIFactory2(
 	REFIID riid,
 	_Out_ void   **ppFactory)
 {
-	InitDXGI();
+	if (!InitDXGI())
+	{
+		if (ppFactory) *ppFactory = nullptr;
+		return DxgiInitFailure();
+	}
+
 	LogInfo("DXGI CreateDXGIFactory2(%s) called Flags = %d \n", UUIDtoString(riid).c_str(), Flags);
 
 	// If the _CreateDXGIFactory2 function is still nullptr, that means we
@@ -439,14 +527,19 @@ HRESULT WINAPI CreateDXGIFactory2(
 	// dxgi.dll loader that works on all Win7 and Win10.
 	if (_CreateDXGIFactory2 == nullptr)
 	{
+		if (_CreateDXGIFactory == nullptr)
+		{
+			if (ppFactory) *ppFactory = nullptr;
+			return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+		}
 		HRESULT hr = (*_CreateDXGIFactory)(riid, ppFactory);
-		LogInfo("  _CreateDXGIFactory returns %x factory = %p \n", hr, *ppFactory);
+		LogInfo("  _CreateDXGIFactory returns %x factory = %p \n", hr, ppFactory ? *ppFactory : nullptr);
 		return hr;
 	}
 
 	HRESULT hr = (*_CreateDXGIFactory2)(Flags, riid, ppFactory);
 
-	LogInfo("  return: %x, factory = %p \n", hr, *ppFactory);
+	LogInfo("  return: %x, factory = %p \n", hr, ppFactory ? *ppFactory : nullptr);
 	return hr;
 }
 
@@ -641,25 +734,29 @@ HRESULT WINAPI CreateDXGIFactory(REFIID riid, void **ppFactory)
 
 int WINAPI D3DKMTGetDeviceState(int a)
 {
-	InitDXGI();
+	if (!InitDXGI()) return E_FAIL;
+	if (_D3DKMTGetDeviceState == nullptr) return E_FAIL;
 	return (*_D3DKMTGetDeviceState)(a);
 }
 
 int WINAPI D3DKMTOpenAdapterFromHdc(int a)
 {
-	InitDXGI();
+	if (!InitDXGI()) return E_FAIL;
+	if (_D3DKMTOpenAdapterFromHdc == nullptr) return E_FAIL;
 	return (*_D3DKMTOpenAdapterFromHdc)(a);
 }
 
 int WINAPI D3DKMTOpenResource(int a)
 {
-	InitDXGI();
+	if (!InitDXGI()) return E_FAIL;
+	if (_D3DKMTOpenResource == nullptr) return E_FAIL;
 	return (*_D3DKMTOpenResource)(a);
 }
 
 int WINAPI D3DKMTQueryResourceInfo(int a)
 {
-	InitDXGI();
+	if (!InitDXGI()) return E_FAIL;
+	if (_D3DKMTQueryResourceInfo == nullptr) return E_FAIL;
 	return (*_D3DKMTQueryResourceInfo)(a);
 }
 

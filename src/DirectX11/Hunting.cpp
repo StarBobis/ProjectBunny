@@ -1,5 +1,6 @@
 #include "ComScope.h"
 #include "Hunting.h"
+#include "ShaderHeader.h"
 
 #include <string>
 #include <sstream>
@@ -341,6 +342,7 @@ static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 
 	ParseParameters p;
 	p.bytecode = pShaderByteCode->GetBufferPointer();
+	p.bytecodeSize = pShaderByteCode->GetBufferSize();
 	p.decompiled = asmText->c_str();
 	p.decompiledSize = asmText->size();
 	p.ZeroOutput = false;
@@ -570,6 +572,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 		{
 			LPVOID errMsg = pErrorMsgs->GetBufferPointer();
 			SIZE_T errSize = pErrorMsgs->GetBufferSize();
+			const SIZE_T textSize = errSize ? errSize - 1 : 0;
 			LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
 			if (FAILED(ret))
 			{
@@ -581,11 +584,11 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 				// If there are only warnings they go to the
 				// log file, because it's too noisy to send all
 				// these to the overlay.
-				fwrite(errMsg, 1, errSize - 1, LogFile);
+				if (textSize) fwrite(errMsg, 1, textSize, LogFile);
 			}
 			LogInfo("---------------------------------------------- END ----------------------------------------------\n");
 			if (errText)
-				*errText = string((char*)pErrorMsgs->GetBufferPointer(), pErrorMsgs->GetBufferSize() - 1);
+				*errText = textSize ? string((char*)errMsg, textSize) : string();
 			pErrorMsgs->Release();
 		}
 
@@ -640,8 +643,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 
 	// For success, let's add the first line of text from the file to the OriginalShaderInfo,
 	// so the ShaderHacker can edit the line and reload and have it live.
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-	headerLine = utf8_to_utf16.from_bytes(srcData.data(), strchr(srcData.data(), '\n'));
+	headerLine = ReadShaderHeaderLine(srcData.data(), srcData.size());
 
 	// pCode on return == NULL for error cases, valid if made it this far.
 	*pCode = pByteCode;
@@ -696,6 +698,12 @@ static bool ReloadShader(wchar_t *shaderPath, wchar_t *fileName, HackerDevice *d
 
 	// Extract hash from first 16 characters of file name so we can look up details by hash
 	wstring ws = fileName;
+	if (ws.size() < 16 || ws.find_first_not_of(L"0123456789abcdefABCDEF") < 16) {
+		LogInfo("> invalid shader hash in filename: %ls\n", fileName);
+		if (errText)
+			*errText = "Invalid shader hash in filename";
+		return false;
+	}
 	hash = stoull(ws.substr(0, 16), NULL, 16);
 
 	// This is probably unnecessary, because we modify already existing map entries, but
@@ -1165,7 +1173,6 @@ static void ReloadFixes(HackerDevice *device, void *private_data)
 
 		// Strict file name format, to allow renaming out of the way. 
 		// "00aa7fa12bbf66b3-ps_replace.txt" or "00aa7fa12bbf66b3-vs.txt"
-		// Will still blow up if the first characters are not hex.
 		swprintf_s(fileName, MAX_PATH, L"%ls\\????????????????-??*.txt", G->SHADER_PATH);
 		HANDLE hFind = FindFirstFile(fileName, &findFileData);
 		if (hFind != INVALID_HANDLE_VALUE)
@@ -1268,7 +1275,12 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 	wcscpy(G->ANALYSIS_PATH, path);
 
 	G->cur_analyse_options = G->def_analyse_options;
-	G->frame_analysis_seen_rts.clear();
+	{
+		// FrameAnalysisClearRT/ClearUAV run on render threads. Publishing a new
+		// session must not clear the shared set while one of them inserts.
+		CriticalSectionGuard(&G->mCriticalSection);
+		G->frame_analysis_seen_rts.clear();
+	}
 	G->analyse_frame_no = 1;
 	G->analyse_frame = true;
 }

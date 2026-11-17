@@ -1,0 +1,369 @@
+{
+  "item": "F-200",
+  "mode": "read-only document/source/CMake inventory",
+  "sourceView": "b worktree: HEAD3dd50ab plus frozen candidates, none of which modify these17 production files",
+  "originalList": "任务-20261114-1330/汇总/修订前备份-20261115/FINDINGS-LEDGER.md F200 row",
+  "counts": {
+    "unusedEntries": 0,
+    "dx12Only": 4,
+    "dx11Core": 8,
+    "entries": 17,
+    "compilerProxy": 5
+  },
+  "bindingBasis": "CMake common definitions plus inspected installed UCRT/WinUser/Shlwapi declarations and actual destination array types; no runtime/binary probe",
+  "runtimeValidated": false,
+  "sourceModified": false,
+  "rows": [
+    {
+      "id": 1,
+      "original": "src/DirectX11/CommandList.cpp:2206-2210",
+      "current": "CommandList.cpp:2152,2215-2218 (同函数回退2223-2228)",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:23,143",
+      "caller": "CustomShader::compile",
+      "arrays": "wchar_t wpath[MAX_PATH],cache_path[MAX_PATH]；MAX_PATH=260",
+      "api": "GetModuleFileNameW; wcscat(wpath,namespace_path); wcscat(wpath,filename)",
+      "binding": "已知数组→MSVC wcscat_s模板重载，容量260；非原始无容量wcscat",
+      "returns": "namespace分支未检查GetModuleFileName；fallback检查0；未检查>=MAX_PATH；wcscat返回值未检查",
+      "semantics": "优先DLL目录+来源namespace路径+filename；未找到则DLL目录+filename；filename=null字符串有既有特殊分支",
+      "scope": "DX11核心，真实适用",
+      "classification": "有容量CRT拼接；路径发现/失败处理仍待证"
+    },
+    {
+      "id": 2,
+      "original": "src/DirectX11/IniHandler.cpp:2211-2212",
+      "current": "IniHandler.cpp:2180,2209-2216 (回退2221-2223)",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:49,143",
+      "caller": "ParseResourceSection",
+      "arrays": "wchar_t path[MAX_PATH]；260",
+      "api": "GetModuleFileNameW; wcscat(path,namespace_path); wcscat(path,setting)",
+      "binding": "两次wcscat均已知path数组→wcscat_s容量260",
+      "returns": "GetModuleFileName返回未检查；目录分隔符查找结果未显式检查；wcscat返回未检查",
+      "semantics": "Resource filename先相对来源namespace目录定位，后相对DLL目录；结果保存到custom_resource->filename",
+      "scope": "DX11核心，真实适用",
+      "classification": "有容量CRT拼接；结果路径/失败处理待证"
+    },
+    {
+      "id": 3,
+      "original": "src/DirectX11/IniHandler.cpp:4639-4640",
+      "current": "IniHandler.cpp:4651,4655-4660",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:49,143",
+      "caller": "LoadConfigFile",
+      "arrays": "wchar_t iniFile[MAX_PATH],logFilename[MAX_PATH]；各260",
+      "api": "GetModuleFileNameW; wcscpy(logFilename,iniFile); wcscat(iniFile,INI_FILENAME); wcscat(logFilename,d3d11_log.txt)",
+      "binding": "复制及两次追加均已知数组→对应_s模板，容量260",
+      "returns": "GetModuleFileName为0走DoubleBeepExit；未检查>=MAX_PATH；复制/追加返回未检查",
+      "semantics": "从DLL目录分别构造d3dx.ini及d3d11_log.txt，再交InitializeLogging等",
+      "scope": "DX11核心，真实适用",
+      "classification": "有容量CRT拼接；不是原报告所称一概无界写"
+    },
+    {
+      "id": 4,
+      "original": "src/DirectX11/ShaderRegex.cpp:491-492",
+      "current": "ShaderRegex.cpp:477,485,488,491-492 (同suffix后续544)",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:60,143",
+      "caller": "HackerContext.cpp:625→load_shader_regex_cache",
+      "arrays": "wchar_t path[MAX_PATH]；260；suffix为size_t",
+      "api": "swprintf_s(path,MAX_PATH,...); wcscpy_s(path+suffix,MAX_PATH-suffix,dat)",
+      "binding": "显式有容量_s；后续目标是派生指针并非数组模板推导",
+      "returns": "swprintf_s的int结果直接保存size_t未校验；wcscpy_s返回未检查；之后才检查CreateFile/ReadFile结果",
+      "semantics": "缓存目录+hash+stage+_regex.，先dat元数据；有效patched元数据时用同suffix换bin",
+      "scope": "DX11核心，真实适用",
+      "classification": "格式化返回值→后续偏移/容量链，不能当成所有_s均安全或原始无界调用"
+    },
+    {
+      "id": 5,
+      "original": "src/DirectX12/Config/DX12ConfigLoader.h:73",
+      "current": "DX12ConfigLoader.h:64-75",
+      "target": "DirectX12/d3d12.dll",
+      "cmake": "src/DirectX12/CMakeLists.txt:85,217；由DX12ModRuntimeInternal/ResourceLifetime包含",
+      "caller": "Bunny::MigotoIniLoaderPath::JoinPath→include递归/文件目录遍历等",
+      "arrays": "wchar_t buffer[MAX_PATH]；260",
+      "api": "wcsncpy_s(buffer,base,_TRUNCATE); PathAppendW(buffer,path)",
+      "binding": "wcsncpy_s本身带数组容量；PathAppendW是Shlwapi固定MAX_PATH契约，不是CRT模板",
+      "returns": "wcsncpy_s返回未检查；PathAppendW BOOL未检查",
+      "semantics": "空path返回base；绝对path直接返回原wstring；相对path才构造base+path",
+      "scope": "仅DX12，非本轮DX11源码",
+      "classification": "截断/失败传播待证；不等同wsprintfW"
+    },
+    {
+      "id": 6,
+      "original": "src/DirectX12/Core/Diag/DX12Diag.h:1032",
+      "current": "DX12Diag.h:1014-1041；Resources/DX12RuntimeControl.h:113调用Open",
+      "target": "DirectX12/d3d12.dll，DX12_RELEASE_TIMING分支",
+      "cmake": "src/DirectX12/CMakeLists.txt:61,195-208,217",
+      "caller": "DX12DiagLog::Open",
+      "arrays": "wchar_t path[MAX_PATH],logPath[MAX_PATH],historyPath[MAX_PATH]；各260",
+      "api": "GetModuleFileNameW; wsprintfW(logPath,...); swprintf_s(historyPath,...); PathAppendW(path,...)",
+      "binding": "wsprintfW为Win32格式化API，无目标容量参数，不受CRT标准名重载保护；historyPath swprintf_s是安全数组形式",
+      "returns": "GetModuleFileName检查0不检查>=MAX_PATH；wsprintfW/历史格式化/PathAppend返回未检查；_wfsopen失败检查",
+      "semantics": "DLL目录构造当前日志与时间戳历史日志；非TIMING分支提前返回，不进入此段",
+      "scope": "仅DX12 TIMING，非DX11；plain Release不编此分支",
+      "classification": "有容量与无目标容量调用混合，不能统一归类"
+    },
+    {
+      "id": 7,
+      "original": "src/DirectX12/ModRuntime/DX12ModRuntimeLoad.cpp:1679-1685",
+      "current": "DX12ModRuntimeLoad.cpp:1672-1690",
+      "target": "DirectX12/d3d12.dll",
+      "cmake": "src/DirectX12/CMakeLists.txt:139,217",
+      "caller": "ResolveResourcePath→ResolveResourcePathLocked/资源加载",
+      "arrays": "wchar_t path[MAX_PATH],combined[MAX_PATH]；各260",
+      "api": "wcsncpy_s(...,_TRUNCATE); PathIsRelativeW; PathAppendW",
+      "binding": "显式安全复制+Shlwapi路径API",
+      "returns": "两次wcsncpy_s返回、PathAppendW BOOL均未检查",
+      "semantics": "空filename为空；绝对路径返回受限copy；相对路径选config.sourceDir或root/baseDir，rootFallback可强制root",
+      "scope": "仅DX12，非本轮DX11源码",
+      "classification": "截断/拼接结果处理待证"
+    },
+    {
+      "id": 8,
+      "original": "src/DirectX12/Proxy/D3D12ProcessGate.h:95",
+      "current": "D3D12ProcessGate.h:30-42,88-113",
+      "target": "DirectX12/d3d12.dll",
+      "cmake": "src/DirectX12/CMakeLists.txt:12,217；DX12Hooks.h:38包含",
+      "caller": "D3D12ProcessGateUtils::Evaluate→ReadPaths",
+      "arrays": "decision的modulePath/moduleDirectory/processPath/processDirectory/configPath等成员数组均MAX_PATH=260，初始化为零",
+      "api": "GetModuleFileNameW两次；wcsncpy_s带MAX_PATH与_TRUNCATE；PathAppendW(configPath,d3dx.ini)",
+      "binding": "复制为显式安全CRT；PathAppendW是固定MAX_PATH契约",
+      "returns": "GetModuleFileName检查0不检查>=MAX_PATH；复制/PathAppend返回未检查；外层Evaluate检查ReadPaths bool",
+      "semantics": "分别取得DLL与EXE目录，以DLL目录定位d3dx.ini并用于图形代理目标配置判断",
+      "scope": "仅DX12，非本轮DX11源码",
+      "classification": "返回成功与路径完整性是不同检查，待证"
+    },
+    {
+      "id": 9,
+      "original": "src/DirectX11/D3D11Wrapper.cpp:422",
+      "current": "D3D11Wrapper.cpp:381,410-422",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:25,143",
+      "caller": "InitializeD3D11Proxy，经InitD311",
+      "arrays": "wchar_t sysDir[MAX_PATH]={0}；260",
+      "api": "GetModuleFileNameW; wcscat(sysDir,G->CHAIN_DLL_PATH)",
+      "binding": "已知数组→wcscat_s模板容量260",
+      "returns": "GetModuleFileName检查0走既有退出处理，不检查>=MAX_PATH；wcscat返回未检查；后续LoadLibrary结果有检查",
+      "semantics": "proxy_d3d11链式加载时先尝试DLL目录+配置路径，失败再尝试配置原路径；该分支会关闭load_library_redirect",
+      "scope": "DX11核心，真实适用",
+      "classification": "有容量CRT；拼接失败与原有两级加载语义不能混同"
+    },
+    {
+      "id": 10,
+      "original": "src/D3DCompiler/d3dcWrapper.cpp:62",
+      "current": "d3dcWrapper.cpp:25,56-62",
+      "target": "D3DCompiler_46→d3dcompiler_47.dll 独立组件",
+      "cmake": "src/D3DCompiler_46/CMakeLists.txt:4-6,26-31；根CMakeLists.txt:35",
+      "caller": "导出D3DCompile等→InitC46(:292)→InitializeDLL",
+      "arrays": "wchar_t val[MAX_PATH]；260；SHADER_PATH为static wchar_t[260]",
+      "api": "GetModuleFileNameW(0,val,...); wcscat(val,SHADER_PATH)",
+      "binding": "已知val数组→wcscat_s模板容量260",
+      "returns": "GetModuleFileName返回和wcscat返回均未检查；CreateDirectory返回也未检查",
+      "semantics": "读取EXE目录下d3dx.ini的storage_directory，以EXE目录前缀构造存储目录；不是按编译器DLL目录",
+      "scope": "实际编入的编译代理，属于DX11组件审查范围；DX12也可调用此独立代理",
+      "classification": "有容量CRT；不得因src/D3DCompiler无独立CMake就称死代码"
+    },
+    {
+      "id": 11,
+      "original": "src/D3DCompiler/d3dcWrapper.cpp:63",
+      "current": "d3dcWrapper.cpp:19,63",
+      "target": "D3DCompiler_46→d3dcompiler_47.dll 独立组件",
+      "cmake": "src/D3DCompiler_46/CMakeLists.txt:4-6,26-31",
+      "caller": "InitializeDLL，接上一个站点",
+      "arrays": "static wchar_t SHADER_PATH[MAX_PATH]={0}；260",
+      "api": "wcscpy(SHADER_PATH,val)",
+      "binding": "已知全局数组→wcscpy_s模板容量260",
+      "returns": "复制返回未检查，输入val来自上一拼接链",
+      "semantics": "将已组合存储目录写回代理全局；供随后导出/替换文件定位使用",
+      "scope": "实际编译器组件，非死代码",
+      "classification": "安全模板复制；前一链失败状态另论"
+    },
+    {
+      "id": 12,
+      "original": "src/D3DCompiler/d3dcWrapper.cpp:452",
+      "current": "d3dcWrapper.cpp:416,438-453",
+      "target": "D3DCompiler_46→d3dcompiler_47.dll 独立组件",
+      "cmake": "src/D3DCompiler_46/CMakeLists.txt:4-6,26-31",
+      "caller": "D3DCompile导出；原编译S_OK、输出blob有效、非wrapper1349且SHADER_PATH非空",
+      "arrays": "wchar_t val[MAX_PATH],entrypoint[MAX_PATH],target[MAX_PATH]；各260",
+      "api": "mbstowcs转target；wsprintf(val,L...SHADER_PATH+hash+target+sourceHash...)",
+      "binding": "UNICODE使wsprintf→wsprintfW，Win32 API，无目标容量参数；不是MSVC安全CRT模板",
+      "returns": "mbstowcs结果和wsprintf返回未检查；后续文件打开返回有检查",
+      "semantics": "先生成源代码导出文件名；是否真的导出由EXPORT_SHADERS决定，但此wsprintf在该条件之前执行",
+      "scope": "实际编译器组件，DX11方案有适用代码",
+      "classification": "无目标容量参数的格式化站点；本轮无动态故障试验"
+    },
+    {
+      "id": 13,
+      "original": "src/D3DCompiler/d3dcWrapper.cpp:466",
+      "current": "d3dcWrapper.cpp:464-468",
+      "target": "D3DCompiler_46→d3dcompiler_47.dll 独立组件",
+      "cmake": "src/D3DCompiler_46/CMakeLists.txt:4-6,26-31",
+      "caller": "D3DCompile导出，存储目录非空且EXPORT_SHADERS=false",
+      "arrays": "同一wchar_t val[MAX_PATH]；260",
+      "api": "wsprintf(val,包含*replace.txt的模式)",
+      "binding": "wsprintf→wsprintfW Win32，无目标容量参数",
+      "returns": "wsprintf返回未检查；FindFirstFile结果检查INVALID_HANDLE_VALUE",
+      "semantics": "按编译字节码hash/profile/sourceHash枚举本地替换文件",
+      "scope": "实际编译器组件，DX11方案有适用代码",
+      "classification": "Win32格式化与后续文件枚举分开"
+    },
+    {
+      "id": 14,
+      "original": "src/D3DCompiler/d3dcWrapper.cpp:471",
+      "current": "d3dcWrapper.cpp:469-477",
+      "target": "D3DCompiler_46→d3dcompiler_47.dll 独立组件",
+      "cmake": "src/D3DCompiler_46/CMakeLists.txt:4-6,26-31",
+      "caller": "D3DCompile导出，FindFirstFile已找到替换项",
+      "arrays": "wchar_t val[MAX_PATH]；260；findFileData.cFileName为Win32固定名称数组",
+      "api": "wsprintf(val,L%ls\\\\%ls,SHADER_PATH,findFileData.cFileName)",
+      "binding": "wsprintf→wsprintfW Win32，无目标容量参数",
+      "returns": "wsprintf返回未检查；Find handle关闭；后续_wfopen_s结果检查",
+      "semantics": "将枚举返回的文件名与存储目录组合后读取替换HLSL",
+      "scope": "实际编译器组件，DX11方案有适用代码",
+      "classification": "Win32格式化，非CRT安全重载"
+    },
+    {
+      "id": 15,
+      "original": "src/DirectX11/ShaderRegex.cpp:589",
+      "current": "ShaderRegex.cpp:566-589，产生suffix在577",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:60,143",
+      "caller": "apply_shader_regex→save_shader_regex_cache_meta；路径非空且CACHE_SHADERS",
+      "arrays": "wchar_t path[MAX_PATH]；260；suffix为size_t",
+      "api": "swprintf_s产生suffix；wcscpy_s(path+suffix,MAX_PATH-suffix,bin)",
+      "binding": "显式安全函数，但派生目标和容量来自未校验格式化返回值",
+      "returns": "格式化结果未校验；复制返回未检查；DeleteFile结果检查并可提前返回",
+      "semantics": "写新元数据之前先删除旧bin以防陈旧缓存被载入",
+      "scope": "DX11核心，真实适用",
+      "classification": "返回值/派生参数链，非无容量printf"
+    },
+    {
+      "id": 16,
+      "original": "src/DirectX11/ShaderRegex.cpp:593",
+      "current": "ShaderRegex.cpp:577,593-596",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:60,143",
+      "caller": "同save_shader_regex_cache_meta的CACHE_SHADERS分支",
+      "arrays": "同path[260]与size_t suffix",
+      "api": "wcscpy_s(path+suffix,MAX_PATH-suffix,dat)",
+      "binding": "显式_s，仍沿用未校验suffix",
+      "returns": "复制返回未检查；wfopen_ensuring_access后检查f非空",
+      "semantics": "为缓存组匹配结果构造dat元数据文件名",
+      "scope": "DX11核心，真实适用",
+      "classification": "同一producer链的另一次扩展名替换"
+    },
+    {
+      "id": 17,
+      "original": "src/DirectX11/ShaderRegex.cpp:609",
+      "current": "ShaderRegex.cpp:577,608-613",
+      "target": "DirectX11/d3d11.dll",
+      "cmake": "src/DirectX11/CMakeLists.txt:60,143",
+      "caller": "save_shader_regex_cache_meta的EXPORT_FIXED分支",
+      "arrays": "同path[260]与size_t suffix",
+      "api": "wcscpy_s(path+suffix,MAX_PATH-suffix,txt)",
+      "binding": "显式_s，仍沿用未校验suffix",
+      "returns": "复制返回未检查；后续打开/删除结果各自处理",
+      "semantics": "导出修补ASM文本或清理未匹配的旧txt输出",
+      "scope": "DX11核心，真实适用",
+      "classification": "同一producer链，不是独立已运行故障证明"
+    }
+  ],
+  "dispositionAppendix": {
+    "mode": "只读依赖与合同建议，非源码修改或运行验证",
+    "classification": "容量保护状态与实施依赖是两个维度，六个已安全CRT位置仍可能依赖初始化/登记合同，不能把标签当成免修",
+    "groups": [
+      {
+        "ids": [
+          1
+        ],
+        "capacityClass": "已有安全CRT，仍需明确诊断/失败传播",
+        "dependencyClass": "可独立审定局部失败合同",
+        "existingFailure": "CustomShader::compile的bool约定是false成功/缓存命中/null解绑，true为错误；ParseCustomShaderSections累计failed后跳过该对象后续命令解析，不erase已登记对象",
+        "preserved": "不是替换游戏原shader的接口，不可自动宣称保留原shader；路径失败应遵循custom shader的现有错误合同",
+        "dependency": "不直接依赖F107或F271，但正常编译仍会使用现有编译器组件；namespace首选与模块相对fallback须保持区别",
+        "decision": "现有_s有容量，不必为了这项统一改成动态字符串或截断；构造失败与文件不存在不是同一事实，需Root确定是否应进入第二级定位"
+      },
+      {
+        "ids": [
+          2
+        ],
+        "capacityClass": "已有安全CRT，不能免修",
+        "dependencyClass": "配置登记/对象寿命策略需先明确",
+        "existingFailure": "ParseResourceSection在解析filename之前已通过customResources[]登记对象；空Resource声明本身合法，函数还被资源池/模板路径使用",
+        "preserved": "当前没有因路径问题自动保留旧resource的完整保证；运行时空资源也不等于维持原绑定",
+        "dependency": "非F107/F271直接依赖；需要明确失败字段与已登记资源对象的状态/引用合同",
+        "decision": "不能凭局部路径错误erase对象或随意返回nullptr，也不能把被截短路径作为正常filename发布；Root先审此合同再安排独立项"
+      },
+      {
+        "ids": [
+          3
+        ],
+        "capacityClass": "已有安全CRT，初始化失败语义未由容量保护解决",
+        "dependencyClass": "依赖主模块配置/重载发布合同",
+        "existingFailure": "LoadConfigFile为void；主模块InitializeDLL调用后继续目标检查/初始化。EarlyConfigRegistries只恢复variables/resources/pools三个登记集合，不是完整配置事务；ReloadConfig在调用前已清理key bindings等",
+        "preserved": "不能简单early return后宣称旧配置、旧按键与所有全局状态完整保留",
+        "dependency": "应遵守现有ProxyConfigurationState与InitializationGate；不是把F107/F271直接列为此站点前置",
+        "decision": "Root需要区分配置加载错误与既有目标不匹配但仍转发的语义，不能把新失败当成READY"
+      },
+      {
+        "ids": [
+          9
+        ],
+        "capacityClass": "已有安全CRT，保留链式加载失败语义",
+        "dependencyClass": "可在现有DX11初始化门控内单独审定，不需等待F271",
+        "existingFailure": "InitializeD3D11Proxy已有局部candidate、mandatory creation exports验证与false返回；InitD311通过InitializationGate运行并捕获异常。READY后通常不重复加载",
+        "preserved": "路径失败发生在candidate发布前；首次加载没有旧provider可保留。不能改变已健康发布的provider或全局函数表",
+        "dependency": "遵守现有DX11 owner/retry/发布次序；F271是另一个DXGI目标的初始化问题，不等同此门控",
+        "decision": "必须保留既有模块相对路径尝试→配置原路径尝试的合法加载语义；不得混成任意系统库替代或部分就绪成功"
+      },
+      {
+        "ids": [
+          10,
+          11
+        ],
+        "capacityClass": "已有安全CRT，但位于初始化过程",
+        "dependencyClass": "与F107的编译器首次发布合同协调",
+        "existingFailure": "InitializeDLL为void且很早置gInitialized=true；InitC46仅以hC46非空作快路径，并逐个GetProcAddress；多个导出在InitC46返回后无条件调用函数指针",
+        "preserved": "这两个站点主要处于首次配置/存储目录初始化，此时不能假设provider已就绪；gInitialized不是整个函数表就绪证明",
+        "dependency": "若处置会中断首次初始化、改变重试或导致提前返回，必须与F107协调；F271无直接代码依赖",
+        "decision": "不能只在void初始化内部return并声称所有公开导出有了可靠失败结果；可选storage配置失败与必需provider加载失败必须分开由Root审定"
+      },
+      {
+        "ids": [
+          12,
+          13,
+          14
+        ],
+        "capacityClass": "Win32 wsprintfW无目标容量参数，需独立构造结果合同",
+        "dependencyClass": "可独立处理编译成功后的可选文件定位，通常不需先修F107/F271",
+        "existingFailure": "进入这三处之前本次原生_D3DCompile已返回S_OK并产出有效*ppCode。现有导出文件打开失败、未找到替换文件、替换文件打开失败，都保留当时ret及原blob；真正开始编译替换文件时则会释放原blob，这是另一阶段",
+        "preserved": "仅可选路径定位失败不应被混成原生编译失败，不应丢弃原blob或卸载provider；若已进入替换编译失败，不能冒称当前代码保留原blob",
+        "dependency": "本分支已成功调用本次provider，但不证明整个组件所有导出/初始化竞态已解决；F107仍独立保留",
+        "decision": "可以单项定义有界或动态的多片段文件名构造；不存在技术上只能选wstring的要求。必须保留原HRESULT/输出与FindFirstFile句柄的既有归属，不能以静默截断的文件名继续定位"
+      },
+      {
+        "ids": [
+          4,
+          15,
+          16,
+          17
+        ],
+        "capacityClass": "已有显式有容量_s，缺格式化返回值到后续参数的结果合同",
+        "dependencyClass": "可独立处理ShaderRegex磁盘缓存边界，不依赖F107/F271初始化",
+        "existingFailure": "load_shader_regex_cache默认返回NO_CACHE，HackerContext据此尝试正常分析；NO_MATCH与MATCH有不同跳过语义。save_shader_regex_cache_meta为可选void保存，已有打开/删除失败出口；替换shader在NativeCreate成功后才交换orig_info->replacement",
+        "preserved": "路径构造失败可沿现有缓存未命中/不写合同处理，但不能伪称匹配成功或不匹配。构造失败未进入磁盘操作时可要求不触碰旧文件；当前成功保存流程先删旧bin再写meta，并不等于全部I/O失败都原子保留旧缓存",
+        "dependency": "不需要F107/F271先行；不应把此项扩成regex组事务、shader重编译或缓存格式改造",
+        "decision": "现有有容量格式化可以配合正确结果分支，动态字符串不是必需。Root应先确认构造失败无删除/写入副作用，并保留有效内存shader/原始shader的既有绑定规则"
+      }
+    ],
+    "crossCutting": [
+      "没有任何站点在技术上只能使用动态字符串；多片段路径可选有界并明确失败或动态构造，不能静默改MAX_PATH/长路径支持政策。",
+      "F107直接关联编译器首次加载/函数表发布；三个编译成功后的可选文件站点可以单独处理，不需把所有F200都挂到它之后。",
+      "F271属于DXGI初始化，原17没有DXGI站点；不得把它当全部F200的统一硬前置，也不代表该高风险项已解决。",
+      "正常fallback路径与路径构造失败需区分；不能为了继续运行而加载另一个同名文件、切换不同provider或吞掉mod配置错误。"
+    ],
+    "dynamicValidationPerformed": false
+  }
+}

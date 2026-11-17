@@ -7,7 +7,9 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 
 
 def run(args, *, env=None, success=True):
@@ -17,6 +19,18 @@ def run(args, *, env=None, success=True):
     if not success:
         assert result.returncode, "invalid version unexpectedly succeeded"
     return result
+
+
+def read_generated_text(output, *, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return output.read_text(encoding="utf-8")
+        except PermissionError:
+            remaining = deadline - time.monotonic()
+            if os.name != "nt" or remaining <= 0:
+                raise
+            time.sleep(min(0.01, remaining))
 
 
 def main():
@@ -30,6 +44,12 @@ def main():
     except ValueError:
         raise AssertionError("version fixtures must remain inside workspace build") from None
     work.mkdir(parents=True, exist_ok=True)
+    reader_test = subprocess.run([sys.executable, str(Path(__file__).with_name("test-dx11-version-reader.py")),
+        "--source-root", str(root), "--work-dir", str(work)], capture_output=True, text=True, encoding="utf-8", timeout=15,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    if reader_test.returncode:
+        raise RuntimeError(reader_test.stderr or reader_test.stdout)
+    print(reader_test.stdout.strip())
     generator = root / "cmake" / "GenerateDX11Version.cmake"
     git, cmake = shutil.which("git"), shutil.which("cmake")
     assert git and cmake
@@ -50,7 +70,7 @@ def main():
                  f"-DGIT_EXECUTABLE={git_path}", f"-DVERSION_TAG={tag}",
                  f"-DBUILDER_OVERRIDE={builder}", "-DFALLBACK_VERSION=1.3.16",
                  "-P", str(generator)], env=env, success=success)
-            return output.read_text(encoding="utf-8") if success else ""
+            return read_generated_text(output) if success else ""
 
         def number(text, name):
             return int(re.search(rf"^#define {name} (\d+)$", text, re.M)[1])

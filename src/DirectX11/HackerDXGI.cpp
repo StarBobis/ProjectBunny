@@ -183,6 +183,8 @@ HackerSwapChain::HackerSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pDev
 	}
 }
 
+HackerSwapChain::~HackerSwapChain() = default;
+
 IDXGISwapChain1* HackerSwapChain::GetOrigSwapChain1()
 {
 	LogDebug("HackerSwapChain::GetOrigSwapChain returns %p\n", mOrigSwapChain1);
@@ -366,6 +368,7 @@ STDMETHODIMP HackerSwapChain::QueryInterface(THIS_
 	if (riid == __uuidof(IDXGISwapChain4))
 	{
 		LogInfo("***  returns E_NOINTERFACE as error for IDXGISwapChain4.\n");
+		reinterpret_cast<IUnknown*>(*ppvObject)->Release();
 		*ppvObject = NULL;
 		return E_NOINTERFACE;
 	}
@@ -552,19 +555,22 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		if (G->hunting == HUNTING_MODE_ENABLED) {
 			if (G->overlay_buffer_hash_lifetime >= 0)
 				PurgeStaleVisitedBufferHashes(mHackerDevice);
-			if (G->mSelectedIndexBufferPos == INT_MAX) {
-				G->mSelectedIndexBufferPos = G->mVisitedIndexBuffers.size() - 1;
-				G->mSelectedIndexBuffer = *std::prev(G->mVisitedIndexBuffers.end());
-			}
-			if (G->mSelectedVertexBufferPos == INT_MAX) {
-				G->mSelectedVertexBufferPos = G->mVisitedVertexBuffers.size() - 1;
-				G->mSelectedVertexBuffer = *std::prev(G->mVisitedVertexBuffers.end());
-			}
-			if (G->gResetSelectedVertexBufferSlotId) {
-				if (!G->mVisitedVertexBuffers.empty()) {
-					G->mSelectedVertexBuffer = *G->mVisitedVertexBuffers.begin();
-					G->mSelectedVertexBufferPos = 0;
-					G->gResetSelectedVertexBufferSlotId = false;
+			{
+				CriticalSectionGuard(&G->mCriticalSection);
+				if (G->mSelectedIndexBufferPos == INT_MAX && !G->mVisitedIndexBuffers.empty()) {
+					G->mSelectedIndexBufferPos = G->mVisitedIndexBuffers.size() - 1;
+					G->mSelectedIndexBuffer = *std::prev(G->mVisitedIndexBuffers.end());
+				}
+				if (G->mSelectedVertexBufferPos == INT_MAX && !G->mVisitedVertexBuffers.empty()) {
+					G->mSelectedVertexBufferPos = G->mVisitedVertexBuffers.size() - 1;
+					G->mSelectedVertexBuffer = *std::prev(G->mVisitedVertexBuffers.end());
+				}
+				if (G->gResetSelectedVertexBufferSlotId) {
+					if (!G->mVisitedVertexBuffers.empty()) {
+						G->mSelectedVertexBuffer = *G->mVisitedVertexBuffers.begin();
+						G->mSelectedVertexBufferPos = 0;
+						G->gResetSelectedVertexBufferSlotId = false;
+					}
 				}
 			}
 		}
@@ -973,29 +979,18 @@ STDMETHODIMP HackerSwapChain::GetRotation(THIS_
 // HackerUpscalingSwapChain, to provide post-process upscaling to arbitrary
 // resolutions.  Particularly good for 4K passive 3D.
 
-HackerUpscalingSwapChain::HackerUpscalingSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pHackerDevice, HackerContext *pHackerContext,
-	DXGI_SWAP_CHAIN_DESC* pFakeSwapChainDesc, UINT newWidth, UINT newHeight)
-	: HackerSwapChain(pSwapChain, pHackerDevice, pHackerContext),
-	mFakeBackBuffer(nullptr), mFakeSwapChain1(nullptr), mWidth(0), mHeight(0)
+HRESULT HackerUpscalingSwapChain::CreateFakeSwapChain(IDXGISwapChain1 *pOrigSwapChain,
+	HackerDevice *pHackerDevice, DXGI_SWAP_CHAIN_DESC *pFakeSwapChainDesc,
+	IDXGISwapChain1 **ppFakeSwapChain1, ID3D11Texture2D **ppFakeBackBuffer)
 {
-	CreateRenderTarget(pFakeSwapChainDesc);
+	if (!pOrigSwapChain || !pHackerDevice || !pFakeSwapChainDesc ||
+		!ppFakeSwapChain1 || !ppFakeBackBuffer)
+		return E_POINTER;
 
-	mWidth = newWidth;
-	mHeight = newHeight;
-}
+	*ppFakeSwapChain1 = nullptr;
+	*ppFakeBackBuffer = nullptr;
 
-
-HackerUpscalingSwapChain::~HackerUpscalingSwapChain()
-{
-	if (mFakeSwapChain1)
-		mFakeSwapChain1->Release();
-	if (mFakeBackBuffer)
-		mFakeBackBuffer->Release();
-}
-
-void HackerUpscalingSwapChain::CreateRenderTarget(DXGI_SWAP_CHAIN_DESC* pFakeSwapChainDesc)
-{
-	HRESULT hr;
+	HRESULT hr = S_OK;
 
 	switch (G->UPSCALE_MODE)
 	{
@@ -1018,61 +1013,92 @@ void HackerUpscalingSwapChain::CreateRenderTarget(DXGI_SWAP_CHAIN_DESC* pFakeSwa
 		fake_buffer_desc.CPUAccessFlags = 0;
 
 		LockResourceCreationMode();
-		hr = mHackerDevice->GetPassThroughOrigDevice1()->CreateTexture2D(&fake_buffer_desc, nullptr, &mFakeBackBuffer);
+		hr = pHackerDevice->GetPassThroughOrigDevice1()->CreateTexture2D(&fake_buffer_desc, nullptr, ppFakeBackBuffer);
 		UnlockResourceCreationMode();
+
+		if (FAILED(hr) || !*ppFakeBackBuffer)
+		{
+			if (*ppFakeBackBuffer)
+			{
+				(*ppFakeBackBuffer)->Release();
+				*ppFakeBackBuffer = nullptr;
+			}
+			LogOverlay(LOG_DIRE, "*** HackerUpscalingSwapChain::CreateFakeSwapChain() failed to create fake back buffer: %08x\n", hr);
+			return FAILED(hr) ? hr : E_UNEXPECTED;
+		}
 	}
 	break;
 	case 1:
 	{
 		IDXGIFactory *pFactory = nullptr;
 
-		hr = mOrigSwapChain1->GetParent(IID_PPV_ARGS(&pFactory));
-		if (FAILED(hr))
+		hr = pOrigSwapChain->GetParent(IID_PPV_ARGS(&pFactory));
+		if (FAILED(hr) || !pFactory)
 		{
+			if (pFactory)
+				pFactory->Release();
 			LogOverlay(LOG_DIRE, "HackerUpscalingSwapChain::createRenderTarget failed to get DXGIFactory\n");
-			// Not positive if we will be able to get an overlay to
-			// display the error, so also issue an audible warning:
-			BeepFailure2();
-			return;
+			return FAILED(hr) ? hr : E_UNEXPECTED;
 		}
 		const UINT flagBackup = pFakeSwapChainDesc->Flags;
 
 		// fake swap chain should have no influence on window
 		pFakeSwapChainDesc->Flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-		IDXGISwapChain* swapChain;
+		IDXGISwapChain *swapChain = nullptr;
 		get_tls()->hooking_quirk_protection = true;
-		pFactory->CreateSwapChain(mHackerDevice->GetPossiblyHookedOrigDevice1(), pFakeSwapChainDesc, &swapChain);
+		hr = pFactory->CreateSwapChain(pHackerDevice->GetPossiblyHookedOrigDevice1(), pFakeSwapChainDesc, &swapChain);
 		get_tls()->hooking_quirk_protection = false;
 
+		// Restore the game's desc on every path.  The old code restored it
+		// after QueryInterface(), which was unreachable when creation failed.
+		pFakeSwapChainDesc->Flags = flagBackup;
 		pFactory->Release();
 
-		HRESULT res = swapChain->QueryInterface(IID_PPV_ARGS(&mFakeSwapChain1));
+		if (FAILED(hr) || !swapChain)
+		{
+			// Do not Release() the out parameter on failure.  DXGI does not
+			// guarantee that *ppSwapChain is a valid object when
+			// CreateSwapChain returns an error (it can be a partially
+			// constructed/garbage pointer); dereferencing it here is exactly
+			// the kind of AV this change must avoid.
+			LogOverlay(LOG_DIRE, "*** HackerUpscalingSwapChain::CreateFakeSwapChain() failed to create fake swap chain: %08x\n", hr);
+			return FAILED(hr) ? hr : E_UNEXPECTED;
+		}
+
+		const HRESULT res = swapChain->QueryInterface(IID_PPV_ARGS(ppFakeSwapChain1));
 		if (SUCCEEDED(res))
 			swapChain->Release();
 		else
-			mFakeSwapChain1 = reinterpret_cast<IDXGISwapChain1*>(swapChain);
-
-		// restore old state in case fall back is required ToDo: Unlikely needed now.
-		pFakeSwapChainDesc->Flags = flagBackup;
+			*ppFakeSwapChain1 = reinterpret_cast<IDXGISwapChain1*>(swapChain);
 	}
 	break;
 	default:
 		LogOverlay(LOG_DIRE, "*** HackerUpscalingSwapChain::HackerUpscalingSwapChain() failed ==> provided upscaling mode is not valid.\n");
-		// Not positive if we will be able to get an overlay to
-		// display the error, so also issue an audible warning:
-		BeepFailure2();
-		return;
+		return E_INVALIDARG;
 	}
 
-	LogInfo("HackerUpscalingSwapChain::HackerUpscalingSwapChain(): result %d\n", hr);
+	return S_OK;
+}
 
-	if (FAILED(hr))
-	{
-		LogOverlay(LOG_DIRE, "*** HackerUpscalingSwapChain::HackerUpscalingSwapChain() failed\n");
-		// Not positive if we will be able to get an overlay to
-		// display the error, so also issue an audible warning:
-		BeepFailure2();
-	}
+HackerUpscalingSwapChain::HackerUpscalingSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pHackerDevice, HackerContext *pHackerContext,
+	IDXGISwapChain1 *pFakeSwapChain1, ID3D11Texture2D *pFakeBackBuffer, UINT newWidth, UINT newHeight)
+	: HackerSwapChain(pSwapChain, pHackerDevice, pHackerContext),
+	mFakeSwapChain1(pFakeSwapChain1), mFakeBackBuffer(pFakeBackBuffer),
+	mWidth(newWidth), mHeight(newHeight)
+{
+	// The old constructor logged this after CreateRenderTarget() (i.e. after
+	// the HackerSwapChain base ctor / Overlay creation).  Keep both the text
+	// and the position so the success-path log order is unchanged.
+	LogInfo("HackerUpscalingSwapChain::HackerUpscalingSwapChain(): result %d\n", S_OK);
+}
+
+
+HackerUpscalingSwapChain::~HackerUpscalingSwapChain()
+{
+	if (mFakeSwapChain1)
+		mFakeSwapChain1->Release();
+	if (mFakeBackBuffer)
+		mFakeBackBuffer->Release();
 }
 
 STDMETHODIMP HackerUpscalingSwapChain::GetBuffer(THIS_

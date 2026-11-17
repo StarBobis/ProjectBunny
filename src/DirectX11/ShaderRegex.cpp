@@ -4,7 +4,9 @@
 #include "log.h"
 
 #include <algorithm>
+#include <charconv>
 #include <iterator>
+#include <string_view>
 
 ShaderRegexGroups shader_regex_groups;
 std::vector<ShaderRegexGroup*> shader_regex_group_index;
@@ -43,17 +45,60 @@ static bool get_shader_model(std::string *asm_text, std::string *shader_model)
 
 static bool find_dcl_end(std::string *asm_text, size_t *dcl_end_pos)
 {
-	// FIXME: Might be better to scan forwards
-
-	*dcl_end_pos = asm_text->rfind("\ndcl_");
-	*dcl_end_pos = asm_text->find("\n", *dcl_end_pos + 1);
-
-	if (*dcl_end_pos == std::string::npos) {
-		LogInfo("WARNING: Unable to locate end of shader declarations!\n");
-		return false;
+	size_t anchor = std::string::npos;
+	bool level9_header = false;
+	char level9_stage = 0;
+	for (size_t pos = 0; pos < asm_text->size();) {
+		const size_t line_end = asm_text->find('\n', pos);
+		const size_t end = line_end == std::string::npos ? asm_text->size() : line_end;
+		std::string_view line(asm_text->data() + pos, end - pos);
+		const size_t raw_first = line.find_first_not_of(" \t\r");
+		if (anchor == std::string::npos && raw_first != std::string_view::npos) {
+			auto comment = line.substr(raw_first);
+			comment = comment.substr(0, comment.find_last_not_of(" \t\r") + 1);
+			if (comment == "// Level9 shader bytecode:") level9_header = true;
+		}
+		line = line.substr(0, line.find("//"));
+		const size_t first = line.find_first_not_of(" \t\r");
+		if (first != std::string_view::npos) {
+			line.remove_prefix(first);
+			line = line.substr(0, line.find_last_not_of(" \t\r") + 1);
+			if (anchor == std::string::npos) {
+				const bool compatibility_model = line == "vs_2_0" || line == "vs_2_x" ||
+					line == "ps_2_0" || line == "ps_2_x";
+				if (level9_header && first != 0 && (level9_stage || compatibility_model)) {
+					// Like the assembler, ignore the indented Level9 bytecode
+					// until its unindented DXBC model, never treating it as dcl_.
+					if (!level9_stage) level9_stage = line[0];
+				} else {
+					const bool model = line.size() == 6 &&
+						std::string_view("pvghdc").find(line[0]) != std::string_view::npos &&
+						line[1] == 's' && line[2] == '_' && line[4] == '_' &&
+						line[3] >= '4' && line[3] <= '5' && line[5] >= '0' && line[5] <= '9';
+					if (!model || line_end == std::string::npos || (level9_stage && line[0] != level9_stage))
+						break;
+					anchor = line_end;
+				}
+			} else if (line.substr(0, 4) == "dcl_") {
+				if (line_end == std::string::npos) {
+					anchor = std::string::npos;
+					break;
+				}
+				// Keep the last declaration, including later hull-shader phases.
+				anchor = line_end;
+			}
+		}
+		if (line_end == std::string::npos)
+			break;
+		pos = line_end + 1;
 	}
 
-	return true;
+	if (anchor != std::string::npos) {
+		*dcl_end_pos = anchor;
+		return true;
+	}
+	LogInfo("WARNING: Unable to locate end of shader declarations!\n");
+	return false;
 }
 
 static bool insert_declarations(std::string *asm_text, ShaderRegexDeclarations *declarations)
@@ -93,24 +138,42 @@ static bool find_dcl_temps(std::string *asm_text, size_t *dcl_temps_pos)
 	return true;
 }
 
-static unsigned get_dcl_temps(std::string *asm_text)
+static bool get_dcl_temps(std::string *asm_text, unsigned *tmp_regs)
 {
 	size_t dcl_temps;
-	unsigned tmp_regs = 0;
+	*tmp_regs = 0;
 
 	if (!find_dcl_temps(asm_text, &dcl_temps))
-		return 0;
+		return true;
 
-	tmp_regs = stoul(asm_text->substr(dcl_temps + 10, 4));
-	LogInfo("Found dcl_temps %d\n", tmp_regs);
+	size_t first = dcl_temps + 11;
+	size_t last = asm_text->find('\n', first);
+	if (last == std::string::npos)
+		last = asm_text->size();
+	while (first < last && ((*asm_text)[first] == ' ' || (*asm_text)[first] == '\t' || (*asm_text)[first] == '\r'))
+		first++;
+	while (last > first && ((*asm_text)[last - 1] == ' ' || (*asm_text)[last - 1] == '\t' || (*asm_text)[last - 1] == '\r'))
+		last--;
 
-	return tmp_regs;
+	const auto parsed = std::from_chars(asm_text->data() + first, asm_text->data() + last, *tmp_regs);
+	if (first == last || parsed.ec != std::errc() || parsed.ptr != asm_text->data() + last ||
+		*tmp_regs > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT) {
+		LogInfo("WARNING: Invalid dcl_temps count\n");
+		return false;
+	}
+	LogInfo("Found dcl_temps %u\n", *tmp_regs);
+	return true;
 }
 
 static bool update_dcl_temps(std::string *asm_text, size_t new_val)
 {
 	size_t dcl_temps, dcl_temps_end, dcl_end;
 	std::string insert_str;
+
+	if (new_val > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT) {
+		LogInfo("WARNING: ShaderRegex temporary-register count exceeds the shader limit\n");
+		return false;
+	}
 
 	if (find_dcl_temps(asm_text, &dcl_temps)) {
 		dcl_temps += 11;
@@ -261,6 +324,12 @@ bool ShaderRegexPattern::patch(std::string *asm_text, ShaderRegexTemps *temp_reg
 	uint32_t options;
 	int rc;
 
+	if (!temp_regs->empty() && (dcl_temps > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT ||
+		temp_regs->size() > D3D11_COMMONSHADER_TEMP_REGISTER_COUNT - dcl_temps)) {
+		LogInfo("WARNING: ShaderRegex temporary-register allocation exceeds the shader limit\n");
+		return false;
+	}
+
 	static_assert(PCRE2_CODE_UNIT_WIDTH == 8, "Need to fix output buffer allocation for non-8bit pcre2");
 
 	// We operate on a copy of the replace string so that future shaders
@@ -335,8 +404,10 @@ void ShaderRegexGroup::apply_regex_patterns(std::string *asm_text, bool *match, 
 	*match = true;
 	*patch = false;
 
-	if (!temp_regs.empty())
-		dcl_temps = get_dcl_temps(asm_text);
+	if (!temp_regs.empty() && !get_dcl_temps(asm_text, &dcl_temps)) {
+		*match = false;
+		return;
+	}
 
 	for (i = patterns.begin(); i != patterns.end(); i++) {
 		pattern = &i->second;
@@ -488,13 +559,30 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 	return ret;
 }
 
-#define SHADER_REGEX_CACHE_VERSION 1
+#define SHADER_REGEX_CACHE_VERSION 2
 struct ShaderRegexCacheHeader {
 	uint32_t version;
 	uint32_t shader_regex_hash;
 	uint32_t patched;
 	uint32_t num_matches;
 };
+
+static bool shader_regex_cache_path_prefix_ok(const wchar_t *path, int n, const char *operation)
+{
+	if (n < 0) {
+		const size_t path_len = wcslen(path);
+		const wchar_t *tail = path_len > 16 ? path + path_len - 16 : path;
+		LogInfo("ShaderRegexCache: %s rejected truncated cache path (path_len=%Iu, tail='...%S')\n",
+			operation, path_len, tail);
+		return false;
+	}
+	if (n > MAX_PATH - 4) {
+		LogInfo("ShaderRegexCache: %s rejected cache path without suffix space (n=%d, max_prefix=%d)\n",
+			operation, n, MAX_PATH - 4);
+		return false;
+	}
+	return true;
+}
 
 ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline)
 {
@@ -508,9 +596,13 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 	DWORD size, size2;
 	byte *buf = NULL;
 	size_t suffix;
+	int n;
 	uint32_t i;
 
-	suffix = swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	n = _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	if (!shader_regex_cache_path_prefix_ok(path, n, "load"))
+		return ret;
+	suffix = (size_t)n;
 	wcscpy_s(path+suffix, MAX_PATH-suffix, L"dat");
 	meta_f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (meta_f == INVALID_HANDLE_VALUE)
@@ -598,11 +690,15 @@ static void save_shader_regex_cache_meta(UINT64 hash, const wchar_t *shader_type
 	wchar_t path[MAX_PATH];
 	FILE *f = NULL;
 	size_t suffix;
+	int n;
 
 	if (!G->SHADER_CACHE_PATH[0] || (!G->CACHE_SHADERS && !G->EXPORT_FIXED))
 		return;
 
-	suffix = swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	n = _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	if (!shader_regex_cache_path_prefix_ok(path, n, "save"))
+		return;
+	suffix = (size_t)n;
 
 	if (G->CACHE_SHADERS) {
 		// TODO: When we have a condition field in ShaderRegex: The evaluations
@@ -658,11 +754,16 @@ void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector
 {
 	wchar_t path[MAX_PATH];
 	FILE *f = NULL;
+	int n;
 
 	if (!G->CACHE_SHADERS || !G->SHADER_CACHE_PATH[0])
 		return;
 
-	swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.bin", G->SHADER_CACHE_PATH, hash, shader_type);
+	n = _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\%016llx-%ls_regex.bin", G->SHADER_CACHE_PATH, hash, shader_type);
+	if (n < 0) {
+		LogInfo("ShaderRegexCache: save bin rejected truncated cache path (path_len=%Iu)\n", wcslen(path));
+		return;
+	}
 
 	wfopen_ensuring_access(&f, path, L"wb");
 	if (!f)
@@ -682,32 +783,21 @@ bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* 
 	if (memcmp(buffer, "DXBC", 4) != 0)
 		return false;
 
-	const uint8_t* ptr = buffer + 4 + 16; // Skip FOURCC + hash
+	uint32_t numChunks;
+	memcpy(&numChunks, buffer + 28, sizeof(numChunks));
 
-	// Read header fields
-	if (ptr + 12 > buffer + size)
+	// Check the table numerically before constructing pointers into it.
+	if (numChunks == 0 || numChunks > (size - 32) / sizeof(uint32_t))
 		return false;
-
-	uint32_t one, totalSize, numChunks;
-	memcpy(&one, ptr, 4); ptr += 4;
-	memcpy(&totalSize, ptr, 4); ptr += 4;
-	memcpy(&numChunks, ptr, 4); ptr += 4;
-
-	if (numChunks == 0)
-		return false;
-
-	// Validate chunk table bounds
-	if (ptr + numChunks * sizeof(uint32_t) > buffer + size)
-		return false;
-
-	const uint32_t* chunkOffsets = reinterpret_cast<const uint32_t*>(ptr);
 
 	// Iterate chunks backwards (same as disassembler)
-	for (int32_t i = (int32_t)numChunks - 1; i >= 0; --i)
+	for (size_t i = numChunks; i-- > 0;)
 	{
-		uint32_t offset = chunkOffsets[i];
+		uint32_t chunkOffset;
+		memcpy(&chunkOffset, buffer + 32 + i * sizeof(chunkOffset), sizeof(chunkOffset));
+		const size_t offset = chunkOffset;
 
-		if (offset + 12 > size)
+		if (offset > size || size - offset < 12)
 			continue;
 
 		const uint8_t* chunk = buffer + offset;

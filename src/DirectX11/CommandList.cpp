@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <iterator>
 #include <sstream>
+#include <string_view>
 #include <typeinfo>
 #include <cmath>
 #include <wrl/client.h>
@@ -25,6 +26,7 @@
 #include "profiling.h"
 #include "Hunting.h"
 #include "cursor.h"
+#include "bounded_path_format.h"
 
 #include <D3DCompiler.h>
 
@@ -344,6 +346,7 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 		res->Release();
 }
 
+
 void optimise_command_lists(HackerDevice *device)
 {
 	bool making_progress;
@@ -411,6 +414,11 @@ void optimise_command_lists(HackerDevice *device)
 		// add a special command for that particular case, but would be
 		// nice if this sort of thing worked more generally.
 	} while (making_progress);
+
+	for (CommandList* command_list : registered_command_lists)
+		MergeAutoCheckTextureOverrides(command_list);
+
+	BuildAutoCheckSlotCoverage();
 
 	for (CommandList* command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
@@ -889,6 +897,10 @@ static bool ParseDrawCommandArgs(const wchar_t* section, wstring *val, DrawComma
 
 		if (operation->indirect_buffer.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 			CustomResource* custom_resource = operation->indirect_buffer.GetCustomResource(nullptr, true);
+			if (!custom_resource) {
+				LogOverlayW(LOG_WARNING, L"Indirect resource or pool template is unavailable\n - [%ls]\n", section);
+				return false;
+			}
 			if (!custom_resource->AddFlags((D3D11_BIND_FLAG)0, D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, true)) {
 				LogOverlayW(LOG_WARNING, L"To use resources with incompatible flags explicitly add 'copy' keyword, e.g. 'vs-cb0 = copy ResourceRWBufferCB'\n - [%ls] @ [%ls]\n", section, ini_namespace ? ini_namespace->c_str() : L"");
 				return false;
@@ -1164,10 +1176,522 @@ public:
     }
 };
 
+bool IsAutoCheckTextureSlotCovered(const ResourceCopyTarget& target)
+{
+    if (G->auto_check_texture_slots.empty())
+        return false;
+
+    // Only plain static slots are covered. Ranges, dynamic slot expressions,
+    // pools and property/identity targets keep running through the legacy path.
+    if (target.IsRange() || target.slot_expression || target.custom_resource_pool ||
+        target.pool_dynamic_index_expression ||
+        target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
+        return false;
+
+    for (const auto& slot : G->auto_check_texture_slots) {
+        if (slot.type != target.type || slot.slot != target.slot)
+            continue;
+        if (target.type == ResourceCopyTargetType::SHADER_RESOURCE && slot.shader_type != target.shader_type)
+            continue;
+        return true;
+    }
+
+    return false;
+}
+
+static uint64_t AutoCheckTextureSlotKey(const ResourceCopyTarget& target)
+{
+    uint64_t key = static_cast<uint64_t>(static_cast<uint32_t>(target.type)) << 32;
+    key |= static_cast<uint64_t>(static_cast<uint16_t>(target.shader_type)) << 16;
+    key |= target.slot;
+    return key;
+}
+
+namespace {
+
+int AutoCheckShaderStageIndex(wchar_t shader_type)
+{
+	switch (shader_type) {
+	case L'p': return 0;
+	case L'v': return 1;
+	case L'c': return 2;
+	default: return -1;
+	}
+}
+
+// Use the immutable draw-start snapshot for candidate filtering and batch
+// matching. Command lists may rewrite the live DrawCallInfo (VertexLimitRaise,
+// count replacement, etc.); the original six counts must still decide whether
+// a TextureOverride matches.
+const DrawCallInfo* AutoCheckMatchingCallInfo(CommandListState* state)
+{
+	if (!state)
+		return nullptr;
+	if (state->mHackerContext) {
+		auto& scopes = state->mHackerContext->auto_check_texture_scopes;
+		for (auto it = scopes.rbegin(); it != scopes.rend(); ++it)
+			if (it->call_info == state->call_info)
+				return &it->original_call_info;
+	}
+	return state->call_info;
+}
+
+struct AutoCheckBinding {
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+	Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+	Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+	UINT stride = 0, offset = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+};
+
+// Batched binding snapshot for one adjacent run of covered checks. Used only
+// while that run executes at its original command-list position; if a TO
+// command list runs, later targets are re-queried instead of trusting this
+// snapshot.
+class AutoCheckBindingCache {
+public:
+	std::vector<AutoCheckBinding> entries;
+
+	void Prefetch(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
+	{
+		entries.assign(targets.size(), AutoCheckBinding());
+		if (!state || !state->mOrigContext1)
+			return;
+
+		UINT first[3] = {UINT_MAX, UINT_MAX, UINT_MAX};
+		UINT last[3] = {0, 0, 0};
+		UINT vb_first = UINT_MAX, vb_last = 0;
+		bool check_ib = false;
+
+		for (const auto& check : targets) {
+			const auto& target = check->target;
+			switch (target.type) {
+			case ResourceCopyTargetType::SHADER_RESOURCE: {
+				const int stage = AutoCheckShaderStageIndex(target.shader_type);
+				if (stage < 0)
+					continue;
+				first[stage] = (std::min)(first[stage], target.slot);
+				last[stage] = (std::max)(last[stage], target.slot);
+				break;
+			}
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+				vb_first = (std::min)(vb_first, target.slot);
+				vb_last = (std::max)(vb_last, target.slot);
+				break;
+			case ResourceCopyTargetType::INDEX_BUFFER:
+				check_ib = true;
+				break;
+			default:
+				break;
+			}
+		}
+
+		ID3D11ShaderResourceView* views[3][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+		for (int stage = 0; stage < 3; ++stage) {
+			if (first[stage] == UINT_MAX)
+				continue;
+			const UINT count = last[stage] - first[stage] + 1;
+			ID3D11ShaderResourceView** stage_views = &views[stage][first[stage]];
+			switch (stage) {
+			case 0: state->mOrigContext1->PSGetShaderResources(first[stage], count, stage_views); break;
+			case 1: state->mOrigContext1->VSGetShaderResources(first[stage], count, stage_views); break;
+			case 2: state->mOrigContext1->CSGetShaderResources(first[stage], count, stage_views); break;
+			}
+		}
+
+		ID3D11Buffer* vertex_buffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		UINT vertex_strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		UINT vertex_offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		if (vb_first != UINT_MAX)
+			state->mOrigContext1->IAGetVertexBuffers(vb_first, vb_last - vb_first + 1,
+				&vertex_buffers[vb_first], &vertex_strides[vb_first], &vertex_offsets[vb_first]);
+
+		ID3D11Buffer* index_buffer = nullptr;
+		DXGI_FORMAT index_format = DXGI_FORMAT_UNKNOWN;
+		UINT index_offset = 0;
+		if (check_ib)
+			state->mOrigContext1->IAGetIndexBuffer(&index_buffer, &index_format, &index_offset);
+
+		for (size_t i = 0; i < targets.size(); ++i) {
+			const auto& target = targets[i]->target;
+			AutoCheckBinding& entry = entries[i];
+			switch (target.type) {
+			case ResourceCopyTargetType::SHADER_RESOURCE: {
+				const int stage = AutoCheckShaderStageIndex(target.shader_type);
+				if (stage < 0 || target.slot < first[stage] || target.slot > last[stage])
+					continue;
+				entry.view = views[stage][target.slot];
+				if (entry.view)
+					entry.view->GetResource(entry.resource.GetAddressOf());
+				break;
+			}
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+				if (target.slot < vb_first || target.slot > vb_last)
+					continue;
+				entry.buffer = vertex_buffers[target.slot];
+				if (entry.buffer)
+					entry.resource = static_cast<ID3D11Resource*>(entry.buffer.Get());
+				entry.stride = vertex_strides[target.slot];
+				entry.offset = vertex_offsets[target.slot];
+				break;
+			case ResourceCopyTargetType::INDEX_BUFFER:
+				entry.buffer = index_buffer;
+				if (entry.buffer)
+					entry.resource = static_cast<ID3D11Resource*>(entry.buffer.Get());
+				entry.format = index_format;
+				entry.offset = index_offset;
+				break;
+			default:
+				break;
+			}
+		}
+
+		for (int stage = 0; stage < 3; ++stage) {
+			if (first[stage] == UINT_MAX)
+				continue;
+			for (UINT slot = first[stage]; slot <= last[stage]; ++slot)
+				if (views[stage][slot])
+					views[stage][slot]->Release();
+		}
+		if (vb_first != UINT_MAX) {
+			for (UINT slot = vb_first; slot <= vb_last; ++slot)
+				if (vertex_buffers[slot])
+					vertex_buffers[slot]->Release();
+		}
+		if (index_buffer)
+			index_buffer->Release();
+	}
+};
+
+// Query exactly one slot immediately before it is consumed. Used after any
+// earlier target in the same adjacent run may have changed the bindings.
+void FetchCurrentAutoCheckBinding(CommandListState* state, const ResourceCopyTarget& target, AutoCheckBinding* binding)
+{
+	*binding = AutoCheckBinding();
+	if (!state || !state->mOrigContext1)
+		return;
+
+	switch (target.type) {
+	case ResourceCopyTargetType::SHADER_RESOURCE: {
+		ID3D11ShaderResourceView* view = nullptr;
+		switch (target.shader_type) {
+		case L'p': state->mOrigContext1->PSGetShaderResources(target.slot, 1, &view); break;
+		case L'v': state->mOrigContext1->VSGetShaderResources(target.slot, 1, &view); break;
+		case L'c': state->mOrigContext1->CSGetShaderResources(target.slot, 1, &view); break;
+		default: return;
+		}
+		binding->view.Attach(view);
+		if (binding->view)
+			binding->view->GetResource(binding->resource.GetAddressOf());
+		break;
+	}
+	case ResourceCopyTargetType::VERTEX_BUFFER: {
+		ID3D11Buffer* buffer = nullptr;
+		state->mOrigContext1->IAGetVertexBuffers(target.slot, 1, &buffer, &binding->stride, &binding->offset);
+		binding->buffer.Attach(buffer);
+		if (binding->buffer)
+			binding->resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
+		break;
+	}
+	case ResourceCopyTargetType::INDEX_BUFFER: {
+		ID3D11Buffer* buffer = nullptr;
+		state->mOrigContext1->IAGetIndexBuffer(&buffer, &binding->format, &binding->offset);
+		binding->buffer.Attach(buffer);
+		if (binding->buffer)
+			binding->resource = static_cast<ID3D11Resource*>(binding->buffer.Get());
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+} // namespace
+
+bool AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
+{
+	if (!state || targets.empty() || state->aborted)
+		return false;
+	// Copy immediately: a TO command list may issue a nested draw/dispatch that
+	// pushes to the scope vector and reallocates it. The batch must keep using
+	// the same immutable draw-start counts for every target.
+	const DrawCallInfo* matched_call_info = AutoCheckMatchingCallInfo(state);
+	DrawCallInfo matching_snapshot;
+	if (matched_call_info)
+		matching_snapshot = *matched_call_info;
+	const DrawCallInfo* matching_call_info = matched_call_info ? &matching_snapshot : nullptr;
+
+	// This command replaces an adjacent run of implicit checktextureoverride
+	// commands, so it runs under exactly the same ShaderOverride/ShaderRegex
+	// gating and at the same command-list position as the first check.
+	CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+		return false;
+
+	AutoCheckBindingCache cache;
+	cache.Prefetch(state, targets);
+
+	// A.4: before doing any per-slot candidate lookup or TO command-list work,
+	// check whether any bound resource has a hash/fuzzy candidate at all. This
+	// is the whole-batch skip for the common no-candidate draw. The per-resource
+	// candidate cache is invalidated on reload/resource recreation.
+	// Fuzzy overrides are conservatively allowed through: a hash-only negative
+	// cache must never suppress a fuzzy candidate.
+	bool any_candidate = !G->mFuzzyTextureOverrides.empty();
+	if (!any_candidate) {
+		for (size_t i = 0; i < cache.entries.size(); ++i) {
+			const AutoCheckBinding& entry = cache.entries[i];
+			if (!entry.resource)
+				continue;
+			const ResourceCopyTargetType type = targets[i]->target.type;
+			const bool region_possible = G->track_region_hashes &&
+				(type == ResourceCopyTargetType::VERTEX_BUFFER || type == ResourceCopyTargetType::INDEX_BUFFER);
+			if (HasTextureOverrideCandidate(entry.resource.Get(),
+				const_cast<DrawCallInfo*>(matching_call_info), region_possible)) {
+				any_candidate = true;
+				break;
+			}
+		}
+	}
+	if (!any_candidate)
+		return false;
+	++G->auto_check_texture_full_pass_count;
+
+	bool dirty = false;
+	bool executed = false;
+
+	for (size_t i = 0; i < targets.size() && !state->aborted; ++i) {
+		CheckTextureOverrideCommand& check = *targets[i];
+		CheckTextureStateScope restore(*state);
+		AutoCheckBinding current;
+		AutoCheckBinding* binding = &cache.entries[i];
+		if (dirty) {
+			FetchCurrentAutoCheckBinding(state, check.target, &current);
+			binding = &current;
+		}
+
+		if (!binding->resource)
+			continue;
+
+		UINT stride = 0, offset = 0;
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+		switch (check.target.type) {
+		case ResourceCopyTargetType::SHADER_RESOURCE:
+			break;
+		case ResourceCopyTargetType::VERTEX_BUFFER:
+			stride = binding->stride;
+			offset = binding->offset;
+			break;
+		case ResourceCopyTargetType::INDEX_BUFFER:
+			format = binding->format;
+			offset = binding->offset;
+			break;
+		default:
+			continue;
+		}
+
+		ResourceCopyTarget target = check.target;
+		state->this_target = &target;
+
+		TextureOverrideMatches matches;
+		FindTextureOverridesForBoundResource(target.type, binding->resource.Get(), state->mHackerContext,
+			stride, offset, format, const_cast<DrawCallInfo*>(matching_call_info), &matches);
+
+		if (!matches.empty()) {
+			for (auto* match : matches) {
+				if (state->aborted)
+					break;
+				_RunCommandList(state->post ? &match->post_command_list : &match->command_list, state);
+			}
+			executed = true;
+			// The TO lists may have changed any later slot; re-query those
+			// immediately before their own check instead of using the snapshot.
+			dirty = true;
+		}
+	}
+	return executed;
+}
+
+void AutoCheckTextureOverrideCommand::run(CommandListState* state)
+{
+	AutoCheckTextureOverrides(state, targets);
+}
+
+void FinishAutoCheckCommandListState(CommandListState* state, const wchar_t* ini_section)
+{
+	if (!state)
+		return;
+	// This pass is a pre-phase execution point: RunCommandListComplete would
+	// apply all deferred layouts and flush IniParams here.
+	if (!state->post && !state->input_layout_overrides.empty())
+		UpdateInputLayout(ini_section, state);
+	CommandListFlushState(state);
+}
+
+void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch)
+{
+	if (!state || G->auto_check_texture_slots.empty())
+		return;
+	// Coverage is computed together with the config-time merge. If it is not
+	// available (e.g. command lists were not optimised), do not run: letting
+	// this pass run on slots that also have checks would double-run them.
+	if (G->auto_check_texture_slot_has_check.size() != G->auto_check_texture_slots.size())
+		return;
+	if (G->auto_check_texture_coverage_generation != G->auto_check_texture_slots_generation)
+		return;
+
+	AutoCheckTextureDrawScope* scope = nullptr;
+	if (state->mHackerContext && !state->mHackerContext->auto_check_texture_scopes.empty()) {
+		AutoCheckTextureDrawScope& top = state->mHackerContext->auto_check_texture_scopes.back();
+		if (top.call_info == state->call_info)
+			scope = &top;
+	}
+
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> targets;
+	std::vector<uint64_t> processed_keys;
+	for (size_t i = 0; i < G->auto_check_texture_slots.size(); ++i) {
+		if (G->auto_check_texture_slot_has_check[i])
+			continue;
+		const AutoCheckTextureSlot& slot = G->auto_check_texture_slots[i];
+		if (dispatch && (slot.type != ResourceCopyTargetType::SHADER_RESOURCE || slot.shader_type != L'c'))
+			continue;
+		auto check = std::make_shared<CheckTextureOverrideCommand>();
+		check->target.type = slot.type;
+		check->target.shader_type = slot.shader_type;
+		check->target.slot = slot.slot;
+		const uint64_t key = AutoCheckTextureSlotKey(check->target);
+		// A dynamic/unregistered checktextureoverride may already have run for
+		// this draw before the pass. In that case let the original path own the
+		// slot instead of running it twice.
+		if (scope && scope->checked_slots.count(key))
+			continue;
+		targets.push_back(check);
+		processed_keys.push_back(key);
+	}
+	if (targets.empty())
+		return;
+
+	// Claim these slots before executing any TO list. A nested
+	// checktextureoverride inside a TO list must not run them again.
+	if (scope)
+		for (uint64_t key : processed_keys)
+			scope->auto_pass_slots.insert(key);
+
+	// Replacement semantics: no original check command exists for these slots,
+	// so run both phases at this call site (pre list first, then post list).
+	state->post = false;
+	const bool ran_pre = AutoCheckTextureOverrides(state, targets);
+	state->post = true;
+	const bool ran_post = AutoCheckTextureOverrides(state, targets);
+	state->post = false;
+	// If A.4 skipped the whole batch (no candidate at all), release the claims
+	// so a later dynamic/unregistered check for the same slot still runs.
+	if (scope && !ran_pre && !ran_post)
+		for (uint64_t key : processed_keys)
+			scope->auto_pass_slots.erase(key);
+	FinishAutoCheckCommandListState(state, L"auto_check_texture_slots");
+}
+
+void MergeAutoCheckTextureOverrides(CommandList* command_list)
+{
+	if (!command_list || G->auto_check_texture_slots.empty())
+		return;
+
+	auto& commands = command_list->commands;
+	size_t i = 0;
+	while (i < commands.size()) {
+		auto first = std::dynamic_pointer_cast<CheckTextureOverrideCommand>(commands[i]);
+		if (!first || first->run_pre_and_post_together || !IsAutoCheckTextureSlotCovered(first->target)) {
+			++i;
+			continue;
+		}
+
+		std::vector<std::shared_ptr<CheckTextureOverrideCommand>> group;
+		group.push_back(first);
+		size_t end = i + 1;
+		while (end < commands.size()) {
+			auto next = std::dynamic_pointer_cast<CheckTextureOverrideCommand>(commands[end]);
+			if (!next || next->run_pre_and_post_together || !IsAutoCheckTextureSlotCovered(next->target))
+				break;
+			group.push_back(next);
+			++end;
+		}
+
+		if (group.size() < 2) {
+			++i;
+			continue;
+		}
+
+		auto batch = std::make_shared<AutoCheckTextureOverrideCommand>();
+		batch->ini_line = first->ini_line;
+		batch->targets = std::move(group);
+		commands[i] = batch;
+		commands.erase(commands.begin() + i + 1, commands.begin() + end);
+		++i;
+	}
+}
+
+static bool AutoCheckTargetMatchesSlot(const ResourceCopyTarget& target, const AutoCheckTextureSlot& slot)
+{
+	if (target.IsRange() || target.slot_expression || target.custom_resource_pool ||
+		target.pool_dynamic_index_expression ||
+		target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
+		return false;
+	if (target.type != slot.type || target.slot != slot.slot)
+		return false;
+	return target.type != ResourceCopyTargetType::SHADER_RESOURCE || target.shader_type == slot.shader_type;
+}
+
+void BuildAutoCheckSlotCoverage()
+{
+	G->auto_check_texture_slot_has_check.assign(G->auto_check_texture_slots.size(), 0);
+	G->auto_check_texture_coverage_generation = G->auto_check_texture_slots_generation;
+	if (G->auto_check_texture_slots.empty())
+		return;
+
+	for (size_t i = 0; i < G->auto_check_texture_slots.size(); ++i) {
+		const AutoCheckTextureSlot& slot = G->auto_check_texture_slots[i];
+		bool found = false;
+		for (CommandList* command_list : registered_command_lists) {
+			for (const auto& command : command_list->commands) {
+				if (auto* check = dynamic_cast<CheckTextureOverrideCommand*>(command.get())) {
+					found = AutoCheckTargetMatchesSlot(check->target, slot);
+				} else if (auto* batch = dynamic_cast<AutoCheckTextureOverrideCommand*>(command.get())) {
+					for (const auto& target : batch->targets)
+						if (AutoCheckTargetMatchesSlot(target->target, slot)) {
+							found = true;
+							break;
+						}
+				}
+				if (found)
+					break;
+			}
+			if (found)
+				break;
+		}
+		G->auto_check_texture_slot_has_check[i] = found ? 1 : 0;
+	}
+}
+
 void CheckTextureOverrideCommand::run(CommandListState* state)
 {
     if (!state) return;
     CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    // Per-draw mutual exclusion with the replacement pass. A pass-processed
+    // slot must not run its TO lists again from a later/duplicate check; a
+    // check that runs before the pass is recorded so the pass skips it.
+    if (state->mHackerContext && IsAutoCheckTextureSlotCovered(target)) {
+        auto& scopes = state->mHackerContext->auto_check_texture_scopes;
+        if (!scopes.empty() && scopes.back().call_info == state->call_info) {
+            const uint64_t key = AutoCheckTextureSlotKey(target);
+            if (scopes.back().auto_pass_slots.count(key))
+                return;
+            scopes.back().checked_slots.insert(key);
+        }
+    }
+    // Keep every TextureOverride* in `matches` inside this guard: reload
+    // clears the config map under the same lock, so consumption must finish
+    // before the guard is released.
     CheckTextureStateScope restore(*state);
     COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
     unsigned first = 0, count = 1;
@@ -1347,6 +1871,8 @@ static UINT get_vertex_count_from_current_vb(ID3D11DeviceContext* mOrigContext1)
 	vb->GetDesc(&desc);
 	vb->Release();
 
+	if (!stride || offset > desc.ByteWidth)
+		return 0;
 	return (desc.ByteWidth - offset) / stride;
 }
 
@@ -1364,6 +1890,8 @@ static UINT get_index_count_from_current_ib(ID3D11DeviceContext *mOrigContext1)
 	ib->GetDesc(&desc);
 	ib->Release();
 
+	if (offset > desc.ByteWidth)
+		return 0;
 	switch(format) {
 		case DXGI_FORMAT_R16_UINT:
 			return (desc.ByteWidth - offset) / 2;
@@ -2002,7 +2530,7 @@ void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 	COMMAND_LIST_LOG(state, "[%S] special = draw_3dmigoto_overlay\n", ini_section.c_str());
 
 	HackerSwapChain *mHackerSwapChain = state->mHackerDevice->GetHackerSwapChain();
-	if (mHackerSwapChain->mOverlay) {
+	if (mHackerSwapChain && mHackerSwapChain->mOverlay) {
 		mHackerSwapChain->mOverlay->DrawOverlay();
 		G->suppress_overlay = true;
 	}
@@ -2208,20 +2736,33 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 	// first, then try relative to the 3DMigoto directory:
 	found = false;
 	if (!namespace_path->empty()) {
-		GetModuleFileName(migoto_handle, wpath, MAX_PATH);
-		wcsrchr(wpath, L'\\')[1] = 0;
-		wcscat(wpath, namespace_path->c_str());
-		wcscat(wpath, filename);
+		DWORD moduleLength = GetModuleFileName(migoto_handle, wpath, MAX_PATH);
+		wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(wpath, L'\\') : NULL;
+		if (!moduleBase) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: module path missing or too long\n");
+			goto err;
+		}
+		moduleBase[1] = 0;
+		if (!AppendPathBounded(wpath, _countof(wpath), namespace_path->c_str()) ||
+			!AppendPathBounded(wpath, _countof(wpath), filename)) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: namespaced shader path too long, rejected\n");
+			goto err;
+		}
 		if (GetFileAttributes(wpath) != INVALID_FILE_ATTRIBUTES)
 			found = true;
 	}
 	if (!found) {
-		if (!GetModuleFileName(migoto_handle, wpath, MAX_PATH)) {
-			LogOverlay(LOG_DIRE, "CustomShader::compile: GetModuleFileName failed\n");
+		DWORD moduleLength = GetModuleFileName(migoto_handle, wpath, MAX_PATH);
+		wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(wpath, L'\\') : NULL;
+		if (!moduleBase) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: GetModuleFileName failed or path too long\n");
 			goto err;
 		}
-		wcsrchr(wpath, L'\\')[1] = 0;
-		wcscat(wpath, filename);
+		moduleBase[1] = 0;
+		if (!AppendPathBounded(wpath, _countof(wpath), filename)) {
+			LogOverlay(LOG_DIRE, "CustomShader::compile: shader path too long, rejected\n");
+			goto err;
+		}
 	}
 
 	f = CreateFile(wpath, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -2797,6 +3338,7 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 		case ResourceCopyTargetEvaluationMode::RESOURCE:
 		{
 			CriticalSectionLockGuard override_lifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
+            // `matches` is valid only while this guard is held.
             TextureOverrideMatches matches;
 			TextureOverrideMatches::reverse_iterator rit;
 			bool resource_found;
@@ -2839,7 +3381,10 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 		}
 
 		case ResourceCopyTargetEvaluationMode::VARIABLE:
-			return texture_filter_target.GetPoolVariable(state, false)->fval;
+			if (auto* variable = texture_filter_target.GetPoolVariable(state, false))
+				return variable->fval;
+			LogDebug("Pool variable is unavailable for this selection\n");
+			return std::numeric_limits<float>::quiet_NaN();
 
 		case ResourceCopyTargetEvaluationMode::RESOURCE_IDENTITY:
 			return texture_filter_target.GetResourceId(state);
@@ -3782,7 +4327,7 @@ static inline bool is_operator_char(wchar_t c)
     return wcschr(L"=&|+-/*><%!^~()[]", c) != nullptr;
 }
 
-static size_t FindIdentifierTokenEnd(const std::wstring& str, const size_t start = 0, OptionalChars identifier_flags = OptionalChars::NONE)
+static size_t FindIdentifierTokenEnd(std::wstring_view str, const size_t start = 0, OptionalChars identifier_flags = OptionalChars::NONE)
 {
 	for (size_t i = start; i < str.size(); ++i)
 	{
@@ -3799,7 +4344,7 @@ static size_t FindIdentifierTokenEnd(const std::wstring& str, const size_t start
 class NamespaceScanner
 {
 public:
-	bool Consume(wchar_t c, const std::wstring& str, size_t pos)
+	bool Consume(wchar_t c, std::wstring_view str, size_t pos)
 	{
 		if (!mStarted) {
 			if (c != L'\\')
@@ -3826,7 +4371,7 @@ private:
 	size_t mEnd = std::wstring::npos;
 };
 
-static size_t FindVariableTokenEnd(const std::wstring& str, size_t start = 0)
+static size_t FindVariableTokenEnd(std::wstring_view str, size_t start = 0)
 {
 	// Scans a variable token and returns the end position after performing minimal syntax validation:
 	// 1. Ensures identifier characters match `[a-z_0-9]+`.
@@ -3849,7 +4394,7 @@ static size_t FindVariableTokenEnd(const std::wstring& str, size_t start = 0)
 	return str.size();
 }
 
-static size_t FindResourceCopyTargetTokenEnd(const std::wstring& str, size_t start = 0)
+static size_t FindResourceCopyTargetTokenEnd(std::wstring_view str, size_t start = 0)
 {
 	// Scans a resource copy target token and returns the end position after performing minimal syntax validation:
 	// 1. Ensures identifier characters match `[a-z_-.0-9]+`.
@@ -3929,13 +4474,22 @@ static size_t FindResourceCopyTargetTokenEnd(const std::wstring& str, size_t sta
 	return str.size();
 }
 
-inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
+// `input` must be backed by a string that is NUL-terminated at input.data() +
+// input.size(), because std::wcstof() has no length-bounded variant.
+inline bool ParseFloatToken(std::wstring_view input, float& out, size_t& length)
 {
 	// Binary literal.
 	if (input.size() >= 3 && input[0] == L'0' && input[1] == L'b')
 	{
 		std::uint64_t value;
-		if (!ParseBinaryLiterals(input, 2, value, length))
+
+		// ParseBinaryLiterals() takes an owning string. It reads at most 67
+		// characters (the "0b" prefix plus the 65 digits that trigger its
+		// overflow check), so a bounded copy keeps this path O(1).
+		const size_t binary_scan_limit = 67;
+		const size_t binary_scan_size = input.size() < binary_scan_limit ? input.size() : binary_scan_limit;
+
+		if (!ParseBinaryLiterals(wstring(input.data(), binary_scan_size), 2, value, length))
 			return false;
 
 		out = static_cast<float>(value);
@@ -3946,16 +4500,31 @@ inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
 	wchar_t* end = nullptr;
 
 	errno = 0;
-	out = std::wcstof(input.c_str(), &end);
+	const wchar_t* begin = input.empty() ? L"" : input.data();
+	out = std::wcstof(begin, &end);
 
-	if (end == input.c_str())
+	if (end == begin)
 		return false;
 
-	length = static_cast<std::size_t>(end - input.c_str());
+	length = static_cast<std::size_t>(end - begin);
 
 	// Preserve wcstof overflow, underflow and signed zero.
 
 	return true;
+}
+
+// Defined below, next to the other operand context helpers.
+static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope* scope);
+
+// View-based counterpart of CommandListOperand::parse_float(): tokenise() reads
+// straight from the remaining expression instead of materialising a wstring.
+static bool parse_float_token(CommandListOperand* operand, std::wstring_view text, CommandListScope* scope, size_t& out_length)
+{
+	if (!ParseFloatToken(text, operand->val, out_length))
+		return false;
+
+	operand->type = ParamOverrideType::VALUE;
+	return operand_allowed_in_context(operand->type, scope);
 }
 
 #pragma region CommandArgumentReader
@@ -4455,7 +5024,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 	ResourceCopyTarget texture_filter_target;
 	shared_ptr<CommandListOperand> operand;
 	wstring token;
-	wstring remain;
+	std::wstring_view remain;
 	size_t pos = 0;
 	size_t friendly_pos = 0;
 	int i;
@@ -4465,7 +5034,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 	// TODO: C++20 refactor.
 	// This rewrite stays close to the old (mostly missing) architecture to simplify transition.
-	// Proper refactor should implement Lexer and CommandParser classes and use `std::wstring_view` once it's available.
+	// Proper refactor should implement Lexer and CommandParser classes.
 	while (true)
 	{
 		// Skip whitespace:
@@ -4475,7 +5044,9 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 		friendly_pos = pos;
 
-		remain = expr.substr(pos);
+		// Non-owning view of the remaining expression; tokens copy their own text
+		// when they are stored in the syntax tree.
+		remain = std::wstring_view(expr.data(), expr.size()).substr(pos);
 
 		bool matched = false;
 		const bool has_variable_prefix = remain[0] == L'$';
@@ -4490,9 +5061,12 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			if (remain.compare(0, len, operator_tokens[i]) == 0)
 			{
                 operator_mask |= GetOperatorMask(operator_tokens[i], len);
-				LogDebug("      Operator: \"%S\"\n", remain.substr(0, len).c_str());
 
-				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, remain.substr(0, len)));
+				// Operator tokens are owned by the syntax tree, so copy the view here.
+				wstring operator_token(remain.data(), len);
+				LogDebug("      Operator: \"%S\"\n", operator_token.c_str());
+
+				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, std::move(operator_token)));
 
 				pos += len;
 				last_was_operand = false;
@@ -4514,7 +5088,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
                 operator_mask |= OP_UNARY;
 				LogDebug("      Function: \"%S\"\n", function_tokens[i]);
 
-				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, remain.substr(0, len)));
+				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, wstring(remain.data(), len)));
 
 				pos += len;
 				last_was_operand = false;
@@ -4537,15 +5111,15 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			// - Special literals (inf, nan, etc) are being parsed last.
 			size_t len = remain.size();
 
-			if (operand->parse_float(&remain, ini_namespace, scope, len))
+			if (parse_float_token(operand.get(), remain, scope, len))
 			{
-				token = remain.substr(0, len);
+				token.assign(remain.data(), len);
 				LogDebug("      Float: \"%S\"\n", token.c_str());
 				pos += len;
 				goto import_operand;
 			}
 
-			throw CommandListSyntaxError(L"Float not recognized: " + remain, friendly_pos);
+			throw CommandListSyntaxError(L"Float not recognized: " + wstring(remain), friendly_pos);
 		}
 
 
@@ -4556,7 +5130,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
             if (remain.size() >= 6 && remain.compare(0, 5, L"$pool") == 0) {
                 const size_t pool_length = FindResourceCopyTargetTokenEnd(remain, 1);
                 if (pool_length) {
-                    token = remain.substr(0, pool_length);
+                    token.assign(remain.data(), pool_length);
                     auto pool_operand = make_shared<CommandListOperand>(friendly_pos);
                     if (pool_operand->parse_target(&token, ini_namespace, scope)) {
                         operand = std::move(pool_operand);
@@ -4570,7 +5144,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 			if (len)
 			{
-				token = remain.substr(0, len);
+				token.assign(remain.data(), len);
 
 				if (operand->parse_variable( &token, ini_namespace, scope))
 				{
@@ -4579,7 +5153,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 					goto import_operand;
 				}
 
-				throw CommandListSyntaxError(L"Variable not recognized: " + remain, friendly_pos);
+				throw CommandListSyntaxError(L"Variable not recognized: " + wstring(remain), friendly_pos);
 			}
 		}
 
@@ -4598,7 +5172,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 			if (len)
 			{
-				token = remain.substr(0, len);
+				token.assign(remain.data(), len);
 
 				// Parse target without hyphen (e.g. `ib`, `vb0`).
 				if (operand->parse_slot(&token, ini_namespace, scope))
@@ -4625,9 +5199,9 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 				}
 
 				// Parse special float (e.g. `inf`, `NaN`). Hyphen before `inf` is handled by operator.
-				if (operand->parse_float(&remain, ini_namespace, scope, len))
+				if (parse_float_token(operand.get(), remain, scope, len))
 				{
-					token = remain.substr(0, len);
+					token.assign(remain.data(), len);
 					LogDebug("      Float: \"%S\"\n", token.c_str());
 					pos += len;
 					goto import_operand;
@@ -4648,7 +5222,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		len_target = FindResourceCopyTargetTokenEnd(remain, has_prefix ? 1 : 0);
 		if (len_target)
 		{
-			token = remain.substr(0, len_target);
+			token.assign(remain.data(), len_target);
 
 			// Parse custom resource, pool or other target (e.g. `ResourceFoo`, `PoolFoo`, `cs-cb0`, `ib`).
 			if (operand->parse_target(&token, ini_namespace, scope))
@@ -5494,12 +6068,7 @@ bool parse_command_list_var_name(const wstring &name, const wstring *ini_namespa
 
 bool CommandListOperand::parse_float(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope, size_t& out_length)
 {
-	if (ParseFloatToken(*operand, val, out_length))
-	{
-		type = ParamOverrideType::VALUE;
-		return operand_allowed_in_context(type, scope);
-	}
-	return false;
+	return parse_float_token(this, *operand, scope, out_length);
 }
 
 bool CommandListOperand::parse_ini_param(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
@@ -5851,8 +6420,10 @@ CustomResource::~CustomResource()
 		resource->Release();
 	if (view)
 		view->Release();
-	if (pool_index < 0)
-		free(initial_data);
+	// initial_data is always an owned malloc snapshot (see CopyMetadataFrom);
+	// pool_index describes pool semantics, not ownership.
+	free(initial_data);
+	initial_data = nullptr;
 }
 
 static bool CanAddResourceFlags(const CustomResource* resource, D3D11_BIND_FLAG extra)
@@ -5926,11 +6497,17 @@ ResourceHandleInfo* CustomResource::GetHandleInfo()
 	return handle_info.get();
 }
 
+class ResourceCreationModeScope {
+public:
+    ResourceCreationModeScope() { LockResourceCreationMode(); }
+    ~ResourceCreationModeScope() { UnlockResourceCreationMode(); }
+    ResourceCreationModeScope(const ResourceCreationModeScope&) = delete;
+    ResourceCreationModeScope& operator=(const ResourceCreationModeScope&) = delete;
+};
+
 void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 		D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags)
 {
-	bool restore_create_mode = false;
-
 	// We only allow a custom resource to be substantiated once. Otherwise
 	// we could end up reloading it again if it is later set to null. Also
 	// prevents us from endlessly retrying to load a custom resource from a
@@ -5963,7 +6540,7 @@ void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 	// parameters while probing the hardware before it settles on the one
 	// it will actually use.
 
-	LockResourceCreationMode();
+	ResourceCreationModeScope creation_mode;
 
 	if (!filename.empty()) {
 		LoadFromFile(mOrigDevice1);
@@ -5987,7 +6564,6 @@ void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 		}
 	}
 
-	UnlockResourceCreationMode();
 }
 
 void CustomResource::LoadBufferFromFile(ID3D11Device *mOrigDevice1)
@@ -6042,7 +6618,6 @@ DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(const wstring& path) const
 
 void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 {
-	wstring ext;
 	HRESULT hr;
 
 	switch (override_type) {
@@ -6080,8 +6655,10 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	if (!com)
 		return;
 
-	ext = filename.substr(filename.rfind(L"."));
-	if (!_wcsicmp(ext.c_str(), L".dds")) {
+	const size_t dot = filename.find_last_of(L'.');
+	const size_t separator = filename.find_last_of(L"/\\");
+	if (dot != wstring::npos && (separator == wstring::npos || dot > separator) &&
+		!_wcsicmp(filename.c_str() + dot, L".dds")) {
 		LogInfoW(L"Loading custom resource %s as DDS, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
 		hr = DirectX::CreateDDSTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
@@ -6150,6 +6727,10 @@ void CustomResource::SubstantiateBuffer(ID3D11Device *mOrigDevice1, void **buf, 
 			}
 			memset((char*)new_buf + size, 0, desc.ByteWidth - size);
 			*buf = new_buf;
+			// Only the owned initial_data snapshot changes size; a file buffer
+			// passed by LoadBufferFromFile is local to that call.
+			if (buf == &initial_data)
+				initial_data_size = desc.ByteWidth;
 		}
 
 		data.pSysMem = *buf;
@@ -6386,6 +6967,9 @@ void CustomResource::ResetRuntimeState()
 
 void CustomResource::CopyMetadataFrom(const CustomResource& src)
 {
+	if (this == &src)
+		return;
+
     // Only declaration/config metadata is copied. Keep runtime buf_size and
     // its count/extent discriminator together, just like resource and offset.
 	max_copies_per_frame = src.max_copies_per_frame;
@@ -6420,8 +7004,34 @@ void CustomResource::CopyMetadataFrom(const CustomResource& src)
 	bind_flags = src.bind_flags;
 	misc_flags = src.misc_flags;
 
-	initial_data = src.initial_data;
-	initial_data_size = src.initial_data_size;
+	// Take an independent snapshot: every CustomResource owns its initial_data
+	// and releases it unconditionally. Do not alias src's buffer because both
+	// objects may outlive each other and may realloc their own copy.
+	const bool reusable =
+		initial_data && src.initial_data &&
+		initial_data != src.initial_data &&
+		initial_data_size == src.initial_data_size &&
+		(!initial_data_size ||
+		 !memcmp(initial_data, src.initial_data, initial_data_size));
+
+	if (!reusable) {
+		void* copy = nullptr;
+		if (src.initial_data && src.initial_data_size) {
+			copy = malloc(src.initial_data_size);
+			if (copy)
+				memcpy(copy, src.initial_data, src.initial_data_size);
+			else
+				LogOverlayW(LOG_WARNING,
+					L"Out of memory copying initial data for [%ls]\n", name.c_str());
+		}
+		// Never free a pointer that is still the source's buffer. This is only
+		// possible for objects created by the previous shallow-copy code, but
+		// keeping the guard makes the transition safe as well.
+		if (initial_data && initial_data != src.initial_data)
+			free(initial_data);
+		initial_data = copy;
+		initial_data_size = copy ? src.initial_data_size : 0;
+	}
 }
 
 // Returns 1 for definite dsv formats
@@ -7047,6 +7657,8 @@ CustomResource* CustomResourcePool::GetResource(float id, bool template_lookup, 
 {
 	if (source_pool)
 		return source_pool->GetResource(id, template_lookup, use_ring_index, is_assignment);
+	if (!resource_template)
+		return nullptr;
 
 	// During static evaluation (parsing time) we cannot evaluate dynamic indexes
 	// So parsing-time config has to be applied to the entire pool
@@ -7072,6 +7684,8 @@ CommandListVariable* CustomResourcePool::GetVariable(float id, bool template_loo
 {
 	if (source_pool)
 		return source_pool->GetVariable(id, template_lookup, use_ring_index, is_assignment);
+	if (!variable_template)
+		return nullptr;
 
 	// During static evaluation (parsing time) we cannot evaluate dynamic indexes
 	// So parsing-time config has to be applied to the entire pool
@@ -7897,7 +8511,7 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 		// Parse value for STATIC index type.
 		wchar_t* end;
 		float static_pool_index = wcstof(pool_index_text.c_str(), &end);
-		if (*end != L'\0')
+		if (end == pool_index_text.c_str() || *end != L'\0' || !std::isfinite(static_pool_index))
 			return IniParserResult::SYNTAX_ERROR;
 		pool_static_index = static_pool_index;
 		pool_index_is_static = true;
@@ -7913,12 +8527,16 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 		case ResourceCopyTargetEvaluationMode::VARIABLE:
 			//LogInfo("ParseTargetPool: STATIC VARIABLE pool_index=%f\n", static_pool_index);
 			static_pool_variable = custom_resource_pool->GetVariable(static_pool_index, false, false, !is_source);
+			if (!static_pool_variable)
+				return IniParserResult::SYNTAX_ERROR;
 			type = ResourceCopyTargetType::VARIABLE;
 			return IniParserResult::TOKEN_FOUND;
 
 		default:
 			//LogInfo("ParseTargetPool: STATIC RESOURCE pool_index=%f\n", static_pool_index);
 			static_custom_resource = custom_resource_pool->GetResource(static_pool_index, false, false, !is_source);
+			if (!static_custom_resource)
+				return IniParserResult::SYNTAX_ERROR;
 			type = ResourceCopyTargetType::CUSTOM_RESOURCE;
 			return IniParserResult::TOKEN_FOUND;
 		}
@@ -8436,6 +9054,10 @@ static CommandListCommand* parse_resource_copy_operation(
 	// FIXME: The constant buffer bind flag can't be combined with others
 	if (src.type == ResourceCopyTargetType::CUSTOM_RESOURCE && (options & ResourceCopyOptions::REFERENCE)) {
 		CustomResource* src_custom_resource = src.GetCustomResource(nullptr, true);
+		if (!src_custom_resource) {
+			LogOverlayW(LOG_WARNING, L"Referenced resource or pool template is unavailable\n - [%ls]\n", section);
+			return nullptr;
+		}
 		D3D11_RESOURCE_MISC_FLAG misc_flags = (D3D11_RESOURCE_MISC_FLAG)0;
 		const D3D11_BIND_FLAG bind_flags = dst.BindFlags(NULL, &misc_flags);
 		if (!src_custom_resource->AddFlags(bind_flags, misc_flags, true)) {
@@ -9783,6 +10405,91 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 	throw(std::range_error("Bad 3DMigoto ResourceCopyTarget"));
 }
 
+void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Resource* resource,
+		HackerContext* hacker_context, UINT stride, UINT offset, DXGI_FORMAT format,
+		DrawCallInfo* call_info, TextureOverrideMatches* matches)
+{
+	if (!resource || !matches)
+		return;
+
+	// For vertex and index buffers the game may pack multiple meshes into
+	// one buffer and bind them at different offsets. In that case the base
+	// resource hash alone is not enough - we must use the same region data hash
+	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in
+	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
+	// That way the hash the user copies from the overlay matches the one looked up
+	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
+	if (G->track_region_hashes)
+	{
+		// Region hashing is only applicable to vertex/index buffers where offsets define subregions of a shared resource.
+		UINT region_offset = 0, region_size = 0;
+		switch (type) {
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+				region_offset = GetVertexBufferRegionOffset(stride, call_info, offset);
+				region_size = GetVertexBufferRegionSize(stride, call_info);
+				break;
+
+			case ResourceCopyTargetType::INDEX_BUFFER:
+				region_offset = GetIndexBufferRegionOffset(format, call_info, offset);
+				region_size = GetIndexBufferRegionSize(format, call_info);
+				break;
+		}
+
+		// Originally, 3dmigoto has 2 methods of TextureOverride matching:
+		// 1. Hash Matching - prefilter by hash, filter by call_info: stored in G->mTextureOverrideMap (hash -> vector<TextureOverride>).
+		// 2. Fuzzy Matching - prefilter by match options, filter by call_info: stored in G->mFuzzyTextureOverrides (set<FuzzyMatchResourceDesc, FuzzyMatchResourceDescLess>).
+		// Those methods cannot be used for SAME TextureOverride - if hash is defined, fuzzy match options will be ignored by INI parser.
+		if (!region_size)
+		{
+			// Resource isn't index or vertex buffer, or region size cannot be computed.
+			// Fallback to original behavior.
+			// Run Hash Matching and Fuzzy Matching.
+			find_texture_overrides_for_resource(resource, matches, call_info);
+		}
+		else
+		{
+			// For region hashes we need another method - prefilter by call_info, filter by hash.
+			// This path has higher CPU cost than Hash Matching, but it's still WAY cheaper than to region-hash every IB or VB.
+
+			// Prefilter TextureOverride sections from G->mTextureOverrideMap by call_info.
+			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(call_info);
+
+			uint32_t region_hash = 0;
+
+			// Filter prefiltering results by hash.
+			if (draw_info_matches) {
+				Profiling::State profiling_state;
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::start(&profiling_state);
+
+				// Calculate region hash.
+				region_hash = GetRegionHash(hacker_context, (ID3D11Buffer*)resource, region_offset, region_size);
+
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+
+				// Run Hash Matching.
+				if (region_hash) {
+					// By region hash.
+					find_texture_overrides_by_hash_from_fuzzy_matches(region_hash, draw_info_matches, matches, call_info);
+				} else {
+					// By full resource hash.
+					find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(resource, draw_info_matches, matches, call_info);
+				}
+			}
+
+			// Fuzzy candidates depend on the resource description, not the
+			// selected region. Reuse only the cache's fuzzy list here; exact
+			// matching above uses region_hash, not the cached whole-resource hash.
+			find_fuzzy_texture_overrides_for_resource(resource, matches, call_info);
+		}
+	}
+	else
+	{
+		find_texture_overrides_for_resource(resource, matches, call_info);
+	}
+}
+
 void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *resource_found, TextureOverrideMatches *matches)
 {
 	ID3D11View *view = NULL;
@@ -9797,84 +10504,8 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	if (!resource)
 		return;
 
-	// For vertex and index buffers the game may pack multiple meshes into
-	// one buffer and bind them at different offsets. In that case the base
-	// resource hash alone is not enough - we must use the same region data hash
-	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in
-	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
-	// That way the hash the user copies from the overlay matches the one looked up
-	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
-	if (G->track_region_hashes)
-	{
-		// Region hashing is only applicable to vertex/index buffers where offsets define subregions of a shared resource.
-		UINT region_offset = 0, region_size = 0;
-		switch (this->type) {
-			case ResourceCopyTargetType::VERTEX_BUFFER:
-				region_offset = GetVertexBufferRegionOffset(stride, state->call_info, offset);
-				region_size = GetVertexBufferRegionSize(stride, state->call_info);
-				break;
-
-			case ResourceCopyTargetType::INDEX_BUFFER:
-				region_offset = GetIndexBufferRegionOffset(format, state->call_info, offset);
-				region_size = GetIndexBufferRegionSize(format, state->call_info);
-				break;
-		}
-
-		// Originally, 3dmigoto has 2 methods of TextureOverride matching:
-		// 1. Hash Matching - prefilter by hash, filter by call_info: stored in G->mTextureOverrideMap (hash -> vector<TextureOverride>).
-		// 2. Fuzzy Matching - prefilter by match options, filter by call_info: stored in G->mFuzzyTextureOverrides (set<FuzzyMatchResourceDesc, FuzzyMatchResourceDescLess>).
-		// Those methods cannot be used for SAME TextureOverride - if hash is defined, fuzzy match options will be ignored by INI parser.
-		if (!region_size)
-		{
-			// Resource isn't index or vertex buffer, or region size cannot be computed.
-			// Fallback to original behavior.
-			// Run Hash Matching and Fuzzy Matching.
-			find_texture_overrides_for_resource(resource, matches, state->call_info);
-		}
-		else
-		{
-			// For region hashes we need another method - prefilter by call_info, filter by hash.
-			// This path has higher CPU cost than Hash Matching, but it's still WAY cheaper than to region-hash every IB or VB.
-
-			// Prefilter TextureOverride sections from G->mTextureOverrideMap by call_info.
-			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(state->call_info);
-
-			uint32_t region_hash = 0;
-
-			// Filter prefiltering results by hash.
-			if (draw_info_matches) {
-				Profiling::State profiling_state;
-				if (Profiling::mode == Profiling::Mode::SUMMARY)
-					Profiling::start(&profiling_state);
-
-				// Calculate region hash.
-				region_hash = GetRegionHash(state->mHackerContext, (ID3D11Buffer*)resource, region_offset, region_size);
-
-				if (Profiling::mode == Profiling::Mode::SUMMARY)
-					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
-
-				// Run Hash Matching.
-				if (region_hash) {
-					// By region hash.
-					find_texture_overrides_by_hash_from_fuzzy_matches(region_hash, draw_info_matches, matches, state->call_info);
-				} else {
-					// By full resource hash.
-					find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(resource, draw_info_matches, matches, state->call_info);
-				}
-			}
-
-			// Fuzzy candidates depend on the resource description, not the
-			// selected region. Reuse only the cache's fuzzy list here; exact
-			// matching above uses region_hash, not the cached whole-resource hash.
-			find_fuzzy_texture_overrides_for_resource(resource, matches, state->call_info);
-		}
-	}
-	else
-	{
-		find_texture_overrides_for_resource(resource, matches, state->call_info);
-	}
-
-	//COMMAND_LIST_LOG(state, "  found texture hash = %08llx\n", hash);
+	FindTextureOverridesForBoundResource(this->type, resource, state->mHackerContext,
+		stride, offset, format, state->call_info, matches);
 
 	resource->Release();
 	if (view)
@@ -10912,14 +11543,6 @@ static ResourceType* RecreateCompatibleTexture(
 	return GetResourceFromPool<ResourceType, DescType, CreateTexture>
 		(ini_line, src_resource, dst_resource, resource_pool, state, &new_desc);
 }
-
-class ResourceCreationModeScope {
-public:
-    ResourceCreationModeScope() { LockResourceCreationMode(); }
-    ~ResourceCreationModeScope() { UnlockResourceCreationMode(); }
-    ResourceCreationModeScope(const ResourceCreationModeScope&) = delete;
-    ResourceCreationModeScope& operator=(const ResourceCreationModeScope&) = delete;
-};
 
 static bool RecreateCompatibleResource(
 		wstring *ini_line,

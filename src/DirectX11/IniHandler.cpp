@@ -1,7 +1,11 @@
 #include "IniHandler.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdint>
+#include <cwctype>
 #include <iterator>
+#include <share.h>
 #include <string>
 #include <strsafe.h>
 #include <fstream>
@@ -17,6 +21,7 @@
 #include "Hunting.h"
 #include "ShaderRegex.h"
 #include "cursor.h"
+#include "bounded_path_format.h"
 #include <chrono>
 
 #include "vector"
@@ -697,6 +702,131 @@ static void ParseIniExcerpt(const wchar_t *excerpt)
 	ParseIniStream(&stream, NULL);
 }
 
+enum class IniDecodeResult {
+	Ok,
+	OpenFailed,
+	ReadFailed,
+	DecodeFailed,
+	UnsupportedEncoding,
+};
+
+static bool DecodeIniBytes(const char *data, int size, UINT code_page, DWORD flags,
+	std::wstring &text)
+{
+	text.clear();
+	if (size == 0)
+		return true;
+
+	const int length = MultiByteToWideChar(code_page, flags, data, size, nullptr, 0);
+	if (length <= 0)
+		return false;
+	text.resize(static_cast<size_t>(length));
+	return MultiByteToWideChar(code_page, flags, data, size, &text[0], length) == length;
+}
+
+// Returns the offset of the first byte that is not a well formed UTF-8
+// sequence, matching the validity rules of MultiByteToWideChar with
+// MB_ERR_INVALID_CHARS (overlong forms, surrogates and values above U+10FFFF
+// are rejected). Only used to report the line of the first bad byte.
+static size_t FindFirstInvalidUtf8(const char *data, size_t size)
+{
+	const unsigned char *bytes = reinterpret_cast<const unsigned char *>(data);
+
+	for (size_t i = 0; i < size;) {
+		const unsigned char lead = bytes[i];
+		size_t extra;
+		unsigned long code;
+
+		if (lead < 0x80) {
+			++i;
+			continue;
+		}
+		if (lead >= 0xC2 && lead <= 0xDF) {
+			extra = 1;
+			code = lead & 0x1F;
+		} else if (lead >= 0xE0 && lead <= 0xEF) {
+			extra = 2;
+			code = lead & 0x0F;
+		} else if (lead >= 0xF0 && lead <= 0xF4) {
+			extra = 3;
+			code = lead & 0x07;
+		} else {
+			return i;
+		}
+		if (i + extra >= size)
+			return i;
+		for (size_t j = 1; j <= extra; ++j) {
+			const unsigned char next = bytes[i + j];
+			if ((next & 0xC0) != 0x80)
+				return i;
+			code = (code << 6) | (next & 0x3F);
+		}
+		if ((extra == 1 && code < 0x80) ||
+		    (extra == 2 && (code < 0x800 || (code >= 0xD800 && code <= 0xDFFF))) ||
+		    (extra == 3 && (code < 0x10000 || code > 0x10FFFF)))
+			return i;
+		i += extra + 1;
+	}
+	return std::wstring::npos;
+}
+
+static IniDecodeResult ReadIniFileUtf8(const wchar_t *ini, std::wstring &text,
+	size_t &invalid_line)
+{
+	text.clear();
+	invalid_line = 0;
+
+	// Text mode keeps the existing CRLF translation of the old wifstream.
+	FILE *file = _wfsopen(ini, L"r", _SH_DENYNO);
+	if (!file)
+		return IniDecodeResult::OpenFailed;
+
+	std::string bytes;
+	char buffer[8192];
+	size_t count;
+	while ((count = fread(buffer, 1, sizeof(buffer), file)) != 0)
+		bytes.append(buffer, count);
+	const bool read_failed = ferror(file) != 0;
+	fclose(file);
+	if (read_failed)
+		return IniDecodeResult::ReadFailed;
+
+	if (bytes.size() >= 2 &&
+	    ((static_cast<unsigned char>(bytes[0]) == 0xFF &&
+	      static_cast<unsigned char>(bytes[1]) == 0xFE) ||
+	     (static_cast<unsigned char>(bytes[0]) == 0xFE &&
+	      static_cast<unsigned char>(bytes[1]) == 0xFF)))
+		return IniDecodeResult::UnsupportedEncoding;
+
+	size_t offset = 0;
+	if (bytes.size() >= 3 &&
+	    static_cast<unsigned char>(bytes[0]) == 0xEF &&
+	    static_cast<unsigned char>(bytes[1]) == 0xBB &&
+	    static_cast<unsigned char>(bytes[2]) == 0xBF)
+		offset = 3;
+	if (bytes.size() - offset > static_cast<size_t>(INT_MAX))
+		return IniDecodeResult::DecodeFailed;
+
+	const char *data = bytes.data() + offset;
+	const int size = static_cast<int>(bytes.size() - offset);
+
+	if (DecodeIniBytes(data, size, CP_UTF8, MB_ERR_INVALID_CHARS, text))
+		return IniDecodeResult::Ok;
+
+	// The strict decode rejected the file, so tell the user where the first
+	// bad byte is, then decode again with U+FFFD replacement and parse it all.
+	invalid_line = 1;
+	const size_t invalid = FindFirstInvalidUtf8(data, size);
+	if (invalid != std::wstring::npos)
+		for (size_t i = 0; i < invalid; ++i)
+			if (data[i] == '\n')
+				++invalid_line;
+
+	if (!DecodeIniBytes(data, size, CP_UTF8, 0, text))
+		return IniDecodeResult::DecodeFailed;
+	return IniDecodeResult::Ok;
+}
+
 // Parse the ini file into data structures. We used to use the
 // GetPrivateProfile family of Windows API calls to parse the ini file, but
 // they have the disadvantage that they open and parse the whole ini file every
@@ -718,15 +848,32 @@ static void ParseIniExcerpt(const wchar_t *excerpt)
 static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namespace,
     const wstring* recursive_root = nullptr)
 {
-	wifstream f(ini, ios::in, _SH_DENYNO);
-	if (!f) {
-		LogOverlay(LOG_WARNING, "  Error opening %S\n", ini);
-		return;
-	}
-	f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t, 0x10ffff, std::consume_header>));
 	const InputDisableScope scope = recursive_root && IsInputPathWithinDirectory(ini, *recursive_root)
 		? InputDisableScope::MODS : InputDisableScope::ALL;
-	ParseIniStream(&f, ini_namespace, scope);
+
+	std::wstring text;
+	size_t invalid_line = 0;
+	switch (ReadIniFileUtf8(ini, text, invalid_line)) {
+	case IniDecodeResult::OpenFailed:
+		LogOverlay(LOG_WARNING, "  Error opening %S\n", ini);
+		return;
+	case IniDecodeResult::UnsupportedEncoding:
+		IniWarningW(L"INI file is UTF-16 encoded, not UTF-8; re-save as UTF-8: %ls\n", ini);
+		return;
+	case IniDecodeResult::ReadFailed:
+	case IniDecodeResult::DecodeFailed:
+		LogOverlay(LOG_WARNING, "  Error reading %S\n", ini);
+		return;
+	case IniDecodeResult::Ok:
+		break;
+	}
+
+	if (invalid_line)
+		IniWarningW(L"Invalid UTF-8 in %ls at line %Iu; invalid bytes replaced with U+FFFD; re-save as UTF-8\n",
+			ini, invalid_line);
+
+	std::wistringstream stream(text);
+	ParseIniStream(&stream, ini_namespace, scope);
 }
 
 static void ParseIniFile(const wchar_t *ini)
@@ -874,7 +1021,8 @@ static void ParseIniFilesRecursive(wchar_t *migoto_path, const wstring &rel_path
 		if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
 			if (wcscmp(find_data.cFileName, L".") && wcscmp(find_data.cFileName, L".."))
 				directories.insert(wstring(find_data.cFileName));
-		} else if (!wcscmp(find_data.cFileName + wcslen(find_data.cFileName) - 4, L".ini")) {
+		} else if (wcslen(find_data.cFileName) >= 4 &&
+			!_wcsicmp(find_data.cFileName + wcslen(find_data.cFileName) - 4, L".ini")) {
 			ini_files.insert(wstring(find_data.cFileName));
 		} else {
 			LogDebug("    Not a directory or ini file: \"%S\"\n", find_data.cFileName);
@@ -1268,11 +1416,13 @@ T GetIniValue(
 	bool* found,
 	bool warn,
 	Parser&& parser,
-	Logger&& logger)
+	Logger&& logger,
+	const wstring* known_value = nullptr)
 {
 	SetFound(found, false);
 
-	const wstring* val = GetIniWstring(section, key);
+	// Borrow only within this parse; no value is retained across config loads.
+	const wstring* val = known_value ? known_value : GetIniWstring(section, key);
 	if (!val)
 		return def;
 
@@ -1600,9 +1750,10 @@ template MarkingMode GetIniEnumClass<const wchar_t *, MarkingMode>(const wchar_t
 
 // Keep named boolean aliases while preserving integer option modes such as 2.
 // Generic expression-aware GetIniBool would coerce every nonzero mode to one.
-static int GetIniBoolOrInt(const wchar_t *section, const wchar_t *key, int def, bool *found)
+static int GetIniBoolOrInt(const wchar_t *section, const wchar_t *key, int def, bool *found,
+        const wstring* known_value = nullptr)
 {
-    const auto* value = GetIniWstring(section, key);
+    const auto* value = known_value ? known_value : GetIniWstring(section, key);
     if (!value) {
         SetFound(found, false);
         return def;
@@ -1610,8 +1761,8 @@ static int GetIniBoolOrInt(const wchar_t *section, const wchar_t *key, int def, 
     const auto normalized = NormalizeString(*value);
     if (normalized == L"true" || normalized == L"yes" || normalized == L"on" ||
         normalized == L"false" || normalized == L"no" || normalized == L"off")
-        return GetIniBool(section, key, !!def, found, false);
-    return GetIniInt(section, key, def, found, false);
+        return GetIniValue<bool>(section, key, !!def, found, false, ParseBoolValue, LogIniBool, value);
+    return GetIniValue<int>(section, key, def, found, false, ParseIntValue, LogIniInt, value);
 }
 
 // For options that used to be booleans or integers and are now enums. Boolean
@@ -1633,7 +1784,7 @@ static int GetIniBoolIntOrEnum(const wchar_t *section, const wchar_t *key, int d
         result = ParseEnum(value->c_str(), prefix, names, names_len, first);
     } catch (EnumParseError&) {
         bool numeric_found = false;
-        result = GetIniBoolOrInt(section, key, def, &numeric_found);
+        result = GetIniBoolOrInt(section, key, def, &numeric_found, value);
         if (!numeric_found) {
             IniWarningW(L"Unrecognised Enum: %ls=%ls\n - [%ls]\n", key, value->c_str(), section);
             return def;
@@ -1947,6 +2098,7 @@ static void ConstructInitialData(CustomResource *custom_resource, std::istringst
 	custom_resource->initial_data_size = sizeof(T) * vals.size();
 	custom_resource->initial_data = malloc(custom_resource->initial_data_size);
 	if (!custom_resource->initial_data) {
+		custom_resource->initial_data_size = 0;
 		IniWarning("ERROR allocating initial data\n");
 		return;
 	}
@@ -1975,6 +2127,7 @@ static void ConstructInitialDataNorm(CustomResource *custom_resource, std::istri
 	custom_resource->initial_data_size = bytes * vals.size();
 	custom_resource->initial_data = malloc(custom_resource->initial_data_size);
 	if (!custom_resource->initial_data) {
+		custom_resource->initial_data_size = 0;
 		IniWarning("ERROR allocating initial data\n");
 		return;
 	}
@@ -2027,6 +2180,7 @@ static void ConstructInitialDataString(CustomResource *custom_resource, std::str
 		custom_resource->initial_data_size = data->length() - 2;
 		custom_resource->initial_data = malloc(custom_resource->initial_data_size);
 		if (!custom_resource->initial_data) {
+			custom_resource->initial_data_size = 0;
 			IniWarning("ERROR allocating initial data\n");
 			return;
 		}
@@ -2213,17 +2367,33 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		bool found = false;
 		wchar_t path[MAX_PATH];
 		if (!namespace_path.empty()) {
-			GetModuleFileName(migoto_handle, path, MAX_PATH);
-			wcsrchr(path, L'\\')[1] = 0;
-			wcscat(path, namespace_path.c_str());
-			wcscat(path, setting);
+			DWORD moduleLength = GetModuleFileName(migoto_handle, path, MAX_PATH);
+			wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(path, L'\\') : NULL;
+			if (!moduleBase) {
+				IniWarningW(L"Resource filename rejected: module path missing or too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
+			moduleBase[1] = 0;
+			if (!AppendPathBounded(path, _countof(path), namespace_path.c_str()) ||
+				!AppendPathBounded(path, _countof(path), setting)) {
+				IniWarningW(L"Resource filename rejected: path too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
 			if (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES)
 				found = true;
 		}
 		if (!found) {
-			GetModuleFileName(migoto_handle, path, MAX_PATH);
-			wcsrchr(path, L'\\')[1] = 0;
-			wcscat(path, setting);
+			DWORD moduleLength = GetModuleFileName(migoto_handle, path, MAX_PATH);
+			wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(path, L'\\') : NULL;
+			if (!moduleBase) {
+				IniWarningW(L"Resource filename rejected: module path missing or too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
+			moduleBase[1] = 0;
+			if (!AppendPathBounded(path, _countof(path), setting)) {
+				IniWarningW(L"Resource filename rejected: path too long\n - [%ls]\n", section_name);
+				return nullptr;
+			}
 		}
 		custom_resource->filename = path;
 	}
@@ -2330,7 +2500,13 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 	pool->spatial_radius = spatial_radius;
 
 	pool->resource_template = ParseResourceSection(section_name, L"template");
-
+	if (!pool->resource_template) {
+		// F-200 #2: the template's filename path was rejected. Drop the pool
+		// instead of dereferencing a null template.
+		IniWarningW(L"Resource pool rejected: template filename path too long\n - [%ls]\n", section_name);
+		customResourcePools.erase(pool_id);
+		return nullptr;
+	}
 	pool->resource_template->pool = pool;
 	pool->resource_template->pool_index = -1;
 
@@ -2613,7 +2789,7 @@ static void ParseConstantsSection()
             ++write_index;
             continue;
         }
-		name = name_pos;
+		name = name_pos ? name_pos : L"";
 
 		if (!valid_variable_name(name)) {
 			IniWarningW(L"Illegal global variable name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), ini_namespace->c_str());
@@ -2840,11 +3016,11 @@ static uint32_t hash_ini_section(uint32_t hash, const wstring *sname)
 	IniSectionVector *svec = NULL;
 	IniSectionVector::iterator entry;
 
-	hash = crc32c_hw(hash, sname->c_str(), sname->size());
+	hash = crc32c_hw(hash, sname->c_str(), sname->size() * sizeof(wchar_t));
 
 	GetIniSection(&svec, sname->c_str());
 	for (entry = svec->begin(); entry < svec->end(); entry++) {
-		hash = crc32c_hw(hash, entry->raw_line.c_str(), entry->raw_line.size());
+		hash = crc32c_hw(hash, entry->raw_line.c_str(), entry->raw_line.size() * sizeof(wchar_t));
 	}
 
 	return hash;
@@ -3444,7 +3620,7 @@ static bool parse_masked_flags_field(const wstring setting, unsigned *val, unsig
 {
 	std::vector<std::wstring> tokens;
 	std::wstring token;
-	int ret, len1, len2;
+	int ret, len1 = -1, len2 = -1;
 	unsigned i;
 	bool use_mask = false;
 	bool set;
@@ -3460,8 +3636,8 @@ static bool parse_masked_flags_field(const wstring setting, unsigned *val, unsig
 
 	// Try parsing the field as a hex string with an optional mask:
 	ret = swscanf_s(setting.c_str(), L"0x%x%n / 0x%x%n", val, &len1, mask, &len2);
-	if (ret != 0 && ret != EOF && (len1 == setting.length() || len2 == setting.length())) {
-		if (ret == 2)
+	if ((ret == 1 && len1 == setting.length()) || (ret == 2 && len2 == setting.length())) {
+		if (ret == 1)
 			*mask = 0xffffffff;
 		LogInfo("    Using: 0x%08x / 0x%08x\n", *val, *mask);
 		return true;
@@ -3990,7 +4166,7 @@ static wchar_t *StencilOps[] = {
 	L"DECR",
 };
 
-static void ParseStencilOp(wchar_t *key, wchar_t *val, D3D11_DEPTH_STENCILOP_DESC *desc)
+static void ParseStencilOp(const wchar_t *key, wchar_t *val, D3D11_DEPTH_STENCILOP_DESC *desc)
 {
 	wchar_t func_buf[32], both_pass_buf[32], depth_fail_buf[32], stencil_fail_buf[32];
 	int i;
@@ -4035,7 +4211,6 @@ static void ParseDepthStencilState(CustomShader *shader, const wchar_t *section)
 	D3D11_DEPTH_STENCIL_DESC *desc = &shader->depth_stencil_desc;
 	D3D11_DEPTH_STENCIL_DESC *mask = &shader->depth_stencil_mask;
 	wchar_t setting[MAX_PATH];
-	wchar_t key[32];
 	bool found;
 
 	memset(desc, 0, sizeof(D3D11_DEPTH_STENCIL_DESC));
@@ -4091,13 +4266,13 @@ static void ParseDepthStencilState(CustomShader *shader, const wchar_t *section)
 
 	if (GetIniStringAndLog(section, L"stencil_front", 0, setting, MAX_PATH)) {
 		shader->depth_stencil_override = 1;
-		ParseStencilOp(key, setting, &desc->FrontFace);
+		ParseStencilOp(L"stencil_front", setting, &desc->FrontFace);
 		memset(&mask->FrontFace, 0, sizeof(D3D11_DEPTH_STENCILOP_DESC));
 	}
 
 	if (GetIniStringAndLog(section, L"stencil_back", 0, setting, MAX_PATH)) {
 		shader->depth_stencil_override = 1;
-		ParseStencilOp(key, setting, &desc->BackFace);
+		ParseStencilOp(L"stencil_back", setting, &desc->BackFace);
 		memset(&mask->BackFace, 0, sizeof(D3D11_DEPTH_STENCILOP_DESC));
 	}
 
@@ -4653,6 +4828,170 @@ public:
     }
 };
 
+static void ParseDepthTextureParameter(const wchar_t *value, const wchar_t *key, std::string &texture, char &component)
+{
+	char buffer[MAX_PATH];
+	if (!ConvertStringParameter(value, buffer))
+		return;
+	const char *start = buffer;
+	while (isspace(static_cast<unsigned char>(*start))) ++start;
+	size_t length = strlen(start);
+	while (length && isspace(static_cast<unsigned char>(start[length - 1]))) --length;
+	if (length < 3 || start[length - 2] != '.' || !strchr("xyzwrgba", start[length - 1])) {
+		IniWarningW(L"Invalid %ls=%ls: expected texture.component (x/y/z/w/r/g/b/a)\n", key, value);
+		return;
+	}
+	texture.assign(start, length - 2);
+	component = start[length - 1];
+}
+
+static bool ParseAutoCheckSlotIndex(const std::wstring& text, unsigned* value)
+{
+	if (!value || text.empty())
+		return false;
+
+	uint64_t parsed = 0;
+	for (const wchar_t c : text) {
+		if (c < L'0' || c > L'9')
+			return false;
+		parsed = parsed * 10 + static_cast<unsigned>(c - L'0');
+		if (parsed > UINT_MAX)
+			return false;
+	}
+
+	*value = static_cast<unsigned>(parsed);
+	return true;
+}
+
+static bool ParseAutoCheckSlotRange(const std::wstring& text, unsigned limit, unsigned* first, unsigned* last)
+{
+	const size_t colon = text.find(L':');
+	if (colon == std::wstring::npos)
+		return false;
+
+	unsigned start = 0, end = 0;
+	if (!ParseAutoCheckSlotIndex(text.substr(0, colon), &start) ||
+	    !ParseAutoCheckSlotIndex(text.substr(colon + 1), &end))
+		return false;
+	if (start > end || end >= limit)
+		return false;
+
+	*first = start;
+	*last = end;
+	return true;
+}
+
+static void AppendAutoCheckSlot(std::vector<AutoCheckTextureSlot>* slots, ResourceCopyTargetType type,
+		wchar_t shader_type, unsigned slot)
+{
+	for (const auto& existing : *slots) {
+		if (existing.type == type && existing.slot == slot &&
+		    (type != ResourceCopyTargetType::SHADER_RESOURCE || existing.shader_type == shader_type))
+			return;
+	}
+	AutoCheckTextureSlot entry;
+	entry.type = type;
+	entry.shader_type = shader_type;
+	entry.slot = slot;
+	slots->push_back(entry);
+}
+
+static bool ParseAutoCheckTextureSlotToken(const std::wstring& token, std::vector<AutoCheckTextureSlot>* slots)
+{
+	std::wstring lower = token;
+	std::transform(lower.begin(), lower.end(), lower.begin(), towlower);
+
+	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
+	wchar_t shader_type = L'\0';
+	unsigned limit = 0;
+	size_t pos = 0;
+
+	if (lower.compare(0, 3, L"ps-") == 0) {
+		type = ResourceCopyTargetType::SHADER_RESOURCE;
+		shader_type = L'p';
+		limit = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 3;
+	} else if (lower.compare(0, 3, L"vs-") == 0) {
+		type = ResourceCopyTargetType::SHADER_RESOURCE;
+		shader_type = L'v';
+		limit = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 3;
+	} else if (lower.compare(0, 3, L"cs-") == 0) {
+		type = ResourceCopyTargetType::SHADER_RESOURCE;
+		shader_type = L'c';
+		limit = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 3;
+	} else if (lower.compare(0, 2, L"vb") == 0) {
+		type = ResourceCopyTargetType::VERTEX_BUFFER;
+		limit = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+		pos = 2;
+	} else if (lower == L"ib") {
+		AppendAutoCheckSlot(slots, ResourceCopyTargetType::INDEX_BUFFER, L'\0', 0);
+		return true;
+	} else {
+		return false;
+	}
+
+	if (pos >= lower.size())
+		return false;
+
+	// Shader resources spell the pipeline target as ps-tN / ps-t[a:b],
+	// vs-tN / vs-t[a:b], cs-tN / cs-t[a:b]. Consume the 't' first so the
+	// bracket check below applies to the slot index, not to the stage letter.
+	if (type == ResourceCopyTargetType::SHADER_RESOURCE) {
+		if (lower[pos] != L't')
+			return false;
+		++pos;
+		if (pos >= lower.size())
+			return false;
+	}
+
+	if (lower[pos] == L'[') {
+		if (lower.back() != L']' || lower.size() < pos + 3)
+			return false;
+		unsigned first = 0, last = 0;
+		if (!ParseAutoCheckSlotRange(lower.substr(pos + 1, lower.size() - pos - 2), limit, &first, &last))
+			return false;
+		for (unsigned slot = first; slot <= last; ++slot)
+			AppendAutoCheckSlot(slots, type, shader_type, slot);
+		return true;
+	}
+
+	unsigned slot = 0;
+	if (!ParseAutoCheckSlotIndex(lower.substr(pos), &slot) || slot >= limit)
+		return false;
+	AppendAutoCheckSlot(slots, type, shader_type, slot);
+	return true;
+}
+
+bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheckTextureSlot>* slots)
+{
+	if (!slots)
+		return false;
+
+	std::vector<AutoCheckTextureSlot> parsed;
+	size_t pos = 0;
+	while (pos < value.size()) {
+		while (pos < value.size() && iswspace(value[pos]))
+			++pos;
+		if (pos >= value.size())
+			break;
+
+		const size_t start = pos;
+		while (pos < value.size() && !iswspace(value[pos]))
+			++pos;
+		const std::wstring token = value.substr(start, pos - start);
+		if (!ParseAutoCheckTextureSlotToken(token, &parsed)) {
+			IniWarningW(L"Invalid auto_check_texture_slots entry \"%ls\"\n - [Rendering]\n", token.c_str());
+			slots->clear();
+			return false;
+		}
+	}
+
+	slots->swap(parsed);
+	return true;
+}
+
 void LoadConfigFile()
 {
     EarlyConfigRegistries previous_registries;
@@ -4662,12 +5001,19 @@ void LoadConfigFile()
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
-	if (!GetModuleFileName(migoto_handle, iniFile, MAX_PATH))
+	DWORD moduleLength = GetModuleFileName(migoto_handle, iniFile, MAX_PATH);
+	wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(iniFile, L'\\') : NULL;
+	if (!moduleBase) {
+		OutputDebugStringW(L"[Bunny] LoadConfigFile rejected: module path missing or too long\n");
 		DoubleBeepExit();
-	wcsrchr(iniFile, L'\\')[1] = 0;
-	wcscpy(logFilename, iniFile);
-	wcscat(iniFile, INI_FILENAME);
-	wcscat(logFilename, L"d3d11_log.txt");
+	}
+	moduleBase[1] = 0;
+	if (!CopyPathBounded(logFilename, _countof(logFilename), iniFile) ||
+		!AppendPathBounded(iniFile, _countof(iniFile), INI_FILENAME) ||
+		!AppendPathBounded(logFilename, _countof(logFilename), L"d3d11_log.txt")) {
+		OutputDebugStringW(L"[Bunny] LoadConfigFile rejected: config/log path too long\n");
+		DoubleBeepExit();
+	}
 	warn_of_conflicting_d3dx(iniFile);
 
 	// Log all settings that are _enabled_, in order, 
@@ -4678,7 +5024,7 @@ void LoadConfigFile()
     InitializeEarlyWarningSettings(iniFile);
 	if (LogFile)
 	{
-		LogWarning("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
+		LogWarning("\nD3D11 DLL starting init - v %s - %s\n", MigotoFileVersionString(), LogTime().c_str());
 
 		wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
 		GetModuleFileName(migoto_handle, our_path, MAX_PATH);
@@ -4882,6 +5228,14 @@ void LoadConfigFile()
     InvalidateResourceDataCaches();
     InvalidateTextureMatchSnapshots();
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
+	// Rebuild on every load; empty/absent keeps the native batch check disabled.
+	G->auto_check_texture_slots.clear();
+	G->auto_check_texture_slot_has_check.clear();
+	++G->auto_check_texture_slots_generation;
+	if (const wstring* auto_check_slots = GetIniWstring(L"Rendering", L"auto_check_texture_slots")) {
+		LogInfo("  auto_check_texture_slots=%S\n", auto_check_slots->c_str());
+		ParseAutoCheckTextureSlots(*auto_check_slots, &G->auto_check_texture_slots);
+	}
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);
 	G->disassemble_undecipherable_custom_data = GetIniBool(L"Rendering", L"disassemble_undecipherable_custom_data", false, NULL);
@@ -4906,21 +5260,13 @@ void LoadConfigFile()
 	G->decompiler_settings.recompileVs = GetIniBool(L"Rendering", L"recompile_all_vs", false, NULL);
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTexture1", 0, setting, MAX_PATH))
 	{
-		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *end = RightStripA(buf);
-		G->decompiler_settings.ZRepair_DepthTextureReg1 = *end; *(end - 1) = 0;
-		char *start = buf; while (isspace(*start)) start++;
-		G->decompiler_settings.ZRepair_DepthTexture1 = start;
+		ParseDepthTextureParameter(setting, L"fix_ZRepair_DepthTexture1", G->decompiler_settings.ZRepair_DepthTexture1,
+			G->decompiler_settings.ZRepair_DepthTextureReg1);
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTexture2", 0, setting, MAX_PATH))
 	{
-		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *end = RightStripA(buf);
-		G->decompiler_settings.ZRepair_DepthTextureReg2 = *end; *(end - 1) = 0;
-		char *start = buf; while (isspace(*start)) start++;
-		G->decompiler_settings.ZRepair_DepthTexture2 = start;
+		ParseDepthTextureParameter(setting, L"fix_ZRepair_DepthTexture2", G->decompiler_settings.ZRepair_DepthTexture2,
+			G->decompiler_settings.ZRepair_DepthTextureReg2);
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_ZPosCalc1", 0, setting, MAX_PATH))
 		G->decompiler_settings.ZRepair_ZPosCalc1 = readStringParameter(setting);
@@ -4933,37 +5279,40 @@ void LoadConfigFile()
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_Dependencies1", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *start = buf; while (isspace(*start)) ++start;
-		while (*start)
-		{
-			char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
-			G->decompiler_settings.ZRepair_Dependencies1.push_back(string(start, end));
-			start = end; if (*start == ',') ++start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) ++start;
+			while (*start)
+			{
+				char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
+				G->decompiler_settings.ZRepair_Dependencies1.push_back(string(start, end));
+				start = end; if (*start == ',') ++start;
+			}
 		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_Dependencies2", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *start = buf; while (isspace(*start)) ++start;
-		while (*start)
-		{
-			char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
-			G->decompiler_settings.ZRepair_Dependencies2.push_back(string(start, end));
-			start = end; if (*start == ',') ++start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) ++start;
+			while (*start)
+			{
+				char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
+				G->decompiler_settings.ZRepair_Dependencies2.push_back(string(start, end));
+				start = end; if (*start == ',') ++start;
+			}
 		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_InvTransform", 0, setting, MAX_PATH))
 	{
 		char buf[MAX_PATH];
-		wcstombs(buf, setting, MAX_PATH);
-		char *start = buf; while (isspace(*start)) ++start;
-		while (*start)
-		{
-			char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
-			G->decompiler_settings.InvTransforms.push_back(string(start, end));
-			start = end; if (*start == ',') ++start;
+		if (ConvertStringParameter(setting, buf)) {
+			char *start = buf; while (isspace(static_cast<unsigned char>(*start))) ++start;
+			while (*start)
+			{
+				char *end = start; while (*end != ',' && *end && *end != ' ') ++end;
+				G->decompiler_settings.InvTransforms.push_back(string(start, end));
+				start = end; if (*start == ',') ++start;
+			}
 		}
 	}
 	if (GetIniStringAndLog(L"Rendering", L"fix_ZRepair_DepthTextureHash", 0, setting, MAX_PATH))

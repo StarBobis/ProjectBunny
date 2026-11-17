@@ -28,6 +28,8 @@ PoolSaved[$id] = ref vs-cb0
 
 FIFO/spatial 缺失读取默认返回模板，不分配；赋值才分配。`pool_allocate_slot_on_missing = 1` 改为读取也分配。
 
+`static` 的单元素选择要求有限数值，NaN/inf 在解析时被拒绝。`ring` 的动态数值索引无效时，变量读取返回 NaN，写入不改变槽或默认模板。FIFO/spatial 按 float 的位模式识别键，NaN 位模式键仍受支持。元素或模板不可用时，资源引用和间接绘制的解析会失败。
+
 空间查找半径按 120 FPS 标准配置，实际半径随 `FRAME_TIME * 120` 缩放并向上取整。临近对象可能共用槽，不是精确对象跟踪。
 
 ## 配置完整表

@@ -412,7 +412,7 @@ static vector<DWORD> assemble_cbvox_operand(string &s, vector<DWORD> &v, token_o
 					string sAdd2 = index1.substr(index1.find(" + ") + 3);
 					vector<DWORD> reg2 = assembleOp(sReg2);
 					tOp->index1_repr = 2;
-					int iAdd2 = atoi(sAdd.c_str());
+					int iAdd2 = atoi(sAdd2.c_str());
 					if (iAdd2) tOp->index1_repr = 3;
 					string swizzle = s.substr(s.find("].") + 2);
 					handleSwizzle(swizzle, tOp);
@@ -799,7 +799,10 @@ static vector<string> strToWords(string s)
 		if (start >= s.size())
 			break;
 		if (s[start] == '(' || s[start + 1] == '(') {
-			end = s.find(')', start) + 1;
+			end = s.find(')', start);
+			if (end == string::npos)
+				throw AssemblerParseError(s, "Unterminated operand parentheses");
+			++end;
 			if (end < s.size() && s[end] == ',')
 				end++;
 		} else if (s[start] == '"') {
@@ -807,12 +810,15 @@ static vector<string> strToWords(string s)
 			// instructions, and we need to match until the
 			// right-most quote in case there are extra quotes
 			// inside the string (which are not escaped).
-			end = s.rfind('"') + 1;
+			end = s.rfind('"');
+			if (end == start)
+				throw AssemblerParseError(s, "Unterminated string operand");
+			++end;
 			if (end < s.size() && s[end] == ',')
 				end++;
 		} else {
 			end = s.find(' ', start);
-			if (s[end + 1] == '+') {
+			if (end != string::npos && s[end + 1] == '+') {
 				end = s.find(' ', end + 3);
 				if (s.size() > end && s[end + 1] == '+') {
 					end = s.find(' ', end + 3);
@@ -1189,22 +1195,22 @@ static void assembleResourceDeclarationType(string *type, vector<DWORD> *v)
 
 	if (*type == "(float,float,float,float)")
 		v->push_back(0x5555);
-	if (*type == "(uint,uint,uint,uint)")
+	else if (*type == "(uint,uint,uint,uint)")
 		v->push_back(0x4444);
-	if (*type == "(sint,sint,sint,sint)")
+	else if (*type == "(sint,sint,sint,sint)")
 		v->push_back(0x3333);
-	if (*type == "(snorm,snorm,snorm,snorm)")
+	else if (*type == "(snorm,snorm,snorm,snorm)")
 		v->push_back(0x2222);
-	if (*type == "(unorm,unorm,unorm,unorm)")
+	else if (*type == "(unorm,unorm,unorm,unorm)")
 		v->push_back(0x1111);
-	if (*type == "(double,<continued>,<unused>,<unused>)")
+	else if (*type == "(double,<continued>,<unused>,<unused>)")
 		v->push_back(0x9987);
-	if (*type == "(double,<continued>,double,<continued>)")
+	else if (*type == "(double,<continued>,double,<continued>)")
 		v->push_back(0x8787);
-	if (*type == "(mixed,mixed,mixed,mixed)") // TestShaders/GameExamples/DR3/cc5538d28f8fd45e-vs
+	else if (*type == "(mixed,mixed,mixed,mixed)") // TestShaders/GameExamples/DR3/cc5538d28f8fd45e-vs
 		v->push_back(0x6666);
-	// FIXME: Fail gracefully if we don't recognise the type, since doing
-	// nothing here will cause a hang!
+	else
+		throw AssemblerParseError(*type, "Unrecognised resource return type");
 }
 
 static void assembleSystemValue(string *sv, vector<DWORD> *os)
@@ -1259,33 +1265,38 @@ static void assembleSystemValue(string *sv, vector<DWORD> *os)
 		os->push_back(21);
 	else if (*sv == "finalLineDensityTessFactor")
 		os->push_back(22);
-
-	// FIXME: Fail gracefully if we don't recognise the system value,
-	// otherwise we might generate a corrupt shader and crash DirectX.
+	else
+		throw AssemblerParseError(*sv, "Unrecognised system value");
 }
 
-static int interpolationMode(vector<string> &w, int def)
+static int interpolationMode(const vector<string> &w, int def, size_t required_operands)
 {
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/dn280473(v=vs.85).aspx
-
-	if (w[1] == "constant")
-		return 1;
-	if (w[1] != "linear")
-		return def;
-
-	if (w[2] == "noperspective") {
-		if (w[3] == "sample")
-			return 7;
-		if (w[3] == "centroid")
-			return 5;
-		return 4;
+	int mode = def;
+	size_t first_operand = 1;
+	if (w.size() > 1 && w[1] == "constant") {
+		mode = 1;
+		first_operand = 2;
+	} else if (w.size() > 1 && w[1] == "linear") {
+		mode = 2;
+		first_operand = 2;
+		if (w.size() > 2 && w[2] == "noperspective") {
+			mode = 4;
+			first_operand = 3;
+			if (w.size() > 3 && (w[3] == "sample" || w[3] == "centroid")) {
+				mode = w[3] == "sample" ? 7 : 5;
+				first_operand = 4;
+			}
+		} else if (w.size() > 2 && (w[2] == "centroid" || w[2] == "sample")) {
+			mode = w[2] == "centroid" ? 3 : 6;
+			first_operand = 3;
+		}
 	}
-	if (w[2] == "centroid")
-		return 3;
-	if (w[2] == "sample")
-		return 6;
-
-	return 2;
+	// Legacy declarations may omit the mode. System-value forms additionally
+	// require the semantic token after the input register.
+	if (w.size() < first_operand + required_operands)
+		throw AssemblerParseError(w.empty() ? "" : w[0], "Missing input or system-value operand in declaration");
+	return mode;
 }
 
 static unsigned parseSyncFlags(string *w)
@@ -2031,7 +2042,7 @@ static vector<DWORD> assembleIns(string s)
 		ins->opcode = 0x62;
 		// Switched to use common interpolation mode parsing to catch
 		// more variants -DarkStarSword
-		ins->_11_23 = interpolationMode(w, 0); // FIXME: Default?
+		ins->_11_23 = interpolationMode(w, 0, 1); // FIXME: Default?
 		os = assembleOp(w[w.size() - 1], true);
 		ins->length = 1 + os.size();
 		v.push_back(op);
@@ -2046,7 +2057,7 @@ static vector<DWORD> assembleIns(string s)
 		check_num_ops(s, w, 2, 5);
 		vector<DWORD> os = assembleOp(w[w.size() - 2], true);
 		ins->opcode = 0x63;
-		ins->_11_23 = interpolationMode(w, 1);
+		ins->_11_23 = interpolationMode(w, 1, 2);
 		if (w.size() > 2)
 			assembleSystemValue(&w[w.size() - 1], &os);
 		ins->length = 1 + os.size();
@@ -2060,7 +2071,7 @@ static vector<DWORD> assembleIns(string s)
 		// system value parsing (fixes missing viewport_array_index)
 		//   -DarkStarSword
 		check_num_ops(s, w, 2, 5);
-		ins->_11_23 = interpolationMode(w, 0); // FIXME: Default?
+		ins->_11_23 = interpolationMode(w, 0, 2); // FIXME: Default?
 		os = assembleOp(w[w.size() - 2], true);
 		assembleSystemValue(&w[w.size() - 1], &os);
 		ins->length = 1 + os.size();
@@ -2313,16 +2324,23 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 	}
 
 	if (v2.size() > 0) {
+		// Malformed literals can make the find()/substr() offsets below
+		// invalid; fall back to the original assembly instead of throwing.
+		try {
 		if (v2.size() == v.size()) {
 			for (DWORD i = 0; i < v.size(); i++) {
 				if (v[i] == 0x1835) {
 					int size = v[++i];
 					int loopSize = (size - 2) / 4;
 					lastLiteral = sNew.find("{ { ");
+					if (loopSize > 0 && lastLiteral == string::npos)
+						return s;
 					for (int j = 0; j < loopSize; j++) {
 						i++;
 						lastLiteral = sNew.find("{ ", lastLiteral + 1);
 						lastEnd = sNew.find(",", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2335,6 +2353,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 						i++;
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 						lastEnd = sNew.find(",", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2349,6 +2369,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 						i++;
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 						lastEnd = sNew.find(",", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2363,6 +2385,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 						i++;
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 						lastEnd = sNew.find("}", lastLiteral + 1);
+						if (lastLiteral == string::npos || lastEnd == string::npos)
+							return s;
 						s3 = sNew.substr(lastLiteral + 2, lastEnd - 2 - lastLiteral);
 						if (v[i] != v2[i]) {
 							string sLiteral = convertF(v[i]);
@@ -2380,6 +2404,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find("l(", lastLiteral + 1);
 					lastEnd = sNew.find(")", lastLiteral);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 2); // +2 matches length of "l("
@@ -2392,6 +2418,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find("l(", lastLiteral);
 					lastEnd = sNew.find(",", lastLiteral);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 2); // +2 matches length of "l("
@@ -2403,6 +2431,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(",", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1); // BUG FIXED: Was using +2, but "," is only length 1 -DSS
@@ -2416,6 +2446,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(",", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1); // BUG FIXED: Was using +2, but "," is only length 1 -DSS
@@ -2429,6 +2461,8 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i++;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(")", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i] != v2[i]) {
 						string sLiteral = convertF(v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1); // BUG FIXED: Was using +2, but "," is only length 1 -DSS
@@ -2443,9 +2477,13 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					i += 2;
 					lastLiteral = sNew.find("d(", lastLiteral);
 					lastEnd = sNew.find(",", lastLiteral);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					// If it's a hex literal it is split over four components instead of two:
 					if (!sNew.compare(lastLiteral + 2, 2, "0x"))
 						lastEnd = sNew.find(",", lastLiteral + 1);
+					if (lastEnd == string::npos)
+						return s;
 					if (v[i-1] != v2[i-1] || v[i] != v2[i]) {
 						string sLiteral = convertD(v[i-1], v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 2);
@@ -2456,10 +2494,14 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 					}
 					i += 2;
 					lastLiteral = sNew.find(",", lastLiteral + 1);
+					if (lastLiteral == string::npos)
+						return s;
 					// If it's a hex literal it is split over four components instead of two:
 					if (!sNew.compare(lastLiteral + 2, 2, "0x"))
 						lastLiteral = sNew.find(",", lastLiteral + 1);
 					lastEnd = sNew.find(")", lastLiteral + 1);
+					if (lastLiteral == string::npos || lastEnd == string::npos)
+						return s;
 					if (v[i-1] != v2[i-1] || v[i] != v2[i]) {
 						string sLiteral = convertD(v[i-1], v[i]);
 						string sBegin = sNew.substr(0, lastLiteral + 1);
@@ -2507,6 +2549,9 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 				codeBin[s2] = v2;
 			}
 		}
+		} catch (const std::out_of_range&) {
+			return s;
+		}
 	} else {
 		if (s != "undecipherable custom data") {
 			s2 = "!missing ";
@@ -2525,22 +2570,23 @@ static string assembleAndCompare(string s, vector<DWORD> v)
 vector<string> stringToLines(const char* start, size_t size)
 {
 	vector<string> lines;
+	if (!size)
+		return lines;
 	const char* pStart = start;
-	const char* pEnd = pStart;
 	const char* pRealEnd = pStart + size;
-	while (true) {
-		while (*pEnd != '\n' && pEnd < pRealEnd) {
+	while (pStart < pRealEnd) {
+		const char* pEnd = pStart;
+		while (pEnd < pRealEnd && *pEnd != '\n') {
 			pEnd++;
 		}
 		if (*pStart == 0) {
 			break;
 		}
-		string s(pStart, pEnd++);
+		string s(pStart, pEnd);
 		pStart = pEnd;
+		if (pStart < pRealEnd)
+			++pStart;
 		lines.push_back(s);
-		if (pStart >= pRealEnd) {
-			break;
-		}
 	}
 	for (unsigned int i = 0; i < lines.size(); i++) {
 		string s = lines[i];
@@ -2902,14 +2948,21 @@ HRESULT disassembler(vector<byte> *buffer, vector<byte> *ret, const char *commen
 	DWORD one;
 	DWORD fSize;
 	DWORD numChunks;
-	vector<DWORD> chunkOffsets;
 	int rdef_state = 0;
+	const HRESULT invalid_dxbc = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
 
-	// TODO: Add robust error checking here (buffer is at least as large as
-	// the header, etc). I've added a check for numChunks < 1 as that
-	// would lead to codeByteStart being used uninitialised
+	if (!buffer || !ret)
+		return E_INVALIDARG;
+
+	// Fixed DXBC container header: 32 bytes. Layout matches
+	// src/common/shader.h:3-9.
+	if (buffer->size() < 32)
+		return invalid_dxbc;
+
 	byte* pPosition = buffer->data();
 	std::memcpy(fourcc, pPosition, 4);
+	if (std::memcmp(fourcc, "DXBC", 4) != 0)
+		return invalid_dxbc;
 	pPosition += 4;
 	std::memcpy(fHash, pPosition, 16);
 	pPosition += 16;
@@ -2918,11 +2971,42 @@ HRESULT disassembler(vector<byte> *buffer, vector<byte> *ret, const char *commen
 	fSize = *(DWORD*)pPosition;
 	pPosition += 4;
 	numChunks = *(DWORD*)pPosition;
-	if (numChunks < 1)
-		return S_FALSE;
+	// Division, not 4 * numChunks: this proves the whole directory fits
+	// without performing the multiplication that used to wrap at 2^30.
+	if (numChunks < 1 ||
+			numChunks > (buffer->size() - 32) / sizeof(DWORD))
+		return invalid_dxbc;
 	pPosition += 4;
-	chunkOffsets.resize(numChunks);
-	std::memcpy(chunkOffsets.data(), pPosition, 4 * numChunks);
+
+	// Validate every directory entry before using any offset, and remember
+	// the last SHEX/SHDR chunk (same effective choice as the old reverse scan).
+	const byte* pDirectory = pPosition;
+	size_t codeOffset = 0;
+	bool codeFound = false;
+	for (DWORD i = 0; i < numChunks; i++) {
+		DWORD chunkOffset;
+		std::memcpy(&chunkOffset, pDirectory + i * sizeof(DWORD),
+				sizeof(chunkOffset));
+		const size_t offset = chunkOffset;
+		if (offset > buffer->size() || buffer->size() - offset < 8)
+			return invalid_dxbc;
+		DWORD chunkSize;
+		std::memcpy(&chunkSize, buffer->data() + offset + 4,
+				sizeof(chunkSize));
+		if (chunkSize > buffer->size() - offset - 8)
+			return invalid_dxbc;
+		if (std::memcmp(buffer->data() + offset, "SHEX", 4) == 0 ||
+				std::memcmp(buffer->data() + offset, "SHDR", 4) == 0) {
+			// The code chunk needs the 8-byte program header
+			// (version token + program length in DWORDs).
+			if (chunkSize < 8)
+				return invalid_dxbc;
+			codeOffset = offset;
+			codeFound = true;
+		}
+	}
+	if (!codeFound)
+		return invalid_dxbc;
 
 	char* asmBuffer;
 	size_t asmSize;
@@ -2941,15 +3025,7 @@ HRESULT disassembler(vector<byte> *buffer, vector<byte> *ret, const char *commen
 	asmBuffer = (char*)pDissassembly->GetBufferPointer();
 	asmSize = pDissassembly->GetBufferSize();
 
-	byte* codeByteStart;
-	int codeChunk = 0;
-	for (DWORD i = 1; i <= numChunks; i++) {
-		codeChunk = numChunks - i;
-		codeByteStart = buffer->data() + chunkOffsets[numChunks - i];
-		if (memcmp(codeByteStart, "SHEX", 4) == 0 || memcmp(codeByteStart, "SHDR", 4) == 0)
-			break;
-	}
-	// FIXME: If neither SHEX or SHDR was found in the shader, codeByteStart will be garbage
+	byte* codeByteStart = buffer->data() + codeOffset;
 	vector<string> lines = stringToLines(asmBuffer, asmSize);
 	DWORD* codeStart = (DWORD*)(codeByteStart + 8);
 	bool codeStarted = false;
@@ -3116,13 +3192,13 @@ static vector<DWORD> ComputeHash(byte const* input, DWORD size)
 					Dst[0] = size << 3;
 					DWORD remSize = size - processedSize;
 					std::memcpy(&Dst[1], pSrc, remSize);
-					std::memcpy(&Dst[1 + remSize / 4], Data, restSize);
+					std::memcpy(reinterpret_cast<byte*>(&Dst[1]) + remSize, Data, restSize);
 					Dst[15] = (size * 2) | 1;
 					pSrc = Dst;
 				} else {
 					DWORD remSize = size - processedSize;
 					std::memcpy(&Dst[0], pSrc, remSize);
-					std::memcpy(&Dst[remSize / 4], Data, 64 - remSize);
+					std::memcpy(reinterpret_cast<byte*>(Dst) + remSize, Data, 64 - remSize);
 					pSrc = Dst;
 				}
 			} else if (i > loopSize2) {
@@ -3225,6 +3301,8 @@ static vector<DWORD> ComputeHash(byte const* input, DWORD size)
 vector<byte> assembler(vector<char> *asmFile, vector<byte> origBytecode,
 		vector<AssemblerParseError> *parse_errors)
 {
+	if (asmFile->empty())
+		throw AssemblerParseError("", "Missing shader model declaration");
 	byte fourcc[4];
 	DWORD fHash[4];
 	DWORD one;
@@ -3277,10 +3355,12 @@ vector<byte> assembler(vector<char> *asmFile, vector<byte> origBytecode,
 			vector<DWORD> v;
 			if (!codeStarted) {
 				if (s.size() > 0 && s[0] != ' ') {
-					codeStarted = true;
 					vector<DWORD> ins = assembleIns(s);
+					if (ins.size() != 1 || (ins[0] >> 16) > 5)
+						throw AssemblerParseError(s, "Expected shader model declaration before instructions");
 					o.insert(o.end(), ins.begin(), ins.end());
 					o.push_back(0);
+					codeStarted = true;
 				}
 			} else if (s.find("{ {") < s.size()) {
 				s2 = s;
@@ -3320,6 +3400,8 @@ vector<byte> assembler(vector<char> *asmFile, vector<byte> origBytecode,
 			parse_errors->push_back(e);
 		}
 	}
+	if (o.size() < 2)
+		throw AssemblerParseError("", "Missing shader model declaration");
 	codeStart = (DWORD*)(codeByteStart); // Endian bug, not that we care
 	auto it = origBytecode.begin() + chunkOffsets[codeChunk] + 8;
 	size_t codeSize = codeStart[1];

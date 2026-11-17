@@ -1,0 +1,17 @@
+-- Configuring done (0.1s)
+-- Generating done (0.0s)
+-- Build files have been written to: E:/代码/ProjectBunny-main/模拟环境/build/tools
+ninja: no work to do.
+-- Found Nektra Hook Library: E:/代码/ProjectBunny-main/3rdparty/Nektra
+-- Configuring done (1.0s)
+-- Generating done (0.2s)
+-- Build files have been written to: E:/代码/ProjectBunny-main/模拟环境/build/candidate
+[1/8] C:\WINDOWS\system32\cmd.exe /C "cd /D E:\代码\ProjectBunny-main\模拟环境\build\candidate\src\DirectX11 && "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -DSOURCE_DIR=E:/代码/ProjectBunny-main -DOUTPUT_FILE=E:/代码/ProjectBunny-main/模拟环境/build/candidate/src/DirectX11/generated/dx11-version.generated.h -DFALLBACK_VERSION=1.3.16 "-DGIT_EXECUTABLE=C:/Program Files/Git/cmd/git.exe" -DVERSION_TAG= -P E:/代码/ProjectBunny-main/cmake/GenerateDX11Version.cmake"
+[2/8] Building CXX object src\DirectX11\CMakeFiles\DirectX11.dir\DX11Version.cpp.obj
+[3/8] Building RC object src\DirectX11\CMakeFiles\DirectX11.dir\DirectX11.rc.res
+[4/8] Linking CXX shared library src\DirectX11\d3d11.dll
+[5/8] Building CXX object src\DirectX11\CMakeFiles\dx11_upstream_regression.dir\DX11Version.cpp.obj
+[6/8] Building RC object src\DirectX11\CMakeFiles\dx11_upstream_regression.dir\DirectX11.rc.res
+[7/8] Building CXX object src\DirectX11\CMakeFiles\dx11_upstream_regression.dir\tests\dx11_version_regression.cpp.obj
+[8/8] Linking CXX executable src\DirectX11\dx11_upstream_regression.exe
+Test hosts: E:\代码\ProjectBunny-main\模拟环境\build\tools

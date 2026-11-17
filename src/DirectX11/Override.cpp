@@ -247,7 +247,6 @@ void KeyOverrideCycle::ParseIniSection(LPCWSTR section)
 	OverrideVars vars;
 	bool is_conditional;
 	CommandListExpression condition_expression;
-	CommandList activate_command_list, deactivate_command_list;
 	IniSectionVector *section_vec = NULL;
 	IniSectionVector::iterator entry;
 	CommandListVariable *var = NULL;
@@ -306,6 +305,7 @@ void KeyOverrideCycle::ParseIniSection(LPCWSTR section)
 		if (!not_done)
 			break;
 
+		CommandList activate_command_list, deactivate_command_list;
 		LogInfoNoNL("  Cycle %i:", i);
 		params.clear();
 		for (j = param_bufs.begin(); j != param_bufs.end(); j++) {
@@ -443,17 +443,23 @@ void KeyOverrideCycleBack::DownEvent(HackerDevice *device)
 // This map/unmap code also requires that the texture be created with the D3D11_USAGE_DYNAMIC flag set.
 // This map operation can also cause the GPU to stall, so this should be done as rarely as possible.
 
-static void UpdateIniParams(HackerDevice* wrapper)
+static bool UpdateIniParams(HackerDevice* wrapper)
 {
+	if (!wrapper || !wrapper->mIniTexture)
+		return false;
 	ID3D11DeviceContext1* realContext = wrapper->GetPassThroughOrigContext1();
-	D3D11_MAPPED_SUBRESOURCE mappedResource;
-
-	if (wrapper->mIniTexture) {
-		realContext->Map(wrapper->mIniTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-		memcpy(mappedResource.pData, G->iniParams.data(), sizeof(DirectX::XMFLOAT4) * G->iniParams.size());
-		realContext->Unmap(wrapper->mIniTexture, 0);
-		Profiling::iniparams_updates++;
+	if (!realContext)
+		return false;
+	D3D11_MAPPED_SUBRESOURCE mappedResource{};
+	const HRESULT result = realContext->Map(wrapper->mIniTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+	if (FAILED(result)) {
+		LogWarning("UpdateIniParams: Map failed with HRESULT=%08lx; upload remains pending\n", static_cast<unsigned long>(result));
+		return false;
 	}
+	memcpy(mappedResource.pData, G->iniParams.data(), sizeof(DirectX::XMFLOAT4) * G->iniParams.size());
+	realContext->Unmap(wrapper->mIniTexture, 0);
+	Profiling::iniparams_updates++;
+	return true;
 }
 
 std::vector<CommandList*> pending_post_command_lists;
@@ -539,6 +545,7 @@ void KeyOverride::UpEvent(HackerDevice *device)
 
 void PresetOverride::Trigger(CommandListCommand *triggered_from)
 {
+	std::lock_guard<std::mutex> lock(trigger_state_mutex);
 	if (unique_triggers_required) {
 		triggers_this_frame.insert(triggered_from);
 		if (triggers_this_frame.size() >= unique_triggers_required)
@@ -550,6 +557,7 @@ void PresetOverride::Trigger(CommandListCommand *triggered_from)
 
 void PresetOverride::Exclude()
 {
+	std::lock_guard<std::mutex> lock(trigger_state_mutex);
 	excluded = true;
 }
 
@@ -557,15 +565,27 @@ void PresetOverride::Exclude()
 // triggered this frame it will remain active, otherwise it will deactivate.
 void PresetOverride::Update(HackerDevice *wrapper)
 {
-	if (!active && triggered && !excluded)
-		Override::Activate(wrapper, true);
-	else if (active && (!triggered || excluded))
-		Override::Deactivate(wrapper);
+	bool activate = false, deactivate = false;
 
-	if (unique_triggers_required)
-		triggers_this_frame.clear();
-	triggered = false;
-	excluded = false;
+	// Consume the complete trigger state before acting on it. Activate and
+	// Deactivate run command lists, which can trigger or exclude this same
+	// preset; those writes must land after the consumption point and belong
+	// to the next frame. Holding the lock across them would self-deadlock.
+	{
+		std::lock_guard<std::mutex> lock(trigger_state_mutex);
+		activate = !active && triggered && !excluded;
+		deactivate = active && (!triggered || excluded);
+
+		if (unique_triggers_required)
+			triggers_this_frame.clear();
+		triggered = false;
+		excluded = false;
+	}
+
+	if (activate)
+		Override::Activate(wrapper, true);
+	else if (deactivate)
+		Override::Deactivate(wrapper);
 }
 
 static void _ScheduleTransition(struct OverrideTransitionParam *transition,
@@ -682,8 +702,10 @@ void OverrideTransition::UpdateTransitions(HackerDevice *wrapper)
 		}
 		LogDebug("\n");
 
-		UpdateIniParams(wrapper);
+		ini_params_upload_pending = true;
 	}
+	if (ini_params_upload_pending && UpdateIniParams(wrapper))
+		ini_params_upload_pending = false;
 
 	if (!vars.empty()) {
 		LogDebugNoNL(" Variables remapped to ");
@@ -718,6 +740,7 @@ void OverrideTransition::Stop()
 {
 	params.clear();
 	vars.clear();
+	ini_params_upload_pending = false;
 }
 
 OverrideGlobalSaveParam::OverrideGlobalSaveParam() :

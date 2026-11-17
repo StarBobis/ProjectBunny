@@ -3,6 +3,8 @@
 
 #include <psapi.h>
 #include <inttypes.h>
+#include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -72,15 +74,39 @@ static bool lock_dependency_checks_enabled;
 static uintptr_t ntdll_base, ntdll_end;
 static uintptr_t apphelp_base, apphelp_end;
 
-static std::unordered_map<CRITICAL_SECTION*, std::string> lock_names;
-static const char* lock_name(CRITICAL_SECTION *lock, char buf[20])
+// Lock names are read from diagnostic paths and written while locks are being
+// installed; those can run on different threads. Keep the names behind their
+// own mutex instead of graph_lock: G locks are Pretty-initialized before
+// graph_lock, so graph_lock cannot protect the first writes.
+struct LockNameRegistry
 {
-	auto i = lock_names.find(lock);
-	if (i == lock_names.end()) {
-		_snprintf_s(buf, 20, _TRUNCATE, "%p", lock);
-		return buf;
-	}
-	return i->second.c_str();
+	std::mutex mutex;
+	std::unordered_map<CRITICAL_SECTION *, std::string> names;
+};
+
+static LockNameRegistry &lock_name_registry()
+{
+	// Function-local static: global constructors may call
+	// InitializeCriticalSectionPretty() before this TU's namespace-scope
+	// objects have been initialized.
+	static LockNameRegistry registry;
+	return registry;
+}
+
+// Returns a copy: callers log after the registry mutex is released, so a
+// same-key rewrite or rehash must not invalidate the returned text.
+static std::string lock_name(CRITICAL_SECTION *lock)
+{
+	LockNameRegistry &registry = lock_name_registry();
+	std::lock_guard<std::mutex> guard(registry.mutex);
+
+	auto i = registry.names.find(lock);
+	if (i != registry.names.end())
+		return i->second;
+
+	char buf[20];
+	_snprintf_s(buf, sizeof(buf), _TRUNCATE, "%p", lock);
+	return std::string(buf);
 }
 
 static void dump_stack_trace()
@@ -111,23 +137,22 @@ static void log_held_locks(LockStack &held_locks, std::vector<LockStack> &other_
 	HMODULE module;
 	wchar_t path[MAX_PATH];
 	MODULEINFO mod_info;
-	char buf[20];
 
 	LogInfo("%04x held locks (most recent first):\n", GetCurrentThreadId());
 	for (auto info = held_locks.rbegin(); info != held_locks.rend(); info++) {
 		if (info->function) {
 			// 3DMigoto internal locking call with decorated function and line number
 			LogInfo("%04x: EnterCriticalSection(%s) %s(%d)\n",
-					GetCurrentThreadId(), lock_name(info->lock, buf), info->function, info->line);
+					GetCurrentThreadId(), lock_name(info->lock).c_str(), info->function, info->line);
 		} else {
 			if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)info->ret, &module)
 			 && GetModuleFileName(module, path, MAX_PATH)
 			 && GetModuleInformation(GetCurrentProcess(), module, &mod_info, sizeof(MODULEINFO))) {
 				LogInfo("%04x: EnterCriticalSection(%s) %S+0x%"PRIxPTR"\n",
-						GetCurrentThreadId(), lock_name(info->lock, buf), path, info->ret - (uintptr_t)mod_info.lpBaseOfDll);
+						GetCurrentThreadId(), lock_name(info->lock).c_str(), path, info->ret - (uintptr_t)mod_info.lpBaseOfDll);
 			} else {
 				LogInfo("%04x: EnterCriticalSection(%s) 0x%"PRIxPTR"\n",
-						GetCurrentThreadId(), lock_name(info->lock, buf), info->ret);
+						GetCurrentThreadId(), lock_name(info->lock).c_str(), info->ret);
 			}
 		}
 	}
@@ -140,16 +165,16 @@ static void log_held_locks(LockStack &held_locks, std::vector<LockStack> &other_
 			if (info->function) {
 				// 3DMigoto internal locking call with decorated function and line number
 				LogInfo("      EnterCriticalSection(%s) %s(%d)\n",
-						lock_name(info->lock, buf), info->function, info->line);
+						lock_name(info->lock).c_str(), info->function, info->line);
 			} else {
 				if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)info->ret, &module)
 				 && GetModuleFileName(module, path, MAX_PATH)
 				 && GetModuleInformation(GetCurrentProcess(), module, &mod_info, sizeof(MODULEINFO))) {
 					LogInfo("      EnterCriticalSection(%s) %S+0x%"PRIxPTR"\n",
-							lock_name(info->lock, buf), path, info->ret - (uintptr_t)mod_info.lpBaseOfDll);
+							lock_name(info->lock).c_str(), path, info->ret - (uintptr_t)mod_info.lpBaseOfDll);
 				} else {
 					LogInfo("      EnterCriticalSection(%s) 0x%"PRIxPTR"\n",
-							lock_name(info->lock, buf), info->ret);
+							lock_name(info->lock).c_str(), info->ret);
 				}
 			}
 		}
@@ -277,13 +302,12 @@ static void validate_lock(LockStack &locks_held, CRITICAL_SECTION *new_lock)
 	_LeaveCriticalSection(&graph_lock);
 
 	for (auto &issue: issues) {
-		char buf1[20], buf2[20];
 		if (issue.second) {
 			LogOverlay(LOG_NOTICE, "%04x: Potential deadlock scenario detected: Lock %s taken after %s\n",
-					GetCurrentThreadId(), lock_name(new_lock, buf1), lock_name(issue.first, buf2));
+					GetCurrentThreadId(), lock_name(new_lock).c_str(), lock_name(issue.first).c_str());
 		} else {
 			LogInfo("%04x: Potential deadlock scenario detected: Lock %s taken after %s\n",
-					GetCurrentThreadId(), lock_name(new_lock, buf1), lock_name(issue.first, buf2));
+					GetCurrentThreadId(), lock_name(new_lock).c_str(), lock_name(issue.first).c_str());
 		}
 	}
 	log_held_locks(locks_held, other_sides);
@@ -435,12 +459,16 @@ static void DeleteCriticalSectionHook(CRITICAL_SECTION *lock)
 {
 	// If a TLS structure hasn't been allocated yet for this thread, we
 	// might be in the TLS allocation itself!
-	if (!TlsGetValue(tls_idx))
+	if (!TlsGetValue(tls_idx)) {
+		_DeleteCriticalSection(lock);
 		return;
+	}
 
 	// Protect against reentrancy:
-	if (get_tls()->hooking_quirk_protection)
+	if (get_tls()->hooking_quirk_protection) {
+		_DeleteCriticalSection(lock);
 		return;
+	}
 	get_tls()->hooking_quirk_protection = true;
 
 	// Purge the lock from our data structures:
@@ -455,8 +483,8 @@ static void DeleteCriticalSectionHook(CRITICAL_SECTION *lock)
 		next++;
 		for (auto &info: stack->second) {
 			if (info.lock == lock) {
-				next = cached_stacks.erase(stack);
 				reported_stacks.erase(stack->first);
+				next = cached_stacks.erase(stack);
 				break;
 			}
 		}
@@ -469,18 +497,15 @@ static void DeleteCriticalSectionHook(CRITICAL_SECTION *lock)
 	_DeleteCriticalSection(lock);
 }
 
-void _InitializeCriticalSectionPretty(CRITICAL_SECTION *lock, char *lock_name)
+void _InitializeCriticalSectionPretty(CRITICAL_SECTION *lock, char *lock_name_text)
 {
 	InitializeCriticalSection(lock);
-	// NOTE: If we have been called from a global constructor, this may
-	// crash due to C++'s undefined initialisation order. Do not use this
-	// function from a global constructor, no matter how convenient they
-	// seem like they would be to wrap a CRITICAL_SECTION! Even if we
-	// switched to dynamically allocating this the first time this function
-	// is called we then risk leaking memory in every process whenever
-	// 3DMigoto Loader.exe is in use.
-	// https://yosefk.com/c++fqa/ctors.html#fqa-10.12
-	lock_names[lock] = lock_name;
+	// The registry is a function-local static, so it is constructed on first
+	// use even when this function is reached from a global constructor before
+	// this TU's namespace-scope objects have been initialized.
+	LockNameRegistry &registry = lock_name_registry();
+	std::lock_guard<std::mutex> guard(registry.mutex);
+	registry.names[lock] = lock_name_text;
 }
 
 void enable_lock_dependency_checks()

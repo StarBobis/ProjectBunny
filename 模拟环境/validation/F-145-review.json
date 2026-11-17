@@ -1,0 +1,88 @@
+{
+  "id": "F-145",
+  "status": "reviewed-pending-native-evidence",
+  "productionCodeChanged": false,
+  "fullReport": "build/f/8f9959cb0ecc/results.json",
+  "fullReportSha256": "95F414672E5A0C3FE868BD029BC1FAA60C43BD696639DBA91942D8115D8D2110",
+  "buildHead": "762974324e8f9e94122c14e31546bc3bdbc0fd1b",
+  "candidateSha256": "AB18E11E46D99D274E02E8092FAF30AA08B64AADDBBB588265053C0B6E4A2790",
+  "buildInfoSha256": "951615C5CE4C20B95969AC12E3DBBF7EE6DC0EC02862DDD115DB345BAFD998A9",
+  "checks": [
+    {
+      "name": "special",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 1469,
+        "message": ""
+      }
+    },
+    {
+      "name": "business",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 15798,
+        "message": ""
+      }
+    },
+    {
+      "name": "offline-shader-tool",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 41,
+        "message": ""
+      }
+    },
+    {
+      "name": "legacy-version",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 32,
+        "message": ""
+      }
+    },
+    {
+      "name": "version-generator",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 12719,
+        "message": ""
+      }
+    },
+    {
+      "name": "proxy-components",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 1647,
+        "message": ""
+      }
+    },
+    {
+      "name": "actual-dll-integration",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 30253,
+        "message": ""
+      }
+    }
+  ],
+  "syntheticLocalExceptionConfirmed": true,
+  "nativeTriggerConfirmed": false,
+  "targetGameValidated": false,
+  "discardedProbe": "build/f/ac6f7a975862/results.json: timeout belongs to F142, not proof of F145 substr exception",
+  "commitLookup": "git log --fixed-strings --grep=F-145",
+  "summary": "合成缺右花括号ICB可在私有函数复现异常；实际四处调用仅接原生D3DDisassemble文本，生产触发未补实。正常精度修补与原生代码块逐字节往返/WARP、25+10全流程通过；B移E，生产不改，不算已修复或误报。"
+}

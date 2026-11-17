@@ -1,0 +1,49 @@
+$ErrorActionPreference='Stop'
+$simulationRoot=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $simulationRoot 'scripts\process.ps1')
+$root=Join-Path $PSScriptRoot ('p01-config-'+[guid]::NewGuid().ToString('N').Substring(0,10))
+$null=New-Item -ItemType Directory -Path $root
+$trials=[Collections.Generic.List[object]]::new(); $digest=$null; $sums=@{}
+for($pair=0;$pair -lt 3;$pair++) {
+    $order=if($pair%2){@('candidate','baseline')}else{@('baseline','candidate')}
+    foreach($role in $order) {
+        $snapshotRoot=Join-Path $PSScriptRoot "p01-$role"
+        $snapshot=Get-Content -LiteralPath (Join-Path $snapshotRoot 'snapshot.json') -Raw | ConvertFrom-Json
+        $caseRoot=Join-Path $root "$pair-$role"
+        $null=New-Item -ItemType Directory -Path $caseRoot
+        foreach($file in $snapshot.files) {
+            Copy-Item -LiteralPath (Join-Path $snapshotRoot $file.name) -Destination $caseRoot
+            if((Get-FileHash -LiteralPath (Join-Path $caseRoot $file.name)).Hash -ne $file.sha256){throw 'Frozen program changed.'}
+        }
+        $process=Invoke-IsolatedSimulationProcess -Executable (Join-Path $caseRoot 'dx11_upstream_regression.exe') -Arguments @('--full','--fixture-isolated') -WorkingDirectory $caseRoot -LogPrefix (Join-Path $caseRoot 'host') -TimeoutMs 60000 -EnvironmentOverrides @{BUNNY_INI_LOOKUP_BENCHMARK='1'}
+        if($process.status -ne 'PASS'){throw "Full plain-host confirmation failed: $caseRoot"}
+        $lines=Get-Content -LiteralPath (Join-Path $caseRoot 'host.stdout.txt')
+        $configIndex=[Array]::IndexOf($lines,'PASS audit item: F-179')
+        $runtimeIndex=[Array]::IndexOf($lines,'P01_RUNTIME_SANITIZER=none')
+        if($configIndex -lt 0 -or $runtimeIndex -le $configIndex -or 'PASS audit item: P-01' -notin $lines){throw 'Real configuration initialization did not precede measurement.'}
+        $behavior=@($lines | Where-Object {$_ -like 'P01_BEHAVIOR_DIGEST=*'})
+        if($behavior.Count -ne 1){throw 'Missing behavior digest.'}
+        if($null -eq $digest){$digest=$behavior[0]}elseif($digest -ne $behavior[0]){throw 'Behavior/diagnostics differ.'}
+        $measurements=@($lines | Where-Object {$_ -like 'P01_BENCHMARK_JSON=*'} | ForEach-Object {$_.Substring(19) | ConvertFrom-Json})
+        if($measurements.Count -ne 3){throw 'Incomplete measurement.'}
+        foreach($measurement in $measurements) {
+            if(-not $sums.ContainsKey($measurement.name)){$sums[$measurement.name]=$measurement.checksum}
+            elseif($sums[$measurement.name] -ne $measurement.checksum){throw 'Workload result changed.'}
+        }
+        $trials.Add([pscustomobject]@{pair=$pair;role=$role;process=$process;measurements=$measurements;configBeforeMeasurement=$true;buildInfoSha256=$snapshot.buildInfoSha256})
+    }
+    Write-Host "P01 actual-config-path confirmation pair $($pair+1)/3 passed"
+}
+$summary=@(foreach($name in $sums.Keys) {
+    $values=@{}
+    foreach($role in @('baseline','candidate')) {
+        $samples=@($trials | Where-Object role -eq $role | ForEach-Object measurements | Where-Object name -eq $name | ForEach-Object nsPerCall | Sort-Object)
+        $values[$role]=[pscustomobject]@{samplesNs=$samples;medianNs=$samples[1];minNs=$samples[0];maxNs=$samples[-1]}
+    }
+    [pscustomobject]@{name=$name;baseline=$values.baseline;candidate=$values.candidate;medianReductionPercent=100*($values.baseline.medianNs-$values.candidate.medianNs)/$values.baseline.medianNs}
+})
+$reportPath=Join-Path $root 'results.json'
+@{item='P-01';status='MEASURED';pairs=3;scope='Plain Release full host; actual LoadConfigFile path runs before P01, including its production locale setup. Getter timers exclude all setup and other tests; no reload/FPS claim.';scriptSha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash;diagnosticDigest=$digest;summary=$summary;trials=$trials.ToArray()} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding utf8
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'p01-config-confirmation-path.txt'),$reportPath)
+$summary | Select-Object name,medianReductionPercent | Format-Table
+Write-Host "Production-configuration confirmation report: $reportPath"

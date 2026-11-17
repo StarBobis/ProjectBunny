@@ -231,6 +231,7 @@ void test_parser_failures(ID3DBlob* code)
 }
 
 class BindingEnvironment {
+    ShaderMap saved_shaders;
     UINT hunting = G->hunting;
     ShaderHashType hash_type = G->shader_hash_type;
     bool export_shaders = G->EXPORT_SHADERS, export_fixed = G->EXPORT_FIXED,
@@ -256,9 +257,13 @@ public:
         G->shader_hash_type = ShaderHashType::FNV;
         G->EXPORT_SHADERS = G->EXPORT_FIXED = G->EXPORT_BINARY = G->CACHE_SHADERS = false;
         G->EXPORT_HLSL = 0;
+        // Shader handles from earlier cases may have been released and reused.
+        // Keep this fixture's raw native shaders outside any prior registry.
+        saved_shaders.swap(G->mShaders);
     }
     ~BindingEnvironment()
     {
+        saved_shaders.swap(G->mShaders);
         G->hunting = hunting;
         G->shader_hash_type = hash_type;
         G->EXPORT_SHADERS = export_shaders;
@@ -300,13 +305,30 @@ public:
     }
 };
 
+class BindingAuditContext : public HackerContext {
+public:
+    using HackerContext::HackerContext;
+    UINT64 current_hash(wchar_t stage) const
+    {
+        switch(stage) {
+        case L'v': return mCurrentVertexShader;
+        case L'p': return mCurrentPixelShader;
+        case L'g': return mCurrentGeometryShader;
+        case L'c': return mCurrentComputeShader;
+        case L'h': return mCurrentHullShader;
+        case L'd': return mCurrentDomainShader;
+        default: throw std::runtime_error("unknown shader audit stage");
+        }
+    }
+};
+
 class BindingDevice {
 public:
     HMODULE runtime = nullptr;
     ComPtr<ID3D11Device1> native;
     ComPtr<ID3D11DeviceContext1> context;
     HackerDevice* device = nullptr;
-    std::unique_ptr<HackerContext> wrapper;
+    std::unique_ptr<BindingAuditContext> wrapper;
     std::vector<ComPtr<ID3D11DeviceChild>> shaders;
     CommandListState state;
 
@@ -325,7 +347,7 @@ public:
             SUCCEEDED(immediate.As(&context)), "create shader binding real device/context");
         device = new HackerDevice(native.Get(), context.Get());
         native->AddRef();
-        wrapper = std::make_unique<HackerContext>(native.Get(), context.Get());
+        wrapper = std::make_unique<BindingAuditContext>(native.Get(), context.Get());
         wrapper->SetHackerDevice(device);
         device->SetHackerContext(wrapper.get());
         device->SetHackerSwapChain(nullptr);
@@ -371,43 +393,45 @@ std::wstring stage_name(wchar_t stage)
     return std::wstring(1, stage) + L"s";
 }
 
-void create_and_bind(BindingDevice& device, wchar_t stage, ID3DBlob* code)
+ComPtr<ID3D11DeviceChild> create_and_bind(BindingDevice& device, wchar_t stage, ID3DBlob* code, bool registered=true)
 {
     const void* data = code->GetBufferPointer();
     const size_t size = code->GetBufferSize();
+    ID3D11Device1* factory=registered ? static_cast<ID3D11Device1*>(device.device) : device.native.Get();
     switch (stage) {
     case L'v': {
         ComPtr<ID3D11VertexShader> shader;
-        check(SUCCEEDED(device.device->CreateVertexShader(data, size, nullptr, shader.GetAddressOf())), "real CreateVertexShader cache path");
+        check(SUCCEEDED(factory->CreateVertexShader(data, size, nullptr, shader.GetAddressOf())), "real CreateVertexShader cache path");
         device.keep(shader.Get()); device.wrapper->VSSetShader(shader.Get(), nullptr, 0); break;
     }
     case L'p': {
         ComPtr<ID3D11PixelShader> shader;
-        check(SUCCEEDED(device.device->CreatePixelShader(data, size, nullptr, shader.GetAddressOf())), "real CreatePixelShader cache path");
+        check(SUCCEEDED(factory->CreatePixelShader(data, size, nullptr, shader.GetAddressOf())), "real CreatePixelShader cache path");
         device.keep(shader.Get()); device.wrapper->PSSetShader(shader.Get(), nullptr, 0); break;
     }
     case L'g': {
         ComPtr<ID3D11GeometryShader> shader;
-        check(SUCCEEDED(device.device->CreateGeometryShader(data, size, nullptr, shader.GetAddressOf())), "real CreateGeometryShader cache path");
+        check(SUCCEEDED(factory->CreateGeometryShader(data, size, nullptr, shader.GetAddressOf())), "real CreateGeometryShader cache path");
         device.keep(shader.Get()); device.wrapper->GSSetShader(shader.Get(), nullptr, 0); break;
     }
     case L'c': {
         ComPtr<ID3D11ComputeShader> shader;
-        check(SUCCEEDED(device.device->CreateComputeShader(data, size, nullptr, shader.GetAddressOf())), "real CreateComputeShader cache path");
+        check(SUCCEEDED(factory->CreateComputeShader(data, size, nullptr, shader.GetAddressOf())), "real CreateComputeShader cache path");
         device.keep(shader.Get()); device.wrapper->CSSetShader(shader.Get(), nullptr, 0); break;
     }
     case L'h': {
         ComPtr<ID3D11HullShader> shader;
-        check(SUCCEEDED(device.device->CreateHullShader(data, size, nullptr, shader.GetAddressOf())), "real CreateHullShader cache path");
+        check(SUCCEEDED(factory->CreateHullShader(data, size, nullptr, shader.GetAddressOf())), "real CreateHullShader cache path");
         device.keep(shader.Get()); device.wrapper->HSSetShader(shader.Get(), nullptr, 0); break;
     }
     case L'd': {
         ComPtr<ID3D11DomainShader> shader;
-        check(SUCCEEDED(device.device->CreateDomainShader(data, size, nullptr, shader.GetAddressOf())), "real CreateDomainShader cache path");
+        check(SUCCEEDED(factory->CreateDomainShader(data, size, nullptr, shader.GetAddressOf())), "real CreateDomainShader cache path");
         device.keep(shader.Get()); device.wrapper->DSSetShader(shader.Get(), nullptr, 0); break;
     }
     default: check(false, "unsupported shader fixture stage");
     }
+    return device.shaders.back();
 }
 
 void test_shader_target_parser()
@@ -669,7 +693,72 @@ void run_shader_bindings_regression()
         "float4 main(float4 p:POSITION):SV_Position{return p+bindings_read((uint)p.x)+19.125;}", "vs_5_0");
     test_concurrent_cache(device, cache, code[0].Get(), other_vertex.Get());
 }
+template<class Shader,class Bind,class Get>
+void audit_shader_binding(ID3D11DeviceChild* expected,Shader** tracked,Bind bind,Get get,bool rebind)
+{
+    ComPtr<Shader> typed,observed;
+    if(expected) check(SUCCEEDED(expected->QueryInterface(IID_PPV_ARGS(&typed))),"F170: actual typed shader interface");
+    if(rebind) bind(typed.Get());
+    get(observed.GetAddressOf());
+    check(observed.Get()==typed.Get() && *tracked==typed.Get(),"F170: current handle and native pipeline both retain the actual shader");
+}
+
+void audit_stage_binding(BindingDevice& device,wchar_t stage,ID3D11DeviceChild* expected,bool rebind=false)
+{
+    switch(stage) {
+    case L'v': audit_shader_binding(expected,&device.wrapper->mCurrentVertexShaderHandle,
+        [&](auto* shader){device.wrapper->VSSetShader(shader,nullptr,0);},[&](auto** shader){device.context->VSGetShader(shader,nullptr,nullptr);},rebind); break;
+    case L'p': audit_shader_binding(expected,&device.wrapper->mCurrentPixelShaderHandle,
+        [&](auto* shader){device.wrapper->PSSetShader(shader,nullptr,0);},[&](auto** shader){device.context->PSGetShader(shader,nullptr,nullptr);},rebind); break;
+    case L'g': audit_shader_binding(expected,&device.wrapper->mCurrentGeometryShaderHandle,
+        [&](auto* shader){device.wrapper->GSSetShader(shader,nullptr,0);},[&](auto** shader){device.context->GSGetShader(shader,nullptr,nullptr);},rebind); break;
+    case L'c': audit_shader_binding(expected,&device.wrapper->mCurrentComputeShaderHandle,
+        [&](auto* shader){device.wrapper->CSSetShader(shader,nullptr,0);},[&](auto** shader){device.context->CSGetShader(shader,nullptr,nullptr);},rebind); break;
+    case L'h': audit_shader_binding(expected,&device.wrapper->mCurrentHullShaderHandle,
+        [&](auto* shader){device.wrapper->HSSetShader(shader,nullptr,0);},[&](auto** shader){device.context->HSGetShader(shader,nullptr,nullptr);},rebind); break;
+    case L'd': audit_shader_binding(expected,&device.wrapper->mCurrentDomainShaderHandle,
+        [&](auto* shader){device.wrapper->DSSetShader(shader,nullptr,0);},[&](auto** shader){device.context->DSGetShader(shader,nullptr,nullptr);},rebind); break;
+    default: check(false,"F170: known shader stage");
+    }
+}
+
+void run_shader_hash_miss_audit()
+{
+    BindingEnvironment environment; BindingCacheScope cache; BindingDevice device;
+    std::string other_bindings=common_bindings;
+    const auto access=other_bindings.find("immediate[3]");
+    check(access!=std::string::npos,"F170: distinct native shader fixture");
+    other_bindings.replace(access,std::strlen("immediate[3]"),"immediate[2]");
+    for(const auto& spec:stage_specs) {
+        auto code=compile(std::string(common_bindings)+spec.entry,spec.profile);
+        auto other=compile(other_bindings+spec.entry,spec.profile);
+        const UINT64 hash=fnv_64_buf(code->GetBufferPointer(),code->GetBufferSize());
+        const UINT64 other_hash=fnv_64_buf(other->GetBufferPointer(),other->GetBufferSize());
+        check(hash && other_hash!=hash,"F170: registered and unregistered shaders have different actual bytecode");
+        cache.track(hash); cache.track(other_hash);
+        BindingFilterScope filter(hash); filter.set(7.25f);
+        auto known=create_and_bind(device,spec.stage,code.Get());
+        check(device.wrapper->current_hash(spec.stage)==hash,"F170: real wrapped creation and lookup establish the known hash");
+        audit_stage_binding(device,spec.stage,known.Get());
+        check(evaluate(stage_name(spec.stage),device.state)==7.25f,"F170: actual filter consumer sees the known shader");
+        auto unknown=create_and_bind(device,spec.stage,other.Get(),false);
+        check(unknown.Get()!=known.Get() && !G->mShaders.count(unknown.Get()),"F170: native shader is genuinely outside the production hash registry");
+        audit_stage_binding(device,spec.stage,unknown.Get());
+        std::fprintf(stderr,"F170: stage %lc must clear the old hash on a real lookup miss\n",spec.stage); std::fflush(stderr);
+        check(device.wrapper->current_hash(spec.stage)==0,"F170: unknown shader must not inherit the preceding shader hash");
+        check(evaluate(stage_name(spec.stage),device.state)==0,"F170: unregistered bound shader does not inherit the known filter index");
+        audit_stage_binding(device,spec.stage,nullptr,true);
+        check(device.wrapper->current_hash(spec.stage)==0,"F170: null binding retains the existing cleared hash");
+        audit_stage_binding(device,spec.stage,known.Get(),true);
+        check(device.wrapper->current_hash(spec.stage)==hash && evaluate(stage_name(spec.stage),device.state)==7.25f,
+            "F170: rebinding a known shader restores its hash and filter");
+        audit_stage_binding(device,spec.stage,unknown.Get(),true);
+        check(device.wrapper->current_hash(spec.stage)==0,"F170: repeated lookup misses remain cleared");
+    }
+}
 } // namespace
+
+void test_dx11_shader_hash_miss_regression() {run_shader_hash_miss_audit();}
 
 void test_dx11_shader_bindings_regression()
 {

@@ -77,6 +77,11 @@ T2 GetIniEnumClass(const wchar_t *section, const wchar_t *key, T2 def, bool *fou
 
 bool ParseBinaryLiterals(const wstring& input, size_t start, uint64_t& out, size_t& length);
 
+// Parses [Rendering] auto_check_texture_slots. Accepts ps-tN, vs-tN, cs-tN,
+// vbN and ib, plus inclusive ranges such as ps-t[0:9]. Returns false (and
+// leaves `slots` empty) if any token is invalid; duplicates are collapsed.
+bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheckTextureSlot>* slots);
+
 bool get_namespaced_section_name_lower(const wstring *section, const wstring *ini_namespace, wstring *ret);
 bool get_section_namespace(const wchar_t *section, wstring *ret);
 inline wchar_t ascii_tolower(wchar_t c) noexcept

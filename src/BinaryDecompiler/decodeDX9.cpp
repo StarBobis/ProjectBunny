@@ -7,6 +7,7 @@
 #include "internal_includes/reflect.h"
 #include "internal_includes/debug.h"
 #include "log.h"
+#include <memory>
 class DecompileErrorDX9 : public std::exception {} decompileErrorDX9; // 3DMigoto specific
 
 #define FOURCC(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24 ))
@@ -33,6 +34,57 @@ uint32_t DX9_DECODE_OPERAND_IS_BCONST = 0x20;
 static DECLUSAGE_DX9 aeInputUsage[MAX_INPUTS];
 static uint32_t aui32InputUsageIndex[MAX_INPUTS];
 
+namespace {
+// DecodeDX9BC hands the shader to the caller on success, but several decode
+// failures throw. Own the partially built shader so none of those paths leak
+// the Shader or its ShaderInfo.
+struct ShaderDeleterDX9
+{
+    void operator()(Shader* psShader) const noexcept
+    {
+        if (!psShader) return;
+        if (psShader->sInfo) FreeShaderInfo(psShader->sInfo);
+        delete psShader;
+    }
+};
+}
+
+// DX9 register numbers are encoded in an 11-bit field, but each register file
+// is smaller. ASSERT is compiled out in release builds, so every static array
+// indexed by a register number needs an explicit range check. These are the
+// largest capacities of any DX9 shader model; the decoder handles SM1-3, so
+// narrowing them to a single model's register count would reject valid shaders.
+static bool IsRegisterNumberValidDX9(const uint32_t ui32RegType, const uint32_t ui32RegNum)
+{
+    switch(ui32RegType)
+    {
+        case OPERAND_TYPE_DX9_TEMP:      return ui32RegNum < 32;  // r0-r31
+        case OPERAND_TYPE_DX9_INPUT:     return ui32RegNum < 16;  // v0-v15
+        case OPERAND_TYPE_DX9_CONST:     return ui32RegNum < 256; // c0-c255
+        case OPERAND_TYPE_DX9_ADDR:      return ui32RegNum < 8;   // VS a0, PS t0-t7
+        case OPERAND_TYPE_DX9_RASTOUT:   return ui32RegNum < 3;   // oPos, oFog, oPts
+        case OPERAND_TYPE_DX9_ATTROUT:   return ui32RegNum < 2;   // oD0, oD1
+        case OPERAND_TYPE_DX9_OUTPUT:    return ui32RegNum < 12;  // o0-o11
+        case OPERAND_TYPE_DX9_CONSTINT:  return ui32RegNum < 16;  // i0-i15
+        case OPERAND_TYPE_DX9_COLOROUT:  return ui32RegNum < 4;   // oC0-oC3
+        case OPERAND_TYPE_DX9_SAMPLER:   return ui32RegNum < 16;  // s0-s15
+        case OPERAND_TYPE_DX9_CONSTBOOL: return ui32RegNum < 16;  // b0-b15
+        case OPERAND_TYPE_DX9_LOOP:      return ui32RegNum < 1;   // aL
+        case OPERAND_TYPE_DX9_MISCTYPE:  return ui32RegNum < 2;   // vPos, vFace
+        default:                         return true;             // unsupported types throw in the switch below
+    }
+}
+
+static void ValidateRegisterNumberDX9(const uint32_t ui32RegType, const uint32_t ui32RegNum)
+{
+    if(!IsRegisterNumberValidDX9(ui32RegType, ui32RegNum))
+    {
+        LogInfo("    error parsing shader> register %u out of range for operand type %u\n",
+                ui32RegNum, ui32RegType);
+        throw decompileErrorDX9;
+    }
+}
+
 static void DecodeOperandDX9(const Shader* psShader,
                              const uint32_t ui32Token,
 							 const uint32_t ui32Token1,
@@ -45,6 +97,9 @@ static void DecodeOperandDX9(const Shader* psShader,
 
     const uint32_t ui32WriteMask = DecodeDestWriteMaskDX9(ui32Token);
     const uint32_t ui32Swizzle = DecodeOperandSwizzleDX9(ui32Token);
+
+    // Reject before touching psOperand or any register-number-indexed array.
+    ValidateRegisterNumberDX9(ui32RegType, ui32RegNum);
 
 	SHADER_VARIABLE_TYPE ConstType;
 
@@ -416,6 +471,9 @@ static void SetupRegisterUsage(const Shader* psShader,
 
 	if(ui32RegType == OPERAND_TYPE_DX9_INPUT)
 	{
+		// Pixel shader input decls are skipped by DecodeOperandDX9, so the
+		// usage arrays must be guarded before every write.
+		ValidateRegisterNumberDX9(ui32RegType, ui32RegNum);
 		ASSERT(ui32RegNum < MAX_INPUTS);
 		aeInputUsage[ui32RegNum] = eUsage;
 		aui32InputUsageIndex[ui32RegNum] = ui32UsageIndex;
@@ -513,7 +571,16 @@ static void DecodeDeclarationDX9(const Shader* psShader,
     {
         psDecl->eOpcode = OPCODE_DCL_CONSTANT_BUFFER;
 
-        ASSERT(psShader->sInfo->ui32NumConstantBuffers);
+        // A DCL constant buffer is only meaningful when the CTAB comment
+        // supplied one. Malformed token streams have neither a count nor an
+        // array, and dereferencing psConstantBuffers[0] here used to crash.
+        if (psShader->sInfo->psConstantBuffers == nullptr ||
+            psShader->sInfo->ui32NumConstantBuffers == 0)
+        {
+            LogInfo("    error parsing shader> DCL constant buffer without CTAB (c%u)\n",
+                    psDecl->asOperands[0].ui32RegisterNumber);
+            throw decompileErrorDX9;
+        }
 
         psDecl->asOperands[0].aui32ArraySizes[0] = 0;//Const buffer index
         psDecl->asOperands[0].aui32ArraySizes[1] = psShader->sInfo->psConstantBuffers[0].ui32TotalSizeInBytes / 16;//Number of vec4 constants.
@@ -529,6 +596,14 @@ static void DefineDX9(Shader* psShader,
                       const uint32_t c3,
                       Declaration* psDecl)
 {
+    // DEF/DEFI/DEFB share aui32ImmediateConst[256], but the register file
+    // they target has its own capacity.
+    const OPERAND_TYPE_DX9 eRegType =
+        (ui32Flags & DX9_DECODE_OPERAND_IS_ICONST) ? OPERAND_TYPE_DX9_CONSTINT :
+        (ui32Flags & DX9_DECODE_OPERAND_IS_BCONST) ? OPERAND_TYPE_DX9_CONSTBOOL :
+                                                     OPERAND_TYPE_DX9_CONST;
+    ValidateRegisterNumberDX9(eRegType, ui32RegNum);
+
     psDecl->eOpcode = OPCODE_SPECIAL_DCL_IMMCONST;
     psDecl->ui32NumOperands = 2;
 
@@ -560,10 +635,19 @@ static void CreateD3D10Instruction(
     const OPCODE_TYPE eType,
     const uint32_t bHasDest,
     const uint32_t ui32SrcCount,
-    const uint32_t* pui32Tokens)
+    const uint32_t* pui32Tokens,
+    const size_t ui32TokensRemaining)
 {
     uint32_t ui32Src;
     uint32_t ui32Offset = 1;
+
+    //F-104: each operand is one DWORD plus a lookahead DWORD (the decoder
+    //passes the following token as the relative-address token), except that an
+    //instruction without operands only reads its opcode token.
+    const size_t ui32OperandTokens = size_t(bHasDest) + ui32SrcCount;
+    const size_t ui32RequiredTokens = ui32OperandTokens ? ui32OperandTokens + 2 : 1;
+    if (ui32RequiredTokens > ui32TokensRemaining)
+        throw decompileErrorDX9;
 
     memset(psInst, 0, sizeof(Instruction));
 
@@ -605,18 +689,31 @@ static void CreateD3D10Instruction(
     }
 }
 
-Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
+Shader* DecodeDX9BC(const uint32_t* pui32Tokens, size_t byteSize)
 {
+    if (!pui32Tokens || byteSize < 2 * sizeof(uint32_t) ||
+        (byteSize % sizeof(uint32_t)) != 0 ||
+        (reinterpret_cast<uintptr_t>(pui32Tokens) % sizeof(uint32_t)) != 0)
+        return nullptr;
+
+    const size_t ui32TokenCount = byteSize / sizeof(uint32_t);
+    //SM1/2/3 streams are a bare token stream. Reject an invalid version token
+    //before allocating anything.
+    if (DecodeShaderTypeDX9(pui32Tokens[0]) == INVALID_SHADER)
+        return nullptr;
+
     const uint32_t* pui32CurrentToken = pui32Tokens;
+    size_t ui32TokensRemaining = ui32TokenCount;
     uint32_t ui32NumInstructions = 0;
     uint32_t ui32NumDeclarations = 0;
     Instruction* psInst;
     Declaration* psDecl;
     uint32_t decl, inst;
     uint32_t bDeclareConstantTable = 0;
-    Shader* psShader = new Shader();
+    std::unique_ptr<Shader, ShaderDeleterDX9> shaderOwner(new Shader());
+    Shader* psShader = shaderOwner.get();
 
-    memset(aui32ImmediateConst, 0, 256);
+    memset(aui32ImmediateConst, 0, sizeof(aui32ImmediateConst));
 
 	psShader->dx9Shader = true; // 3DMigoto specific
 	psShader->ui32MajorVersion = DecodeProgramMajorVersionDX9(*pui32CurrentToken);
@@ -624,10 +721,18 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 	psShader->eShaderType = DecodeShaderTypeDX9(*pui32CurrentToken);
 
     pui32CurrentToken++;
+    ui32TokensRemaining--;
 
     //Work out how many instructions and declarations we need to allocate memory for.
+	auto RequireTokens = [&](size_t words)
+	{
+		if (words > ui32TokensRemaining)
+			throw decompileErrorDX9;
+	};
+
 	while (1)
 	{
+		RequireTokens(1);
 		OPCODE_TYPE_DX9 eOpcode = DecodeOpcodeTypeDX9(pui32CurrentToken[0]);
 		uint32_t ui32InstLen = DecodeInstructionLengthDX9(pui32CurrentToken[0]);
 
@@ -642,8 +747,11 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
         else if(eOpcode == OPCODE_DX9_COMMENT)
         {
             ui32InstLen = DecodeCommentLengthDX9(pui32CurrentToken[0]);
+            RequireTokens(2);
             if(pui32CurrentToken[1] == FOURCC_CTAB)
             {
+                RequireTokens(ui32InstLen + 1);
+                RequireTokens(3);
                 LoadD3D9ConstantTable((char*)(&pui32CurrentToken[2]), psShader->sInfo);
 
 				ASSERT(psShader->sInfo->ui32NumConstantBuffers);
@@ -661,6 +769,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 		}
         else if(eOpcode == OPCODE_DX9_DCL)
         {
+			RequireTokens(3);
 			const OPERAND_TYPE_DX9 eType = DecodeOperandTypeDX9(pui32CurrentToken[2]);
 			uint32_t ignoreDCL = 0;
 
@@ -692,7 +801,9 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
             }
         }
 
+        RequireTokens(ui32InstLen + 1);
         pui32CurrentToken += ui32InstLen + 1;
+        ui32TokensRemaining -= ui32InstLen + 1;
     }
 
 	psShader->asPhase[MAIN_PHASE].ui32InstanceCount = 1;
@@ -712,17 +823,19 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 	psDecl = &psShader->asPhase[MAIN_PHASE].ppsDecl[0][0];
 
     pui32CurrentToken = pui32Tokens + 1;
+    ui32TokensRemaining = ui32TokenCount - 1;
 
     inst=0;
     decl=0;
     while (1)
     {
+		RequireTokens(1);
 		OPCODE_TYPE_DX9 eOpcode = DecodeOpcodeTypeDX9(pui32CurrentToken[0]);
 		uint32_t ui32InstLen = DecodeInstructionLengthDX9(pui32CurrentToken[0]);
 
         if(eOpcode == OPCODE_DX9_END)
         {
-            CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RET, 0, 0, pui32CurrentToken);
+            CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RET, 0, 0, pui32CurrentToken, ui32TokensRemaining);
             inst++;
             break;
         }
@@ -732,6 +845,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
         }
         else if(eOpcode == OPCODE_DX9_DCL)
         {
+			RequireTokens(3);
 			const OPERAND_TYPE_DX9 eType = DecodeOperandTypeDX9(pui32CurrentToken[2]);
 			uint32_t ignoreDCL = 0;
 			//Inputs and outputs are declared in AddVersionDependentCode
@@ -750,6 +864,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
         }
         else if((eOpcode == OPCODE_DX9_DEF)||(eOpcode == OPCODE_DX9_DEFI)||(eOpcode == OPCODE_DX9_DEFB))
         {
+			RequireTokens(6);
             const uint32_t ui32Const0 = *(pui32CurrentToken+2);
             const uint32_t ui32Const1 = *(pui32CurrentToken+3);
             const uint32_t ui32Const2 = *(pui32CurrentToken+4);
@@ -786,7 +901,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
             {
                 case OPCODE_DX9_MOV:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MOV, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MOV, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_LIT:
@@ -802,74 +917,74 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
                 }
                 case OPCODE_DX9_ADD:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ADD, 1, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ADD, 1, 2, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_SUB:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ADD, 1, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ADD, 1, 2, pui32CurrentToken, ui32TokensRemaining);
                     ASSERT(psInst[inst].asOperands[2].eModifier == OPERAND_MODIFIER_NONE);
                     psInst[inst].asOperands[2].eModifier = OPERAND_MODIFIER_NEG;
                     break;
                 }
                 case OPCODE_DX9_MAD:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MAD, 1, 3, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MAD, 1, 3, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_MUL:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MUL, 1, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MUL, 1, 2, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_RCP:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RCP, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RCP, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_RSQ:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RSQ, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RSQ, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_DP3:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP3, 1, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP3, 1, 2, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_DP4:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP4, 1, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP4, 1, 2, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_MIN:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MIN, 1, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MIN, 1, 2, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_MAX:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MAX, 1, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MAX, 1, 2, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_SLT:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LT, 1, 2, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LT, 1, 2, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
                 case OPCODE_DX9_SGE:
                 {
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_GE, 1, 2, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_GE, 1, 2, pui32CurrentToken, ui32TokensRemaining);
 					break;
                 }
                 case OPCODE_DX9_EXP:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_EXP, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_EXP, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_LOG:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LOG, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LOG, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_NRM:
@@ -878,12 +993,12 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
                     //dp4 RESULT, SRCA, SRCA
                     //rsq RESULT, RESULT
 
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP4, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP4, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     memcpy(&psInst[inst].asOperands[2],&psInst[inst].asOperands[1], sizeof(Operand));
 					psInst[inst].ui32NumOperands++;
                     ++inst;
 
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RSQ, 0, 0, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RSQ, 0, 0, pui32CurrentToken, ui32TokensRemaining);
                     memcpy(&psInst[inst].asOperands[0],&psInst[inst-1].asOperands[0], sizeof(Operand));
 					memcpy(&psInst[inst].asOperands[1], &psInst[inst - 1].asOperands[0], sizeof(Operand));
 					psInst[inst].ui32NumOperands++;
@@ -895,7 +1010,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
                     //Before SM3, SINCOS has 2 extra constant sources -D3DSINCOSCONST1 and D3DSINCOSCONST2.
                     //Ignore them.
 
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SINCOS, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SINCOS, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     //Pre-SM4:
                         //If the write mask is .x: dest.x = cos( V )
                         //If the write mask is .y: dest.y = sin( V )
@@ -938,7 +1053,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
                 }
                 case OPCODE_DX9_FRC:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_FRC, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_FRC, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
 
@@ -946,7 +1061,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
                 {
                     //MOVA preforms RoundToNearest on the src data.
                     //The only rounding functions available in all GLSL version are ceil and floor.
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ROUND_NI, 1, 1, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ROUND_NI, 1, 1, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
 
@@ -954,7 +1069,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 				{
 					//texld r0, t0, s0
 					// srcAddress[.swizzle], srcResource[.swizzle], srcSampler
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SAMPLE, 1, 2, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SAMPLE, 1, 2, pui32CurrentToken, ui32TokensRemaining);
 					psInst[inst].asOperands[2].ui32RegisterNumber = 0;
 
 					
@@ -964,7 +1079,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 				{
 					//texld r0, t0, s0
 					// srcAddress[.swizzle], srcResource[.swizzle], srcSampler
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SAMPLE_L, 1, 2, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SAMPLE_L, 1, 2, pui32CurrentToken, ui32TokensRemaining);
 					psInst[inst].asOperands[2].ui32RegisterNumber = 0;
 
 					//Lod comes from fourth coordinate of address.
@@ -977,7 +1092,7 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 
 				case OPCODE_DX9_IF:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_IF, 0, 1, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_IF, 0, 1, pui32CurrentToken, ui32TokensRemaining);
 					psInst[inst].eDX9TestType = D3DSPC_BOOLEAN;
 					break;
 				}
@@ -985,58 +1100,58 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
                 case OPCODE_DX9_IFC:
 				{
 					const COMPARISON_DX9 eCmpOp = DecodeComparisonDX9(pui32CurrentToken[0]);
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_IF, 0, 2, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_IF, 0, 2, pui32CurrentToken, ui32TokensRemaining);
 					psInst[inst].eDX9TestType = eCmpOp;
 					break;
 				}
                 case OPCODE_DX9_ELSE:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ELSE, 0, 0, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ELSE, 0, 0, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
                 case OPCODE_DX9_CMP:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MOVC, 1, 3, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_MOVC, 1, 3, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
                 case OPCODE_DX9_REP:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_REP, 0, 1, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_REP, 0, 1, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
                 case OPCODE_DX9_ENDREP:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ENDREP, 0, 0, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ENDREP, 0, 0, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
                 case OPCODE_DX9_BREAKC:
 				{
 					const COMPARISON_DX9 eCmpOp = DecodeComparisonDX9(pui32CurrentToken[0]);
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_BREAKC, 0, 2, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_BREAKC, 0, 2, pui32CurrentToken, ui32TokensRemaining);
 					psInst[inst].eDX9TestType = eCmpOp;
 					break;
 				}
 
                 case OPCODE_DX9_DSX:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DERIV_RTX, 1, 1, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DERIV_RTX, 1, 1, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
                 case OPCODE_DX9_DSY:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DERIV_RTY, 1, 1, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DERIV_RTY, 1, 1, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
 				case OPCODE_DX9_TEXKILL:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DISCARD, 1, 0, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DISCARD, 1, 0, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
 				case OPCODE_DX9_TEXLDD:
 				{
 					// texldd, dst, src0, src1, src2, src3
 					// srcAddress[.swizzle], srcResource[.swizzle], srcSampler, XGradient, YGradient
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SAMPLE_D, 1, 4, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_SAMPLE_D, 1, 4, pui32CurrentToken, ui32TokensRemaining);
 
 					// Move the gradients one slot up
 					memcpy(&psInst[inst].asOperands[5], &psInst[inst].asOperands[4], sizeof(Operand));
@@ -1049,17 +1164,17 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 				}
 				case OPCODE_DX9_LRP:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LRP, 1, 3, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LRP, 1, 3, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
 				case OPCODE_DX9_DP2ADD:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP2ADD, 1, 3, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_DP2ADD, 1, 3, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
 				case OPCODE_DX9_POW:
 				{
-					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_POW, 1, 2, pui32CurrentToken);
+					CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_POW, 1, 2, pui32CurrentToken, ui32TokensRemaining);
 					break;
 				}
 
@@ -1109,32 +1224,32 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
                 case OPCODE_DX9_NOP:
                 case OPCODE_DX9_PHASE:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_NOP, 0, 0, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_NOP, 0, 0, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_LOOP:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LOOP, 0, 2, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_LOOP, 0, 2, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_RET:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RET, 0, 0, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_RET, 0, 0, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_ENDLOOP:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ENDLOOP, 0, 0, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ENDLOOP, 0, 0, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_ENDIF:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ENDIF, 0, 0, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_ENDIF, 0, 0, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 case OPCODE_DX9_BREAK:
                 {
-                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_BREAK, 0, 0, pui32CurrentToken);
+                    CreateD3D10Instruction(psShader, &psInst[inst], OPCODE_BREAK, 0, 0, pui32CurrentToken, ui32TokensRemaining);
                     break;
                 }
                 default:
@@ -1155,7 +1270,9 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
             inst++;
         }
 
+        RequireTokens(ui32InstLen + 1);
         pui32CurrentToken += ui32InstLen + 1;
+        ui32TokensRemaining -= ui32InstLen + 1;
     }
 
     DeclareNumTemps(psShader, ui32MaxTemp, &psDecl[decl]);
@@ -1179,5 +1296,5 @@ Shader* DecodeDX9BC(const uint32_t* pui32Tokens)
 		DeclareConstantBuffer(psShader, &psDecl[decl]);
     }
 
-    return psShader;
+    return shaderOwner.release();
 }

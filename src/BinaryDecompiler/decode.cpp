@@ -7,6 +7,9 @@
 #include "internal_includes/debug.h"
 #include "log.h"
 
+#include <cstring>
+#include <new>
+
 #define FOURCC(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24 ))
 enum {FOURCC_DXBC = FOURCC('D', 'X', 'B', 'C')}; //DirectX byte code
 enum {FOURCC_SHDR = FOURCC('S', 'H', 'D', 'R')}; //Shader model 4 code
@@ -36,6 +39,95 @@ typedef struct DXBCChunkHeaderTAG
 	unsigned size;
 } DXBCChunkHeader;
 
+namespace {
+
+constexpr size_t kDxbcHeaderBytes = 32;
+constexpr size_t kDxbcChunkHeaderBytes = 8;
+constexpr uint32_t kMaxDxbcChunks = 256;
+
+static_assert(sizeof(DXBCContainerHeader) == kDxbcHeaderBytes, "DXBC container header layout");
+static_assert(sizeof(DXBCChunkHeader) == kDxbcChunkHeaderBytes, "DXBC chunk header layout");
+
+//Fixed prefix the reflection reader dereferences before it can trust any
+//count or offset inside the chunk. Inner counts remain F-128's responsibility.
+size_t ReflectionChunkPrefixBytes(uint32_t fourcc)
+{
+	switch (fourcc)
+	{
+	case FOURCC_ISGN:
+	case FOURCC_ISG1:
+	case FOURCC_OSGN:
+	case FOURCC_OSG1:
+	case FOURCC_OSG5:
+	case FOURCC_PSGN:
+		return 2 * sizeof(uint32_t);		// element count + key
+	case FOURCC_RDEF:
+		return 6 * sizeof(uint32_t);		// buffers, offsets, bindings, model, flags
+	case FOURCC_IFCE:
+		return 7 * sizeof(uint32_t);		// instance/type/slot counts and offsets
+	default:
+		return 0;
+	}
+}
+
+size_t SignatureChunkEntryBytes(uint32_t fourcc)
+{
+	switch (fourcc)
+	{
+	case FOURCC_ISGN:
+	case FOURCC_OSGN:
+	case FOURCC_PSGN:
+		return 6 * sizeof(uint32_t);		// six DWORDs per element
+	case FOURCC_ISG1:
+	case FOURCC_OSG1:
+		return 8 * sizeof(uint32_t);		// stream + min-precision DWORDs
+	case FOURCC_OSG5:
+		return 7 * sizeof(uint32_t);		// stream DWORD, no min precision
+	default:
+		return 0;
+	}
+}
+
+//F-104: reject absurd element counts before LoadShaderInfo allocates arrays
+//from them. This is deliberately a count/payload check, not the complete
+//chunk-internal offset validation that belongs to F-128.
+bool ValidateReflectionCounts(uint32_t fourcc, const uint32_t* payload, size_t payloadBytes)
+{
+	const size_t entryBytes = SignatureChunkEntryBytes(fourcc);
+	if (entryBytes)
+	{
+		const uint32_t elementCount = payload[0];
+		return elementCount <= (payloadBytes - 2 * sizeof(uint32_t)) / entryBytes;
+	}
+
+	switch (fourcc)
+	{
+	case FOURCC_RDEF:
+		//ReadResources reads buffers/offsets/bindings/offset/model/flags.
+		return payload[0] <= payloadBytes / sizeof(uint32_t) &&
+			payload[2] <= payloadBytes / sizeof(uint32_t);
+	case FOURCC_IFCE:
+		//ReadInterfaces reads class-instance/type/slot-record/slot counts.
+		return payload[0] <= payloadBytes / sizeof(uint32_t) &&
+			payload[1] <= payloadBytes / sizeof(uint32_t) &&
+			payload[2] <= payloadBytes / sizeof(uint32_t) &&
+			payload[3] <= payloadBytes / sizeof(uint32_t);
+	default:
+		return true;
+	}
+}
+
+}
+
+void ShaderOwnerDeleter::operator()(Shader* shader) const noexcept
+{
+	if (!shader)
+		return;
+	if (shader->sInfo)
+		FreeShaderInfo(shader->sInfo);
+	delete shader;
+}
+
 #ifdef _DEBUG
 static uint64_t operandID = 0;
 static uint64_t instructionID = 0;
@@ -49,6 +141,40 @@ static uint64_t instructionID = 0;
 
 // VS2013 BUG WORKAROUND: Make sure this class has a unique type name!
 class DecompileError: public std::exception {} decompileError;
+
+//F-101: the only place that turns a token's self-reported length into a
+//pointer step. The payload end is mandatory so a token can neither claim a
+//zero length (which would stall the caller's loop) nor a length past the
+//payload. CUSTOMDATA keeps its length in the second DWORD, so that DWORD must
+//exist and the total must cover both header DWORDs.
+static uint32_t DecodeCheckedTokenLength(const uint32_t* pui32Token,
+                                         const uint32_t* pui32End)
+{
+    if (pui32Token >= pui32End)
+        throw decompileError;
+
+    const size_t ui32Remaining =
+        static_cast<size_t>(pui32End - pui32Token);
+
+    uint32_t ui32Length = DecodeInstructionLength(*pui32Token);
+    if (DecodeOpcodeType(*pui32Token) == OPCODE_CUSTOMDATA)
+    {
+        if (ui32Remaining < 2)
+            throw decompileError;
+        ui32Length = pui32Token[1];
+        if (ui32Length < 2)
+            throw decompileError;
+    }
+    else if (ui32Length == 0)
+    {
+        throw decompileError;
+    }
+
+    if (static_cast<size_t>(ui32Length) > ui32Remaining)
+        throw decompileError;
+
+    return ui32Length;
+}
 
 void DecodeNameToken(const uint32_t* pui32NameToken, Operand* psOperand)
 {
@@ -346,12 +472,17 @@ uint32_t DecodeOperand (const uint32_t *pui32Tokens, Operand* psOperand)
     return ui32NumTokens;
 }
 
-const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, Declaration* psDecl)
+const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token,
+                                  const uint32_t* pui32End, Declaration* psDecl)
 {
-    uint32_t ui32TokenLength = DecodeInstructionLength(*pui32Token);
+    const uint32_t ui32TokenLength = DecodeCheckedTokenLength(pui32Token, pui32End);
     const uint32_t bExtended = DecodeIsOpcodeExtended(*pui32Token);
     const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32Token);
     uint32_t ui32OperandOffset = 1;
+
+    //An extended token is itself one of the declared DWORDs.
+    if (bExtended && ui32TokenLength < 2)
+        throw decompileError;
 
     psDecl->eOpcode = eOpcode;
 
@@ -605,23 +736,53 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
 		}
 		case OPCODE_CUSTOMDATA:
 		{
-			ui32TokenLength = pui32Token[1];
+			//F-101: DecodeCheckedTokenLength already read and validated the
+			//CUSTOMDATA length DWORD before this switch was entered.
 			{
 				int iTupleSrc = 0, iTupleDest = 0;
 				//const uint32_t ui32ConstCount = pui32Token[1] - 2;
 				//const uint32_t ui32TupleCount = (ui32ConstCount / 4);
 				CUSTOMDATA_CLASS eClass = DecodeCustomDataClass(pui32Token[0]);
 
-				const uint32_t ui32NumVec4 = (ui32TokenLength - 2) / 4;
+				//The length includes this token and the length token, so the
+				//payload is (ui32TokenLength - 2) DWORDs. Reject a length that
+				//cannot describe a payload before subtracting, otherwise the
+				//unsigned subtraction wraps around.
+				if (ui32TokenLength < 2)
+				{
+					LogInfo("    error parsing shader> invalid CUSTOMDATA length %u\n", ui32TokenLength);
+					throw decompileError;
+				}
+
+				const uint32_t ui32PayloadDwords = ui32TokenLength - 2;
+				uint32_t ui32NumVec4 = ui32PayloadDwords / 4;
+
+				if (eClass == CUSTOMDATA_DCL_IMMEDIATE_CONSTANT_BUFFER)
+				{
+					//An immediate constant buffer is a vec4 array: it must be
+					//a whole number of vec4s and fit the fixed size array.
+					//1024 vec4s (ui32TokenLength == 4098) is valid.
+					if ((ui32PayloadDwords % 4) != 0 ||
+						ui32NumVec4 > MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE)
+					{
+						LogInfo("    error parsing shader> invalid immediate constant buffer length %u\n", ui32TokenLength);
+						throw decompileError;
+					}
+				}
+				else if (ui32NumVec4 > MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE)
+				{
+					//The other CUSTOMDATA classes (COMMENT/DEBUGINFO/OPAQUE/
+					//SHADER_MESSAGE) carry opaque payloads, not a vec4 array,
+					//so their length need not be a multiple of four vec4s.
+					//Keep the legacy vec4 copy below, but clamp it to the
+					//fixed size destination instead of overflowing it.
+					ui32NumVec4 = MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE;
+				}
+
 				uint32_t uIdx = 0;
 
 				ICBVec4 const *pVec4Array = (ICBVec4 const *) (pui32Token + 2);
-
-				//The buffer will contain at least one value, but not more than 4096 scalars/1024 vec4's.
-				ASSERT(ui32NumVec4 < MAX_IMMEDIATE_CONST_BUFFER_VEC4_SIZE);
 		
-				/* must be a multiple of 4 */
-				ASSERT(((ui32TokenLength - 2) % 4) == 0);
 
 				for (uIdx = 0; uIdx < ui32NumVec4; uIdx++)
 				{
@@ -761,9 +922,11 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
     return pui32Token + ui32TokenLength;
 }
 
-const uint32_t* DeocdeInstruction(const uint32_t* pui32Token, Instruction* psInst, Shader* psShader)
+const uint32_t* DeocdeInstruction(const uint32_t* pui32Token,
+                                  const uint32_t* pui32End,
+                                  Instruction* psInst, Shader* psShader)
 {
-    uint32_t ui32TokenLength = DecodeInstructionLength(*pui32Token);
+    const uint32_t ui32TokenLength = DecodeCheckedTokenLength(pui32Token, pui32End);
     const uint32_t bExtended = DecodeIsOpcodeExtended(*pui32Token);
     const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32Token);
     uint32_t ui32OperandOffset = 1;
@@ -781,6 +944,10 @@ const uint32_t* DeocdeInstruction(const uint32_t* pui32Token, Instruction* psIns
     if(bExtended)
     {
         do {
+            //F-101: the extended-opcode chain is part of this instruction, so
+            //it cannot read past the instruction's declared token length.
+            if (ui32OperandOffset >= ui32TokenLength)
+                throw decompileError;
             const uint32_t ui32ExtOpcodeToken = pui32Token[ui32OperandOffset];
             const EXTENDED_OPCODE_TYPE eExtType = DecodeExtendedOpcodeType(ui32ExtOpcodeToken);
 
@@ -1095,7 +1262,7 @@ const uint32_t* DeocdeInstruction(const uint32_t* pui32Token, Instruction* psIns
 		case OPCODE_CUSTOMDATA:
 		{
             psInst->ui32NumOperands = 0;
-			ui32TokenLength = pui32Token[1];
+			//F-101: the helper already consumed the CUSTOMDATA length DWORD.
 			break;
 		}
         case OPCODE_EVAL_CENTROID:
@@ -1195,49 +1362,52 @@ const uint32_t* DecodeShaderPhase(const uint32_t* pui32Tokens,
 	const uint32_t* pui32CurrentToken = pui32Tokens;
 	const uint32_t ui32ShaderLength = psShader->ui32ShaderLength;
 	const uint32_t ui32InstanceIndex = psShader->asPhase[ui32Phase].ui32InstanceCount;
+	const uint32_t* const pui32End = psShader->pui32FirstToken + ui32ShaderLength;
 
 	//Declarations
 	std::vector<Declaration> &psDecl = psShader->asPhase[ui32Phase].ppsDecl[ui32InstanceIndex];
 
 	psShader->asPhase[ui32Phase].ui32InstanceCount++;
 
-    while(1) //Keep going until we reach the first non-declaration token, or the end of the shader.
+    //F-101: every accepted declaration advances by at least one token, so the
+    //remaining payload size is also a hard pass limit.
+    size_t ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
+
 		Declaration decl;
-        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, &decl);
+        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, pui32End, &decl);
 
-        if(pui32Result)
-        {
-            pui32CurrentToken = pui32Result;
-			psDecl.push_back(decl);
-
-            if(pui32CurrentToken >= (psShader->pui32FirstToken + ui32ShaderLength))
-            {
-                break;
-            }
-        }
-        else
+        if(!pui32Result)
         {
             break;
         }
+
+        pui32CurrentToken = pui32Result;
+		psDecl.push_back(decl);
     }
 
 
 	//Instructions
 	std::vector<Instruction> &psInst = psShader->asPhase[ui32Phase].ppsInst[ui32InstanceIndex];
 
-    while (pui32CurrentToken < (psShader->pui32FirstToken + ui32ShaderLength))
+    ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
-		Instruction inst;
-        const uint32_t* nextInstr = DeocdeInstruction(pui32CurrentToken, &inst, psShader);
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
 
-#ifdef _DEBUG
-        if(nextInstr == pui32CurrentToken)
-        {
-            ASSERT(0);
-            break;
-        }
-#endif
+		Instruction inst;
+        const uint32_t* nextInstr = DeocdeInstruction(pui32CurrentToken, pui32End, &inst, psShader);
+
+        //F-101: unconditional in Release too; a stalled pointer must fail the
+        //decode instead of pushing the same instruction forever.
+        if (nextInstr <= pui32CurrentToken || nextInstr > pui32End)
+            throw decompileError;
 
 		if(inst.eOpcode == OPCODE_HS_FORK_PHASE)
 		{
@@ -1262,18 +1432,20 @@ const void AllocateHullPhaseArrays(const uint32_t* pui32Tokens,
 {
 	const uint32_t* pui32CurrentToken = pui32Tokens;
 	const uint32_t ui32ShaderLength = psShader->ui32ShaderLength;
+	const uint32_t* const pui32End = psShader->pui32FirstToken + ui32ShaderLength;
 	uint32_t ui32InstanceCount = 0;
 
-    while(1) //Keep going until we reach the first non-declaration token, or the end of the shader.
+    //F-101: use the checked length helper so a zero-length token cannot spin
+    //here forever, and keep an explicit payload-sized pass cap.
+    size_t ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
-		uint32_t ui32TokenLength = DecodeInstructionLength(*pui32CurrentToken);
-		const uint32_t bExtended = DecodeIsOpcodeExtended(*pui32CurrentToken);
-		const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32CurrentToken);
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
 
-		if(eOpcode == OPCODE_CUSTOMDATA)
-		{
-			ui32TokenLength = pui32CurrentToken[1];
-		}
+		const uint32_t ui32TokenLength = DecodeCheckedTokenLength(pui32CurrentToken, pui32End);
+		const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32CurrentToken);
 
         pui32CurrentToken = pui32CurrentToken + ui32TokenLength;
 
@@ -1281,11 +1453,6 @@ const void AllocateHullPhaseArrays(const uint32_t* pui32Tokens,
 		{
 			ui32InstanceCount++;
 		}
-
-        if(pui32CurrentToken >= (psShader->pui32FirstToken + ui32ShaderLength))
-        {
-            break;
-        }
     }
 
 	if(ui32InstanceCount)
@@ -1300,6 +1467,7 @@ const uint32_t* DecodeHullShader(const uint32_t* pui32Tokens, Shader* psShader)
 {
 	const uint32_t* pui32CurrentToken = pui32Tokens;
 	const uint32_t ui32ShaderLength = psShader->ui32ShaderLength;
+	const uint32_t* const pui32End = psShader->pui32FirstToken + ui32ShaderLength;
 
 	std::vector<Declaration> &psDecl = psShader->asPhase[HS_GLOBAL_DECL].ppsDecl[0];
 	psShader->asPhase[HS_GLOBAL_DECL].ui32InstanceCount = 1;
@@ -1309,50 +1477,56 @@ const uint32_t* DecodeHullShader(const uint32_t* pui32Tokens, Shader* psShader)
 	AllocateHullPhaseArrays(pui32Tokens, psShader, HS_JOIN_PHASE, OPCODE_HS_JOIN_PHASE);
 
 	//Keep going until we have done all phases or the end of the shader.
-    while(1)
+    size_t ui32StepsLeft = static_cast<size_t>(pui32End - pui32CurrentToken);
+    while (pui32CurrentToken < pui32End)
     {
+        if (ui32StepsLeft == 0)
+            throw decompileError;
+        --ui32StepsLeft;
+
 		Declaration decl;
-        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, &decl);
+        const uint32_t* pui32Result = DecodeDeclaration(psShader, pui32CurrentToken, pui32End, &decl);
 
-        if(pui32Result)
-        {
-            pui32CurrentToken = pui32Result;
-
-			if(decl.eOpcode == OPCODE_HS_CONTROL_POINT_PHASE)
-			{
-				pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_CTRL_POINT_PHASE);
-			}
-			else if(decl.eOpcode == OPCODE_HS_FORK_PHASE)
-			{
-				pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_FORK_PHASE);
-			}
-			else if(decl.eOpcode == OPCODE_HS_JOIN_PHASE)
-			{
-				pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_JOIN_PHASE);
-			}
-			else
-			{
-				psDecl.push_back(decl);
-			}
-
-			if(pui32CurrentToken >= (psShader->pui32FirstToken + ui32ShaderLength))
-			{
-				break;
-			}
-		}
-        else
+        if(!pui32Result)
         {
             break;
         }
+
+        pui32CurrentToken = pui32Result;
+
+		if(decl.eOpcode == OPCODE_HS_CONTROL_POINT_PHASE)
+		{
+			pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_CTRL_POINT_PHASE);
+		}
+		else if(decl.eOpcode == OPCODE_HS_FORK_PHASE)
+		{
+			pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_FORK_PHASE);
+		}
+		else if(decl.eOpcode == OPCODE_HS_JOIN_PHASE)
+		{
+			pui32CurrentToken = DecodeShaderPhase(pui32CurrentToken, psShader, HS_JOIN_PHASE);
+		}
+		else
+		{
+			psDecl.push_back(decl);
+		}
     }
 
 	return pui32CurrentToken;
 }
 
-void Decode(const uint32_t* pui32Tokens, Shader* psShader)
+void Decode(const uint32_t* pui32Tokens, uint32_t ui32TokenCount, Shader* psShader)
 {
+	if (!pui32Tokens || ui32TokenCount < 2)
+		throw decompileError;
+
 	const uint32_t* pui32CurrentToken = pui32Tokens;
     const uint32_t ui32ShaderLength = pui32Tokens[1];
+
+	//F-104: the length token is attacker controlled. Keep it inside the chunk
+	//payload that was already validated by DecodeDXBC.
+	if (ui32ShaderLength < 2 || ui32ShaderLength > ui32TokenCount)
+		throw decompileError;
 
 	psShader->ui32MajorVersion = DecodeProgramMajorVersion(*pui32CurrentToken);
 	psShader->ui32MinorVersion = DecodeProgramMinorVersion(*pui32CurrentToken);
@@ -1375,123 +1549,188 @@ void Decode(const uint32_t* pui32Tokens, Shader* psShader)
 	DecodeShaderPhase(pui32CurrentToken, psShader, MAIN_PHASE);
 }
 
-Shader* DecodeDXBC(uint32_t* data)
+Shader* DecodeDXBC(const void* data, size_t byteSize)
 {
-    Shader* psShader;
-	DXBCContainerHeader* header = (DXBCContainerHeader*)data;
-	uint32_t i;
-	uint32_t chunkCount;
-	uint32_t* chunkOffsets;
-    ReflectionChunks refChunks;
-    uint32_t* shaderChunk = 0;
+	if (!data)
+		return nullptr;
 
-	if(header->fourcc != FOURCC_DXBC)
+	const uint8_t* base = static_cast<const uint8_t*>(data);
+
+	uint32_t fourcc = 0;
+	if (byteSize < sizeof(fourcc))
+		return nullptr;
+	memcpy(&fourcc, base, sizeof(fourcc));
+
+	//The payload and reflection chunks are read as DWORDs.
+	if ((reinterpret_cast<uintptr_t>(data) % sizeof(uint32_t)) != 0)
+		return nullptr;
+
+	if (fourcc != FOURCC_DXBC)
 	{
-        //Could be SM1/2/3. If the shader type token
-        //looks valid then we continue
-        uint32_t type = DecodeShaderTypeDX9(data[0]);
+		//Could be SM1/2/3. If the shader type token
+		//looks valid then we continue
+		if (byteSize < 2 * sizeof(uint32_t) || (byteSize % sizeof(uint32_t)) != 0 ||
+			(reinterpret_cast<uintptr_t>(data) % sizeof(uint32_t)) != 0)
+			return nullptr;
 
-        if(type != INVALID_SHADER)
-        {
-            return DecodeDX9BC(data);
-        }
-		return 0;
+		const uint32_t* tokens = static_cast<const uint32_t*>(data);
+		if (DecodeShaderTypeDX9(tokens[0]) == INVALID_SHADER)
+			return nullptr;
+
+		return DecodeDX9BC(tokens, byteSize);
 	}
 
-    refChunks.pui32Inputs = NULL;
-    refChunks.pui32Interfaces = NULL;
-    refChunks.pui32Outputs = NULL;
-    refChunks.pui32Resources = NULL;
-	refChunks.pui32Inputs11 = NULL;
-	refChunks.pui32Outputs11 = NULL;
-	refChunks.pui32OutputsWithStreams = NULL;
-	refChunks.pui32PatchConstants = NULL;
+	if (byteSize < kDxbcHeaderBytes)
+		return nullptr;
 
-	chunkOffsets = (uint32_t*)(header + 1);
+	DXBCContainerHeader header;
+	memcpy(&header, base, sizeof(header));
+	if (header.fourcc != FOURCC_DXBC)
+		return nullptr;
+	if (header.totalSize < kDxbcHeaderBytes || header.totalSize > byteSize)
+		return nullptr;
+	if (header.chunkCount > kMaxDxbcChunks)
+		return nullptr;
 
-	chunkCount = header->chunkCount;
+	const size_t limit = header.totalSize;
+	if (size_t(header.chunkCount) * sizeof(uint32_t) > limit - kDxbcHeaderBytes)
+		return nullptr;
+	const size_t tableEnd = kDxbcHeaderBytes + size_t(header.chunkCount) * sizeof(uint32_t);
 
-	for(i = 0; i < chunkCount; ++i)
+	ReflectionChunks refChunks = {};
+	const uint32_t* shaderChunk = nullptr;
+	size_t shaderChunkBytes = 0;
+
+	for (uint32_t i = 0; i < header.chunkCount; ++i)
 	{
-		uint32_t offset = chunkOffsets[i];
+		uint32_t offset = 0;
+		memcpy(&offset, base + kDxbcHeaderBytes + size_t(i) * sizeof(uint32_t), sizeof(offset));
 
-		DXBCChunkHeader* chunk = (DXBCChunkHeader*)((char*)data + offset);
+		if (offset < tableEnd)
+			return nullptr;				// cannot point into the header or the offset table
+		if ((offset & 3) != 0)
+			return nullptr;				// payload is read as DWORDs
+		if (size_t(offset) > limit - kDxbcChunkHeaderBytes)
+			return nullptr;
 
-        switch(chunk->fourcc)
-        {
-            case FOURCC_ISGN:
-            {
-                refChunks.pui32Inputs = (uint32_t*)(chunk + 1);
-                break;
-            }
+		DXBCChunkHeader chunk;
+		memcpy(&chunk, base + size_t(offset), sizeof(chunk));
+
+		const size_t payloadBytes = chunk.size;
+		if (payloadBytes > limit - size_t(offset) - kDxbcChunkHeaderBytes)
+			return nullptr;
+
+		const uint32_t* payload = reinterpret_cast<const uint32_t*>(base + size_t(offset) + kDxbcChunkHeaderBytes);
+
+		const size_t reflectionPrefix = ReflectionChunkPrefixBytes(chunk.fourcc);
+		if (reflectionPrefix && (payloadBytes < reflectionPrefix || (payloadBytes % sizeof(uint32_t)) != 0))
+			return nullptr;
+		if (reflectionPrefix && !ValidateReflectionCounts(chunk.fourcc, payload, payloadBytes))
+			return nullptr;
+
+		switch(chunk.fourcc)
+		{
+			case FOURCC_ISGN:
+			{
+				refChunks.inputs = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
+				break;
+			}
 			case FOURCC_ISG1:
 			{
-                refChunks.pui32Inputs11 = (uint32_t*)(chunk + 1);
-                break;
+				refChunks.inputs11 = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
+				break;
 			}
-            case FOURCC_RDEF:
-            {
-                refChunks.pui32Resources = (uint32_t*)(chunk + 1);
-                break;
-            }
-            case FOURCC_IFCE:
-            {
-                refChunks.pui32Interfaces = (uint32_t*)(chunk + 1);
-                break;
-            }
-            case FOURCC_OSGN:
-            {
-                refChunks.pui32Outputs = (uint32_t*)(chunk + 1);
-                break;
-            }
+			case FOURCC_RDEF:
+			{
+				refChunks.resources = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
+				break;
+			}
+			case FOURCC_IFCE:
+			{
+				refChunks.interfaces = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
+				break;
+			}
+			case FOURCC_OSGN:
+			{
+				refChunks.outputs = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
+				break;
+			}
 			case FOURCC_OSG1:
-            {
-                refChunks.pui32Outputs11 = (uint32_t*)(chunk + 1);
-                break;
-            }
+			{
+				refChunks.outputs11 = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
+				break;
+			}
 			case FOURCC_OSG5:
 			{
-                refChunks.pui32OutputsWithStreams = (uint32_t*)(chunk + 1);
+				refChunks.outputsWithStreams = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
-            case FOURCC_SHDR:
-            case FOURCC_SHEX:
-            {
-                shaderChunk = (uint32_t*)(chunk + 1);
-                break;
-            }
+			case FOURCC_SHDR:
+			case FOURCC_SHEX:
+			{
+				if ((payloadBytes % sizeof(uint32_t)) != 0 || payloadBytes < 2 * sizeof(uint32_t))
+					return nullptr;		// needs version + length, read as DWORDs
+				shaderChunk = payload;
+				shaderChunkBytes = payloadBytes;
+				break;
+			}
 			case FOURCC_PSGN:
 			{
-				refChunks.pui32PatchConstants = (uint32_t*)(chunk + 1);
+				refChunks.patchConstants = { reinterpret_cast<const uint8_t*>(payload), payloadBytes };
 				break;
 			}
-            default:
-            {
-                break;
-            }
-        }
+			default:
+			{
+				break;
+			}
+		}
 	}
 
-    if(shaderChunk)
-    {
-        uint32_t ui32MajorVersion;
-        uint32_t ui32MinorVersion;
+	if (!shaderChunk)
+		return nullptr;
 
-	psShader = new Shader();
+	const uint32_t shaderWords = static_cast<uint32_t>(shaderChunkBytes / sizeof(uint32_t));
+	const uint32_t shaderLength = shaderChunk[1];
+	if (shaderLength < 2 || shaderLength > shaderWords)
+		return nullptr;
 
-        ui32MajorVersion = DecodeProgramMajorVersion(*shaderChunk);
-        ui32MinorVersion = DecodeProgramMinorVersion(*shaderChunk);
+	const uint32_t ui32MajorVersion = DecodeProgramMajorVersion(shaderChunk[0]);
+	const uint32_t ui32MinorVersion = DecodeProgramMinorVersion(shaderChunk[0]);
 
-        LoadShaderInfo(ui32MajorVersion,
-            ui32MinorVersion,
-            &refChunks,
-            psShader->sInfo);
+	//F-101: the owner covers both calls, so a decompileError raised by the
+	//checked length helper releases the partial Shader and its reflection
+	//arrays before the exception leaves this decode entry point.
+	ShaderPtr shader(new Shader());
 
-        Decode(shaderChunk, psShader);
+	try
+	{
+		//F-128: reflection counts/offsets that do not fit their chunk are
+		//malformed input. Release the owner and report failure; F-101 still
+		//owns the catch below for errors raised by Decode itself.
+		if (!LoadShaderInfo(ui32MajorVersion,
+			ui32MinorVersion,
+			&refChunks,
+			shader->sInfo))
+			return nullptr;
 
-        return psShader;
-    }
+		Decode(shaderChunk, shaderWords, shader.get());
+	}
+	catch (const DecompileError&)
+	{
+		throw;
+	}
+	catch (const std::bad_alloc&)
+	{
+		//Keep allocation failure distinguishable from malformed input.
+		throw;
+	}
+	catch (...)
+	{
+		//F-101: normalize unexpected decode exceptions to the decoder's
+		//documented failure type so callers only have decompileError to handle.
+		throw decompileError;
+	}
 
-    return 0;
+	return shader.release();
 }
 

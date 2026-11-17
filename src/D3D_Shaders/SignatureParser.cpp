@@ -367,7 +367,7 @@ static void* parse_signature_section(char *section24, char *section28, char *sec
 
 		// Try parsing register as a decimal number. If it is not, it
 		// is a special purpose register, in which case we store -1:
-		if (numRead = sscanf_s(reg, "%d", &entry.common.reg) == 0)
+		if (sscanf_s(reg, "%d", &entry.common.reg) != 1)
 			entry.common.reg = 0xffffffff;
 
 		entry.common.system_value = parse_system_value(system_value);
@@ -534,6 +534,9 @@ static uint64_t parse_subshader_feature_info_comment(string *shader, size_t *pos
 		line = next_line(shader, pos);
 
 		LogDebug("%s\n", line.c_str());
+		if (line.size() < 9 || line.compare(0, 2, "//") != 0 ||
+			line.find_first_not_of(" \t", 2) != 9)
+			break;
 
 		for (i = 0; i < ARRAYSIZE(subshader_feature_comments); i++) {
 			if (!strcmp(line.c_str() + 9, subshader_feature_comments[i])) {

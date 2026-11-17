@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cwchar>
 #include <initializer_list>
@@ -645,6 +646,28 @@ public:
 		return target;
 	}
 
+	// Optional sink for persist-save failure diagnostics. This header is shared
+	// and has no logger of its own; the DX12 runtime installs a sink that writes
+	// to d3d12_log.txt. Without one (tests, early startup) the failure still
+	// goes to stderr instead of being silent.
+	using PersistFailureSink = void (*)(const char *stage, const wchar_t *path, int error);
+	inline static PersistFailureSink persistFailureSink = nullptr;
+
+	static void SetPersistFailureSink(PersistFailureSink sink)
+	{
+		persistFailureSink = sink;
+	}
+
+	static void ReportPersistFailure(const char *stage, const std::wstring &path, int error)
+	{
+		if (persistFailureSink) {
+			persistFailureSink(stage, path.c_str(), error);
+			return;
+		}
+		fprintf(stderr, "persist save failed at %s (error %d): %ls\n",
+			stage ? stage : "", error, path.c_str());
+	}
+
 	// Writes the live values of every persist variable to `target` in the
 	// exact DX11 SavePersistentSettings() format, so a d3dx_user.ini produced
 	// here is byte-compatible with the DX11 runtime and vice versa:
@@ -658,7 +681,8 @@ public:
 	// RegisterPersistedVariables, and the values come from the live global
 	// table, so the file always reflects the newest hotkey state. Returns false
 	// without touching the file when nothing is declared as persistent or the
-	// file cannot be opened.
+	// file cannot be opened, and returns false while leaving the dirty flag set
+	// when any write, flush or close fails so the next autosave retries.
 	static bool SavePersistedVariables(const PersistTarget &target)
 	{
 		if (target.directory.empty() || target.fileName.empty())
@@ -677,29 +701,66 @@ public:
 			path += L'\\';
 		path += target.fileName;
 
+		errno = 0;
 		FILE *file = _wfsopen(path.c_str(), L"w", _SH_DENYNO);
-		if (!file)
+		if (!file) {
+			ReportPersistFailure("fopen", path, errno);
 			return false;
+		}
 
-		fputs("; AUTOMATICALLY GENERATED FILE - DO NOT EDIT\n"
+		// This file is the only copy of the user's persisted settings, so every
+		// stdio step is checked. A failed write/flush/close keeps the dirty flag
+		// armed and reports one line to the platform log; the next autosave or
+		// reload then retries the complete file. The success-path bytes are the
+		// same DX11-compatible format as before this check.
+		bool ok = true;
+		const char *failedStage = "fputs";
+		if (fputs("; AUTOMATICALLY GENERATED FILE - DO NOT EDIT\n"
 		      ";\n"
 		      "; 3DMigoto will overwrite this file whenever any persistent settings are\n"
 		      "; altered by hot key or command list. Tag global variables with the \"persist\"\n"
 		      "; keyword to save them in this file. Use the post keyword in the [Constants]\n"
 		      "; command list if you need to do any intialisation after this file is loaded.\n"
 		      ";\n"
-		      "[Constants]\n", file);
-
-		for (const PersistedVariable &declaration : VariableStore::persistedVariables) {
-			auto found = VariableStore::globals.find(
-				NormalizeVariableName(declaration.name));
-			if (found == VariableStore::globals.end())
-				continue;
-			fwprintf_s(file, L"%ls = %.9g\n",
-				declaration.name.c_str(), found->second);
+		      "[Constants]\n", file) < 0) {
+			ok = false;
 		}
 
-		fclose(file);
+		if (ok) {
+			failedStage = "fwprintf_s";
+			for (const PersistedVariable &declaration : VariableStore::persistedVariables) {
+				auto found = VariableStore::globals.find(
+					NormalizeVariableName(declaration.name));
+				if (found == VariableStore::globals.end())
+					continue;
+				if (fwprintf_s(file, L"%ls = %.9g\n",
+					declaration.name.c_str(), found->second) < 0) {
+					ok = false;
+					break;
+				}
+			}
+		}
+
+		if (ferror(file)) {
+			if (ok)
+				failedStage = "ferror";
+			ok = false;
+		}
+		if (fflush(file) != 0) {
+			if (ok)
+				failedStage = "fflush";
+			ok = false;
+		}
+		if (fclose(file) != 0) {
+			if (ok)
+				failedStage = "fclose";
+			ok = false;
+		}
+		if (!ok) {
+			ReportPersistFailure(failedStage, path, errno);
+			return false;
+		}
+
 		ClearPersistDirty();
 		return true;
 	}

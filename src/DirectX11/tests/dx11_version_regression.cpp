@@ -1,12 +1,16 @@
 #include <Windows.h>
 #include <winver.h>
 #include "DX11Version.h"
+#include "version.h"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+void test_dx11_version_fallback_regression();
 
 namespace {
 void check(bool ok, const char* message)
@@ -25,6 +29,9 @@ std::wstring wide(const char* text)
 }
 void run_version_test()
 {
+    test_dx11_version_fallback_regression();
+    check(!std::strcmp(MigotoFileVersionString(), VER_FILE_VERSION_STR),
+        "runtime version provider matches current generated metadata");
     wchar_t executable[MAX_PATH] = {};
     check(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "locate built DX11 version fixture");
     const auto library = std::filesystem::path(executable).parent_path() / L"d3d11.dll";

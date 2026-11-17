@@ -1,5 +1,6 @@
 #include "slot_range_test_support.h"
 #include "cache_policy_test_scope.h"
+#include <D3Dcompiler.h>
 using namespace dx11_slot_test;
 
 namespace {
@@ -20,6 +21,14 @@ ComPtr<ID3D11Resource> view_resource(ID3D11View* view)
     return result;
 }
 
+D3D11_SHADER_RESOURCE_VIEW_DESC describe_roundtrip_srv(const ComPtr<ID3D11ShaderResourceView>& view)
+{
+    require_batch(view != nullptr, "ref: scalar roundtrip must bind a CS SRV before reading its description");
+    D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+    view->GetDesc(&desc);
+    return desc;
+}
+
 void view_kinds(BatchDevice& device, Registry& registry)
 {
     auto native = array_texture(device, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -38,7 +47,7 @@ void view_kinds(BatchDevice& device, Registry& registry)
     device.context->ClearState();
     scalar(device, L"cs-t7", L"ref resourceref_view_hold");
     auto rebound = get_slot(device, L'c', 7);
-    D3D11_SHADER_RESOURCE_VIEW_DESC actual = {}; rebound->GetDesc(&actual);
+    const auto actual = describe_roundtrip_srv(rebound);
     require_batch(rebound.Get() == original.Get() && actual.Texture2DArray.MostDetailedMip == 1 &&
         actual.Texture2DArray.FirstArraySlice == 1 && actual.Texture2DArray.ArraySize == 1,
         "ref: scalar roundtrip retains array/mip subview rather than widening to full resource");
@@ -143,4 +152,158 @@ void test_dx11_view_reference_regression()
     BatchDevice device; Registry registry;
     view_kinds(device, registry);
     structured_to_cb_and_flags(device, registry);
+}
+
+void test_dx11_view_reference_null_diagnostic_regression()
+{
+    BatchDevice device;
+    device.context->ClearState();
+    auto empty = get_slot(device, L'c', 7);
+    require_batch(!empty, "F298: actual cleared CS slot returns a null SRV");
+    std::fputs("F298: describe an actual empty slot through the ordinary regression consumer\n", stderr); std::fflush(stderr);
+    bool diagnosed = false;
+    try { describe_roundtrip_srv(empty); }
+    catch (const std::runtime_error& error) {
+        std::fprintf(stderr, "F298 caught diagnostic: %s\n", error.what());
+        diagnosed = std::string(error.what()).find("scalar roundtrip must bind a CS SRV") != std::string::npos;
+    }
+    require_batch(diagnosed, "F298: missing SRV must produce the existing diagnostic exception before GetDesc");
+    Registry registry;
+    view_kinds(device, registry);
+}
+
+namespace {
+// F-112 (A): AddRef() returns the new count; subtract the probe reference to
+// report the object's actual reference count.
+ULONG srv_refs(ID3D11ShaderResourceView *view)
+{
+    const ULONG probe = view->AddRef();
+    view->Release();
+    return probe - 1;
+}
+
+struct ZBufferHashScope
+{
+    uint32_t saved = G->ZBufferHashToInject;
+    explicit ZBufferHashScope(uint32_t hash) { G->ZBufferHashToInject = hash; }
+    ~ZBufferHashScope() { G->ZBufferHashToInject = saved; }
+};
+
+ComPtr<ID3D11Texture2D> z_depth_texture(BatchDevice &device)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = desc.Height = 8;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> texture;
+    require_batch(SUCCEEDED(device.device->CreateTexture2D(&desc, nullptr, &texture)),
+        "F112: wrapped depth texture creation");
+    return texture;
+}
+
+ComPtr<ID3D11ShaderResourceView> z_srv(BatchDevice &device, ID3D11Texture2D *texture)
+{
+    D3D11_SHADER_RESOURCE_VIEW_DESC desc = {};
+    desc.Format = DXGI_FORMAT_R32_FLOAT;
+    desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    desc.Texture2D.MipLevels = 1;
+    ComPtr<ID3D11ShaderResourceView> view;
+    require_batch(SUCCEEDED(device.device->CreateShaderResourceView(texture, &desc, &view)),
+        "F112: wrapped SRV creation");
+    return view;
+}
+
+ComPtr<ID3D11PixelShader> z_test_pixel_shader(BatchDevice &device)
+{
+    const char hlsl[] = "float4 main():SV_Target{return float4(0.25,0.5,0.75,1);}";
+    ComPtr<ID3DBlob> bytecode, errors;
+    require_batch(SUCCEEDED(D3DCompile(hlsl, sizeof(hlsl) - 1, "ZBufferLease", nullptr, nullptr,
+        "main", "ps_5_0", 0, 0, &bytecode, &errors)), "F112: compile pixel shader");
+    ComPtr<ID3D11PixelShader> shader;
+    require_batch(SUCCEEDED(device.device->CreatePixelShader(bytecode->GetBufferPointer(),
+        bytecode->GetBufferSize(), nullptr, &shader)), "F112: wrapped pixel shader creation");
+    return shader;
+}
+
+ComPtr<ID3D11ShaderResourceView> ps_slot_126(BatchDevice &device)
+{
+    ComPtr<ID3D11ShaderResourceView> slot;
+    device.context->PSGetShaderResources(126, 1, &slot);
+    return slot;
+}
+} // namespace
+
+void test_dx11_zbuffer_view_ownership_regression()
+{
+    BatchDevice device;
+    auto depth = z_depth_texture(device);
+    const uint32_t hash = GetResourceHash(depth.Get());
+    require_batch(hash != 0, "F112: wrapped depth texture is registered with a hash");
+    ZBufferHashScope inject(hash);
+    auto shader = z_test_pixel_shader(device);
+
+    // 1) Capture: print the baseline reference count of a fresh SRV, then the
+    // count of the captured SRV (baseline + 1 held by HackerDevice).
+    {
+        ZBufferHashScope control_hash(0);
+        auto control = z_srv(device, depth.Get());
+        require_batch(device.device->mZBufferResourceView == nullptr,
+            "F112: SRV created without a hash match is not captured");
+        std::fprintf(stderr, "F112: capture-before: fresh SRV refs = %lu\n",
+            static_cast<unsigned long>(srv_refs(control.Get())));
+    }
+    auto srv = z_srv(device, depth.Get());
+    require_batch(device.device->mZBufferResourceView == srv.Get(),
+        "F112: wrapper publishes the captured z buffer SRV");
+    std::fprintf(stderr, "F112: capture-after: captured SRV refs = %lu\n",
+        static_cast<unsigned long>(srv_refs(srv.Get())));
+    require_batch(srv_refs(srv.Get()) == 2, "F112: capture adds exactly one reference");
+    device.wrapper->PSSetShader(shader.Get(), nullptr, 0);
+    {
+        auto slot = ps_slot_126(device);
+        require_batch(slot.Get() == srv.Get(), "F112: captured SRV is bound to slot 126");
+    }
+    device.context->ClearState();
+    device.context->Flush();
+
+    // 2) Replacement: print the old count before replacement and both counts
+    // after it; exactly one Release must have hit the old value (2 -> 1) and
+    // exactly one AddRef the new one (1 -> 2).
+    std::fprintf(stderr, "F112: replacement-before: old SRV refs = %lu\n",
+        static_cast<unsigned long>(srv_refs(srv.Get())));
+    auto replacement = z_srv(device, depth.Get());
+    require_batch(device.device->mZBufferResourceView == replacement.Get(),
+        "F112: replacement publishes the new SRV");
+    std::fprintf(stderr, "F112: replacement-after: old SRV refs = %lu, new SRV refs = %lu\n",
+        static_cast<unsigned long>(srv_refs(srv.Get())),
+        static_cast<unsigned long>(srv_refs(replacement.Get())));
+    require_batch(srv_refs(srv.Get()) == 1, "F112: replacement releases the old SRV exactly once");
+    require_batch(srv_refs(replacement.Get()) == 2, "F112: replacement retains one reference on the new SRV");
+    srv.Reset();
+    require_batch(device.device->mZBufferResourceView == replacement.Get(),
+        "F112: releasing the caller's old reference does not clear the replacement");
+
+    // 3) HackerDevice::Release path: ReleaseZBufferResourceView() is the exact
+    // step HackerDevice::Release() runs. Print the count before it, the value
+    // returned by the view's Release (0 = last reference), then the pointer.
+    device.context->ClearState();
+    device.context->Flush();
+    replacement.Reset();
+    require_batch(device.device->mZBufferResourceView != nullptr,
+        "F112: device still holds the last reference after the caller releases");
+    std::fprintf(stderr, "F112: release-before: SRV refs = %lu\n",
+        static_cast<unsigned long>(srv_refs(device.device->mZBufferResourceView)));
+    const long released = device.device->ReleaseZBufferResourceView();
+    std::fprintf(stderr, "F112: release-step: SRV Release() returned %ld (0 = refcount reached 0)\n", released);
+    std::fprintf(stderr, "F112: release-step: mZBufferResourceView = %p (null after release)\n",
+        static_cast<void*>(device.device->mZBufferResourceView));
+    require_batch(released == 0, "F112: Release returns 0 when the retained reference is the last one");
+    require_batch(device.device->mZBufferResourceView == nullptr,
+        "F112: z buffer pointer is cleared after the release");
+    device.wrapper->PSSetShader(shader.Get(), nullptr, 0);
+    require_batch(!ps_slot_126(device), "F112: released z view is not bound after Release");
 }

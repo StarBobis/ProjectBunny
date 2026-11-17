@@ -1,0 +1,156 @@
+[CmdletBinding()]
+param([string]$Item = '',[switch]$SpecialOnly,[ValidateRange(1000,60000)][int]$TimeoutMs=60000,
+    [ValidateRange(1000,600000)][int]$IntegrationTimeoutMs=600000,
+    [ValidateRange(1000,600000)][int]$ComponentTimeoutMs=240000)
+$ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'process.ps1')
+$simulationRoot=Split-Path -Parent $PSScriptRoot
+$repositoryRoot=Split-Path -Parent $simulationRoot
+$buildRoot=Join-Path $simulationRoot 'build'
+$candidateBuild=Join-Path $buildRoot 'candidate'
+$infoPath=Join-Path $buildRoot 'business-build-info.json'
+$info=Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+$buildInfoSha256=(Get-FileHash -LiteralPath $infoPath).Hash
+foreach($source in $info.sources) {
+    if((Get-FileHash -LiteralPath (Join-Path $repositoryRoot $source.path) -Algorithm SHA256).Hash -ne $source.sha256) { throw "Rebuild before testing changed source: $($source.path)" }
+}
+foreach($product in $info.products) {
+    if((Get-FileHash -LiteralPath (Join-Path $candidateBuild $product.path) -Algorithm SHA256).Hash -ne $product.sha256) { throw "Built product changed: $($product.path)" }
+}
+$label=if($Item){$Item}else{'baseline'}
+if($SpecialOnly -and -not $Item){throw 'SpecialOnly requires an item.'}
+if($label -notmatch '^(baseline|F-\d{3}|P-\d{2})$'){throw 'Invalid item id.'}
+$runRoot=Join-Path $buildRoot ('f\'+[guid]::NewGuid().ToString('N').Substring(0,12))
+New-Item -ItemType Directory -Path $runRoot | Out-Null
+$checks=[Collections.Generic.List[object]]::new()
+$specialComponentReport=$null
+$dll=Join-Path $candidateBuild 'src\DirectX11\d3d11.dll'
+$regression=Join-Path $candidateBuild 'src\DirectX11\dx11_upstream_regression.exe'
+foreach($mode in @('special','business')) {
+    if($mode -eq 'special' -and -not $Item){continue}
+    if($mode -eq 'business' -and $SpecialOnly){continue}
+    $caseRoot=Join-Path $runRoot $mode
+    New-Item -ItemType Directory -Path $caseRoot | Out-Null
+    foreach($path in @($dll,$regression,(Join-Path $candidateBuild 'src\DirectX11\wic-regression.png'),(Join-Path $candidateBuild 'src\DirectX11\clang_rt.asan_dynamic-x86_64.dll'))) {
+        Copy-Item -LiteralPath $path -Destination $caseRoot
+    }
+    $exe=Join-Path $caseRoot 'dx11_upstream_regression.exe'
+    $arguments=if($mode -eq 'special'){@('--audit-item',$Item,'--fixture-isolated')}else{@('--full','--fixture-isolated')}
+    if($mode -eq 'special' -and $Item -eq 'F-152') {
+        $exe=(Get-Process -Id $PID).Path
+        $specialComponentPointer=Join-Path $caseRoot 'component-report-path.txt'
+        $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-Item',$Item,'-SpecialOnly','-ReportPointer',$specialComponentPointer)
+    }
+    if($mode -eq 'special' -and $Item -in @('F-178','F-291')) {
+        $exe=(Get-Process -Id $PID).Path
+        $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-SpecialItem',$Item)
+    }
+    if($mode -eq 'special' -and $Item -eq 'F-202') {
+        $arguments=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-fixture-isolation.ps1'),'-Executable',$exe)
+        $exe=(Get-Process -Id $PID).Path
+    }
+    $result=Invoke-IsolatedSimulationProcess -Executable $exe -Arguments $arguments -WorkingDirectory $caseRoot -LogPrefix (Join-Path $caseRoot 'host') -TimeoutMs $TimeoutMs -EnvironmentOverrides @{ASAN_OPTIONS='halt_on_error=1:alloc_dealloc_mismatch=1:new_delete_type_mismatch=1'}
+    if($mode -eq 'special' -and $Item -eq 'F-152' -and (Test-Path -LiteralPath $specialComponentPointer)) {
+        $specialComponentReport=Get-Content -LiteralPath ([IO.File]::ReadAllText($specialComponentPointer)) -Raw | ConvertFrom-Json
+    }
+    if($mode -eq 'special' -and $result.status -eq 'PASS') {
+        $outputLines=Get-Content -LiteralPath (Join-Path $caseRoot 'host.stdout.txt')
+        if("PASS audit item: $Item" -notin $outputLines) {
+            $result.status='FAIL';$result.message='Specialized test did not acknowledge the requested item.'
+        }
+    }
+    $checks.Add([pscustomobject]@{name=$mode;status=$result.status;detail=$result})
+    Write-Host "[$($result.status)] $label $mode"
+}
+if($SpecialOnly) {
+    $status=if(@($checks | Where-Object status -ne 'PASS').Count){'FAIL'}else{'PASS'}
+    @{item=$label;status=$status;validationLevel='special-only';buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll).Hash;checks=$checks.ToArray();proxyComponentSpecial=$specialComponentReport} |
+        ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $runRoot 'results.json') -Encoding utf8
+    Write-Host "Special report: $(Join-Path $runRoot 'results.json')"
+    if($status -ne 'PASS'){exit 1}
+    exit 0
+}
+$shaderRoot=Join-Path $runRoot 'business\shader-fixture'
+$toolSource=Join-Path $candidateBuild 'src\D3D_Shaders\D3D_Shaders.exe'
+$shaderResult=[pscustomobject]@{status='NOT_RUN';exitCode=$null;elapsedMs=0;message='Business suite did not produce the native-validated shader fixture.'}
+if(Test-Path -LiteralPath (Join-Path $shaderRoot 'expected.cbo')) {
+    $toolCopy=Join-Path $shaderRoot 'D3D_Shaders.exe'
+    Copy-Item -LiteralPath $toolSource -Destination $toolCopy
+    $shaderResult=Invoke-IsolatedSimulationProcess -Executable $toolCopy -Arguments @('--fixture-run') -WorkingDirectory $shaderRoot -LogPrefix (Join-Path $shaderRoot 'tool') -TimeoutMs $TimeoutMs
+    $output=Join-Path $shaderRoot 'ShaderCache\0123456789abcdef-ps.cbo'
+    if($shaderResult.status -eq 'PASS' -and (-not (Test-Path -LiteralPath $output) -or (Get-FileHash -LiteralPath $output).Hash -ne (Get-FileHash -LiteralPath (Join-Path $shaderRoot 'expected.cbo')).Hash)) {
+        $shaderResult.status='FAIL';$shaderResult.message='CLI did not produce the complete native-validated bytecode.'
+    }
+    if($shaderResult.status -eq 'PASS') {
+        $readFailureRoot=Join-Path $runRoot 'tool-input-failure'
+        New-Item -ItemType Directory -Path (Join-Path $readFailureRoot 'ShaderCache') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $readFailureRoot 'ShaderCache\0123456789abcdef-ps.txt'),"ps_5_0`nret`n",[Text.Encoding]::ASCII)
+        Copy-Item -LiteralPath $toolSource -Destination $readFailureRoot
+        $readFailure=Invoke-IsolatedSimulationProcess -Executable (Join-Path $readFailureRoot 'D3D_Shaders.exe') -Arguments @('--fixture-run') -WorkingDirectory $readFailureRoot -LogPrefix (Join-Path $readFailureRoot 'tool') -TimeoutMs $TimeoutMs
+        $diagnostic=Get-Content -LiteralPath (Join-Path $readFailureRoot 'tool.stderr.txt') -Raw
+        $passed=$readFailure.status -eq 'FAIL' -and $readFailure.exitCode -eq 1 -and $diagnostic.Contains('Cannot open shader input:') -and $diagnostic.Contains('0123456789abcdef-ps.bin') -and -not (Test-Path -LiteralPath (Join-Path $readFailureRoot 'ShaderCache\0123456789abcdef-ps.cbo'))
+        $shaderResult | Add-Member -NotePropertyName missingInput -NotePropertyValue ([pscustomobject]@{status=$(if($passed){'PASS'}else{'FAIL'});process=$readFailure;expectedExitCode=1;diagnosticChecked=$passed})
+        if(-not $passed){$shaderResult.status='FAIL';$shaderResult.message='CLI must report missing input and exit 1 without producing bytecode.'}
+    }
+    if($shaderResult.status -eq 'PASS') {
+        $outputFailures=@()
+        foreach($phase in @('cache-text','cache-binary','mark-text')) {
+            $failureRoot=Join-Path $runRoot "tool-output-$phase"
+            $folder=if($phase -eq 'mark-text'){'Mark'}else{'ShaderCache'}
+            New-Item -ItemType Directory -Path (Join-Path $failureRoot $folder) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $shaderRoot 'ShaderCache\0123456789abcdef-ps.bin') -Destination (Join-Path $failureRoot "$folder\0123456789abcdef-ps.bin")
+            $suffix=if($phase -eq 'cache-binary'){'cbo'}else{'txt'}
+            New-Item -ItemType Directory -Path (Join-Path $failureRoot "$folder\0123456789abcdef-ps.$suffix") | Out-Null
+            Copy-Item -LiteralPath $toolSource -Destination $failureRoot
+            $failure=Invoke-IsolatedSimulationProcess -Executable (Join-Path $failureRoot 'D3D_Shaders.exe') -Arguments @('--fixture-run') -WorkingDirectory $failureRoot -LogPrefix (Join-Path $failureRoot 'tool') -TimeoutMs $TimeoutMs
+            $diagnostic=Get-Content -LiteralPath (Join-Path $failureRoot 'tool.stderr.txt') -Raw
+            $passed=$failure.status -eq 'FAIL' -and $failure.exitCode -eq 1 -and $diagnostic.Contains('Cannot open shader output:') -and $diagnostic.Contains("0123456789abcdef-ps.$suffix")
+            $outputFailures += [pscustomobject]@{phase=$phase;status=$(if($passed){'PASS'}else{'FAIL'});process=$failure;expectedExitCode=1;diagnosticChecked=$passed}
+        }
+        $shaderResult | Add-Member -NotePropertyName outputFailures -NotePropertyValue $outputFailures
+        if(@($outputFailures | Where-Object status -ne 'PASS').Count){$shaderResult.status='FAIL';$shaderResult.message='Every CLI conversion output failure must report its filename and exit 1.'}
+    }
+}
+$checks.Add([pscustomobject]@{name='offline-shader-tool';status=$shaderResult.status;detail=$shaderResult})
+Write-Host "[$($shaderResult.status)] $label offline-shader-tool"
+$legacyRoot=Join-Path $runRoot 'legacy-version'
+New-Item -ItemType Directory -Path $legacyRoot | Out-Null
+$legacySource=Join-Path $candidateBuild 'src\DirectX11\Release\dx11_legacy_version_regression.exe'
+Copy-Item -LiteralPath $legacySource -Destination $legacyRoot
+$legacyResult=Invoke-IsolatedSimulationProcess -Executable (Join-Path $legacyRoot 'dx11_legacy_version_regression.exe') -Arguments @('--full') -WorkingDirectory $legacyRoot -LogPrefix (Join-Path $legacyRoot 'host') -TimeoutMs $TimeoutMs
+$checks.Add([pscustomobject]@{name='legacy-version';status=$legacyResult.status;detail=$legacyResult})
+Write-Host "[$($legacyResult.status)] $label legacy-version"
+$versionRoot=Join-Path $runRoot 'version-source'
+New-Item -ItemType Directory -Path (Join-Path $versionRoot 'cmake') | Out-Null
+$generatorSource=Join-Path $repositoryRoot 'cmake\GenerateDX11Version.cmake'
+$generatorCopy=Join-Path $versionRoot 'cmake\GenerateDX11Version.cmake'
+Copy-Item -LiteralPath $generatorSource -Destination $generatorCopy
+if((Get-FileHash -LiteralPath $generatorSource).Hash -ne (Get-FileHash -LiteralPath $generatorCopy).Hash){throw 'Version generator snapshot differs.'}
+$env:Path=(Split-Path -Parent $info.toolchain.cmake)+';'+$env:Path
+$versionResult=Invoke-IsolatedSimulationProcess -Executable $info.python -Arguments @((Join-Path $repositoryRoot 'scripts\test-dx11-version.py'),'--source-root',$versionRoot,'--work-dir',(Join-Path $versionRoot 'build')) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'version-generator') -TimeoutMs $TimeoutMs
+$checks.Add([pscustomobject]@{name='version-generator';status=$versionResult.status;detail=$versionResult})
+Write-Host "[$($versionResult.status)] $label version-generator"
+$shell=(Get-Process -Id $PID).Path
+$componentPointer=Join-Path $runRoot 'component-report-path.txt'
+$componentResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-components.ps1'),'-ReportPointer',$componentPointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'components') -TimeoutMs $ComponentTimeoutMs
+$componentReport=$null
+if(Test-Path -LiteralPath $componentPointer){$componentReport=Get-Content -LiteralPath ([IO.File]::ReadAllText($componentPointer)) -Raw | ConvertFrom-Json}
+if($componentResult.status -eq 'PASS' -and (-not $componentReport -or $componentReport.status -ne 'PASS')){$componentResult.status='FAIL';$componentResult.message='Component report is incomplete.'}
+$checks.Add([pscustomobject]@{name='proxy-components';status=$componentResult.status;detail=$componentResult})
+Write-Host "[$($componentResult.status)] $label proxy-components"
+$pointer=Join-Path $runRoot 'integration-report-path.txt'
+$shell=(Get-Process -Id $PID).Path
+$integrationResult=Invoke-IsolatedSimulationProcess -Executable $shell -Arguments @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-tests.ps1'),'-CandidateDll',$dll,'-ReportPointer',$pointer) -WorkingDirectory $runRoot -LogPrefix (Join-Path $runRoot 'integration') -TimeoutMs $IntegrationTimeoutMs
+$checks.Add([pscustomobject]@{name='actual-dll-integration';status=$integrationResult.status;detail=$integrationResult})
+Write-Host "[$($integrationResult.status)] $label actual-dll-integration"
+$integration=$null
+if(Test-Path -LiteralPath $pointer) {
+    $integrationPath=[IO.File]::ReadAllText($pointer,[Text.Encoding]::UTF8)
+    $integration=Get-Content -LiteralPath $integrationPath -Raw | ConvertFrom-Json
+}
+$status=if(@($checks | Where-Object status -ne 'PASS').Count -eq 0 -and $integration -and @($integration.cases | Where-Object status -ne 'PASS').Count -eq 0){'PASS'}else{'FAIL'}
+$report=[ordered]@{item=$label;status=$status;utc=[DateTime]::UtcNow.ToString('o');buildHead=$info.head;buildInfoSha256=$buildInfoSha256;candidateSha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash;checks=$checks.ToArray();actualDllIntegration=$integration;proxyComponents=$componentReport;businessSurface='Entire production-source DX11 business suite with real WARP resources; lock.cpp additionally ASan-instrumented in this host, while the actual DLL remains regular Release';lockCleanupAddressSanitizer=$info.lockCleanupAddressSanitizer;dx12CompatibilityBuildOnly=$info.dx12CompatibilityBuilt;targetGameValidated=$false}
+$reportPath=Join-Path $runRoot 'results.json'
+$report | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $reportPath -Encoding utf8
+Write-Host "Full report: $reportPath"
+if($status -ne 'PASS'){exit 1}

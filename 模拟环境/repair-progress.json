@@ -1,0 +1,555 @@
+{
+  "schemaVersion": 1,
+  "baselineHead": "38851ec207ea9cef3ad5cfceff435bd59a29be8f",
+  "completed": [
+    {
+      "id": "F-001",
+      "status": "validated-in-simulator",
+      "summary": "VB文本转储完整保护空call_info；保留实例绘制元数据和既有零stride失败路径。",
+      "evidence": "validation/F-001.json",
+      "commitLookup": "git log --fixed-strings --grep=F-001"
+    },
+    {
+      "id": "F-106",
+      "status": "validated-in-simulator",
+      "summary": "缺model边界保留，collector只有在模型验证/两字头写入后才进入code状态；ret三行不再返回损坏DXBC，坏前缀+合法model仍可恢复。独立公开红例、原生恢复/行号专项、主线25+10全流程及对抗复审通过；整批期限装置问题另单独修正，旧验证和超时记录保留。",
+      "evidence": "validation/F-106.json",
+      "commitLookup": "git log --fixed-strings --grep=F-106",
+      "latestEvidence": "validation/F-106-correction-1.json"
+    },
+    {
+      "id": "F-114",
+      "status": "validated-in-simulator",
+      "summary": "全flag声明缺名字走既有非法变量诊断而非空指针；专项覆盖解析与重载，真实DLL额外验证后续合法全局/持久变量上传值为7和9。",
+      "evidence": "validation/F-114.json",
+      "commitLookup": "git log --fixed-strings --grep=F-114"
+    },
+    {
+      "id": "F-115",
+      "status": "validated-in-simulator",
+      "summary": "ASan复现并消除锁缓存节点释放后读取；在erase前移除报告键，无TLS/重入路径仍调用真实DeleteCriticalSection，其他锁钩子策略保持原样。",
+      "evidence": "validation/F-115.json",
+      "commitLookup": "git log --fixed-strings --grep=F-115"
+    },
+    {
+      "id": "F-127",
+      "status": "validated-in-simulator",
+      "summary": "按实际数组字节数清零DX9立即数寄存器标记；串行解码验证c0/63/64/127/200/255不跨shader残留，不扩张为并发解码协议修改。",
+      "evidence": "validation/F-127.json",
+      "commitLookup": "git log --fixed-strings --grep=F-127"
+    },
+    {
+      "id": "F-135",
+      "status": "validated-in-simulator",
+      "summary": "虚拟键十六进制解析拒绝缺数字、尾随垃圾及超255/溢出，保留合法别名和反向按键；DX11全流程16项通过，共享消费者DX12 Release兼容构建通过，未部署。",
+      "evidence": "validation/F-135.json",
+      "commitLookup": "git log --fixed-strings --grep=F-135"
+    },
+    {
+      "id": "F-140",
+      "status": "validated-in-simulator",
+      "summary": "第二动态索引使用自己的sAdd2编码；专项核对不同偏移、各自为零、固定索引及完整token字段，完整业务和16项DLL集成通过。",
+      "evidence": "validation/F-140.json",
+      "commitLookup": "git log --fixed-strings --grep=F-140"
+    },
+    {
+      "id": "F-144",
+      "status": "validated-in-simulator",
+      "summary": "按插值关键字实际消费数量验证输入/系统值操作数，避免vector越界；保留全部7种插值模式、无模式旧格式和d3dcompiler46/47的SGV形式，完整测试通过。",
+      "evidence": "validation/F-144.json",
+      "commitLookup": "git log --fixed-strings --grep=F-144"
+    },
+    {
+      "id": "F-150",
+      "status": "validated-in-simulator",
+      "summary": "真实签名解析中+/-的EOF转换不再继承前条寄存器5；普通0/31、oDepth、mask和used字段保持，完整业务及16项DLL集成通过。",
+      "evidence": "validation/F-150.json",
+      "commitLookup": "git log --fixed-strings --grep=F-150"
+    },
+    {
+      "id": "F-151",
+      "status": "validated-in-simulator",
+      "summary": "SFI特性注释先验证长度和//加空白前缀再偏移读取；拒绝伪九字节前缀，保留空格/制表符合法格式、已有flags和位置回退，完整测试通过。",
+      "evidence": "validation/F-151.json",
+      "commitLookup": "git log --fixed-strings --grep=F-151"
+    },
+    {
+      "id": "F-152",
+      "status": "validated-in-simulator",
+      "summary": "DXGI和编译器代理仅对有效LogFile设置unbuffered，消除关闭日志/打开失败时的CRT终止；两模块8项真实业务及D3D11全流程16项均通过，编译器原生提供方明确为兼容系统47。",
+      "evidence": "validation/F-152.json",
+      "commitLookup": "git log --fixed-strings --grep=F-152"
+    },
+    {
+      "id": "F-153",
+      "status": "validated-in-simulator",
+      "summary": "两处new[]缓冲按数组释放：DX11替换字节码和编译器替换源码；两站点均有ASan失配反例，实际渲染/编译成功失败及借用数据回退通过，完整业务与26项集成/组件用例通过。",
+      "evidence": "validation/F-153.json",
+      "commitLookup": "git log --fixed-strings --grep=F-153"
+    },
+    {
+      "id": "F-167",
+      "status": "validated-in-simulator",
+      "summary": "Finish失败时日志和延迟转储均不读取旧输出；真实deferred context注入保持录制状态的OOM，验证无错误发布及后续成功执行的转储字节，整套26项集成/组件与业务回归通过。",
+      "evidence": "validation/F-167.json",
+      "commitLookup": "git log --fixed-strings --grep=F-167"
+    },
+    {
+      "id": "F-172",
+      "status": "validated-in-simulator",
+      "summary": "附加D3DCreateBlob失败不覆盖shader原生成功HRESULT，并记录警告；专项验证真实渲染、正常hash发布、无半成品重载元数据及取消注入后的留存恢复，整套测试通过。",
+      "evidence": "validation/F-172.json",
+      "commitLookup": "git log --fixed-strings --grep=F-172"
+    },
+    {
+      "id": "F-178",
+      "status": "validated-in-simulator",
+      "summary": "拒绝SwapChain4前归还成功QI获得的引用；真实DLL32次查询前后引用数不增长，Native对照稳定，保持E_NOINTERFACE/空输出，整套18+10项集成组件通过。",
+      "evidence": "validation/F-178.json",
+      "commitLookup": "git log --fixed-strings --grep=F-178"
+    },
+    {
+      "id": "F-179",
+      "status": "validated-in-simulator",
+      "summary": "Present仅在非空已访问集合中完成上一个选择的回绕，并在既有全局锁内同步选择元数据；真实INI初始化、TLS和字体资源下验证空集合/非空恢复/重复清空及帧流程，专项与全流程通过。",
+      "evidence": "validation/F-179.json",
+      "commitLookup": "git log --fixed-strings --grep=F-179"
+    },
+    {
+      "id": "F-184",
+      "status": "validated-in-simulator",
+      "summary": "重载shader前校验完整16位ASCII十六进制hash，非法文件名返回失败与诊断而非抛异常或接受部分前缀；零/最大值/混合大小写及合法尚未加载shader保持成功跳过，专项与全流程通过。",
+      "evidence": "validation/F-184.json",
+      "commitLookup": "git log --fixed-strings --grep=F-184"
+    },
+    {
+      "id": "F-187",
+      "status": "validated-in-simulator",
+      "summary": "按成功转换数和对应消费长度解析数值flags；仅省略mask时设全1，显式mask含零值保持原值，初始化扫描长度。真实FuzzyMatch验证部分/完整mask、命名正负flags及三个实际枚举表，缺项尾随垃圾拒绝，专项与全流程通过。",
+      "evidence": "validation/F-187.json",
+      "commitLookup": "git log --fixed-strings --grep=F-187"
+    },
+    {
+      "id": "F-202",
+      "status": "validated-in-simulator",
+      "summary": "原回归程序普通/CTest入口分配独立EXE、DLL、d3dx.ini目录；父进程按受控绝对路径清理，job约束子进程寿命。两实例实际INI加载、std::exit(37)遗留清理与原配置哈希保护通过；全流程及原CTest完整入口通过。",
+      "evidence": "validation/F-202.json",
+      "commitLookup": "git log --fixed-strings --grep=F-202"
+    },
+    {
+      "id": "F-286",
+      "status": "validated-in-simulator",
+      "summary": "删除交互崩溃帮助中没有处理分支的Ctrl+Alt+W提示；实际生产日志输出验证Q/K/C/B保留、W不存在及无日志流路径。按键处理未改，专项与全流程通过；当前CMake的util.cpp仅编入DX11。",
+      "evidence": "validation/F-286.json",
+      "commitLookup": "git log --fixed-strings --grep=F-286"
+    },
+    {
+      "id": "F-291",
+      "status": "reviewed-no-active-defect",
+      "summary": "执行复查纠正：当前x64公开导出是跳向System32/GDI32精确同名入口的IAT跳板，不运行报告中的C++桩。已撤回一行无效源码修复，F291移A至N；实际绑定和非法窗口原生状态/输出专项、整套19+10项集成组件及业务回归通过。",
+      "evidence": "validation/F-291.json",
+      "commitLookup": "git log --fixed-strings --grep=F-291"
+    },
+    {
+      "id": "F-294",
+      "status": "validated-in-simulator",
+      "summary": "递归INI枚举先验证文件名长度再比较后缀，忽略.ini大小写；真实文件与生产解析器验证1至3字符短名、.ini、大/混合后缀、Unicode文件、文件与目录排序、递归及skip排除，专项与19+10集成组件全流程通过。",
+      "evidence": "validation/F-294.json",
+      "commitLookup": "git log --fixed-strings --grep=F-294"
+    },
+    {
+      "id": "F-295",
+      "status": "validated-in-simulator",
+      "summary": "ParseStencilOp接收const真实stencil_front/back键名，删除未初始化key数组；实际INI日志验证两路错误诊断，非法值保持既有默认操作，合法8字段解析及原生WARP深度模板状态创建通过，专项与全流程通过。",
+      "evidence": "validation/F-295.json",
+      "commitLookup": "git log --fixed-strings --grep=F-295"
+    },
+    {
+      "id": "F-298",
+      "status": "validated-in-simulator",
+      "summary": "原view-reference回归读取SRV描述符前使用require_batch检查；真实空CS槽先产生可捕获诊断，旧路径ASan复现访问冲突；合法视图往返与各类型保留通过，专项与全流程通过，仅改测试。",
+      "evidence": "validation/F-298.json",
+      "commitLookup": "git log --fixed-strings --grep=F-298"
+    },
+    {
+      "id": "P-01",
+      "status": "validated-in-simulator",
+      "summary": "同次INI解析复用已取值，避免重复查找，无跨重载缓存；默认/空/别名/整数/表达式/namespace/枚举/告警语义通过。无ASan同机9对与正式配置路径3对测量结果一致，后者局部中位数下降25%-46%；专项与全流程通过，不外推总重载或FPS。",
+      "evidence": "validation/P-01.json",
+      "commitLookup": "git log --fixed-strings --grep=P-01"
+    },
+    {
+      "id": "F-003",
+      "status": "validated-in-simulator",
+      "summary": "仅DX11生效站点：shader文本完整写入、刷新和关闭成功后原子发布，失败返回正确HRESULT；不覆盖已有文件。专项注入写/短写/刷新/关闭失败并验证旧文件、清理、重试和8线程单一发布者；真实DLL导出失败仍可创建绑定shader，20+10集成组件及DX12兼容构建通过；DX12另两站转交。",
+      "evidence": "validation/F-003.json",
+      "commitLookup": "git log --fixed-strings --grep=F-003"
+    },
+    {
+      "id": "F-005",
+      "status": "validated-in-simulator",
+      "summary": "设备context/swapchain指针以nullptr初始化，overlay命令先判swapchain；非零堆内存构造、无swapchain/无overlay/实际overlay绘制/正常释放后重入均通过。旧DLL两条创建入口Constants均访问冲突，修复后真实IniParams继续上传7/9；专项及22+10项集成组件全流程通过。",
+      "evidence": "validation/F-005.json",
+      "commitLookup": "git log --fixed-strings --grep=F-005"
+    },
+    {
+      "id": "F-007",
+      "status": "validated-in-simulator",
+      "summary": "公共IniParam入口改为有符号宽范围解析，拒绝负值、溢出及无法安全index+1的INT_MAX，输出仅成功时发布；保留DX11超过225的范围及已有非负扫描形式。专项覆盖四个预留入口、表达式减法/读写、preset保存恢复、cycle、GPU上传和缩小重载清旧过渡；23+10集成组件及DX12兼容构建通过。",
+      "evidence": "validation/F-007.json",
+      "commitLookup": "git log --fixed-strings --grep=F-007"
+    },
+    {
+      "id": "F-008",
+      "status": "validated-in-simulator",
+      "summary": "VB元素读取前按真实映射剩余字节检查offset/格式宽度，顶点和实例两条路径均保护；保留合法跨stride、重叠和既有零stride策略。保护页旧版越界复现，完整字段/截断/极端offset/步进及实际WARP公共源码转储通过；专项与23+10集成组件全流程通过，APPEND状态另项复核。",
+      "evidence": "validation/F-008.json",
+      "commitLookup": "git log --fixed-strings --grep=F-008"
+    },
+    {
+      "id": "F-324",
+      "status": "validated-in-simulator",
+      "summary": "执行新增遗漏：APPEND字段每次从零解码，原生SO为1/2/3/4而旧文本第二字段重复1/2。按记录/槽传递64位转储游标，保留原布局哈希/描述及F008边界；原生双float2与16→32位对齐、重置/跨槽/实例/截断/大偏移专项和23+10全流程通过。",
+      "evidence": "validation/F-324.json",
+      "commitLookup": "git log --fixed-strings --grep=F-324"
+    },
+    {
+      "id": "F-100",
+      "status": "validated-in-simulator",
+      "summary": "字面量按实际1至4分量解析并验证所选索引，单值广播保留；解析失败不拆坏原操作数，调用方设置现有decompile错误标记。精确保留32位整数、避免float取整越界，合法向量/修饰/边界与畸形输入专项通过；真实shader反编译重编译后WARP像素一致，23+10全流程通过。",
+      "evidence": "validation/F-100.json",
+      "commitLookup": "git log --fixed-strings --grep=F-100"
+    },
+    {
+      "id": "F-108",
+      "status": "validated-in-simulator",
+      "summary": "纹理扩展名安全定位到最终文件名，无扩展走WIC；复用现有ResourceCreationModeScope保证加载异常解锁，不改变buffer分支或一次加载策略。PNG/DDS/目录点号/缺失文件、异常后锁探测与恢复及buffer字节通过；真实DLL无扩展纹理绑定和原像素回读、24+10全流程通过。",
+      "evidence": "validation/F-108.json",
+      "commitLookup": "git log --fixed-strings --grep=F-108"
+    },
+    {
+      "id": "F-110",
+      "status": "validated-in-simulator",
+      "summary": "STATIC非有限/缺元素选择不再发布空目标，引用和间接flags消费者分别判空；无模板getter不分配残缺对象，动态无效数值变量读取返回NaN、写入不改模板。保留负数/大数环绕、missing模板、FIFO/SPATIAL NaN UID与代理；专项及真实DLL非法池配置继续Constants、25+10全流程通过，修正五处同型的报告说法。",
+      "evidence": "validation/F-110.json",
+      "commitLookup": "git log --fixed-strings --grep=F-110"
+    },
+    {
+      "id": "F-111",
+      "status": "validated-in-simulator",
+      "summary": "自动重编译无导出时辅助FILE判空，保持真实成功字节码后续处理；错误blob长度不回绕，文件关闭后查询真实属性，失败零时间戳。真实编译警告/失败、无日志、HLSL/ASM导出与时间戳故障专项及NativeVS接受通过；25+10全流程通过，初版缺初始化装置结果不采纳。",
+      "evidence": "validation/F-111.json",
+      "commitLookup": "git log --fixed-strings --grep=F-111"
+    },
+    {
+      "id": "F-138",
+      "status": "validated-in-simulator",
+      "summary": "纠正原报告的未终止机制：当前安全CRT已清空编码错误结果，容量耗尽仍会终止或返回截断前缀。保持现有locale，预检完整字节数并核对转换；共享参数及5个直接调用拒绝错误/超限。C/UTF-8、边界、无效UTF-16、恢复和真实INI重载专项、25+10全流程与DX12兼容构建通过；_TRUNCATE初版被专项否决。",
+      "evidence": "validation/F-138.json",
+      "commitLookup": "git log --fixed-strings --grep=F-138"
+    },
+    {
+      "id": "F-137",
+      "status": "validated-in-simulator",
+      "summary": "ZRepair短串保护保留，补回HLSL合法小写rgba别名；对抗审查发现原xyzw白名单误拒。原生52字母+独立LoadConfig反例确认，当前八分量逐个原生编译/两键配置、大写/坏后缀、专项与25+10全流程和对抗复审通过；原验证保留并追加纠正记录。",
+      "evidence": "validation/F-137.json",
+      "commitLookup": "git log --fixed-strings --grep=F-137",
+      "latestEvidence": "validation/F-137-correction-1.json"
+    },
+    {
+      "id": "F-143",
+      "status": "validated-in-simulator",
+      "summary": "未知资源返回类型和系统值不再静默漏写token，改走既有AssemblerParseError；保留8种资源和22个系统值精确编码。专项验证完整指令、公共无collector行号异常/显式collector告警继续契约，以及原生shader往返和WARP接受；25+10全流程通过，不把未证实的必然挂死写为事实。",
+      "evidence": "validation/F-143.json",
+      "commitLookup": "git log --fixed-strings --grep=F-143"
+    },
+    {
+      "id": "F-142",
+      "status": "validated-in-simulator",
+      "summary": "纠正错误暂缓：正常末词安全不代表未闭合操作数安全；缺右括号使find()+1回零，旧独立专项超时，F142由E恢复B。括号/引号缺闭合走现有解析错误，不再循环；保持普通末词、合法浮点/双精度、内嵌引号及公共第2行错误/显式collector策略，25+10全流程通过；F145探针未混入。",
+      "evidence": "validation/F-142.json",
+      "commitLookup": "git log --fixed-strings --grep=F-142"
+    },
+    {
+      "id": "F-146",
+      "status": "validated-in-simulator",
+      "summary": "行拆分先检查真实长度再读字符，空范围提前返回，末行不把指针递增到末尾之外；不补哨兵掩盖调用契约。旧7字节保护页访问冲突已复现，空/null+0、无末换行、空行/CR/空格/内嵌NUL和实际shader代码块位一致/WARP专项及25+10全流程通过；仅DX9消费者的未生效同名支路保留。",
+      "evidence": "validation/F-146.json",
+      "commitLookup": "git log --fixed-strings --grep=F-146"
+    },
+    {
+      "id": "F-148",
+      "status": "validated-in-simulator",
+      "summary": "离线工具用检查结果的64位seek/tell，拒绝负/超UINT32长度、短读及关闭失败；RAII确保关闭一次，入口诊断并返回1。专项透传真实静态CRT并在测试TU注入既有调用故障，2GiB重定位无实际大分配；原先__imp注入无效已排除。真实旧EXE缺BIN访问冲突、新EXE诊断退出1无CBO及正常字节一致，25+10全流程通过；不外推DLL热路径/完整畸形DXBC。",
+      "evidence": "validation/F-148.json",
+      "commitLookup": "git log --fixed-strings --grep=F-148"
+    },
+    {
+      "id": "F-149",
+      "status": "validated-in-simulator",
+      "summary": "三个工具转换主输出共用检查写函数，打开/短写/关闭失败明确诊断并返回1；旧实际EXE一处CRT终止、另两处静默成功均复现。正常/含NUL/空输出、失败关闭一次/恢复专项、实际EXE三站点输出诊断及25+10全流程通过；保留原wb覆盖，不承诺原子回滚；回执连行只修夹具。",
+      "evidence": "validation/F-149.json",
+      "commitLookup": "git log --fixed-strings --grep=F-149"
+    },
+    {
+      "id": "F-155",
+      "status": "validated-in-simulator",
+      "summary": "自动VB计数在减法/除法前拒绝零stride及过大offset，IB仅检查offset并保留R16/R32规则；复用现有0计数跳过而不估造数量，释放引用后再返回。原生WARP零stride除零已复现；正常/部分/末端/越界/缺资源、三个auto消费者/重绑恢复专项及25+10全流程通过，用户文档同步；显式draw不改。",
+      "evidence": "validation/F-155.json",
+      "commitLookup": "git log --fixed-strings --grep=F-155"
+    },
+    {
+      "id": "F-169",
+      "status": "validated-in-simulator",
+      "summary": "UpdateSubresource1在既有基类上传后、帧分析开启时补接一次FrameAnalysisAfterUpdate；原转发参数和上传跟踪不变。旧版上传字节正确但漏转储已复现；完整/局部上传、逐事件一份正确捕获、关闭分析/选项、旧API、真实转储IO失败与恢复专项及25+10全流程通过；WARP immediate/CopyFlags=0，不冒充实机。",
+      "evidence": "validation/F-169.json",
+      "commitLookup": "git log --fixed-strings --grep=F-169"
+    },
+    {
+      "id": "F-170",
+      "status": "validated-in-simulator",
+      "summary": "共享SetShader查表失败时仅清零旧hash，保留实际shader句柄、类实例参数和原生转发。六阶段真实包装创建→原生未登记对象已复现旧hash残留；GetShader/跟踪句柄、空绑定/恢复/重复miss与真实filter表达式专项及25+10全流程通过；测试只读子类不改变DLL接口，不宣称六阶段均渲染。",
+      "evidence": "validation/F-170.json",
+      "commitLookup": "git log --fixed-strings --grep=F-170"
+    },
+    {
+      "id": "F-171",
+      "status": "validated-in-simulator",
+      "summary": "三处创建/重载首行按实际长度读取并严格UTF8解码，无换行取全行；非法显示信息诊断清空，保留主编译/汇编结果。旧合法单行HLSL已ASan复现堆越界；创建源先拒绝读失败/短读，可选时间戳失败零值但仍保留有效输出。保护页/编码/三路径/native shader/重载跳过/Win32失败专项和25+10全流程通过，新头完整接入CMake。",
+      "evidence": "validation/F-171.json",
+      "commitLookup": "git log --fixed-strings --grep=F-171"
+    },
+    {
+      "id": "F-175",
+      "status": "validated-in-simulator",
+      "summary": "拒绝不安全资源尺寸数值转换，保留合法float乘法/截断、有限中间零值的优先级修复和完整iteration消耗；错误字段明确失败，原生非法格式HRESULT保留，不fallback。隔离候选+主线专项、25+10全流程及独立对抗复审通过；诊断用中性匹配上下文，不误归因覆盖，F174/F176不改。",
+      "evidence": "validation/F-175.json",
+      "commitLookup": "git log --fixed-strings --grep=F-175"
+    },
+    {
+      "id": "F-177",
+      "status": "validated-in-simulator",
+      "summary": "DEBUG初始数据预览最多读可证明的16字节；复用surface布局，紧凑范围保留原诊断，padding/NV11仅首行，未知/opaque不读但保留描述。真实1字节R8保护页红版复现，开关/布局矩阵专项与主线25+10全流程、对抗复审通过；关闭debug早退，哈希/初始化/创建行为及const find_ptr不改。",
+      "evidence": "validation/F-177.json",
+      "commitLookup": "git log --fixed-strings --grep=F-177"
+    },
+    {
+      "id": "F-186",
+      "status": "validated-in-simulator",
+      "summary": "ShaderRegex节名/raw_line按完整wchar字节哈希，缓存reader/writer版本同升2，拒绝旧配置与v1缓存，不清整个目录。真实尾部变化哈希红例、PCRE/程序集/磁盘缓存/原生WARP alpha128→191、PATCH/NO_MATCH/旧版本/截断专项及主线25+10全流程、对抗审查通过。",
+      "evidence": "validation/F-186.json",
+      "commitLookup": "git log --fixed-strings --grep=F-186"
+    },
+    {
+      "id": "F-193",
+      "status": "validated-in-simulator",
+      "summary": "cycle每个有效档新建两临时CommandList，避免后档累积前档run；保留共享目标活引用、单档多run、空档/末项继承和transition后post顺序。真实事件红例、namespace/反向/条件/preset专项、对抗复审及主线25+10全流程通过，未改全局追加规则或生产gate。",
+      "evidence": "validation/F-193.json",
+      "commitLookup": "git log --fixed-strings --grep=F-193"
+    },
+    {
+      "id": "F-194",
+      "status": "validated-in-simulator",
+      "summary": "Map失败不写/Unmap/计成功，pending保留最新CPU数组，params空后仍可重试，成功清脏；Stop/reload清旧布局状态，变量/post只执行一次。真实Map注入红例、GPU恢复/暂缺纹理/重建专项，独立对抗复跑和主线25+10全流程通过；仅模拟DeviceRemoved HRESULT，非设备恢复。",
+      "evidence": "validation/F-194.json",
+      "commitLookup": "git log --fixed-strings --grep=F-194"
+    },
+    {
+      "id": "F-201",
+      "status": "validated-in-simulator",
+      "summary": "仅DX11 ShaderRegex元数据入口：数字表跨度先验、memcpy offset、size_t逆序和减法12字节范围，保留坏chunk跳过/末chunk优先/xx与失败输出语义。真实回绕读取红例、原生模型/边界专项、独立对抗复跑及主线25+10全流程通过；不称完整DXBC验证，独立DX12站点另待办。",
+      "evidence": "validation/F-201.json",
+      "commitLookup": "git log --fixed-strings --grep=F-201"
+    },
+    {
+      "id": "F-203",
+      "status": "validated-in-simulator",
+      "summary": "初始化测试先释放owner再回收已启线程，异常与局部期限清理，不能合作时独立Job硬截止；生产InitializationGate不改。修正全程无期限旧说法，保留F202/sim外层保护，主CTest加TIMEOUT60。真实红终止、正常8/故障1或4线程回收/子进程归零专项、独立对抗及主线25+10全流程通过。",
+      "evidence": "validation/F-203.json",
+      "commitLookup": "git log --fixed-strings --grep=F-203"
+    },
+    {
+      "id": "F-272",
+      "status": "validated-in-simulator",
+      "summary": "IBFE类型后缀取规范化目的mask宽度，避免无点号源操作数空指针相减及向量literal误当标量；原生合法DXBC公开反编译/重编译、六组WARP像素对照与边界专项、主线25+10全流程及独立对抗审查通过。",
+      "evidence": "validation/F-272.json",
+      "commitLookup": "git log --fixed-strings --grep=F-272"
+    },
+    {
+      "id": "F-274",
+      "status": "validated-in-simulator",
+      "summary": "输出签名按实际参数关闭分隔符，失败回滚文本及寄存器元数据；仅实际DX9 shader允许缺DXBC签名表，保留SM3既有诊断/导出行为。v1兼容回退已纠正，原生空输出/常规输出/坏表/SM3专项、主线25+10全流程与独立合并复审通过。",
+      "evidence": "validation/F-274.json",
+      "commitLookup": "git log --fixed-strings --grep=F-274"
+    },
+    {
+      "id": "F-275",
+      "status": "validated-in-simulator",
+      "summary": "特殊输出路径更新真实外层numRead，两个扫描分支只读当前行且6字段完整才发布，保留F274类型检查/回滚与SM3兼容。原生深度/覆盖率及混合输出、截断3/4/5字段专项和主线25+10全流程通过，候选独立对抗审查通过。",
+      "evidence": "validation/F-275.json",
+      "commitLookup": "git log --fixed-strings --grep=F-275"
+    },
+    {
+      "id": "F-276",
+      "status": "validated-in-simulator",
+      "summary": "DX9 Registers行缓冲改为数组RAII，成功/continue/异常均自动释放，解析及SM3导出行为不变。64次真实成功解析旧增长5568字节、新增长0，拒绝/空表/CRLF/分配计数校准与原生兼容专项、主线25+10全流程和独立候选/合并审查通过。",
+      "evidence": "validation/F-276.json",
+      "commitLookup": "git log --fixed-strings --grep=F-276"
+    },
+    {
+      "id": "F-279",
+      "status": "validated-in-simulator",
+      "summary": "GetSuffix检查实际swizzle长度、标量广播和空操作数，保留typed member及abs文本，不从短mask读旧字节生成错误表达式。实际UBFE/BFI/SWAPC共24组原始DXBC与重编译HLSL像素对照、专项边界、主线25+10全流程与独立候选/合并审查通过；相邻旧移位等问题未混修。",
+      "evidence": "validation/F-279.json",
+      "commitLookup": "git log --fixed-strings --grep=F-279"
+    },
+    {
+      "id": "F-280",
+      "status": "validated-in-simulator",
+      "summary": "浮点坐标构造器逐分量验证完成后才截取，缺逗号/分量/闭合保持原操作数并诊断；v2保留floatCoords/float2Indices/float123合法名称，纠正v1误报。真实公开2D坐标/命名cbuffer、原生重编译WARP与边界专项、主线25+10全流程及独立候选/合并复核通过；未扩展Array/Cube既有维度策略。",
+      "evidence": "validation/F-280.json",
+      "commitLookup": "git log --fixed-strings --grep=F-280"
+    },
+    {
+      "id": "F-282",
+      "status": "validated-in-simulator",
+      "summary": "fixImm初始化并验证整条immediate32及组件后才恢复精度，保留尾逗号/空白、整数/raw bits不该重写的路径和旧正INF特例，失败原样返回并诊断。53调用站点复核、真实公开精度往返和边界专项、主线25+10全流程及独立候选/合并审查通过；旧hex INF/NaN位解释差异未声称修复。",
+      "evidence": "validation/F-282.json",
+      "commitLookup": "git log --fixed-strings --grep=F-282"
+    },
+    {
+      "id": "F-285",
+      "status": "validated-in-simulator",
+      "summary": "DX9 CTAB反射的PT_SAMPLER3D改为3D维度，native sampler3D/2D/Cube/1D/generic+tex2D五组真实编译与binding/declaration专项、主线25+10全流程及独立候选/合并审查通过。generic+tex2D原夹具误期望1D已按原生2D纠正，未混修MemberCount或宣称SM3重编译支持。",
+      "evidence": "validation/F-285.json",
+      "commitLookup": "git log --fixed-strings --grep=F-285"
+    },
+    {
+      "id": "F-292",
+      "status": "validated-in-simulator",
+      "summary": "仅_DEBUG_LAYER路径：主QI失败即返回，debug/infoqueue用ComPtr各释放一次；抽出真实helper由宏启用独立target验证，默认DLL设备标志不变。真实非debug WARP的E_NOINTERFACE、成功/次级QI失败/报告及引用数稳定专项、主线25+10全流程与候选独立审查通过。",
+      "evidence": "validation/F-292.json",
+      "commitLookup": "git log --fixed-strings --grep=F-292"
+    },
+    {
+      "id": "F-293",
+      "status": "validated-in-simulator",
+      "summary": "选中PS的VB只记入PS集合，消除串入VS集合的一行错误；保持IB offset0整体hash等旧规则。真实hunting72绘制矩阵覆盖VS/PS组合、region开关及IB无/offset0/offset2，专项和主线25+10全流程通过，独立候选审查与主线小增量复核通过。",
+      "evidence": "validation/F-293.json",
+      "commitLookup": "git log --fixed-strings --grep=F-293"
+    },
+    {
+      "id": "F-296",
+      "status": "validated-in-simulator",
+      "summary": "声明定位按真实主模型/声明行扫描，解决前导注释且无dcl时插入错误，保留HS最后声明策略。v1新模型识别误拒合法level9_3已由SDK47/WARP及逐字往返反例否决；v2仅跳明确Level9兼容段再找对应DXBC主模型，四profile/八修改shader及旧边界、主线25+10全流程与独立v2审查通过。",
+      "evidence": "validation/F-296.json",
+      "commitLookup": "git log --fixed-strings --grep=F-296"
+    },
+    {
+      "id": "F-297",
+      "status": "validated-in-simulator",
+      "summary": "完整十进制解析dcl_temps并校验4096上限，临时分配与声明更新一并检查容量，拒绝无效token/超限且保持原文。旧4095读成409使活跃寄存器被复用，实际像素64/64/64/64替代96/159/223/255；新0→1、1→2、4095→4096及4096不分配、边界专项和主线25+10全流程通过，候选独立审查通过。",
+      "evidence": "validation/F-297.json",
+      "commitLookup": "git log --fixed-strings --grep=F-297"
+    },
+    {
+      "id": "F-283",
+      "status": "validated-in-simulator",
+      "summary": "成功Decode后立即由custom deleter接管Shader，按FreeShaderInfo→delete完整释放，正常释放时点保持，早退和后续C++异常各释放一次。正常/异常/签名早退各64次实际Decode/Free及nested数组、存活字节稳定和保留HLSL原生重编译专项、主线25+10全流程及独立候选/合并审查通过；Decode内部部分失败仍归F104。",
+      "evidence": "validation/F-283.json",
+      "commitLookup": "git log --fixed-strings --grep=F-283"
+    },
+    {
+      "id": "F-181",
+      "status": "validated-in-simulator",
+      "summary": "Device/Context lookup在原锁内复制mapped pointer并销毁iterator，解锁后只返回借用值；不添加COM引用或改变F002/F182生命周期/安装协议。真实WARP保活下各16次rehash与16次其他节点erase、命中/未命中/引用数/锁释放专项，主线25+10全流程及独立候选对抗审查通过；基线也PASS，无伪造崩溃红例。",
+      "evidence": "validation/F-181.json",
+      "commitLookup": "git log --fixed-strings --grep=F-181"
+    },
+    {
+      "id": "F-163",
+      "status": "validated-in-simulator",
+      "summary": "DllMain目标验证读取先用64位GetFileSizeEx检查完整尺寸及DWORD单次读取/终NUL容量，改HeapAlloc/HeapFree避免new异常穿过DllMain；保留准入/loader/profile早放行策略。真实稀疏INI旧DLL误放行、新DLL拒绝1114；正常/无EOL/empty、尺寸/分配/短读/关闭计数专项、主线25+10全流程及独立审查通过。",
+      "evidence": "validation/F-163.json",
+      "commitLookup": "git log --fixed-strings --grep=F-163"
+    },
+    {
+      "id": "F-196",
+      "status": "validated-in-simulator",
+      "summary": "legacy profiling start/end复用既有collection token与samples mutex，旧窗口end在触碰Overhead前丢弃；QPC起止不包含新增锁/token开销，Sample独立起点避免重复捕获。确定红、normal/idle/double-end/嵌套/复用/mode/clear先后/Finish专项、主线25+10全流程及独立审查通过。仅统计协议对齐，既有clear两段夹缝未原子化，不宣称渲染或性能收益。",
+      "evidence": "validation/F-196.json",
+      "commitLookup": "git log --fixed-strings --grep=F-196"
+    },
+    {
+      "id": "F-176",
+      "status": "validated-in-simulator",
+      "summary": "资源创建的匹配/iteration/F175数值处理在既有G域内完成，返回caller-owned最终desc后才调用D3D，消除reload使borrowed配置失效。真实exact/fuzzy reload、Buffer/1D、20次双线程iteration及F175边界专项、主线25+10全流程和独立审查通过；旧入口本已无条件取G，未新增项目锁边，既有C/G逆序与F174不外推修复。",
+      "evidence": "validation/F-176.json",
+      "commitLookup": "git log --fixed-strings --grep=F-176"
+    }
+  ],
+  "scope": "A/B/C逐条；R/待证/撤销/仅DX12/未生效保持边界",
+  "rules": "专项与全流程均通过后单条提交；证据在对应commit与build日志中",
+  "deferred": [
+    {
+      "id": "F-145",
+      "status": "reviewed-pending-native-evidence",
+      "summary": "合成缺右花括号ICB可在私有函数复现异常；实际四处调用仅接原生D3DDisassemble文本，生产触发未补实。正常精度修补与原生代码块逐字节往返/WARP、25+10全流程通过；B移E，生产不改，不算已修复或误报。",
+      "evidence": "validation/F-145-review.json",
+      "commitLookup": "git log --fixed-strings --grep=F-145"
+    },
+    {
+      "id": "F-199",
+      "status": "reviewed-pending-production-reachability",
+      "summary": "真实INI仅单.Pattern，大小写重复不建第二项、命名多pattern禁组；私有手造多项局部风险未补生产前提，B移E不改事务逻辑。修正文档错误支持主张，独立专审及主线专项/25+10全流程通过，不计生产修复或绝对误报。",
+      "evidence": "validation/F-199-review.json",
+      "commitLookup": "git log --fixed-strings --grep=F-199"
+    }
+  ],
+  "supplements": [
+    {
+      "id": "F-137",
+      "tag": "correction-1",
+      "status": "validated-correction-in-simulator",
+      "evidence": "validation/F-137-correction-1.json",
+      "summary": "ZRepair短串保护保留，补回HLSL合法小写rgba别名；对抗审查发现原xyzw白名单误拒。原生52字母+独立LoadConfig反例确认，当前八分量逐个原生编译/两键配置、大写/坏后缀、专项与25+10全流程和对抗复审通过；原验证保留并追加纠正记录。"
+    },
+    {
+      "id": "F-106",
+      "tag": "correction-1",
+      "status": "validated-correction-in-simulator",
+      "evidence": "validation/F-106-correction-1.json",
+      "summary": "缺model边界保留，collector只有在模型验证/两字头写入后才进入code状态；ret三行不再返回损坏DXBC，坏前缀+合法model仍可恢复。独立公开红例、原生恢复/行号专项、主线25+10全流程及对抗复审通过；整批期限装置问题另单独修正，旧验证和超时记录保留。"
+    }
+  ],
+  "attributionReviews": [
+    {
+      "id": "F-270",
+      "status": "static-reviewed-no-active-defect-in-inspected-x64-export-path",
+      "summary": "F270仅按已检x64公开路径静态归N：68个KMT出口均跳向GDI32同名IAT，29个报告C++零桩未绑定。不改生产代码，不增加已修复数；F160本地CoreCreateDevice宽度风险保留，完整私有ABI待证。",
+      "evidence": "validation/F-270-review.json",
+      "productionCodeChanged": false,
+      "newSpecialOrFullRunExecuted": false,
+      "countAsRepaired": false,
+      "commitLookup": "git log --fixed-strings --grep=F-270"
+    }
+  ],
+  "candidateHolds": [
+    {
+      "id": "F-281",
+      "status": "pending-native-modifier-validation",
+      "summary": "新增原生NEG合法，但公开链先因-l多词收集失败，未到新fallback；positive失败归属已纠正为重建shader的UINT marker，original XY没有保存。候选继续hold，不计完成。",
+      "evidence": "validation/F-281-native-review.json",
+      "countAsRepaired": false
+    }
+  ],
+  "performanceDeferred": [
+    {
+      "id": "P-03",
+      "status": "measured-inconclusive-deferred",
+      "summary": "真实public/native47、同Release flags、3层源长度、8对AB/BA各64次共48腿全部保留；独立中位数变化-0.94%/+3.90%/+2.97%，配对波动最高约32%，64KiB仅4/8更快。收益证据不足，生产守卫与接入均不合入，P03由B移E暂缓，不计完成。",
+      "evidence": "validation/P-03-review.json",
+      "countAsRepaired": false
+    }
+  ]
+}

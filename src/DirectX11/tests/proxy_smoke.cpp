@@ -8,7 +8,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
-#include "DX11Version.h"
+#include "DX11ResourceIds.h"
 
 namespace {
 using Microsoft::WRL::ComPtr;

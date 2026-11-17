@@ -908,6 +908,7 @@ void test_dx11_cache_resource_data_regression();
 void test_dx11_store_cache_regression();
 void test_dx11_check_to_range_regression();
 void test_dx11_view_reference_regression();
+void test_dx11_zbuffer_view_ownership_regression();
 void test_dx11_conditional_batch_regression();
 void test_dx11_conditional_batch_followup_regression();
 void test_dx11_region_reference_followup_regression();
@@ -947,11 +948,69 @@ void test_dx11_dds_mips_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
+bool test_dx11_audit_item(const char* id);
+void test_dx11_audit_regressions();
+int run_dx11_regression_isolated(int argc, char** argv);
+int exit_dx11_regression_fixture();
+int run_dx11_initialization_gate_case(const char* scenario, const char* entered_event);
+
+// The regression host embeds production sources rather than loading their
+// DllMain. Supply the same real TLS initialization before exercising Present.
+class RegressionTlsScope {
+    DWORD previous = tls_idx;
+    DWORD owned = TlsAlloc();
+public:
+    RegressionTlsScope()
+    {
+        if (owned == TLS_OUT_OF_INDEXES) { std::fputs("FAIL: regression TLS allocation\n", stderr); std::exit(EXIT_FAILURE); }
+        tls_idx = owned;
+    }
+    ~RegressionTlsScope()
+    {
+        delete static_cast<TLS*>(TlsGetValue(owned));
+        TlsSetValue(owned, nullptr); TlsFree(owned); tls_idx = previous;
+    }
+};
+
 int main(int argc, char** argv)
 {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    // The simulator already gives each process a private EXE/DLL directory.
+    // Ordinary direct/CTest invocations acquire the same isolation here.
+    if (argc < 2 || std::strcmp(argv[argc - 1], "--fixture-isolated"))
+        return run_dx11_regression_isolated(argc, argv);
+    --argc;
+    if (argc == 2 && !std::strcmp(argv[1], "--fixture-exit-test"))
+        return exit_dx11_regression_fixture();
+    if (argc == 4 && !std::strcmp(argv[1], "--initialization-gate-case"))
+        return run_dx11_initialization_gate_case(argv[2], argv[3]);
+    const char* audit_item = nullptr;
+    if (argc == 3 && !std::strcmp(argv[1], "--audit-item")) audit_item = argv[2];
+    else if (!(argc == 1 || (argc == 2 &&
+        (!std::strcmp(argv[1], "--full") || !std::strcmp(argv[1], "--texture-match-hooked") ||
+         !std::strcmp(argv[1], "--texture-match") || !std::strcmp(argv[1], "--overlay-text") ||
+         !std::strcmp(argv[1], "--shader-regex-exclusions"))))) {
+        std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN | --texture-match | --texture-match-hooked | --overlay-text | --shader-regex-exclusions]\n", stderr);
+        return EXIT_FAILURE;
+    }
+    RegressionTlsScope runtime_tls;
     InitializeCriticalSection(&G->mCriticalSection);
     InitializeCriticalSection(&G->mResourcesLock);
     InitializeCriticalSection(&resource_creation_mode_lock);
+    if (audit_item) {
+        bool passed = false;
+        try {
+            if (!test_dx11_audit_item(audit_item)) throw std::runtime_error("unknown audit item");
+            std::printf("PASS audit item: %s\n", audit_item);
+            passed = true;
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "FAIL audit item %s: %s\n", audit_item, error.what());
+        }
+        DeleteCriticalSection(&resource_creation_mode_lock);
+        DeleteCriticalSection(&G->mResourcesLock);
+        DeleteCriticalSection(&G->mCriticalSection);
+        return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
     test_dx11_version_regression();
     try {
         if (argc == 2 && std::string(argv[1]) == "--texture-match-hooked") {
@@ -971,6 +1030,7 @@ int main(int argc, char** argv)
             std::puts("PASS: ShaderRegex exclusion INI, matching, cache and reload regression");
             return 0;
         }
+        test_dx11_audit_regressions();
         test_dx11_slot_range_numeric_regression();
         test_dx11_dynamic_slot_regression();
         test_dx11_dynamic_pipeline_slot_regression();
@@ -982,6 +1042,7 @@ int main(int argc, char** argv)
         test_dx11_store_cache_regression();
         test_dx11_check_to_range_regression();
         test_dx11_view_reference_regression();
+        test_dx11_zbuffer_view_ownership_regression();
         test_dx11_conditional_batch_regression();
         test_dx11_conditional_batch_followup_regression();
         test_dx11_region_reference_followup_regression();

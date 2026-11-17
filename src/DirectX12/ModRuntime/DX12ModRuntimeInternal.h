@@ -2487,12 +2487,22 @@ public:
 	// disables the periodic write.
 	inline static int AutoSaveIntervalSeconds = 60;
 
+	// The shared VM writer has no logger of its own; route a failed write
+	// through the normal d3d12_log.txt stream, including the stage that failed.
+	static void LogFailure(const char *stage, const wchar_t *path, int error)
+	{
+		DX12_LOG("DX12UserConfig",
+			"\"status\":\"save_failed\",\"stage\":\"%s\",\"error\":%d,\"path\":\"%ls\"",
+			stage ? stage : "", error, path ? path : L"");
+	}
+
 	// Arms the save path from the path the loader resolved. Called after every
 	// config load, so a config that moves its user_config takes effect on the
 	// next reload without restarting the game; the path is empty until a load
 	// has succeeded, which also keeps the exit save from writing anything.
 	static void RefreshTarget()
 	{
+		MigotoCommandVmUtils::SetPersistFailureSink(&LogFailure);
 		mTargetValid = UserConfigPathActive(&mTarget);
 	}
 
@@ -2523,10 +2533,13 @@ public:
 			return;
 		if (!TryAcquireSRWLockExclusive(&gModLock))
 			return;
-		const bool saved = Save("autosave");
+		(void)Save("autosave");
 		ReleaseSRWLockExclusive(&gModLock);
-		if (saved)
-			mLastSaveTick = GetTickCount64();
+		// DX11 records gSettingsSaveTime at the start of the attempt. Do the
+		// same here: keeping persistDirty armed on a failed save must retry on
+		// the autosave interval, not on every Present (a bad path or full disk
+		// would otherwise truncate and log every frame).
+		mLastSaveTick = GetTickCount64();
 	}
 
 	static void ResetAutosaveTimer()

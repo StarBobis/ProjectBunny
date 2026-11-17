@@ -23,7 +23,9 @@ add_library(DirectX11 SHARED
     CommandList.cpp
     cursor.cpp
     D3D11Wrapper.cpp
+    DX11Version.cpp
     DX11Version.h
+    DX11ResourceIds.h
     DLLMainHook.cpp
     ExpressionFunctions.cpp
     FrameAnalysis.cpp
@@ -38,6 +40,7 @@ add_library(DirectX11 SHARED
     DHash64Gpu.cpp
     DHash64Gpu.h
     HackerDevice.cpp
+    ShaderHeader.h
     HackerDXGI.cpp
     HackerInputLayout.cpp
     HookAddresses.c
@@ -48,6 +51,7 @@ add_library(DirectX11 SHARED
     IniHandler.cpp
     InitializationGate.h
     D3D11Initialization.h
+    D3D11DebugInfo.h
     input.cpp
     lock.cpp
     Logging.cpp
@@ -145,16 +149,128 @@ target_compile_definitions(DirectX11 PRIVATE
 
 set_target_msvc_options(DirectX11)
 set_target_common_definitions(DirectX11)
+if(MSVC)
+    # F-113 AV diagnostics: map file for RVA -> function lookup.
+    target_link_options(DirectX11 PRIVATE /MAP)
+endif()
 
 if(BUILD_TESTING)
+    option(DX11_AUDIT_ASAN_LOCKS "Instrument lock cleanup in the regression host with AddressSanitizer" OFF)
+    option(DX11_AUDIT_ASAN_DECOMPILER "Instrument the decompiler bounds regression with AddressSanitizer" OFF)
     configure_file(tests/data/wic.png wic-regression.png COPYONLY)
     # Exercise the real parser/globals/resource lifecycle without exporting test
     # hooks from d3d11.dll or replacing production dependencies with mocks.
     get_target_property(DX11_REGRESSION_SOURCES DirectX11 SOURCES)
-    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "\\.(def|rc)$")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "\\.def$")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)DLLMainHook\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/dllmain_hook_audit_regression.cpp)
+    set_source_files_properties(tests/dllmain_hook_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/DLLMainHook.cpp")
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp" "tests/assembler_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/assembler_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp")
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/SignatureParser.cpp" "tests/signature_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/signature_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/SignatureParser.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)Hunting\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/hunting_audit_regression.cpp)
+    set_source_files_properties(tests/hunting_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Hunting.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)IniHandler\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/ini_audit_regression.cpp)
+    set_source_files_properties(tests/ini_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/IniHandler.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)FrameAnalysis\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/frame_analysis_audit_regression.cpp)
+    set_source_files_properties(tests/frame_analysis_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/FrameAnalysis.cpp")
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/HLSLDecompiler/DecompileHLSL.cpp" "tests/hlsl_decompiler_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/hlsl_decompiler_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/HLSLDecompiler/DecompileHLSL.cpp")
+    if(DX11_AUDIT_ASAN_DECOMPILER)
+        if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+            message(FATAL_ERROR "DX11_AUDIT_ASAN_DECOMPILER requires MSVC x64 with AddressSanitizer.")
+        endif()
+        # F-103: only the TU that includes DecompileHLSL.cpp is instrumented, so
+        # stack overflows in the production local buffers get a redzone and a
+        # source line. The DLL is instrumented by the real build, not here.
+        set_source_files_properties(tests/hlsl_decompiler_audit_regression.cpp PROPERTIES
+            COMPILE_OPTIONS "/GL-;/fsanitize=address;/Zi"
+            COMPILE_DEFINITIONS "_DISABLE_VECTOR_ANNOTATION;_DISABLE_STRING_ANNOTATION")
+    endif()
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)ShaderRegex\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/shader_regex_audit_regression.cpp)
+    set_source_files_properties(tests/shader_regex_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ShaderRegex.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)HackerDevice\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/hacker_device_audit_regression.cpp)
+    set_source_files_properties(tests/hacker_device_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/HackerDevice.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)HookedContext\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/hooked_context_native_regression.cpp)
+    set_source_files_properties(tests/hooked_context_native_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/HookedContext.cpp")
+    foreach(component Context Device)
+        string(TOLOWER "${component}" component_lower)
+        # Keep real hooks for native WARP integration. The deterministic audit
+        # copies use distinct entry points and cannot replace production hooks.
+        list(APPEND DX11_REGRESSION_SOURCES "tests/hooked_${component_lower}_lookup_audit.cpp")
+        set_source_files_properties("tests/hooked_${component_lower}_lookup_audit.cpp" PROPERTIES
+            OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Hooked${component}.cpp")
+        if(DX11_AUDIT_ASAN_LOCKS)
+            set_source_files_properties("tests/hooked_${component_lower}_lookup_audit.cpp" PROPERTIES
+                COMPILE_OPTIONS "/GL-;/fsanitize=address;/Zi"
+                COMPILE_DEFINITIONS "_DISABLE_VECTOR_ANNOTATION;_DISABLE_STRING_ANNOTATION")
+        endif()
+    endforeach()
+    string(REPLACE "${CMAKE_SOURCE_DIR}/src/common/util.cpp" "tests/util_audit_regression.cpp"
+        DX11_REGRESSION_SOURCES "${DX11_REGRESSION_SOURCES}")
+    set_source_files_properties(tests/util_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/common/util.cpp")
+    list(APPEND DX11_REGRESSION_SOURCES tests/shader_tool_audit_regression.cpp)
+    list(APPEND DX11_REGRESSION_SOURCES tests/ini_upload_audit_regression.cpp)
+    set_source_files_properties(tests/shader_tool_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Shaders.cpp")
+    list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)CommandList\\.cpp$")
+    list(APPEND DX11_REGRESSION_SOURCES tests/command_list_audit_regression.cpp)
+    set_source_files_properties(tests/command_list_audit_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/CommandList.cpp")
+    if(DX11_AUDIT_ASAN_LOCKS)
+        if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+            message(FATAL_ERROR "DX11_AUDIT_ASAN_LOCKS requires MSVC x64 with AddressSanitizer.")
+        endif()
+        # Include the unchanged production implementation in its test TU so its
+        # private cleanup state is observable; do not compile a second copy.
+        list(FILTER DX11_REGRESSION_SOURCES EXCLUDE REGEX "(^|/)lock\\.cpp$")
+        list(APPEND DX11_REGRESSION_SOURCES tests/lock_audit_regression.cpp)
+        set_source_files_properties(tests/lock_audit_regression.cpp PROPERTIES
+            OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/lock.cpp"
+            COMPILE_OPTIONS "/GL-;/fsanitize=address;/Zi"
+            # Match uninstrumented STL libraries; heap UAF detection stays on.
+            COMPILE_DEFINITIONS "_DISABLE_VECTOR_ANNOTATION;_DISABLE_STRING_ANNOTATION")
+    endif()
     add_executable(dx11_upstream_regression
         ${DX11_REGRESSION_SOURCES}
         tests/upstream_regression.cpp
+        tests/regression_isolation.cpp
+        tests/audit_regressions.cpp
+        tests/hook_lookup_audit_regression.cpp
+        tests/audit_dx9_regression.cpp
+        tests/reflect_bounds_audit.cpp
+        tests/shader_regex_temp_regression.cpp
+        tests/shader_ownership_audit.cpp
+        tests/shader_regex_declaration_audit.cpp
+        tests/file_publication_audit.cpp
+        tests/device_initialization_audit.cpp
+        tests/resource_file_audit.cpp
+        tests/shader_model_bounds_audit.cpp
+        tests/finish_command_audit.cpp
+        tests/d3d11_vtable_layout.c
+        tests/hunting_present_audit.cpp
+        tests/hunting_shader_selection_audit.cpp
         tests/persistence_regression.cpp
         tests/input_layout_regression.cpp
         tests/ini_expression_regression.cpp
@@ -173,6 +289,7 @@ if(BUILD_TESTING)
         tests/resource_region_regression.cpp
         tests/reader_variable_regression.cpp
         tests/pool_lifecycle_regression.cpp
+        tests/initial_data_ownership_regression.cpp
         tests/utf8_tokenizer_regression.cpp
         tests/pool_missing_regression.cpp
         tests/proxy_recovery_regression.cpp
@@ -197,9 +314,11 @@ if(BUILD_TESTING)
         tests/resource_metadata_v2_regression.cpp
         tests/ini_parser_v2_regression.cpp
         tests/persist_settings_v2_regression.cpp
+        tests/persist_write_failure_regression.cpp
         tests/slot_batch_regression.cpp
         tests/pool_range_flags_regression.cpp
         tests/texture_override_cache_regression.cpp
+        tests/f197_override_lifetime_regression.cpp
         tests/dynamic_slot_regression.cpp
         tests/dynamic_pipeline_slot_regression.cpp
         tests/slot_range_regression.cpp
@@ -219,6 +338,7 @@ if(BUILD_TESTING)
         tests/shader_dump_filter_regression.cpp
         tests/stream_output_append_regression.cpp
         tests/texture_upload_state_regression.cpp
+        tests/texture_hash_layout_regression.cpp
         tests/original_resource_metadata_regression.cpp
         tests/dhash_gpu_regression.cpp
         tests/member_argument_regression.cpp
@@ -248,19 +368,62 @@ if(BUILD_TESTING)
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
+        tests/profiling_legacy_regression.cpp
         tests/dx11_version_regression.cpp
+        tests/dx11_version_fallback_regression.cpp
     )
+    set_source_files_properties(tests/dx11_version_fallback_regression.cpp PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/DX11Version.cpp")
     target_include_directories(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,INCLUDE_DIRECTORIES>>)
+    add_executable(dx11_loader_test_host "${CMAKE_SOURCE_DIR}/模拟环境/src/dx11_sim_host.cpp")
+    target_compile_features(dx11_loader_test_host PRIVATE cxx_std_17)
+    set_target_msvc_options(dx11_loader_test_host)
+    set_target_common_definitions(dx11_loader_test_host)
+    target_link_libraries(dx11_loader_test_host PRIVATE user32)
+    add_dependencies(dx11_upstream_regression dx11_loader_test_host)
     target_compile_definitions(dx11_upstream_regression PRIVATE
-        $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,COMPILE_DEFINITIONS>>)
+        $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,COMPILE_DEFINITIONS>>
+        DX11_LOADER_TEST_HOST="$<TARGET_FILE:dx11_loader_test_host>"
+        DX11_LOADER_TEST_DLL="$<TARGET_FILE:DirectX11>"
+        F281_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/f281"
+        F126_FIXTURE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/f126/F-126-vs3-dcl-c0.txt")
     target_link_libraries(dx11_upstream_regression PRIVATE
         $<TARGET_GENEX_EVAL:DirectX11,$<TARGET_PROPERTY:DirectX11,LINK_LIBRARIES>>)
     target_compile_features(dx11_upstream_regression PRIVATE cxx_std_17)
+    if(DX11_AUDIT_ASAN_LOCKS)
+        target_compile_definitions(dx11_upstream_regression PRIVATE DX11_AUDIT_ASAN_LOCKS=1)
+    endif()
+    if(DX11_AUDIT_ASAN_DECOMPILER)
+        target_compile_definitions(dx11_upstream_regression PRIVATE DX11_AUDIT_ASAN_DECOMPILER=1)
+        # The regression host re-execs itself in an isolated directory and only
+        # copies the ASan runtime if it is already next to the executable.
+        get_filename_component(F103_ASAN_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        set(F103_ASAN_RUNTIME "${F103_ASAN_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll")
+        if(EXISTS "${F103_ASAN_RUNTIME}")
+            add_custom_command(TARGET dx11_upstream_regression POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${F103_ASAN_RUNTIME}"
+                    "$<TARGET_FILE_DIR:dx11_upstream_regression>/clang_rt.asan_dynamic-x86_64.dll"
+                VERBATIM)
+        else()
+            message(WARNING "DX11_AUDIT_ASAN_DECOMPILER: clang_rt.asan_dynamic-x86_64.dll not found next to ${CMAKE_CXX_COMPILER}; copy it next to the regression exe before running.")
+        endif()
+    endif()
     set_target_msvc_options(dx11_upstream_regression)
     set_target_common_definitions(dx11_upstream_regression)
+    if(MSVC)
+        # F-113 AV diagnostics: map file for RVA -> function lookup.
+        target_link_options(dx11_upstream_regression PRIVATE /MAP)
+    endif()
     add_dependencies(dx11_upstream_regression DirectX11 dx11_version_header)
     target_link_libraries(dx11_upstream_regression PRIVATE Version.lib)
+    add_library(dx11_debug_layer_audit STATIC tests/debug_layer_audit_regression.cpp)
+    target_include_directories(dx11_debug_layer_audit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(dx11_debug_layer_audit PRIVATE _DEBUG_LAYER=1)
+    target_compile_features(dx11_debug_layer_audit PRIVATE cxx_std_17)
+    set_target_msvc_options(dx11_debug_layer_audit)
+    set_target_common_definitions(dx11_debug_layer_audit)
+    target_link_libraries(dx11_upstream_regression PRIVATE dx11_debug_layer_audit)
     add_executable(dx11_legacy_version_regression tests/legacy_version_regression.cpp)
     target_compile_definitions(dx11_legacy_version_regression PRIVATE MIGOTO_DX=12)
     target_include_directories(dx11_legacy_version_regression PRIVATE ${CMAKE_SOURCE_DIR}/src/common)
@@ -277,6 +440,7 @@ if(BUILD_TESTING)
                 --work-dir "${CMAKE_SOURCE_DIR}/build/version-generator-regression")
     endif()
     add_test(NAME dx11_upstream_regression COMMAND dx11_upstream_regression)
+    set_tests_properties(dx11_upstream_regression PROPERTIES TIMEOUT 60)
     add_test(NAME dx11_overlay_text_regression COMMAND dx11_upstream_regression --overlay-text)
     add_test(NAME dx11_texture_match_regression COMMAND dx11_upstream_regression --texture-match)
     add_test(NAME dx11_texture_match_hooked_regression COMMAND dx11_upstream_regression --texture-match-hooked)

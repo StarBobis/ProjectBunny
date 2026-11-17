@@ -464,6 +464,8 @@ struct ResourceHandleInfo
     uint32_t texture_override_hash = 0;
     UINT texture_override_resolution_width = 0, texture_override_resolution_height = 0;
     TextureOverrideCandidates texture_override_candidates;
+    bool has_override_candidate = false;
+    bool has_override_candidate_valid = false;
 
 	// CPU-side copy of the resource data captured via hooks or staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
@@ -676,6 +678,8 @@ uint32_t CalcTexture3DDescHash(uint32_t initial_hash, const D3D11_TEXTURE3D_DESC
 
 uint32_t CalcTexture1DDataHash(const D3D11_TEXTURE1D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData);
 uint32_t CalcTexture2DDataHash(const D3D11_TEXTURE2D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, bool zero_padding = false);
+// Diagnostic bytes from the first subresource only; never assumes row padding is readable.
+void LogDebugTexture2DInitialData(const D3D11_TEXTURE2D_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial);
 uint32_t CalcTexture2DDataHashAccurate(const D3D11_TEXTURE2D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData);
 uint32_t CalcTexture3DDataHash(const D3D11_TEXTURE3D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData);
 
@@ -945,10 +949,17 @@ struct TextureOverrideFuzzyMatch {
 };
 typedef std::vector<TextureOverrideFuzzyMatch> TextureOverrideFuzzyMatches;
 
+// Caller must hold G->mCriticalSection; the returned draw-map vector is
+// rebuilt under G on reload and must be consumed before unlocking.
 TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info);
 
 template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
+// Caller must hold G->mCriticalSection across the call and while consuming
+// `matches`; these functions only hold G while collecting. The returned
+// TextureOverride* point into the config map and become invalid on reload.
+// The resource handle is AddRef'd for the lookup only, not for the config
+// nodes, so the caller's G must still cover consumption.
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 
@@ -959,9 +970,17 @@ void ClearRegionHashesGlobalCache();
 
 // Ordinary/fuzzy candidate lookup never matches an untracked resource.
 // Explicit region exact matching is a separate path.
-// Caller must hold G->mCriticalSection and a live resource reference; consume
-// returned pointers before unlocking. Untracked resources return nullptr.
+// Caller must hold G->mCriticalSection and a live resource reference; that
+// reference must cover the whole candidate use, and returned pointers must
+// be consumed before unlocking. Untracked resources return nullptr.
 TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resource);
+// A.4 gate: true if the resource has a hash candidate that matches the current
+// draw (match_first_index etc.) or a fuzzy candidate matching its descriptor.
+// Caller must hold G->mCriticalSection and a live resource reference. Uses the
+// per-resource candidate cache. If region_hash_possible is set, the whole-
+// resource hash cannot prove absence of a region-hash candidate, so the caller
+// is conservatively told to run the full path.
+bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_info, bool region_hash_possible);
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 // Takes G->mCriticalSection before mResourcesLock; call before old maps die.
 void InvalidateTextureOverrideCandidates();

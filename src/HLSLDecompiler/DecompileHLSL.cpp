@@ -18,11 +18,16 @@
 // All sscanf that did not use %s or %c were switched to sscanf_s to avoid warnings.
 
 #include <map>
+#include <memory>
 #include <string>
 #include <cstdio>
 #include <vector>
 #include <set>
 #include <algorithm>
+#include <charconv>
+#include <climits>
+#include <cmath>
+#include <cctype>
 
 #include "DecompileHLSL.h"
 
@@ -44,6 +49,21 @@
 #define UCOUNTOF(...) (unsigned)_countof(__VA_ARGS__)
 
 using namespace std;
+
+// F-103: a fixed-size decompiler buffer that cannot hold the input is a fatal
+// error for this decompile attempt. Throwing unwinds to the catch(...) in
+// DecompileBinaryHLSL, which sets errorOccurred and returns an empty string, so
+// callers never receive a half-generated shader.
+struct DecompileFatal
+{
+	string message;
+};
+
+[[noreturn]] static void fatalDecompileError(const string &err)
+{
+	LogInfo("    fatal decompile error> %s\n", err.c_str());
+	throw DecompileFatal{ err };
+}
 
 enum DataType
 {
@@ -116,16 +136,30 @@ struct ConstantValue
 };
 //dx9
 
-// Convenience routine to calculate just the number of swizzle components.
-// Used for ibfe.  Inputs like 'o1.xy', return 2.
+// IBFE destination component suffix: scalar operands need no numeric suffix.
 
-static string swizCount(char *operand)
+static string swizCount(const char *operand)
 {
 	if (!operand)
 		return "";
 
-	size_t count = strlen(operand) - (strrchr(operand, '.') - operand) - 1;
+	const char *swizzle = strrchr(operand, '.');
+	if (!swizzle)
+		return "";
+	size_t count = strlen(swizzle + 1);
 	return (count == 1) ? "" : to_string(count);
+}
+
+// F-278b: the single bounded newline scan used by NextLine and every former
+// open-coded "while (c[pos] != 0x0a && pos < size)" site. The bound is tested
+// before c[pos] is read, and a line without a newline returns size, never size + 1.
+static inline size_t next_line_bounded(const char *c, size_t pos, size_t size)
+{
+	if (pos >= size)
+		return size;
+	while (pos < size && c[pos] != 0x0a)
+		pos++;
+	return pos < size ? pos + 1 : size;
 }
 
 class Decompiler
@@ -253,9 +287,26 @@ public:
 	// Make this bump to new line slightly more clear by making it a convenience routine.
 	static void NextLine(const char *c, size_t &pos, size_t max)
 	{
-		while (c[pos] != 0x0a && pos < max) 
-			pos++; 
-		pos++;
+		pos = next_line_bounded(c, pos, max);
+	}
+
+	// F-277: diagnostics are bounded by the caller's remaining input.
+	// Do not derive the length with strlen(c): c may point at a short tail
+	// that has no NUL inside [pos, size), and scanning would read past it.
+	static string diagnosticSnippet(const char *input, size_t pos, size_t size)
+	{
+		if (!input || pos >= size)
+			return string();
+		return string(input + pos, std::min<size_t>(80, size - pos));
+	}
+
+	// F-278b: :1675 compares at c[pos] after NextLine, and pos can equal size.
+	// Every caller of DecompileBinaryHLSL in this tree passes std::string::c_str()
+	// (HackerDevice.cpp:962-963, Hunting.cpp:345-346 and the audit tests), so c[size]
+	// is the readable NUL sentinel that terminates this comparison.
+	static bool IsBufferClose(const char *c, size_t pos)
+	{
+		return !strncmp(c + pos, "// }", 4);
 	}
 
 	// Just take the current input line, and copy it to the output.
@@ -298,11 +349,18 @@ public:
 	// This does also unfortunately create warnings for the TEXCOORD outputs, but
 	// I was unable to find any other way to avoid the fxc packing optimization.
 
-	bool SkipPacking(const char *c, map<string, DataType> inUse)
+	// F-273: max is the real remaining length from this line to the terminator
+	// of params.decompiled (callers pass size - pos). Scans read only
+	// c[0 .. max - 1]; c[max] is the NUL sentinel. The old fixed 200 was
+	// unrelated to the buffer end and ran past it on truncated signature text.
+	bool SkipPacking(const char *c, size_t max, map<string, DataType> inUse)
 	{
 		char name[256], mask[16], sysvalue[16], format[16];
 		int index, reg1, reg2; format[0] = 0; mask[0] = 0;
 		size_t pos = 0;
+
+		if (!c || max == 0)
+			return false;
 
 		int numRead = sscanf_s(c + pos, "// %s %d %s %d %s %s",
 			name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), &reg1, sysvalue, UCOUNTOF(sysvalue), format, UCOUNTOF(format));
@@ -320,7 +378,13 @@ public:
 			return false;
 
 		// skip pointer in order to parse next line
-		while (c[pos] != 0x0a && pos < 200) pos++; pos++;
+		// F-273: a line without a newline (or a newline at max - 1) has no
+		// second row; reject it instead of scanning past the real end.
+		size_t next = pos;
+		NextLine(c, next, max);
+		if (next <= pos || next >= max || c[next - 1] != 0x0a)
+			return false;
+		pos = next;
 
 		numRead = sscanf_s(c + pos, "// %s %d %s %d %s %s",
 			name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), &reg2, sysvalue, UCOUNTOF(sysvalue), format, UCOUNTOF(format));
@@ -462,7 +526,7 @@ public:
 				return;
 			}
 			// finish type.
-			if (SkipPacking(c + pos, usedInputRegisters))
+			if (SkipPacking(c + pos, size - pos, usedInputRegisters))
 				sprintf(format2, "%s%d", format, 4);				// force to float4
 			else
 				if (strlen(mask) > 1)
@@ -515,30 +579,50 @@ public:
 		}
 	}
 
-	void ParseOutputSignature(const char *c, size_t size)
+	bool ParseOutputSignature(const char *c, size_t size, bool dx9Shader = false)
 	{
+		const size_t outputStart = mOutput.size();
 		mOutputRegisterType.clear();
 		mRemappedOutputRegisters.clear();
 		mSV_Position.clear();
 		// Read until header.
 		const char *headerid = "// Output signature:";
+		const size_t headerLength = strlen(headerid);
 		size_t pos = 0;
-		while (pos < size - strlen(headerid))
+		while (pos <= size && headerLength <= size - pos)
 		{
-			if (!strncmp(c + pos, headerid, strlen(headerid)))
+			if (!strncmp(c + pos, headerid, headerLength))
 				break;
 			else
 			{
 				NextLine(c, pos, size);
 			}
 		}
-		if (pos >= size - strlen(headerid)) return;
+		if (pos > size || headerLength > size - pos)
+		{
+			// Native SM1-3 disassembly has no DXBC signature table.
+			if (dx9Shader)
+				return true;
+			logDecompileError("Missing output signature header");
+			return false;
+		}
 		// Skip header.
 		for (int i = 0; i < 4; ++i)
 		{
+			if (pos >= size)
+			{
+				logDecompileError("Incomplete output signature header");
+				return false;
+			}
 			NextLine(c, pos, size);
 		}
+		if (pos >= size)
+		{
+			logDecompileError("Missing output signature entries");
+			return false;
+		}
 		// Read list.
+		bool parsed = true;
 		while (pos < size)
 		{
 			char name[256], mask[16], format[16], format2[16];
@@ -554,7 +638,7 @@ public:
 			if (numRead == 6)
 			{
 				// finish type.
-				if (SkipPacking(c + pos, mOutputRegisterType))
+				if (SkipPacking(c + pos, size - pos, mOutputRegisterType))
 					sprintf(format2, "%s%d", format, 4);				// force to float4
 				else
 					if (strlen(mask) > 1)
@@ -589,12 +673,18 @@ public:
 					regNameStr = registerName;
 				}
 				// Write.
+				const DataType type = TranslateType(format2);
+				if (type == DT_Unknown)
+				{
+					parsed = false;
+					break;
+				}
 				char buffer[256];
 				sprintf(buffer, "  out %s %s : %s%d,\n", format2, regNameStr.c_str(), name, index);
 				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 				if (!strcmp(name, "SV_Position"))
 					mSV_Position = regNameStr;
-				mOutputRegisterType[regNameStr] = TranslateType(format2);
+				mOutputRegisterType[regNameStr] = type;
 			}
 			else if (numRead == 3)
 			{
@@ -604,14 +694,26 @@ public:
 				// Name                 Index   Mask Register SysValue  Format   Used
 				// -------------------- ----- ------ -------- -------- ------- ------
 				// SV_Depth                 0    N/A   oDepth    DEPTH   float    YES
-				numRead = sscanf_s(c + pos, "// %s %d %s %s %s %s",
+				size_t lineEnd = pos;
+				while (lineEnd < size && c[lineEnd] != '\r' && c[lineEnd] != '\n') ++lineEnd;
+				const string row(c + pos, lineEnd - pos);
+				numRead = sscanf_s(row.c_str(), "// %s %d %s %s %s %s",
 					name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), reg, UCOUNTOF(reg), sysValue, UCOUNTOF(sysValue), format, UCOUNTOF(format));
-				sprintf(buffer, "  out %s %s : %s,\n", format, reg, name);
-				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				if (numRead == 6)
+				{
+					if (TranslateType(format) == DT_Unknown)
+					{
+						parsed = false;
+						break;
+					}
+					sprintf(buffer, "  out %s %s : %s,\n", format, reg, name);
+					mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				}
 			}
 			if (numRead != 6)
 			{
-				logDecompileError("Error parsing output signature: " + string(c + pos, 80));
+				logDecompileError("Error parsing output signature: " + string(c + pos, std::min<size_t>(80, size - pos)));
+				parsed = false;
 				break;
 			}
 			NextLine(c, pos, size);
@@ -619,11 +721,21 @@ public:
 			if (!strncmp(c + pos, "//\n", 3) || !strncmp(c + pos, "//\r", 3))
 				break;
 		}
+		if (!parsed)
+		{
+			mOutput.resize(outputStart);
+			mOutputRegisterType.clear();
+			mRemappedOutputRegisters.clear();
+			mSV_Position.clear();
+			return false;
+		}
 		// Write footer.
-		mOutput.pop_back();
-		mOutput.pop_back();
+		// Inputs also have a trailing separator when there are no outputs.
+		if (mOutput.size() >= 2 && mOutput[mOutput.size() - 2] == ',' && mOutput.back() == '\n')
+			mOutput.resize(mOutput.size() - 2);
 		const char *mainFooter = ")\n{\n";
 		mOutput.insert(mOutput.end(), mainFooter, mainFooter + strlen(mainFooter));
+		return true;
 	}
 
 	void WriteZeroOutputSignature(const char *c, size_t size)
@@ -680,12 +792,18 @@ public:
 			else if (numRead == 3)
 			{
 				char sysValue[64];
-				int numRead = sscanf_s(c + pos, "// %s %d %s %s %s %s",
+				size_t lineEnd = pos;
+				while (lineEnd < size && c[lineEnd] != '\r' && c[lineEnd] != '\n') ++lineEnd;
+				const string row(c + pos, lineEnd - pos);
+				numRead = sscanf_s(row.c_str(), "// %s %d %s %s %s %s",
 					name, UCOUNTOF(name), &index, mask, UCOUNTOF(mask), sysValue, UCOUNTOF(sysValue), format2, UCOUNTOF(format2), format, UCOUNTOF(format));
-				// Write.
-				char buffer[256];
-				sprintf(buffer, "  %s = 0;\n", sysValue);
-				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				if (numRead == 6)
+				{
+					// Write.
+					char buffer[256];
+					sprintf(buffer, "  %s = 0;\n", sysValue);
+					mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
+				}
 			}
 			if (numRead != 6)
 			{
@@ -801,22 +919,20 @@ public:
 
 			if (parseRegisters)
 			{
-				char * lineStr = new char[lineSize + 1];
-				memcpy(lineStr, lineStart, lineSize);
+				unique_ptr<char[]> lineStr(new char[lineSize + 1]);
+				memcpy(lineStr.get(), lineStart, lineSize);
 				lineStr[lineSize] = 0;
 
 				vector<string> result;
-				SplitString(lineStr, result, " ");
+				SplitString(lineStr.get(), result, " ");
 
 				if (result.size() != 4)
 				{
-					delete[] lineStr;
 					continue;
 				}
 
 				if (result[1] == "Name" || result[3] == "----")
 				{
-					delete[] lineStr;
 					continue;
 				}
 
@@ -1168,15 +1284,29 @@ public:
 			}
 			const int bufferRegister = i->second;
 			// Write declaration.
-			char buffer[256];
+			// F-103: 512 holds the largest legal declaration line: a 255-byte
+			// cbuffer member name plus the "//   <type> <name>;// Offset..."
+			// decoration and the added packoffset text.
+			char buffer[512];
 			if (name[0] == '$') name[0] = '_';
 			_snprintf_s(buffer, 256, 256, "\ncbuffer %s : register(b%d)\n{\n", name, bufferRegister);
 			mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 			do
 			{
-				const char *eolPos = strchr(c + pos, '\n');
-				memcpy(buffer, c + pos, eolPos - c - pos + 1);
-				buffer[eolPos - c - pos + 1] = 0;
+				// F-103: bound the line by the shader text, not by the NUL
+				// terminator, then copy it including the newline. A line that
+				// does not fit is a controlled decompile failure, never a
+				// stack overflow.
+				if (pos >= size)
+					fatalDecompileError("unterminated cbuffer line");
+				const char *eolPos = static_cast<const char *>(memchr(c + pos, '\n', size - pos));
+				if (!eolPos)
+					fatalDecompileError("unterminated cbuffer line");
+				const size_t lineLen = static_cast<size_t>(eolPos - (c + pos)) + 1;
+				if (lineLen >= sizeof(buffer))
+					fatalDecompileError("cbuffer line too long");
+				memcpy(buffer, c + pos, lineLen);
+				buffer[lineLen] = 0;
 				// Skip opening bracket.
 				if (strstr(buffer, " {\n"))
 				{
@@ -1222,10 +1352,24 @@ public:
 				if (strstr(buffer, " }"))
 				{
 					// Read struct name.
-					while (c[pos] != '}') ++pos;
+					// F-103: a 255-byte struct name spans 258 bytes here
+					// (closing brace + newline + name), which overflowed the
+					// old 256-byte buffer; the old loops also read past the
+					// end of the shader text. Bound the scan, the copy, and
+					// leave room for the packoffset/terminator suffix below.
+					while (pos < size && c[pos] != '}') ++pos;
+					if (pos >= size)
+						fatalDecompileError("unterminated struct name");
 					int bpos = 0;
-					while (c[pos] != ';')
+					while (pos < size && c[pos] != ';')
+					{
+						if (static_cast<size_t>(bpos) + 32 >= sizeof(buffer))
+							fatalDecompileError("struct name too long");
 						buffer[bpos++] = c[pos++];
+					}
+					if (pos >= size)
+						fatalDecompileError("unterminated struct name");
+					buffer[bpos] = 0;
 					string structName = string(buffer + 2, buffer + bpos) + ".";
 					// Read offset.
 					while (c[pos] != '/' && pos < size) pos++;
@@ -1346,18 +1490,18 @@ public:
 				// Uses projection matrix?
 				if (e.bt == DT_float4x4 && e.Name.find_first_of("Projection") >= 0)
 				{
-					eolPos = strchr(c + pos, '\n');
+					const char *eolPos = strchr(c + pos, '\n');
 					// Used?
-					if (*(eolPos - 1) != ']')
+					if (eolPos && *(eolPos - 1) != ']')
 						mUsesProjection = true;
 				}
 
 				// SR3 variant of projection matrix.
 				if (e.bt == DT_float4x4 && e.Name.find_first_of("projTM") >= 0)
 				{
-					eolPos = strchr(c + pos, '\n');
+					const char *eolPos = strchr(c + pos, '\n');
 					// Used?
-					if (*(eolPos - 1) != ']')
+					if (eolPos && *(eolPos - 1) != ']')
 						mUsesProjection = true;
 				}
 
@@ -1612,7 +1756,7 @@ public:
 						sprintf(buffer, "  %s%s%s %s;\n", structSpacing.c_str(), modifier.c_str(), type, name);
 					mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 				}
-			} while (strncmp(c + pos, "// }", 4));
+			} while (!IsBufferClose(c, pos));
 			
 			// Write closing declaration.
 			const char *endBuffer = "}\n";
@@ -1635,12 +1779,15 @@ public:
 		return 0;
 	}
 
-	bool warn_if_line_is_not(const char *expect, const char *c)
+	bool warn_if_line_is_not(const char *expect, const char *input, size_t pos, size_t size)
 	{
-		if (strncmp(c, expect, strlen(expect))) {
+		const size_t expect_len = strlen(expect);
+		const size_t remaining = pos < size ? size - pos : 0;
+
+		if (remaining < expect_len || strncmp(input + pos, expect, expect_len)) {
 			logDecompileError("WARNING: Unexpected string in shader"
 					"\n  Expected: " + string(expect) +
-					"\n     Found: " + string(c, 80));
+					"\n     Found: " + diagnosticSnippet(input, pos, size));
 			return true;
 		}
 		return false;
@@ -1675,14 +1822,14 @@ public:
 		while (pos = find_next_header("// Resource bind info for ", c, pos, size)) {
 			n = sscanf_s(c + pos, "// Resource bind info for %s", bind_name, UCOUNTOF(bind_name));
 			if (n != 1) {
-				logDecompileError("Error parsing structure bind name: " + string(c + pos, 80));
+				logDecompileError("Error parsing structure bind name: " + diagnosticSnippet(c, pos, size));
 				continue;
 			}
 			NextLine(c, pos, size);
 
-			warn_if_line_is_not("// {\n", c + pos);
+			warn_if_line_is_not("// {\n", c, pos, size);
 			NextLine(c, pos, size);
-			warn_if_line_is_not("//\n", c + pos);
+			warn_if_line_is_not("//\n", c, pos, size);
 			NextLine(c, pos, size);
 
 			if (!strncmp(c + pos, "//   struct ", 12)) {
@@ -1692,7 +1839,7 @@ public:
 				// matches "\n" in scanf:
 				n = sscanf_s(c + pos + 12, "%s", type_name_buf, UCOUNTOF(type_name_buf));
 				if (n != 1) {
-					logDecompileError("Error parsing structure type name: " + string(c + pos, 80));
+					logDecompileError("Error parsing structure type name: " + diagnosticSnippet(c, pos, size));
 					continue;
 				}
 				type_name = type_name_buf;
@@ -1705,7 +1852,7 @@ public:
 				n = 0;
 				sscanf_s(c + pos, "//   %s $Element;%n", type_name_buf, UCOUNTOF(type_name_buf), &n);
 				if (!n) {
-					logDecompileError("Error parsing primitive structure type: " + string(c + pos, 80));
+					logDecompileError("Error parsing primitive structure type: " + diagnosticSnippet(c, pos, size));
 					continue;
 				}
 				mStructuredBufferTypes[bind_name] = type_name_buf;
@@ -1720,16 +1867,16 @@ public:
 			}
 			NextLine(c, pos, size);
 
-			warn_if_line_is_not("//   {\n", c + pos);
+			warn_if_line_is_not("//   {\n", c, pos, size);
 			NextLine(c, pos, size);
-			warn_if_line_is_not("//       \n", c + pos);
+			warn_if_line_is_not("//       \n", c, pos, size);
 			NextLine(c, pos, size);
 
 			hlsl = "\nstruct " + string(type_name) + "\n{\n";
 
 			while (true) {
 				// Strip comments:
-				if (warn_if_line_is_not("//", c + pos))
+				if (warn_if_line_is_not("//", c, pos, size))
 					break;
 				spos = pos + 2;
 
@@ -1759,9 +1906,9 @@ public:
 				if (!strncmp(&c[fpos], "struct ", 7) || !strncmp(&c[fpos], "struct\n", 7)) {
 					hlsl += string(c, spos, fpos - spos) + "struct {\n";
 					NextLine(c, pos, size); // struct typename
-					warn_if_line_is_not("{\n", c + pos + strspn(c + pos, "/ "));
+					warn_if_line_is_not("{\n", c, pos + strspn(c + pos, "/ "), size);
 					NextLine(c, pos, size); // {
-					warn_if_line_is_not("\n", c + pos + strspn(c + pos, "/ "));
+					warn_if_line_is_not("\n", c, pos + strspn(c + pos, "/ "), size);
 					NextLine(c, pos, size); // blank
 				} else {
 					// Add the stripped line to the HLSL output, unless blank:
@@ -1775,59 +1922,108 @@ public:
 		}
 	}
 
-	static void applySwizzleLiteral(char *right, char *right2, bool useInt, size_t pos, char idx[4])
-	{
-		// Single literal?
-		if (!strchr(right, ','))
-		{
-			strcpy_s(right2, opcodeSize, right + 2);
-			right2[strlen(right2) - 1] = 0;
-			return;
-		}
+	struct LiteralComponent {
+		float number;
+		int signed_value;
+		unsigned unsigned_value;
+		bool exact_signed;
+		bool exact_unsigned;
+		bool raw_hex;
+	};
 
-		char *beginPos = right + 2;
-		float args[4];
-		unsigned hex_args[4];
-		bool is_hex[4];
-		for (int i = 0; i < 4; ++i)
-		{
-			char *endPos = strchr(beginPos, ',');
-			if (endPos) *endPos = 0;
-			sscanf_s(beginPos, "%f", args + i);
-			is_hex[i] = (sscanf_s(beginPos, " 0x%x", hex_args + i) == 1);
-			beginPos = endPos + 1;
+	static bool applySwizzleLiteral(const char *right, char *right2, bool useInt, size_t pos, const char idx[4])
+	{
+		if (!right || !right2 || !idx || !pos || pos > 4)
+			return false;
+		const size_t length = strlen(right);
+		if (length < 4 || length >= opcodeSize || right[0] != 'l' || right[1] != '(' || right[length-1] != ')')
+			return false;
+		for (size_t i = 0; i < pos; ++i)
+			if (idx[i] < 0 || idx[i] >= 4) return false;
+
+		char contents[opcodeSize];
+		strcpy_s(contents, right + 2); contents[length-3] = 0;
+		LiteralComponent args[4]{};
+		size_t count = 0;
+		char *begin = contents;
+		char *scalar = nullptr;
+		while (true) {
+			if (count == 4) return false;
+			char *comma = strchr(begin, ',');
+			if (comma) *comma = 0;
+			while (isspace(static_cast<unsigned char>(*begin))) ++begin;
+			char *end = begin + strlen(begin);
+			while (end != begin && isspace(static_cast<unsigned char>(end[-1]))) *--end = 0;
+			if (begin == end) return false;
+			if (!scalar) scalar = begin;
+			int consumed = 0;
+			if (sscanf_s(begin, "%f %n", &args[count].number, &consumed) != 1 || consumed != end - begin)
+				return false;
+			if (end - begin >= 2 && begin[0] == '0' && (begin[1] == 'x' || begin[1] == 'X')) {
+				const auto parsed = std::from_chars(begin + 2, end, args[count].unsigned_value, 16);
+				if (parsed.ec != std::errc() || parsed.ptr != end) return false;
+				args[count].raw_hex = args[count].exact_unsigned = true;
+			} else {
+				const char *integer = *begin == '+' ? begin + 1 : begin;
+				const auto signed_result = std::from_chars(integer, end, args[count].signed_value);
+				args[count].exact_signed = signed_result.ec == std::errc() && signed_result.ptr == end;
+				const auto unsigned_result = std::from_chars(integer, end, args[count].unsigned_value);
+				args[count].exact_unsigned = unsigned_result.ec == std::errc() && unsigned_result.ptr == end;
+			}
+			++count;
+			if (!comma) break;
+			begin = comma + 1;
 		}
+		// A single literal broadcasts; vector literals require every selected
+		// component to have actually been supplied.
+		if (count == 1) {
+			strcpy_s(right2, opcodeSize, scalar);
+			return true;
+		}
+		for (size_t i = 0; i < pos; ++i)
+			if (static_cast<size_t>(idx[i]) >= count) return false;
 		if (pos == 1)
 		{
-			sprintf_s(right2, opcodeSize, "%.9g", args[idx[0]]);
+			const auto &value = args[idx[0]];
+			if (useInt && value.exact_signed) sprintf_s(right2, opcodeSize, "%d", value.signed_value);
+			else if (useInt && value.exact_unsigned) sprintf_s(right2, opcodeSize, "0x%x", value.unsigned_value);
+			else sprintf_s(right2, opcodeSize, "%.9g", value.number);
 		}
 		else
 		{
 			// Only integer values?
 			bool isInt = true;
-			for (int i = 0; idx[i] >= 0 && i < 4; ++i)
-				isInt = isInt && (is_hex[idx[i]] || (floor(args[idx[i]]) == args[idx[i]]));
+			for (size_t i = 0; i < pos; ++i) {
+				const auto &value = args[idx[i]];
+				isInt = isInt && (value.exact_signed || value.exact_unsigned ||
+					(std::isfinite(value.number) && floor(value.number) == value.number &&
+					static_cast<double>(value.number) >= INT_MIN && static_cast<double>(value.number) <= INT_MAX));
+			}
 			if (isInt && useInt)
 			{
-				sprintf_s(right2, opcodeSize, "int%Id(", pos);
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i) {
-					if (is_hex[idx[i]])
-						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "0x%x,", hex_args[idx[i]]);
+				sprintf_s(right2, opcodeSize, "int%zu(", pos);
+				for (size_t i = 0; i < pos; ++i) {
+					const auto &value = args[idx[i]];
+					if (value.raw_hex || (!value.exact_signed && value.exact_unsigned))
+						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "0x%x,", value.unsigned_value);
+					else if (value.exact_signed)
+						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%d,", value.signed_value);
 					else
-						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%d,", int(args[idx[i]]));
+						sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%d,", static_cast<int>(value.number));
 				}
 				right2[strlen(right2) - 1] = 0;
 				strcat_s(right2, opcodeSize, ")");
 			}
 			else
 			{
-				sprintf_s(right2, opcodeSize, "float%Id(", pos);
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i)
-					sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%.9g,", args[idx[i]]);
+				sprintf_s(right2, opcodeSize, "float%zu(", pos);
+				for (size_t i = 0; i < pos; ++i)
+					sprintf_s(right2 + strlen(right2), opcodeSize - strlen(right2), "%.9g,", args[idx[i]].number);
 				right2[strlen(right2) - 1] = 0;
 				strcat_s(right2, opcodeSize, ")");
 			}
 		}
+		return true;
 	}
 
 	void applySwizzle(const char *left, char *right, bool useInt = false)
@@ -1875,18 +2071,30 @@ public:
 		// Fairly bold change here- this fetches the source swizzle from 'left', and it previously would
 		// find the first dot in the string.  That's not right for left side array indices, so I changed it
 		// to look for the far right dot instead.  Should be correct, but this is used everywhere.
-		const char *strPos = strrchr(left, '.') + 1;
+		const char *strPos = strrchr(left, '.');
+		strPos = strPos ? strPos + 1 : "x";
 		char idx[4] = { -1, -1, -1, -1 };
 		char map[4] = { 3, 0, 1, 2 };
 		size_t pos = 0;							// Used as index into string buffer
-		if (strPos == (const char *)1)
-			strPos = "x";
-		while (*strPos && pos < 4)
+		while (*strPos && pos < 4) {
+			if (*strPos < 'w' || *strPos > 'z') {
+				logDecompileError("Invalid swizzle: " + string(left));
+				return;
+			}
 			idx[pos++] = map[*strPos++ - 'w'];
+		}
+		if (*strPos || !pos) {
+			logDecompileError("Invalid swizzle component count: " + string(left));
+			return;
+		}
 
 		// literal?
-		if (right[0] == 'l')
-			applySwizzleLiteral(right, right2, useInt, pos, idx);
+		if (right[0] == 'l') {
+			if (!applySwizzleLiteral(right, right2, useInt, pos, idx)) {
+				logDecompileError("Invalid literal or selected component: " + string(right));
+				return;
+			}
+		}
 		else if (right[0] == 'c' && right[1] != 'b')
 		{
 			//dx9 const register, start with c
@@ -1907,7 +2115,7 @@ public:
 				strcpy(right2, right);
 			else
 			{
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i)
+				for (int i = 0; i < 4 && idx[i] >= 0; ++i)
 					right2[pos++] = strPos[idx[i]];
 				right2[pos] = 0;
 			}
@@ -1952,7 +2160,7 @@ public:
 				sprintf_s(buff, opcodeSize, "%s", right2);
 
 
-				for (int i = 0; idx1[i] >= 0 && i < 4; ++i)
+				for (int i = 0; i < 4 && idx1[i] >= 0; ++i)
 				{
 					if (idx1[i] == 0)
 					{
@@ -2013,7 +2221,7 @@ public:
 				strcpy(right2, right);
 			else
 			{
-				for (int i = 0; idx[i] >= 0 && i < 4; ++i)
+				for (int i = 0; i < 4 && idx[i] >= 0; ++i)
 					right2[pos++] = strPos[idx[i]];
 				right2[pos] = 0;
 			}
@@ -2302,7 +2510,7 @@ public:
 		// the automatic CRT_SECURE macros to find the sizes.
 		//  CollectBrackets(op1, op2, op3, op4, op5, op6, op7, op8, op9, op10, op11, op12, op13, op14, op15);
 		{
-			if (!strncmp(op1, "l(", 2) && op1[strlen(op1) - 1] != ')' && op1[strlen(op1) - 2] != ')')
+			if ((!strncmp(op1, "l(", 2) || !strncmp(op1, "-l(", 3)) && op1[strlen(op1) - 1] != ')' && op1[strlen(op1) - 2] != ')')
 			{
 				strcat(op1, " "); strcat(op1, op2);
 				strcat(op1, " "); strcat(op1, op3);
@@ -2310,7 +2518,7 @@ public:
 				strcpy(op2, op5); strcpy(op3, op6); strcpy(op4, op7); strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12); strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op2, "l(", 2) && op2[strlen(op2) - 1] != ')' && op2[strlen(op2) - 2] != ')')
+			if ((!strncmp(op2, "l(", 2) || !strncmp(op2, "-l(", 3)) && op2[strlen(op2) - 1] != ')' && op2[strlen(op2) - 2] != ')')
 			{
 				strcat(op2, " "); strcat(op2, op3);
 				strcat(op2, " "); strcat(op2, op4);
@@ -2318,7 +2526,7 @@ public:
 				strcpy(op3, op6); strcpy(op4, op7); strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op3, "l(", 2) && op3[strlen(op3) - 1] != ')' && op3[strlen(op3) - 2] != ')')
+			if ((!strncmp(op3, "l(", 2) || !strncmp(op3, "-l(", 3)) && op3[strlen(op3) - 1] != ')' && op3[strlen(op3) - 2] != ')')
 			{
 				strcat(op3, " "); strcat(op3, op4);
 				strcat(op3, " "); strcat(op3, op5);
@@ -2326,7 +2534,7 @@ public:
 				strcpy(op4, op7); strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op4, "l(", 2) && op4[strlen(op4) - 1] != ')' && op4[strlen(op4) - 2] != ')')
+			if ((!strncmp(op4, "l(", 2) || !strncmp(op4, "-l(", 3)) && op4[strlen(op4) - 1] != ')' && op4[strlen(op4) - 2] != ')')
 			{
 				strcat(op4, " "); strcat(op4, op5);
 				strcat(op4, " "); strcat(op4, op6);
@@ -2334,7 +2542,7 @@ public:
 				strcpy(op5, op8); strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op5, "l(", 2) && op5[strlen(op5) - 1] != ')' && op5[strlen(op5) - 2] != ')')
+			if ((!strncmp(op5, "l(", 2) || !strncmp(op5, "-l(", 3)) && op5[strlen(op5) - 1] != ')' && op5[strlen(op5) - 2] != ')')
 			{
 				strcat(op5, " "); strcat(op5, op6);
 				strcat(op5, " "); strcat(op5, op7);
@@ -2342,7 +2550,7 @@ public:
 				strcpy(op6, op9); strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op6, "l(", 2) && op6[strlen(op6) - 1] != ')' && op6[strlen(op6) - 2] != ')')
+			if ((!strncmp(op6, "l(", 2) || !strncmp(op6, "-l(", 3)) && op6[strlen(op6) - 1] != ')' && op6[strlen(op6) - 2] != ')')
 			{
 				strcat(op6, " "); strcat(op6, op7);
 				strcat(op6, " "); strcat(op6, op8);
@@ -2350,7 +2558,7 @@ public:
 				strcpy(op7, op10); strcpy(op8, op11); strcpy(op9, op12);  strcpy(op10, op13); strcpy(op11, op14); strcpy(op12, op15);
 				op13[0] = 0; op14[0] = 0; op15[0] = 0;
 			}
-			if (!strncmp(op7, "l(", 2) && op7[strlen(op7) - 1] != ')' && op7[strlen(op7) - 2] != ')')
+			if ((!strncmp(op7, "l(", 2) || !strncmp(op7, "-l(", 3)) && op7[strlen(op7) - 1] != ')' && op7[strlen(op7) - 2] != ')')
 			{
 				strcat(op7, " "); strcat(op7, op8);
 				strcat(op7, " "); strcat(op7, op9);
@@ -2406,17 +2614,27 @@ public:
 
 	string GetSuffix(char *s, int index)
 	{
-		if (s[strlen(s) - 1] == ',') s[strlen(s) - 1] = 0;
+		size_t length = strlen(s);
+		if (length && s[length - 1] == ',') s[--length] = 0;
+		if (!length || index < 0 || index >= 4) {
+			logDecompileError("Invalid component selection: " + string(s));
+			return s;
+		}
 		char *dotPos = strrchr(s, '.');
-		// Single byte?
+		// applySwizzle retains scalar selections for broadcasting. A dot in
+		// a typed member or array index is not necessarily a component suffix.
 		if (dotPos && dotPos[1] >= 'w' && dotPos[1] <= 'z')
 		{
+			const size_t count = strspn(dotPos + 1, "xyzw");
+			const char *end = dotPos + 1 + count;
+			if (*end && strcmp(end, ")")) return s;
+			if (count > 4 || (count > 1 && static_cast<size_t>(index) >= count)) {
+				logDecompileError("Unavailable swizzle component: " + string(s));
+				return s;
+			}
+			if (count == 1) return s;
 			string buffer = s;
-			size_t targetPos = buffer.find_last_of('.');
-			buffer[targetPos + 1] = dotPos[1 + index];
-			buffer.resize(targetPos + 2);
-			if (!buffer.substr(0, 4).compare("abs("))
-				buffer.push_back(')');
+			buffer.replace(dotPos - s + 1, count, 1, dotPos[1 + index]);
 			return buffer;
 		}
 		// Single literal?
@@ -2470,29 +2688,58 @@ public:
 
 		if (!strncmp(op, "float", 5))
 		{
-			if (!strncmp(textype, "Texture2D", 9))
+			const size_t length = strlen(op);
+			// Constant-buffer identifiers may also start with "float".
+			const char *typeEnd = op + 5;
+			while (isdigit(static_cast<unsigned char>(*typeEnd))) ++typeEnd;
+			const bool bareType = length == 5 || (length == 6 && op[5] >= '1' && op[5] <= '4');
+			if (*typeEnd != '(' && !bareType)
+				return;
+			if (length < 8 || op[5] < '2' || op[5] > '4' || op[6] != '(')
 			{
-				cpos = strchr(op, ',');
-				cpos++;
-				cpos = strchr(cpos, ',');
-				cpos[0] = ')';
-				cpos[1] = 0;
-				op[5] = '2';	// now: float2(x,y)
+				logDecompileError("Invalid float texture coordinate: " + string(op));
+				return;
 			}
-			else if (!strncmp(textype, "Texture3D", 9))
+			const int components = op[5] - '0';
+			char *componentEnds[4]{};
+			char *cursor = op + 7;
+			// Validate every component before publishing a shortened constructor.
+			// Keep the original text so precision and special values are unchanged.
+			for (int i = 0; i < components; ++i)
 			{
-				cpos = strchr(op, ',');
-				cpos++;
-				cpos = strchr(cpos, ',');
-				cpos++;
-				cpos = strchr(cpos, ',');
-				cpos[0] = ')';
-				cpos[1] = 0;
-				op[5] = '3';	// now: float3(x,y,z)
+				float number;
+				int consumed = 0;
+				if (sscanf_s(cursor, "%f %n", &number, &consumed) != 1 || !consumed)
+				{
+					logDecompileError("Invalid float texture coordinate: " + string(op));
+					return;
+				}
+				cursor += consumed;
+				if (*cursor != (i + 1 == components ? ')' : ','))
+				{
+					logDecompileError("Invalid float texture coordinate: " + string(op));
+					return;
+				}
+				componentEnds[i] = cursor++;
 			}
-			else // if (!strncmp(textype, "TextureCube", 11) || !strncmp(textype, "TextureCubeArray", 11))
+			if (*cursor)
 			{
-				// left as: float4(x,y,z,w)
+				logDecompileError("Invalid float texture coordinate: " + string(op));
+				return;
+			}
+			int dimensions = components;
+			if (!strncmp(textype, "Texture2D", 9)) dimensions = 2;
+			else if (!strncmp(textype, "Texture3D", 9)) dimensions = 3;
+			if (components < dimensions)
+			{
+				logDecompileError("Insufficient float texture coordinate components: " + string(op));
+				return;
+			}
+			if (components > dimensions)
+			{
+				componentEnds[dimensions - 1][0] = ')';
+				componentEnds[dimensions - 1][1] = 0;
+				op[5] = '0' + dimensions;
 			}
 		}
 		else
@@ -2648,27 +2895,72 @@ public:
 		}
 	}
 
+	static bool isFloatConstructor(const char *operand)
+	{
+		if (strncmp(operand, "float", 5)) return false;
+		const char *suffix = operand + 5;
+		while (isdigit(static_cast<unsigned char>(*suffix))) ++suffix;
+		return *suffix == '(' || (!*suffix && (suffix == operand + 5 ||
+			(suffix == operand + 6 && operand[5] >= '1' && operand[5] <= '4')));
+	}
+
+	char *convertFloatVectorToInteger(char *target, const char *type, int isMinus)
+	{
+		const char *literal = target + isMinus;
+		int size = 0, count = 0, consumed = 0;
+		float values[4]{};
+		if (literal[5] >= '2' && literal[5] <= '4' && literal[6] == '(') {
+			switch (literal[5]) {
+			case '2': count = sscanf_s(literal, "float%1d( %f , %f ) %n", &size, &values[0], &values[1], &consumed); break;
+			case '3': count = sscanf_s(literal, "float%1d( %f , %f , %f ) %n", &size, &values[0], &values[1], &values[2], &consumed); break;
+			case '4': count = sscanf_s(literal, "float%1d( %f , %f , %f , %f ) %n", &size, &values[0], &values[1], &values[2], &values[3], &consumed); break;
+			}
+		}
+		if (!consumed || count != size + 1 || literal[consumed]) {
+			logDecompileError("Invalid float vector conversion: " + string(target));
+			return target;
+		}
+
+		bool fold = true;
+		for (int i = 0; i < size; ++i)
+			fold = fold && std::isfinite(values[i]) && static_cast<double>(values[i]) >= INT_MIN &&
+				static_cast<double>(values[i]) <= INT_MAX;
+		// Let HLSL perform conversions that cannot be folded through a host int.
+		// Normalize components instead of wrapping the potentially long input.
+		char buffer[opcodeSize];
+		int printed = fold ? _snprintf_s(buffer, opcodeSize, _TRUNCATE, "%s%s%d(", isMinus ? "-" : "", type, size) :
+			_snprintf_s(buffer, opcodeSize, _TRUNCATE, "%s(%s%d)float%d(", isMinus ? "-" : "", type, size, size);
+		for (int i = 0; printed >= 0 && i < size; ++i) {
+			int written;
+			if (fold)
+				written = _snprintf_s(buffer + printed, opcodeSize - printed, _TRUNCATE, "%d,", static_cast<int>(values[i]));
+			else if (std::isfinite(values[i]))
+				written = _snprintf_s(buffer + printed, opcodeSize - printed, _TRUNCATE, "%.9g,", values[i]);
+			else {
+				unsigned bits;
+				static_assert(sizeof(bits) == sizeof(values[i]), "float bit width");
+				memcpy(&bits, &values[i], sizeof(bits));
+				written = _snprintf_s(buffer + printed, opcodeSize - printed, _TRUNCATE, "asfloat(0x%08x),", bits);
+			}
+			printed = written < 0 ? -1 : printed + written;
+		}
+		if (printed <= 0) {
+			logDecompileError("Float vector conversion exceeds operand buffer: " + string(target));
+			return target;
+		}
+		buffer[printed - 1] = ')';
+		strcpy_s(target, opcodeSize, buffer);
+		return target;
+	}
+
 	char *_convertToInt(char *target, bool fixupCBs)
 	{
 		char buffer[opcodeSize];
 
 		int isMinus = target[0] == '-' ? 1 : 0;
 		if (!strncmp(target + isMinus, "int", 3) || !strncmp(target + isMinus, "uint", 4)) return target;
-		if (!strncmp(target + isMinus, "float", 5))
-		{
-			int size = 0; float f0, f1, f2, f3;
-			sscanf_s(target + isMinus, "float%d(%f,%f,%f,%f)", &size, &f0, &f1, &f2, &f3);
-
-			buffer[0] = 0;
-			if (isMinus) strcpy(buffer, "-");
-
-			if (size == 2) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "int2(%d,%d)", (int)f0, (int)f1);
-			else if (size == 3) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "int3(%d,%d,%d)", (int)f0, (int)f1, (int)f2);
-			else if (size == 4) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "int4(%d,%d,%d,%d)", (int)f0, (int)f1, (int)f2, (int)f3);
-
-			strcpy_s(target, opcodeSize, buffer);
-			return target;
-		}
+		if (isFloatConstructor(target + isMinus))
+			return convertFloatVectorToInteger(target, "int", isMinus);
 		// Fixup for constant buffer reads where the type may not be known due to missing headers:
 		if (fixupCBs && !strncmp(target + isMinus, "cb", 2))
 		{
@@ -2695,23 +2987,8 @@ public:
 
 		int isMinus = target[0] == '-' ? 1 : 0;
 		if (!strncmp(target + isMinus, "int", 3) || !strncmp(target + isMinus, "uint", 4)) return target;
-		if (!strncmp(target + isMinus, "float", 5))
-		{
-			int size = 0;
-			float f0, f1, f2, f3;
-
-			sscanf_s(target + isMinus, "float%d(%f,%f,%f,%f)", &size, &f0, &f1, &f2, &f3);
-
-			buffer[0] = 0;
-			if (isMinus) strcpy(buffer, "-");
-
-			if (size == 2) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "uint2(%d,%d)", (int)f0, (int)f1);
-			else if (size == 3) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "uint3(%d,%d,%d)", (int)f0, (int)f1, (int)f2);
-			else if (size == 4) sprintf_s(buffer + strlen(buffer), opcodeSize - strlen(buffer), "uint4(%d,%d,%d,%d)", (int)f0, (int)f1, (int)f2, (int)f3);
-
-			strcpy_s(target, opcodeSize, buffer);
-			return target;
-		}
+		if (isFloatConstructor(target + isMinus))
+			return convertFloatVectorToInteger(target, "uint", isMinus);
 		// Fixup for constant buffer reads where the type may not be known due to missing headers:
 		if (fixupCBs && !strncmp(target + isMinus, "cb", 2))
 		{
@@ -2841,18 +3118,34 @@ public:
 		// Check old value.
 		if (o.eType == OPERAND_TYPE_IMMEDIATE32)
 		{
-			float oldValue;
-			sscanf_s(op, "l(%e", &oldValue);
-			if (!strncmp(op, "l(1.#INF00", strlen("l(1.#INF00")) || abs(oldValue - o.afImmediates[0]) < 0.1)
+			const bool negative = op[0] == '-';
+			const char *lit = op + (negative ? 1 : 0);
+			float oldValue = 0;
+			const bool legacyInf = !strncmp(lit, "l(1.#INF00", strlen("l(1.#INF00"));
+			string literal(lit);
+			while (!literal.empty() && isspace(static_cast<unsigned char>(literal.back()))) literal.pop_back();
+			if (!literal.empty() && literal.back() == ',') literal.pop_back();
+			while (!literal.empty() && isspace(static_cast<unsigned char>(literal.back()))) literal.pop_back();
+			if (legacyInf) literal.replace(2, strlen("1.#INF00"), "inf");
+			// Validate every component before replacing rounded disassembly text.
+			char checked[opcodeSize];
+			const char components[4] = { 0, 1, 2, 3 };
+			if ((!legacyInf && sscanf_s(lit, "l(%e", &oldValue) != 1) ||
+				!applySwizzleLiteral(literal.c_str(), checked, false, o.iNumComponents, components))
+			{
+				logDecompileError("Invalid immediate32 operand: " + string(op));
+				return op;
+			}
+			if (legacyInf || abs(oldValue - o.afImmediates[0]) < 0.1)
 			{
 				if (o.iNumComponents == 4)
-					sprintf_s(op, opcodeSize, "l(%.9g,%.9g,%.9g,%.9g)", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2], o.afImmediates[3]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g,%.9g,%.9g,%.9g)", negative ? "-" : "", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2], o.afImmediates[3]);
 				else if (o.iNumComponents == 3)
-					sprintf_s(op, opcodeSize, "l(%.9g,%.9g,%.9g)", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g,%.9g,%.9g)", negative ? "-" : "", o.afImmediates[0], o.afImmediates[1], o.afImmediates[2]);
 				else if (o.iNumComponents == 2)
-					sprintf_s(op, opcodeSize, "l(%.9g,%.9g)", o.afImmediates[0], o.afImmediates[1]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g,%.9g)", negative ? "-" : "", o.afImmediates[0], o.afImmediates[1]);
 				else if (o.iNumComponents == 1)
-					sprintf_s(op, opcodeSize, "l(%.9g)", o.afImmediates[0]);
+					sprintf_s(op, opcodeSize, "%sl(%.9g)", negative ? "-" : "", o.afImmediates[0]);
 			}
 		}
 		return op;
@@ -3170,11 +3463,21 @@ public:
 					char *pos = strstr(mOutput.data(), op1);
 					if (pos)
 					{
+						// F-103 (P1 defense): the target expression comes from
+						// already generated mOutput, so a malformed/long line
+						// must fail here instead of running off the front of
+						// the buffer or aborting inside applySwizzle's
+						// opcodeSize-sized contract.
 						char *bpos = pos;
-						while (*--bpos != ' ');
+						while (bpos > mOutput.data() && *--bpos != ' ') {}
+						if (*bpos != ' ' || bpos + 1 > pos)
+							fatalDecompileError("bad position texture register");
+						const size_t nameLen = static_cast<size_t>(pos - (bpos + 1));
+						if (nameLen >= static_cast<size_t>(opcodeSize))
+							fatalDecompileError("position texture register name too long");
 						char buf[512];
-						memcpy(buf, bpos + 1, pos - (bpos + 1));
-						buf[pos - (bpos + 1)] = 0;
+						memcpy(buf, bpos + 1, nameLen);
+						buf[nameLen] = 0;
 						applySwizzle(".xyz", buf);
 						char calcStatement[256];
 						sprintf(calcStatement, G->ZRepair_WorldPosCalc.c_str(), buf);
@@ -3321,10 +3624,23 @@ public:
 								(pos[3] == 'x' || pos[3] == 'y' || pos[3] == 'z'))
 							{
 								char *lightPosDecl = pos + 1;
-								while (*--pos != '=');
+								while (pos > mOutput.data() && *--pos != '=') {}
+								if (*pos != '=')
+									fatalDecompileError("bad object position expression");
 								char *bpos = pos;
-								while (*--bpos != '\n');
-								size_t size = (pos - 1) - (bpos + 3);
+								while (bpos > mOutput.data() && *--bpos != '\n') {}
+								if (*bpos != '\n')
+									fatalDecompileError("bad object position expression");
+								// F-103 (P1 defense): op1 is opcodeSize bytes.
+								// A 128-byte target used to write the NUL into
+								// op2[0]; longer targets overran the member.
+								const size_t assignPos = static_cast<size_t>(pos - mOutput.data());
+								const size_t lineStart = static_cast<size_t>(bpos - mOutput.data());
+								if (assignPos < lineStart + 4)
+									fatalDecompileError("bad object position expression");
+								const size_t size = assignPos - lineStart - 4;
+								if (size >= static_cast<size_t>(opcodeSize))
+									fatalDecompileError("object position expression too long");
 								memcpy(op1, bpos + 3, size);
 								op1[size] = 0;
 
@@ -3376,10 +3692,22 @@ public:
 								(pos[3] == 'x' || pos[3] == 'y' || pos[3] == 'z'))
 							{
 								char *spotPosDecl = pos + 1;
-								while (*--pos != '=');
+								while (pos > mOutput.data() && *--pos != '=') {}
+								if (*pos != '=')
+									fatalDecompileError("bad object position expression");
 								char *bpos = pos;
-								while (*--bpos != '\n');
-								size_t size = (pos - 1) - (bpos + 3);
+								while (bpos > mOutput.data() && *--bpos != '\n') {}
+								if (*bpos != '\n')
+									fatalDecompileError("bad object position expression");
+								// F-103 (P1 defense): same op1 contract as the
+								// ObjectPos_ID1 block above.
+								const size_t assignPos = static_cast<size_t>(pos - mOutput.data());
+								const size_t lineStart = static_cast<size_t>(bpos - mOutput.data());
+								if (assignPos < lineStart + 4)
+									fatalDecompileError("bad object position expression");
+								const size_t size = assignPos - lineStart - 4;
+								if (size >= static_cast<size_t>(opcodeSize))
+									fatalDecompileError("object position expression too long");
 								memcpy(op1, bpos + 3, size);
 								op1[size] = 0;
 
@@ -4150,9 +4478,17 @@ public:
 				sprintf(buffer, "  const float4 icb[] =");
 				mOutput.insert(mOutput.end(), buffer, buffer + strlen(buffer));
 				pos += strlen(statement);
-				while (c[pos] != 0x0a && pos < size)
-					mOutput.insert(mOutput.end(), c[pos++]);
+				const size_t lineEnd = next_line_bounded(c, pos, size);
+				size_t contentEnd = lineEnd;
+				if (lineEnd > pos)
+				{
+					contentEnd = (c[lineEnd - 1] == 0x0a) ? lineEnd - 1 : lineEnd;
+					mOutput.insert(mOutput.end(), c + pos, c + contentEnd);
+				}
 				mOutput.insert(mOutput.end(), '\n');
+				// Leave the newline for ParseCode's unconditional NextLine, matching
+				// the old loop which stopped on '\n' (or at size when truncated).
+				pos = contentEnd;
 			}
 			else if (!strcmp(statement, "dcl_constantbuffer"))
 			{
@@ -4482,11 +4818,17 @@ public:
 				//                      { 0, 1.000000, 0, 0},
 				//                      { 0, 0, 1.000000, 0},
 				//                      { 0, 0, 0, 1.000000} }
-				while (c[pos] != 0x0a && pos < size)
-					mOutput.insert(mOutput.end(), c[pos++]);
-				if (c[pos - 1] == '}')
-					mOutput.insert(mOutput.end(), ';');
-				mOutput.insert(mOutput.end(), c[pos++]);
+				const size_t lineEnd = next_line_bounded(c, pos, size);
+				if (lineEnd > pos)
+				{
+					const size_t contentEnd = (c[lineEnd - 1] == 0x0a) ? lineEnd - 1 : lineEnd;
+					mOutput.insert(mOutput.end(), c + pos, c + contentEnd);
+					if (contentEnd > pos && c[contentEnd - 1] == '}')
+						mOutput.insert(mOutput.end(), ';');
+					if (lineEnd > contentEnd)
+						mOutput.insert(mOutput.end(), c[contentEnd]);
+				}
+				pos = lineEnd;
 				continue;
 			}
 			else if (!strcmp(statement, "dcl_indexrange"))
@@ -4967,6 +5309,7 @@ public:
 							// Instruction for sign extending field extraction. Used in new versions of Dolphin
 							// ibfe r0.xyzw, l(24, 24, 24, 24), l(0, 0, 0, 0), cb0[12].xyzw
 							remapTarget(op1);
+							const string cast_suffix = swizCount(op1);
 							removeBoolean(op1);
 							applySwizzle(op1, op2, true);
 							applySwizzle(op1, op3, true);
@@ -4979,8 +5322,8 @@ public:
 									")));\n",
 									writeTarget(op1), ci(op2).c_str(),
 										ci(op2).c_str(), ci(op3).c_str(),
-											swizCount(op4).c_str(), ci(op4).c_str(), ci(op2).c_str(), ci(op3).c_str(), ci(op2).c_str(),
-											swizCount(op4).c_str(), ci(op4).c_str(), ci(op3).c_str()
+										cast_suffix.c_str(), ci(op4).c_str(), ci(op2).c_str(), ci(op3).c_str(), ci(op2).c_str(),
+										cast_suffix.c_str(), ci(op4).c_str(), ci(op3).c_str()
 								);
 
 							appendOutput(buffer);
@@ -5028,7 +5371,7 @@ public:
 								//read next instruction
 								for (int i = 0; i < lookahead; i++)
 								{
-									while (c[pos] != 0x0a && pos < size) pos++; pos++;
+									pos = next_line_bounded(c, pos, size);
 
 									if (ReadStatement(c + pos) < 1)
 									{
@@ -5051,7 +5394,7 @@ public:
 
 								appendOutput(buffer);
 
-								while (c[pos] != 0x0a && pos < size) pos++; pos++;
+								pos = next_line_bounded(c, pos, size);
 								mLastStatement = nextIns[5];
 								iNr += lookahead + 1;
 								continue;
@@ -5334,7 +5677,7 @@ public:
 								//read next instruction
 								for (int i = 0; i < lookahead; i++)
 								{
-									while (c[pos] != 0x0a && pos < size) pos++; pos++;
+									pos = next_line_bounded(c, pos, size);
 
 									if (ReadStatement(c + pos) < 1)
 									{
@@ -5349,7 +5692,7 @@ public:
 								sprintf_s(buffer, opcodeSize, "  %s = lerp(%s, %s, %s);\n", op1, op4, y, op2);
 								appendOutput(buffer);
 
-								while (c[pos] != 0x0a && pos < size) pos++; pos++;
+								pos = next_line_bounded(c, pos, size);
 								mLastStatement = nextIns;
 								iNr += lookahead + 1;
 								continue;
@@ -5462,7 +5805,7 @@ public:
 								//read next instruction
 								for (int i = 0; i < lookahead; i++)
 								{
-									while (c[pos] != 0x0a && pos < size) pos++; pos++;
+									pos = next_line_bounded(c, pos, size);
 
 									if (ReadStatement(c + pos) < 1)
 									{
@@ -5481,7 +5824,7 @@ public:
 
 								appendOutput(buffer);
 
-								while (c[pos] != 0x0a && pos < size) pos++; pos++;
+								pos = next_line_bounded(c, pos, size);
 								mLastStatement = nextIns[1];
 								iNr += lookahead + 1;
 								continue;
@@ -6763,12 +7106,23 @@ public:
 	void WriteHeaderDeclarations()
 	{
 		string header =
-			"// ---- Created with 3Dmigoto v" + string(VER_FILE_VERSION_STR) + " on " + LogTime();
+			"// ---- Created with 3Dmigoto v" + string(MigotoFileVersionString()) + " on " + LogTime();
 
 		// using .begin() to ensure first lines in files.
 		mOutput.insert(mOutput.begin(), header.c_str(), header.c_str() + header.length());
 	}
 };
+
+namespace {
+struct DecompiledShaderDeleter
+{
+	void operator()(Shader *shader) const noexcept
+	{
+		FreeShaderInfo(shader->sInfo);
+		delete shader;
+	}
+};
+}
 
 const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::string &shaderModel, bool &errorOccurred)
 {
@@ -6782,6 +7136,14 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 	d.mPatched = false;
 	d.G = params.G;
 
+	//F-104: a missing or impossibly short bytecode buffer is a rejected input,
+	//not something the decoder may probe.
+	if (!params.bytecode || params.bytecodeSize < 4)
+	{
+		errorOccurred = true;
+		return string();
+	}
+
 	// Decompile binary.
 
 	// This can crash, because of unknown or unseen syntax, so we wrap it in try/catch
@@ -6794,8 +7156,13 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 	// The termination handler approach does not catch those errors either.
 	try
 	{
-		Shader *shader = DecodeDXBC((uint32_t*)params.bytecode);
-		if (!shader) return string();
+		Shader *shader = DecodeDXBC(params.bytecode, params.bytecodeSize);
+		if (!shader)
+		{
+			errorOccurred = true;
+			return string();
+		}
+		std::unique_ptr<Shader, DecompiledShaderDeleter> shaderOwner(shader);
 
 		if (shader->dx9Shader)
 		{
@@ -6811,7 +7178,11 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 		d.WriteResourceDefinitions();
 		d.WriteAddOnDeclarations();
 		d.ParseInputSignature(shader, params.decompiled, params.decompiledSize);
-		d.ParseOutputSignature(params.decompiled, params.decompiledSize);
+		if (!d.ParseOutputSignature(params.decompiled, params.decompiledSize, shader->dx9Shader))
+		{
+			errorOccurred = true;
+			return string();
+		}
 		if (!params.ZeroOutput)
 		{
 			d.ParseCode(shader, params.decompiled, params.decompiledSize);
@@ -6826,8 +7197,7 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 
 		shaderModel = d.mShaderType;
 		errorOccurred = d.mErrorOccurred;
-		FreeShaderInfo(shader->sInfo);
-		delete shader;
+		shaderOwner.reset();
 		patched = d.mPatched;
 		return string(d.mOutput.begin(), d.mOutput.end());
 	}

@@ -12,7 +12,7 @@
 
 #include "Hunting.h"
 
-//#include "HookedContext.h"
+#include "HookedContext.h"
 
 #include "log.h"
 #include "Globals.h"
@@ -871,6 +871,12 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	AdvanceTextureMatchCall();
 	draw_number++;
 
+	if (!G->auto_check_texture_slots.empty()) {
+		auto_check_texture_scopes.emplace_back();
+		auto_check_texture_scopes.back().call_info = &data.call_info;
+		auto_check_texture_scopes.back().original_call_info = data.call_info;
+	}
+
 	Profiling::State profiling_state;
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
@@ -1006,7 +1012,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				if (mCurrentPixelShader == G->mSelectedPixelShader) {
 					for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
 						if (mCurrentVertexBuffers[i])
-							G->mSelectedVertexShader_VertexBuffer.insert(mCurrentVertexBuffers[i]);
+							G->mSelectedPixelShader_VertexBuffer.insert(mCurrentVertexBuffers[i]);
 					}
 					if (mCurrentIndexBuffer)
 						G->mSelectedPixelShader_IndexBuffer.insert(mCurrentIndexBuffer);
@@ -1078,11 +1084,55 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		}
 	}
 
+	// Replacement-mode pass for configured slots that have no
+	// checktextureoverride in the loaded command lists. Existing checks keep
+	// their original positions and gate; this only covers the gaps.
+	if (!G->auto_check_texture_slots.empty() && !data.call_info.skip)
+		AutoCheckTextureOverridesIndependent(data);
+
 	OverrideInputLayout();
 
 out_profile:
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::draw_overhead);
+}
+
+void HackerContext::AutoCheckTextureOverridesIndependent(DrawContext& data)
+{
+	if (G->auto_check_texture_slots.empty() || !mHackerDevice || !mOrigContext1)
+		return;
+	if (G->auto_check_texture_slot_has_check.size() != G->auto_check_texture_slots.size())
+		return;
+
+	CommandListState state;
+	state.mHackerDevice = mHackerDevice;
+	state.mHackerContext = this;
+	state.mOrigDevice1 = mHackerDevice->GetPassThroughOrigDevice1();
+	state.mOrigContext1 = mOrigContext1;
+	state.call_info = &data.call_info;
+	state.resource = data.call_info.indirect_buffer ?
+		reinterpret_cast<ID3D11Resource**>(data.call_info.indirect_buffer) : nullptr;
+	state.post = false;
+	::AutoCheckTextureOverridesIndependent(&state, false);
+}
+
+void HackerContext::AutoCheckTextureOverridesIndependent(DispatchContext* context)
+{
+	if (!context || G->auto_check_texture_slots.empty() || !mHackerDevice || !mOrigContext1)
+		return;
+	if (G->auto_check_texture_slot_has_check.size() != G->auto_check_texture_slots.size())
+		return;
+
+	CommandListState state;
+	state.mHackerDevice = mHackerDevice;
+	state.mHackerContext = this;
+	state.mOrigDevice1 = mHackerDevice->GetPassThroughOrigDevice1();
+	state.mOrigContext1 = mOrigContext1;
+	state.call_info = &context->call_info;
+	state.resource = context->call_info.indirect_buffer ?
+		reinterpret_cast<ID3D11Resource**>(context->call_info.indirect_buffer) : nullptr;
+	state.post = false;
+	::AutoCheckTextureOverridesIndependent(&state, true);
 }
 
 void HackerContext::AfterDraw(DrawContext &data)
@@ -1120,6 +1170,10 @@ void HackerContext::AfterDraw(DrawContext &data)
 	RestoreInputLayout();
     textureOverrideCache.Clear();
 
+	if (!auto_check_texture_scopes.empty() &&
+	    auto_check_texture_scopes.back().call_info == &data.call_info)
+		auto_check_texture_scopes.pop_back();
+
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::draw_overhead);
 }
@@ -1143,6 +1197,10 @@ STDMETHODIMP_(ULONG) HackerContext::Release(THIS)
 	if (ulRef <= 0)
 	{
 		LogInfo("  deleting self\n");
+
+		// The map entry is owned by this wrapper. Drop it after the original
+		// context is known dead and before the wrapper address can be reused.
+		unregister_hooked_context(mRealOrigContext1, this);
 
 		if (mHackerDevice != nullptr) {
 			if (mHackerDevice->GetHackerContext() == this) {
@@ -1320,26 +1378,28 @@ bool HackerContext::MapDenyCPURead(
 	UINT MapFlags,
 	D3D11_MAPPED_SUBRESOURCE *pMappedResource)
 {
-	uint32_t hash;
-	TextureOverrideMap::iterator i;
-
 	// Currently only replacing first subresource to simplify map type, and
 	// only on read access as it is unclear how to handle a read/write access.
 	if (Subresource != 0)
 		return false;
 
-	if (G->mTextureOverrideMap.empty())
-		return false;
+	// The whole config lookup is performed under G and only the bool escapes.
+	// Reload clears mTextureOverrideMap under the same lock; keeping an
+	// iterator or TextureOverride* past this scope would race with reload.
+	bool deny_cpu_read = false;
+	{
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-		hash = GetResourceHash(pResource);
-	LeaveCriticalSection(&G->mCriticalSection);
+		if (G->mTextureOverrideMap.empty())
+			return false;
 
-	i = lookup_textureoverride(hash);
-	if (i == G->mTextureOverrideMap.end())
-		return false;
+		const uint32_t hash = GetResourceHash(pResource);
+		auto i = lookup_textureoverride(hash);
+		if (i != G->mTextureOverrideMap.end() && !i->second.empty())
+			deny_cpu_read = i->second.begin()->deny_cpu_read;
+	}
 
-	return i->second.begin()->deny_cpu_read;
+	return deny_cpu_read;
 }
 
 // Checks resource for being an index or vertex buffer.
@@ -1793,6 +1853,12 @@ bool HackerContext::BeforeDispatch(DispatchContext *context)
 	AdvanceTextureMatchCall();
 	dispatch_number++;
 
+	if (!G->auto_check_texture_slots.empty()) {
+		auto_check_texture_scopes.emplace_back();
+		auto_check_texture_scopes.back().call_info = &context->call_info;
+		auto_check_texture_scopes.back().original_call_info = context->call_info;
+	}
+
 	if (G->hunting == HUNTING_MODE_ENABLED) {
 		if (G->DumpUsage)
 			RecordComputeShaderStats();
@@ -1820,11 +1886,14 @@ bool HackerContext::BeforeDispatch(DispatchContext *context)
 			// compute shaders. The main thing we care
 			// about is the command list, so just run that:
 			RunCommandList(mHackerDevice, this, &i->second.command_list, &context->call_info, false);
-			return !context->call_info.skip;
 		}
 	}
 
-	return true;
+	// Replacement-mode pass for cs-tN slots with no check command.
+	if (!G->auto_check_texture_slots.empty() && !context->call_info.skip)
+		AutoCheckTextureOverridesIndependent(context);
+
+	return !context->call_info.skip;
 }
 
 void HackerContext::AfterDispatch(DispatchContext *context)
@@ -1832,6 +1901,10 @@ void HackerContext::AfterDispatch(DispatchContext *context)
 	if (context->post_commands)
 		RunCommandList(mHackerDevice, this, context->post_commands, &context->call_info, true);
     textureOverrideCache.Clear();
+
+	if (!auto_check_texture_scopes.empty() &&
+	    auto_check_texture_scopes.back().call_info == &context->call_info)
+		auto_check_texture_scopes.pop_back();
 }
 
 STDMETHODIMP_(void) HackerContext::Dispatch(THIS_
@@ -1911,7 +1984,7 @@ bool HackerContext::ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,
 	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
 	D3D11_RESOURCE_DIMENSION srcDim, dstDim;
 	uint32_t srcHash, dstHash;
-	TextureOverrideMap::iterator i;
+	bool expand_region_copy = false;
 
 	if (!pSrcResource || !pDstResource || !pSrcBox)
 		return false;
@@ -1923,20 +1996,23 @@ bool HackerContext::ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,
 
 	srcTex->GetDesc(&srcDesc);
 	dstTex->GetDesc(&dstDesc);
-	EnterCriticalSectionPretty(&G->mCriticalSection);
+	{
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 		srcHash = GetResourceHash(srcTex);
 		dstHash = GetResourceHash(dstTex);
-	LeaveCriticalSection(&G->mCriticalSection);
+		// Snapshot only the bool while G protects the config map. Reload
+		// clears mTextureOverrideMap under this same lock, so an iterator
+		// must not escape this block.
+		auto i = lookup_textureoverride(dstHash);
+		if (i != G->mTextureOverrideMap.end() && !i->second.empty())
+			expand_region_copy = i->second.begin()->expand_region_copy;
+	}
 
 	LogDebug("CopySubresourceRegion %08lx (%u:%u x %u:%u / %u x %u) -> %08lx (%u x %u / %u x %u)\n",
 			srcHash, pSrcBox->left, pSrcBox->right, pSrcBox->top, pSrcBox->bottom, srcDesc.Width, srcDesc.Height, 
 			dstHash, DstX, DstY, dstDesc.Width, dstDesc.Height);
 
-	i = lookup_textureoverride(dstHash);
-	if (i == G->mTextureOverrideMap.end())
-		return false;
-
-	if (!i->second.begin()->expand_region_copy)
+	if (!expand_region_copy)
 		return false;
 
 	memcpy(replaceBox, pSrcBox, sizeof(D3D11_BOX));
@@ -2418,8 +2494,10 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 					LeaveCriticalSection(&G->mCriticalSection);
 				}
 			}
-			else
+			else {
+				*currentShaderHash = 0;
 				LogDebug("  shader %p not found\n", pShader);
+			}
 		} else {
 			// Not accurate, but if we have a bug where we
 			// reference this at least make sure we don't use the
@@ -3165,7 +3243,9 @@ STDMETHODIMP_(void) HackerContext::PSSetShader(THIS_
 		 &mCurrentPixelShaderHandle);
 
 	if (pPixelShader) {
-		// Set custom depth texture.
+		// Set custom depth texture. HackerDevice retains a reference, so the
+		// captured value stays valid until it is replaced or the device is
+		// released (F-112 A).
 		if (mHackerDevice->mZBufferResourceView)
 		{
 			LogDebug("  adding Z buffer to shader resources in slot 126.\n");

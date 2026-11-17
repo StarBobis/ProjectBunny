@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <limits>
 #include <vector>
+#include <stdexcept>
+#include <cmath>
 
 extern uint32_t PackCellCoords(float x, float y, float z, float cell_size);
 
@@ -311,4 +313,97 @@ void test_dx11_pool_missing_regression()
     auto* proxied = proxy.GetVariable(8, false, false, false);
     require_pool_missing(proxied != nullptr && proxied != metadata_source.variable_template.get() &&
         proxied == metadata_source.GetVariable(8, false, false, false), "proxy reads use resolved source allocation policy");
+}
+
+static void check_pool_access(bool condition, const char* message)
+{
+    if (!condition) throw std::runtime_error(message);
+}
+static bool parse_pool_reference(const std::wstring& source)
+{
+    CommandList list; CommandListScope scope; scope.emplace_front(); list.scope=&scope;
+    const std::wstring ns; std::wstring text=L"ref "+source;
+    const bool parsed=ParseCommandListResourceCopyTargetDirective(L"CommandListPoolAccess",L"ps-t0",&text,&list,&ns);
+    list.scope=nullptr; return parsed;
+}
+static bool parse_pool_indirect(const std::wstring& source)
+{
+    CommandList list; CommandListScope scope; scope.emplace_front(); list.scope=&scope;
+    const std::wstring ns; std::wstring text=source+L",0";
+    const bool parsed=ParseCommandListGeneralCommands(L"CommandListPoolAccess",L"drawindexedinstancedindirect",&text,&list,&list,&list,&ns);
+    list.scope=nullptr; return parsed;
+}
+
+void test_dx11_pool_access_regression()
+{
+    PoolMissingFixture fixture;
+    auto& fixed=fixture.make(L"f110_static",PoolIndexType::STATIC,2);
+    std::fputs("F110: invalid static selection must not reach reference flag propagation\n",stderr); std::fflush(stderr);
+    check_pool_access(!parse_pool_reference(fixed.name+L"[nan]"), "F110: invalid static selection cannot publish a reference or dereference an absent selected object");
+    check_pool_access(!parse_pool_indirect(fixed.name+L"[nan]"), "F110: invalid static indirect target is rejected");
+    const std::wstring ns; CommandListScope scope; scope.emplace_front(); CommandListState state;
+    const auto objects=customResources.size();
+    for (const auto* invalid : {L"nan",L"inf",L"-inf",L"1e100"}) {
+        ResourceCopyTarget resource, variable;
+        const auto name=fixed.name+L"["+invalid+L"]";
+        check_pool_access(!resource.ParseTarget(name.c_str(),true,&ns,&scope) &&
+            !variable.ParseTarget((L"$"+name).c_str(),true,&ns,&scope), "F110: nonfinite STATIC resource/variable selectors fail before object publication");
+    }
+    check_pool_access(customResources.size()==objects, "F110: invalid selectors do not materialize slots");
+    check_pool_access(parse_pool_reference(fixed.name+L"[-1]") && parse_pool_indirect(fixed.name+L"[0]"),
+        "F110: finite negative wrapping and normal indirect flag propagation remain supported");
+    ResourceCopyTarget large;
+    check_pool_access(large.ParseTarget((fixed.name+L"[1e20]").c_str(),true,&ns,&scope) && large.GetCustomResource(&state),
+        "F110: finite large STATIC values retain existing safe wrapping");
+
+    auto& dynamic=fixture.make(L"f110_ring",PoolIndexType::RING,2);
+    const auto index_name=L"$"+fixture.prefix+L"f110_index";
+    auto* index=&command_list_globals.emplace(index_name,CommandListVariable(index_name,0,VariableFlags::GLOBAL)).first->second;
+    const auto expression_text=L"$"+dynamic.name+L"["+index_name+L"]";
+    CommandListExpression read;
+    check_pool_access(read.parse(&expression_text,&ns,&scope), "F110: parse real dynamic variable read");
+    for (const auto invalid : {std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        index->fval=invalid;
+        check_pool_access(std::isnan(read.evaluate(&state)), "F110: invalid numeric dynamic read returns unavailable NaN rather than dereferencing null");
+        assign_missing_pool(dynamic,index_name.c_str(),L"99",nullptr);
+        check_pool_access(dynamic.variable_template->fval==17, "F110: invalid writes cannot overwrite the default template");
+    }
+    index->fval=-1;
+    auto* value=dynamic.GetVariable(-1,false,false,true); check_pool_access(value!=nullptr,"F110: normal wrapped slot"); value->fval=23;
+    check_pool_access(read.evaluate(&state)==23, "F110: same parsed read recovers when the index becomes valid");
+
+    const float nan_key=BitCastToFloat(UINT_MAX);
+    for (const auto mode : {PoolIndexType::FIFO,PoolIndexType::SPATIAL}) {
+        auto& uid=fixture.make(mode==PoolIndexType::FIFO?L"f110_fifo":L"f110_spatial",mode,2);
+        auto* assigned=uid.GetVariable(nan_key,false,false,true);
+        check_pool_access(assigned!=nullptr,"F110: NaN bit pattern is a legal UID"); assigned->fval=31;
+        index->fval=nan_key;
+        const auto text=L"$"+uid.name+L"["+index_name+L"]"; CommandListExpression uid_read;
+        check_pool_access(uid_read.parse(&text,&ns,&scope) && uid_read.evaluate(&state)==31, "F110: full expression keeps bitwise FIFO/SPATIAL NaN keys");
+        auto& proxy=fixture.make(mode==PoolIndexType::FIFO?L"f110_fifo_proxy":L"f110_spatial_proxy",PoolIndexType::RING,1);
+        check_pool_access(proxy.SetSourcePool(&uid) && proxy.GetVariable(nan_key,false,false,false)==assigned, "F110: proxy delegates to the source UID policy");
+        check_pool_access(uid.GetVariable(900,false,false,false)==uid.variable_template.get() && uid.variable_template->fval==17,
+            "F110: ordinary missing UID still returns its configured template without allocation");
+    }
+
+    auto& unavailable=fixture.make(L"f110_unavailable",PoolIndexType::FIFO,2);
+    auto* resource_template=unavailable.resource_template; unavailable.resource_template=nullptr;
+    check_pool_access(!parse_pool_reference(unavailable.name+L"[1]") && !parse_pool_indirect(unavailable.name+L"[1]"),
+        "F110: unavailable template rejects both reference and indirect consumers");
+    const auto resource_count=customResources.size();
+    check_pool_access(!unavailable.GetResource(1,false,false,true) && customResources.size()==resource_count,
+        "F110: unavailable resource template cannot allocate a malformed element");
+    unavailable.resource_template=resource_template;
+    check_pool_access(parse_pool_reference(unavailable.name+L"[1]") && parse_pool_indirect(unavailable.name+L"[1]"),
+        "F110: normal template metadata remains usable after the scoped absence");
+    auto variable_template=std::move(unavailable.variable_template);
+    const auto variable_count=command_list_globals.size();
+    check_pool_access(!unavailable.GetVariable(2,false,false,true) && command_list_globals.size()==variable_count,
+        "F110: missing variable template cannot publish an uninitialized variable");
+    unavailable.variable_template=std::move(variable_template);
+
+    auto& empty=fixture.make(L"f110_empty",PoolIndexType::STATIC,0);
+    ResourceCopyTarget missing;
+    check_pool_access(!missing.ParseTarget((empty.name+L"[0]").c_str(),true,&ns,&scope),
+        "F110: absent static element does not become a successful null target");
 }

@@ -1,0 +1,10 @@
+{
+  "generatedDependentOutputs": 5,
+  "outputs": [
+    "src/DirectX11/CMakeFiles/DirectX11.dir/DX11Version.cpp.obj",
+    "src/DirectX11/CMakeFiles/DirectX11.dir/DirectX11.rc.res",
+    "src/DirectX11/CMakeFiles/dx11_upstream_regression.dir/DX11Version.cpp.obj",
+    "src/DirectX11/CMakeFiles/dx11_upstream_regression.dir/DirectX11.rc.res",
+    "src/DirectX11/CMakeFiles/dx11_upstream_regression.dir/tests/dx11_version_regression.cpp.obj"
+  ]
+}

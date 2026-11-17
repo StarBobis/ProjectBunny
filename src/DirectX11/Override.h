@@ -2,6 +2,7 @@
 
 #include <DirectXMath.h>
 #include <d3d11_1.h>
+#include <mutex>
 #include <vector>
 
 #include "util.h"
@@ -190,6 +191,11 @@ public:
 class PresetOverride : public Override
 {
 private:
+	// Serialises the whole trigger decision: Trigger, Exclude and Update all
+	// take this lock, and Update consumes triggered/excluded/triggers_this_frame
+	// as one unit before it calls Activate/Deactivate. The lock is a leaf: it is
+	// never held across command list execution, D3D calls or another lock.
+	std::mutex trigger_state_mutex;
 	bool triggered;
 	bool excluded;
 	unordered_set<CommandListCommand*> triggers_this_frame;
@@ -233,6 +239,7 @@ struct OverrideTransitionParam
 
 class OverrideTransition
 {
+	bool ini_params_upload_pending = false;
 public:
 	std::map<OverrideParam, OverrideTransitionParam> params;
 	std::map<CommandListVariable*, OverrideTransitionParam> vars;

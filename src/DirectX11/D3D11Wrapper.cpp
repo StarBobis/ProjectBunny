@@ -1,11 +1,13 @@
 #include "D3D11Wrapper.h"
 #include "InitializationGate.h"
 #include "D3D11Initialization.h"
+#include "D3D11DebugInfo.h"
 
 #include "log.h"
 #include "Globals.h"
 #include "IniHandler.h"
 #include "HookedDXGI.h"
+#include "bounded_path_format.h"
 
 #include <locale>
 #include <chrono>
@@ -414,19 +416,30 @@ static bool InitializeD3D11Proxy()
 		G->load_library_redirect = 0;
 
 		wchar_t sysDir[MAX_PATH] = {0};
-		if (!GetModuleFileName(migoto_handle, sysDir, MAX_PATH)) {
-			LogInfo("GetModuleFileName failed\n");
+		DWORD moduleLength = GetModuleFileName(migoto_handle, sysDir, MAX_PATH);
+		wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(sysDir, L'\\') : NULL;
+		if (!moduleBase) {
+			LogInfo("GetModuleFileName failed or module path too long\n");
 			DoubleBeepExit();
 		}
-		wcsrchr(sysDir, L'\\')[1] = 0;
-		wcscat(sysDir, G->CHAIN_DLL_PATH);
-		if (LogFile)
+		moduleBase[1] = 0;
+		const bool prefixReady = AppendPathBounded(sysDir, _countof(sysDir), G->CHAIN_DLL_PATH);
+		if (!prefixReady) {
+			// Reject the prefixed candidate rather than loading a truncated
+			// path that may name a different DLL. The existing raw
+			// chain_dll_path fallback below still applies.
+			LogInfo("Proxy path rejected: module directory + chain_dll_path exceeds MAX_PATH\n");
+		}
+		else if (LogFile)
 		{
 			char path[MAX_PATH];
 			wcstombs(path, sysDir, MAX_PATH);
 			LogInfo("trying to chain load %s\n", path);
 		}
-		candidate = LoadLibrary(sysDir);
+		if (prefixReady)
+		{
+			candidate = LoadLibrary(sysDir);
+		}
 		if (!candidate)
 		{
 			if (LogFile)
@@ -637,31 +650,6 @@ static UINT EnableDebugFlags(UINT flags)
 	LogInfo("  D3D11CreateDevice _DEBUG_LAYER flags set: %#x\n", flags);
 
 	return flags;
-}
-
-
-// Only where _DEBUG_LAYER=1.  This enables the debug layer for the GPU
-// itself, which will show GPU errors, warnings, and leaks in the console output.
-// This call shows that the layer is active, and the initial LiveObjectState.
-// And enable debugger breaks for errors that we might be introducing.
-
-static void ShowDebugInfo(ID3D11Device *origDevice)
-{
-	ID3D11Debug *d3dDebug = nullptr;
-	if (origDevice != nullptr)
-	{
-		if (SUCCEEDED(origDevice->QueryInterface(__uuidof(ID3D11Debug), (void**)&d3dDebug)))
-		{
-			ID3D11InfoQueue *d3dInfoQueue = nullptr;
-
-			if (SUCCEEDED(d3dDebug->QueryInterface(__uuidof(ID3D11InfoQueue), (void**)&d3dInfoQueue)))
-			{
-				d3dInfoQueue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_CORRUPTION, true);
-				d3dInfoQueue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_ERROR, true);
-			}
-		}
-		d3dDebug->ReportLiveDeviceObjects(D3D11_RLDO_SUMMARY | D3D11_RLDO_DETAIL);
-	}
 }
 
 

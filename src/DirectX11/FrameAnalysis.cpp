@@ -1325,11 +1325,12 @@ static int fprint_dxgi_format(FILE *fd, DXGI_FORMAT format, uint8_t *buf)
 }
 
 
-static void dump_vb_elem(FILE *fd, uint8_t *buf,
+static void dump_vb_elem(FILE *fd, uint8_t *buf, UINT bytes_remaining,
 		const D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
-		int slot, UINT vb_idx, UINT elem, UINT stride)
+		int slot, UINT vb_idx, UINT elem, UINT stride, uint64_t &next_offset)
 {
-	UINT offset = 0, alignment, size;
+	uint64_t offset = next_offset;
+	UINT alignment, size;
 
 	if (layout_desc[elem].InputSlot != slot)
 		return;
@@ -1341,26 +1342,33 @@ static void dump_vb_elem(FILE *fd, uint8_t *buf,
 		if (!alignment) {
 			fprintf(fd, "# WARNING: Unknown format alignment, vertex buffer may be decoded incorrectly\n");
 		} else if (offset % alignment) {
-			fprintf(fd, "# WARNING: Untested alignment code in use, please report incorrectly decoded vertex buffers\n");
 			// XXX: Also, what if the entire vertex is misaligned in the buffer?
 			offset += alignment - (offset % alignment);
 		}
 	}
 
+	size = dxgi_format_size(layout_desc[elem].Format);
+	// Layout placement is independent of whether this element's bytes exist.
+	// Keep a wide cursor so even invalid metadata cannot wrap back into range.
+	next_offset = offset + size;
+	if (offset > bytes_remaining || size > bytes_remaining - offset) {
+		fprintf(fd, "# WARNING: vb%i[%u] element %u at offset %llu (%u bytes) exceeds mapped buffer (%u bytes remaining)\n",
+			slot, vb_idx, elem, static_cast<unsigned long long>(offset), size, bytes_remaining);
+		return;
+	}
+
 	if (layout_desc[elem].SemanticIndex)
-		fprintf(fd, "vb%i[%u]+%03u %s%u: ", slot, vb_idx, offset,
+		fprintf(fd, "vb%i[%u]+%03llu %s%u: ", slot, vb_idx, static_cast<unsigned long long>(offset),
 			layout_desc[elem].SemanticName, layout_desc[elem].SemanticIndex);
 	else
-		fprintf(fd, "vb%i[%u]+%03u %s: ", slot, vb_idx, offset, layout_desc[elem].SemanticName);
+		fprintf(fd, "vb%i[%u]+%03llu %s: ", slot, vb_idx, static_cast<unsigned long long>(offset), layout_desc[elem].SemanticName);
 
 	fprint_dxgi_format(fd, layout_desc[elem].Format, buf + offset);
 	fprintf(fd, "\n");
 
-	size = dxgi_format_size(layout_desc[elem].Format);
 	if (!size)
 		fprintf(fd, "# WARNING: Unknown format size, vertex buffer may be decoded incorrectly\n");
-	offset += size;
-	if (offset > stride)
+	if (next_offset > stride)
 		fprintf(fd, "# WARNING: Offset exceeded stride, vertex buffer may be decoded incorrectly\n");
 }
 
@@ -1377,14 +1385,15 @@ static void dump_vb_known_layout(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 	end = limit_vb_text_preview(fd, start, end);
 
 	for (vertex = start; vertex < end; vertex++) {
+		uint64_t next_offset = 0;
 		fprintf(fd, "\n");
 		for (elem = 0; elem < layout_elements; elem++) {
 			if (layout_desc[elem].InputSlotClass != D3D11_INPUT_PER_VERTEX_DATA)
 				continue;
 
-			dump_vb_elem(fd, (uint8_t*)map->pData + stride*vertex,
+			dump_vb_elem(fd, (uint8_t*)map->pData + stride*vertex, size - stride*vertex,
 					layout_desc, layout_elements, slot,
-					vertex - start, elem, stride);
+					vertex - start, elem, stride, next_offset);
 		}
 	}
 }
@@ -1402,6 +1411,7 @@ static void dump_vb_instance_data(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 	end = limit_vb_text_preview(fd, start, end);
 
 	for (instance = start; instance < end; instance++) {
+		uint64_t next_offset = 0;
 		fprintf(fd, "\n");
 		for (elem = 0; elem < layout_elements; elem++) {
 			if (layout_desc[elem].InputSlotClass != D3D11_INPUT_PER_INSTANCE_DATA)
@@ -1412,9 +1422,9 @@ static void dump_vb_instance_data(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 			else
 				idx = instance;
 
-			dump_vb_elem(fd, (uint8_t*)map->pData + stride*idx,
+			dump_vb_elem(fd, (uint8_t*)map->pData + stride*idx, size - stride*idx,
 					layout_desc, layout_elements, slot,
-					idx - start, elem, stride);
+					idx - start, elem, stride, next_offset);
 		}
 	}
 }
@@ -1450,7 +1460,7 @@ void FrameAnalysisContext::DumpVBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 		fprintf(fd, "first vertex: %u\n", first);
 		fprintf(fd, "vertex count: %u\n", count);
 	}
-	if (call_info && call_info->FirstInstance || call_info->InstanceCount) {
+	if (call_info && (call_info->FirstInstance || call_info->InstanceCount)) {
 		fprintf(fd, "first instance: %u\n", call_info->FirstInstance);
 		fprintf(fd, "instance count: %u\n", call_info->InstanceCount);
 	}
@@ -2835,9 +2845,14 @@ void FrameAnalysisContext::FrameAnalysisClearRT(ID3D11RenderTargetView *target)
 		return;
 	resource->Release(); // Don't need the object, only the address
 
-	if (G->frame_analysis_seen_rts.count(resource))
-		return;
-	G->frame_analysis_seen_rts.insert(resource);
+	{
+		// count() + insert() is one atomic check-and-insert. The set is shared
+		// by every render thread's FrameAnalysisContext, so guard it with the
+		// same leaf lock the hunting paths use. Do not call D3D while holding it.
+		CriticalSectionGuard(&G->mCriticalSection);
+		if (!G->frame_analysis_seen_rts.insert(resource).second)
+			return;
+	}
 
 	GetPassThroughOrigContext1()->ClearRenderTargetView(target, colour);
 }
@@ -2862,9 +2877,12 @@ void FrameAnalysisContext::FrameAnalysisClearUAV(ID3D11UnorderedAccessView *uav)
 		return;
 	resource->Release(); // Don't need the object, only the address
 
-	if (G->frame_analysis_seen_rts.count(resource))
-		return;
-	G->frame_analysis_seen_rts.insert(resource);
+	{
+		// See FrameAnalysisClearRT: same set, same leaf lock, no D3D inside.
+		CriticalSectionGuard(&G->mCriticalSection);
+		if (!G->frame_analysis_seen_rts.insert(resource).second)
+			return;
+	}
 
 	GetPassThroughOrigContext1()->ClearUnorderedAccessViewUint(uav, values);
 }
@@ -4518,11 +4536,12 @@ STDMETHODIMP FrameAnalysisContext::FinishCommandList(THIS_
 		__out_opt  ID3D11CommandList **ppCommandList)
 {
 	HRESULT ret = HackerContext::FinishCommandList(RestoreDeferredContextState, ppCommandList);
+	ID3D11CommandList *command_list = SUCCEEDED(ret) && ppCommandList ? *ppCommandList : nullptr;
 
-	FrameAnalysisLog("FinishCommandList(ppCommandList:0x%p -> 0x%p) = %u\n", ppCommandList, ppCommandList ? *ppCommandList : NULL, ret);
+	FrameAnalysisLog("FinishCommandList(ppCommandList:0x%p -> 0x%p) = %u\n", ppCommandList, command_list, ret);
 
-	if (ppCommandList)
-		finish_deferred_resources(*ppCommandList);
+	if (command_list)
+		finish_deferred_resources(command_list);
 
 	return ret;
 }
@@ -4874,6 +4893,9 @@ void STDMETHODCALLTYPE FrameAnalysisContext::UpdateSubresource1(
 	FrameAnalysisLogResourceHash(pDstResource);
 
 	HackerContext::UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
+
+	if (G->analyse_frame)
+		FrameAnalysisAfterUpdate(pDstResource);
 }
 
 void STDMETHODCALLTYPE FrameAnalysisContext::DiscardResource(

@@ -1,0 +1,64 @@
+{
+  "id": "P-03",
+  "status": "measured-inconclusive-deferred",
+  "summary": "真实public/native47、同Release flags、3层源长度、8对AB/BA各64次共48腿全部保留；独立中位数变化-0.94%/+3.90%/+2.97%，配对波动最高约32%，64KiB仅4/8更快。收益证据不足，生产守卫与接入均不合入，P03由B移E暂缓，不计完成。",
+  "productionCodeChanged": false,
+  "integrationPatchApplied": false,
+  "countAsRepaired": false,
+  "newRootSpecialOrFullExecuted": false,
+  "baselineAndCandidateUntimedSemanticCases": 19,
+  "measurementSummary": "validation/P-03-measurement-summary.json",
+  "measurementSummarySha256": "93A3AF9AC492D10F1670B37934FAF803842ACE0A16ABEED52A7AD0B78065417E",
+  "rawSamples": "validation/P-03-raw-samples.csv",
+  "rawSamplesSha256": "359EE1D29272B45DAE2CCC101415876451E14E4FAA04AE91C923B2C6543F2109",
+  "pairedSamples": "validation/P-03-paired-results.csv",
+  "pairedSamplesSha256": "E7B2613C79941B92BA34E134EC27080C933E95E95D82BB5F0A623A1087DCFA96",
+  "supervision": {
+    "actualOuterScript": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\w\\f\\build\\P-03-preparation\\baseline-prep\\run-approved-window.ps1",
+    "actualOuterScriptSha256": "97B787AAAFD1C64E6A863E80BB2F5436F4A479871E2CC3189CA7CDCFCADAE5C0",
+    "actualChildScript": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\w\\f\\build\\P-03-preparation\\baseline-prep\\approved-window\\dd1330b03bb9\\paired-execution.ps1",
+    "actualChildScriptSha256": "CD14081FCB83C084551D92CB940544E8679EECEC37016100002E6E9454CBCDCB",
+    "implementation": "Actual run: independent .NET supervisor, PASS/exit0/12741ms. Timeout branch attempts Kill(true) and WaitForExit(5000), then may wait for output without a bound; timeout cleanup was not exercised or validated. No claim of bounded timeout completion from this run.",
+    "result": {
+      "status": "PASS",
+      "exitCode": 0,
+      "elapsedMs": 12741
+    },
+    "rootValidatedHelper": "E:\\代码\\ProjectBunny-main\\模拟环境\\scripts\\process.ps1",
+    "rootValidatedHelperSha256AtSummary": "0BA275942FCA8473F2840A16BABD36F9BA9BB424E49226778BF24E61F7433279",
+    "rootHelperExecuted": false,
+    "workerOldHelper": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\w\\f\\模拟环境\\scripts\\process.ps1",
+    "workerOldHelperSha256": "86EA11C253FE2DE52AAAE8A9E2557240C87CEB282B77BFCAE9CF19DE27A541DC",
+    "workerOldHelperUse": "Loaded only in aborted pre-measurement startup; rejected 179865ms timeout because its range max was60000; no benchmark child started in that attempt.",
+    "allThreeSlotsExclusivelyAvailableBefore": true,
+    "allThreeSlotsReleasedAfter": true,
+    "rootWasNotifiedWindowClosed": true,
+    "leaseScope": "Outer pre/post availability probes; each timed leg held all three leases internally and released on completion. No continuous whole-window lease; between-leg quiet relied on coordinated pause, not host-wide exclusion."
+  },
+  "startupFailuresNotSamples": [
+    {
+      "kind": "Nested here-string parse failure",
+      "artifact": "API tool transcript; no script execution/lease acquisition/sample."
+    },
+    {
+      "meta": "E:\\代码\\ProjectBunny-main\\模拟环境\\build\\w\\f\\build\\P-03-preparation\\baseline-prep\\approved-window\\af29759f6595\\window.json",
+      "sha256": "173DA2834F903E8957B0A4B2943665E5F2AA19133442C0412C4116BE4D90F426",
+      "status": "ABORTED_BEFORE_MEASUREMENT",
+      "benchmarkExecuted": false,
+      "legs": 0,
+      "reason": "Legacy worker helper timeout parameter rejected before child launch."
+    }
+  ],
+  "allPairsRetained": true,
+  "representativeGameCorpusMeasured": false,
+  "gamePerformanceValidated": false,
+  "eligibleDefects": 92,
+  "eligiblePerformanceBefore": 4,
+  "eligiblePerformanceAfter": 3,
+  "eligibleTasksBefore": 96,
+  "eligibleTasksAfter": 95,
+  "completedNumeratorUnchanged": true,
+  "originalWorkerSummarySha256": "BEE92CF3605D78F52117EFDD08BBAFA333717D46673BD13B9E0AE788A7D2859D",
+  "independentReview": "build/w/r/模拟环境/build/adversarial-P03-evidence/result.json",
+  "independentReviewSha256": "E46FC82487FFEAC70385A24B5743686BB20266F8CFA83BE1EFC08457A14226F4"
+}

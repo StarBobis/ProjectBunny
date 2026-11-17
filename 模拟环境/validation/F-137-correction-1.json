@@ -1,0 +1,143 @@
+{
+  "id": "F-137",
+  "tag": "correction-1",
+  "status": "validated-correction-in-simulator",
+  "summary": "ZRepair短串保护保留，补回HLSL合法小写rgba别名；对抗审查发现原xyzw白名单误拒。原生52字母+独立LoadConfig反例确认，当前八分量逐个原生编译/两键配置、大写/坏后缀、专项与25+10全流程和对抗复审通过；原验证保留并追加纠正记录。",
+  "originalEvidence": "validation/F-137.json",
+  "buildHead": "3dd50ab28947fdfef8927c04aa36adc99de79297",
+  "candidateSha256": "8702D5E11774018FE544C9513D29D4E4E9A479126137CE045BD933008C5BB208",
+  "buildInfoSha256": "AB5F132918FDABB0592D6C425EC8E349A60205F78F0DD65D43A8D73137F473BF",
+  "fullReport": "build/f/867cd4d68b83/results.json",
+  "fullReportSha256": "C2345DE70993397BAB5FD09FCCE6301612A31FC5A76D420062A260690227E57D",
+  "checks": [
+    {
+      "name": "special",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 2196,
+        "message": ""
+      }
+    },
+    {
+      "name": "business",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 52062,
+        "message": ""
+      }
+    },
+    {
+      "name": "offline-shader-tool",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 2834,
+        "message": "",
+        "missingInput": {
+          "status": "PASS",
+          "process": {
+            "status": "FAIL",
+            "exitCode": 1,
+            "elapsedMs": 73,
+            "message": ""
+          },
+          "expectedExitCode": 1,
+          "diagnosticChecked": true
+        },
+        "outputFailures": [
+          {
+            "phase": "cache-text",
+            "status": "PASS",
+            "process": {
+              "status": "FAIL",
+              "exitCode": 1,
+              "elapsedMs": 54,
+              "message": ""
+            },
+            "expectedExitCode": 1,
+            "diagnosticChecked": true
+          },
+          {
+            "phase": "cache-binary",
+            "status": "PASS",
+            "process": {
+              "status": "FAIL",
+              "exitCode": 1,
+              "elapsedMs": 60,
+              "message": ""
+            },
+            "expectedExitCode": 1,
+            "diagnosticChecked": true
+          },
+          {
+            "phase": "mark-text",
+            "status": "PASS",
+            "process": {
+              "status": "FAIL",
+              "exitCode": 1,
+              "elapsedMs": 68,
+              "message": ""
+            },
+            "expectedExitCode": 1,
+            "diagnosticChecked": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "legacy-version",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 66,
+        "message": ""
+      }
+    },
+    {
+      "name": "version-generator",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 17471,
+        "message": ""
+      }
+    },
+    {
+      "name": "proxy-components",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 3542,
+        "message": ""
+      }
+    },
+    {
+      "name": "actual-dll-integration",
+      "status": "PASS",
+      "detail": {
+        "status": "PASS",
+        "exitCode": 0,
+        "elapsedMs": 48178,
+        "message": ""
+      }
+    }
+  ],
+  "redReport": "build/f/8c90eb73c77f/results.json",
+  "redReportSha256": "616795A5643DA035B7C765E40F5ACF8FACD920F111F8C883016CD1BD48A09FF3",
+  "independentRedReport": "build/w/r/模拟环境/build/f/92ed3e25be63/results.json",
+  "independentRedReportSha256": "3EA58133FD5E9E113B5393688CB7223EF97BD246B56B9A28569CC40A26375E0A",
+  "nativeAliasProof": "validation/F-137-native-alias-proof.txt",
+  "nativeAliasProofSha256": "5DB20EAC0C3092FB5A4773C1DC8BDD079ECE875CCFA3065546F2D69E1A63DED7",
+  "reviewer": "/root/adversarial",
+  "reviewVerdict": "No blocker: exactly the native lower-case xyzwrgba range; original bounds protections preserved; full-cycle pass required and observed.",
+  "targetGameValidated": false,
+  "commitLookup": "git log --fixed-strings --grep=F-137"
+}

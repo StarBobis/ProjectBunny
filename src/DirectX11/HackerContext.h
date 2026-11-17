@@ -2,6 +2,7 @@
 
 #include <d3d11_1.h>
 #include <INITGUID.h>
+#include <set>
 
 #include "DrawCallInfo.h"
 #include "TextureUploadTracking.h"
@@ -66,6 +67,23 @@ struct DispatchContext
 		post_commands(NULL),
 		call_info(DrawCall::DispatchIndirect, 0, 0, 0, 0, 0, 0, indirect_buffer, args_offset)
 	{}
+};
+
+// Per-draw/dispatch bookkeeping for the auto_check_texture_slots replacement
+// pass. Both directions are tracked so a slot cannot be covered twice:
+// - checked_slots: an original checktextureoverride already ran for this slot;
+//   the independent pass must skip it.
+// - auto_pass_slots: the independent pass already ran both phases for this
+//   slot; a later/duplicate checktextureoverride must return early.
+struct AutoCheckTextureDrawScope
+{
+	const DrawCallInfo* call_info = nullptr;
+	// Immutable snapshot taken when the draw/dispatch starts. Command lists may
+	// modify the live DrawCallInfo (e.g. VertexLimitRaise / count replacement);
+	// candidate gating and batch matching must use these original six fields.
+	DrawCallInfo original_call_info;
+	std::set<uint64_t> checked_slots;
+	std::set<uint64_t> auto_pass_slots;
 };
 
 
@@ -180,6 +198,8 @@ private:
 		D3D11_MAPPED_SUBRESOURCE *pMappedResource);
 	bool TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresource, bool* discard);
 	void ProcessShaderOverride(ShaderOverride *shaderOverride, bool isPixelShader, DrawContext *data);
+	void AutoCheckTextureOverridesIndependent(DrawContext& data);
+	void AutoCheckTextureOverridesIndependent(DispatchContext* context);
 	ID3D11PixelShader* SwitchPSShader(ID3D11PixelShader *shader);
 	ID3D11VertexShader* SwitchVSShader(ID3D11VertexShader *shader);
 	void RecordDepthStencil(ID3D11DepthStencilView *target);
@@ -263,6 +283,10 @@ public:
     uint64_t GetTextureMatchCall() const { return textureMatchCall; }
     void AdvanceTextureMatchCall() { textureOverrideCache.Clear(); ++textureMatchCall; }
     TextureOverrideCache& GetTextureOverrideCache() { return textureOverrideCache; }
+
+	// Stack of active draw/dispatch scopes for auto_check_texture_slots. Top is
+	// the current call; nested draws push/pop their own entry.
+	std::vector<AutoCheckTextureDrawScope> auto_check_texture_scopes;
 
 	ID3D11Buffer* GetReadbackBuffer(UINT size);
 

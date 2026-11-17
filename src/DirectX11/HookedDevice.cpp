@@ -34,6 +34,9 @@
 #undef D3D11_NO_HELPERS
 #undef CINTERFACE
 
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <unordered_map>
 
 #include "HookedDevice.h"
@@ -62,25 +65,47 @@ static CRITICAL_SECTION device_map_lock;
 // device:
 static struct ID3D11Device1Vtbl orig_vtable;
 
-static bool hooks_installed = false;
+// Installation state machine. There is one instance per translation unit (the
+// device and the context install independent tables of hooks):
+//   NotStarted -> Installing -> Ready
+//                            -> Failed (terminal; the rollback already ran)
+// Ready is published only after orig_vtable is complete, the map lock is
+// initialised and every hook has been enabled, so a reader that observes Ready
+// can only reach fully initialised state.
+enum class HookState {
+	NotStarted,
+	Installing,
+	Ready,
+	Failed,
+};
+
+static std::atomic<HookState> hook_state{ HookState::NotStarted };
+static std::mutex hook_state_mutex;
+static std::condition_variable hook_state_cv;
+static thread_local bool installing_hooks_here = false;
+
+static bool hooks_ready()
+{
+	return hook_state.load(std::memory_order_acquire) == HookState::Ready;
+}
 
 
 ID3D11Device1* lookup_hooked_device(ID3D11Device1 *orig_device)
 {
-	DeviceMap::iterator i;
+	ID3D11Device1 *device = NULL;
 
-	if (!hooks_installed)
+	if (!hooks_ready())
 		return NULL;
 
 	EnterCriticalSectionPretty(&device_map_lock);
-	i = device_map.find(orig_device);
-	if (i == device_map.end()) {
-		LeaveCriticalSection(&device_map_lock);
-		return NULL;
+	{
+		auto i = device_map.find(orig_device);
+		if (i != device_map.end())
+			device = i->second;
 	}
 	LeaveCriticalSection(&device_map_lock);
 
-	return i->second;
+	return device;
 }
 
 
@@ -984,80 +1009,192 @@ static HRESULT STDMETHODCALLTYPE OpenSharedResourceByName(ID3D11Device1* This,
     return orig_vtable.OpenSharedResourceByName(This, lpName, dwDesiredAccess, returnedInterface, ppResource);
 }
 
-static void install_hooks(ID3D11Device1 *device)
-{
-	SIZE_T hook_id;
+// Hook ids of one installation attempt. The table is fixed size so recording
+// an id cannot throw while hooks are already live; the context's largest
+// table (base + ID3D11DeviceContext1) needs 134 entries.
+struct HookBatch {
+	SIZE_T ids[160];
+	size_t count = 0;
+};
 
-	// Hooks should only be installed once as they will affect all contexts
-	if (hooks_installed)
-		return;
+// Create one hook but leave it disabled (NKTHOOKLIB_DontEnableHooks). The
+// trampoline is written into orig_vtable immediately, while the patched entry
+// stays dormant until enable_hooks(), so a reader can never reach a stub before
+// orig_vtable is complete.
+static bool hook_one(HookBatch &batch, void **original, void *target, void *detour)
+{
+	SIZE_T hook_id = 0;
+	const DWORD error = cHookMgr.Hook(&hook_id, original, target, detour,
+		NKTHOOKLIB_DontEnableHooks);
+	if (error != ERROR_SUCCESS) {
+		LogInfo("  *** Failed to create device hook at %p (error %lu)\n",
+			target, (unsigned long)error);
+		return false;
+	}
+	if (batch.count >= sizeof(batch.ids) / sizeof(batch.ids[0])) {
+		cHookMgr.Unhook(hook_id);
+		return false;
+	}
+	batch.ids[batch.count++] = hook_id;
+	return true;
+}
+
+// Undo every hook created so far, newest first. Do not delete the map critical
+// section: a concurrent Release stub may already own it (F-182).
+static void rollback_hooks(HookBatch &batch)
+{
+	while (batch.count) {
+		const SIZE_T hook_id = batch.ids[--batch.count];
+		const DWORD error = cHookMgr.Unhook(hook_id);
+		if (error != ERROR_SUCCESS)
+			LogInfo("  *** Failed to unhook device hook %llu (error %lu)\n",
+				(unsigned long long)hook_id, (unsigned long)error);
+	}
+}
+
+static bool enable_hooks(HookBatch &batch)
+{
+	for (size_t i = 0; i < batch.count; i++) {
+		const DWORD error = cHookMgr.EnableHook(batch.ids[i], TRUE);
+		if (error != ERROR_SUCCESS) {
+			LogInfo("  *** Failed to enable device hook %llu (error %lu)\n",
+				(unsigned long long)batch.ids[i], (unsigned long)error);
+			return false;
+		}
+	}
+	return true;
+}
+
+// Expands to one checked batch insert. The trailing semicolon in the caller
+// becomes an empty statement.
+#define batch_hook(...) \
+	if (!hook_one(batch, __VA_ARGS__)) return false
+
+static bool install_device_hooks(ID3D11Device1 *device, bool supports_device1,
+	HookBatch &batch)
+{
+	batch_hook((void**)&orig_vtable.QueryInterface,                       device->lpVtbl->QueryInterface,                       QueryInterface);
+	batch_hook((void**)&orig_vtable.AddRef,                               device->lpVtbl->AddRef,                               AddRef);
+	batch_hook((void**)&orig_vtable.Release,                              device->lpVtbl->Release,                              Release);
+	batch_hook((void**)&orig_vtable.CreateBuffer,                         device->lpVtbl->CreateBuffer,                         CreateBuffer);
+	batch_hook((void**)&orig_vtable.CreateTexture1D,                      device->lpVtbl->CreateTexture1D,                      CreateTexture1D);
+	batch_hook((void**)&orig_vtable.CreateTexture2D,                      device->lpVtbl->CreateTexture2D,                      CreateTexture2D);
+	batch_hook((void**)&orig_vtable.CreateTexture3D,                      device->lpVtbl->CreateTexture3D,                      CreateTexture3D);
+	batch_hook((void**)&orig_vtable.CreateShaderResourceView,             device->lpVtbl->CreateShaderResourceView,             CreateShaderResourceView);
+	batch_hook((void**)&orig_vtable.CreateUnorderedAccessView,            device->lpVtbl->CreateUnorderedAccessView,            CreateUnorderedAccessView);
+	batch_hook((void**)&orig_vtable.CreateRenderTargetView,               device->lpVtbl->CreateRenderTargetView,               CreateRenderTargetView);
+	batch_hook((void**)&orig_vtable.CreateDepthStencilView,               device->lpVtbl->CreateDepthStencilView,               CreateDepthStencilView);
+	batch_hook((void**)&orig_vtable.CreateInputLayout,                    device->lpVtbl->CreateInputLayout,                    CreateInputLayout);
+	batch_hook((void**)&orig_vtable.CreateVertexShader,                   device->lpVtbl->CreateVertexShader,                   CreateVertexShader);
+	batch_hook((void**)&orig_vtable.CreateGeometryShader,                 device->lpVtbl->CreateGeometryShader,                 CreateGeometryShader);
+	batch_hook((void**)&orig_vtable.CreateGeometryShaderWithStreamOutput, device->lpVtbl->CreateGeometryShaderWithStreamOutput, CreateGeometryShaderWithStreamOutput);
+	batch_hook((void**)&orig_vtable.CreatePixelShader,                    device->lpVtbl->CreatePixelShader,                    CreatePixelShader);
+	batch_hook((void**)&orig_vtable.CreateHullShader,                     device->lpVtbl->CreateHullShader,                     CreateHullShader);
+	batch_hook((void**)&orig_vtable.CreateDomainShader,                   device->lpVtbl->CreateDomainShader,                   CreateDomainShader);
+	batch_hook((void**)&orig_vtable.CreateComputeShader,                  device->lpVtbl->CreateComputeShader,                  CreateComputeShader);
+	batch_hook((void**)&orig_vtable.CreateClassLinkage,                   device->lpVtbl->CreateClassLinkage,                   CreateClassLinkage);
+	batch_hook((void**)&orig_vtable.CreateBlendState,                     device->lpVtbl->CreateBlendState,                     CreateBlendState);
+	batch_hook((void**)&orig_vtable.CreateDepthStencilState,              device->lpVtbl->CreateDepthStencilState,              CreateDepthStencilState);
+	batch_hook((void**)&orig_vtable.CreateRasterizerState,                device->lpVtbl->CreateRasterizerState,                CreateRasterizerState);
+	batch_hook((void**)&orig_vtable.CreateSamplerState,                   device->lpVtbl->CreateSamplerState,                   CreateSamplerState);
+	batch_hook((void**)&orig_vtable.CreateQuery,                          device->lpVtbl->CreateQuery,                          CreateQuery);
+	batch_hook((void**)&orig_vtable.CreatePredicate,                      device->lpVtbl->CreatePredicate,                      CreatePredicate);
+	batch_hook((void**)&orig_vtable.CreateCounter,                        device->lpVtbl->CreateCounter,                        CreateCounter);
+	batch_hook((void**)&orig_vtable.CreateDeferredContext,                device->lpVtbl->CreateDeferredContext,                CreateDeferredContext);
+	batch_hook((void**)&orig_vtable.OpenSharedResource,                   device->lpVtbl->OpenSharedResource,                   OpenSharedResource);
+	batch_hook((void**)&orig_vtable.CheckFormatSupport,                   device->lpVtbl->CheckFormatSupport,                   CheckFormatSupport);
+	batch_hook((void**)&orig_vtable.CheckMultisampleQualityLevels,        device->lpVtbl->CheckMultisampleQualityLevels,        CheckMultisampleQualityLevels);
+	batch_hook((void**)&orig_vtable.CheckCounterInfo,                     device->lpVtbl->CheckCounterInfo,                     CheckCounterInfo);
+	batch_hook((void**)&orig_vtable.CheckCounter,                         device->lpVtbl->CheckCounter,                         CheckCounter);
+	batch_hook((void**)&orig_vtable.CheckFeatureSupport,                  device->lpVtbl->CheckFeatureSupport,                  CheckFeatureSupport);
+	batch_hook((void**)&orig_vtable.GetPrivateData,                       device->lpVtbl->GetPrivateData,                       GetPrivateData);
+	batch_hook((void**)&orig_vtable.SetPrivateData,                       device->lpVtbl->SetPrivateData,                       SetPrivateData);
+	batch_hook((void**)&orig_vtable.SetPrivateDataInterface,              device->lpVtbl->SetPrivateDataInterface,              SetPrivateDataInterface);
+	batch_hook((void**)&orig_vtable.GetFeatureLevel,                      device->lpVtbl->GetFeatureLevel,                      GetFeatureLevel);
+	batch_hook((void**)&orig_vtable.GetCreationFlags,                     device->lpVtbl->GetCreationFlags,                     GetCreationFlags);
+	batch_hook((void**)&orig_vtable.GetDeviceRemovedReason,               device->lpVtbl->GetDeviceRemovedReason,               GetDeviceRemovedReason);
+	batch_hook((void**)&orig_vtable.GetImmediateContext,                  device->lpVtbl->GetImmediateContext,                  GetImmediateContext);
+	batch_hook((void**)&orig_vtable.SetExceptionMode,                     device->lpVtbl->SetExceptionMode,                     SetExceptionMode);
+	batch_hook((void**)&orig_vtable.GetExceptionMode,                     device->lpVtbl->GetExceptionMode,                     GetExceptionMode);
+    if (supports_device1) {
+        batch_hook((void**)&orig_vtable.GetImmediateContext1, device->lpVtbl->GetImmediateContext1, GetImmediateContext1);
+        batch_hook((void**)&orig_vtable.CreateDeferredContext1, device->lpVtbl->CreateDeferredContext1, CreateDeferredContext1);
+        batch_hook((void**)&orig_vtable.CreateBlendState1, device->lpVtbl->CreateBlendState1, CreateBlendState1);
+        batch_hook((void**)&orig_vtable.CreateRasterizerState1, device->lpVtbl->CreateRasterizerState1, CreateRasterizerState1);
+        batch_hook((void**)&orig_vtable.CreateDeviceContextState, device->lpVtbl->CreateDeviceContextState, CreateDeviceContextState);
+        batch_hook((void**)&orig_vtable.OpenSharedResource1, device->lpVtbl->OpenSharedResource1, OpenSharedResource1);
+        batch_hook((void**)&orig_vtable.OpenSharedResourceByName, device->lpVtbl->OpenSharedResourceByName, OpenSharedResourceByName);
+    }
+
+	return true;
+}
+
+#undef batch_hook
+
+static bool install_hooks_once(ID3D11Device1 *device)
+{
 	InitializeCriticalSectionPretty(&device_map_lock);
-	hooks_installed = true;
 
 	// Make sure that everything in the orig_vtable is filled in just in
 	// case we miss one of the hooks below:
 	ID3D11Device1* extended = nullptr;
-    const bool supports_device1 = SUCCEEDED(device->lpVtbl->QueryInterface(device,
-        IID_ID3D11Device1, reinterpret_cast<void**>(&extended))) && extended;
-    memcpy(&orig_vtable, device->lpVtbl, supports_device1 ?
-        sizeof(struct ID3D11Device1Vtbl) : sizeof(struct ID3D11DeviceVtbl));
-    if (extended) extended->lpVtbl->Release(extended);
+	const bool supports_device1 = SUCCEEDED(device->lpVtbl->QueryInterface(device,
+		IID_ID3D11Device1, reinterpret_cast<void**>(&extended))) && extended;
+	memcpy(&orig_vtable, device->lpVtbl, supports_device1 ?
+		sizeof(struct ID3D11Device1Vtbl) : sizeof(struct ID3D11DeviceVtbl));
+	if (extended) extended->lpVtbl->Release(extended);
 
-	// At the moment we are just throwing away the hook IDs - we should
-	// probably hold on to them incase we need to remove the hooks later:
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.QueryInterface,                       device->lpVtbl->QueryInterface,                       QueryInterface);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.AddRef,                               device->lpVtbl->AddRef,                               AddRef);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.Release,                              device->lpVtbl->Release,                              Release);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateBuffer,                         device->lpVtbl->CreateBuffer,                         CreateBuffer);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateTexture1D,                      device->lpVtbl->CreateTexture1D,                      CreateTexture1D);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateTexture2D,                      device->lpVtbl->CreateTexture2D,                      CreateTexture2D);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateTexture3D,                      device->lpVtbl->CreateTexture3D,                      CreateTexture3D);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateShaderResourceView,             device->lpVtbl->CreateShaderResourceView,             CreateShaderResourceView);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateUnorderedAccessView,            device->lpVtbl->CreateUnorderedAccessView,            CreateUnorderedAccessView);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateRenderTargetView,               device->lpVtbl->CreateRenderTargetView,               CreateRenderTargetView);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDepthStencilView,               device->lpVtbl->CreateDepthStencilView,               CreateDepthStencilView);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateInputLayout,                    device->lpVtbl->CreateInputLayout,                    CreateInputLayout);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateVertexShader,                   device->lpVtbl->CreateVertexShader,                   CreateVertexShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateGeometryShader,                 device->lpVtbl->CreateGeometryShader,                 CreateGeometryShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateGeometryShaderWithStreamOutput, device->lpVtbl->CreateGeometryShaderWithStreamOutput, CreateGeometryShaderWithStreamOutput);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreatePixelShader,                    device->lpVtbl->CreatePixelShader,                    CreatePixelShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateHullShader,                     device->lpVtbl->CreateHullShader,                     CreateHullShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDomainShader,                   device->lpVtbl->CreateDomainShader,                   CreateDomainShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateComputeShader,                  device->lpVtbl->CreateComputeShader,                  CreateComputeShader);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateClassLinkage,                   device->lpVtbl->CreateClassLinkage,                   CreateClassLinkage);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateBlendState,                     device->lpVtbl->CreateBlendState,                     CreateBlendState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDepthStencilState,              device->lpVtbl->CreateDepthStencilState,              CreateDepthStencilState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateRasterizerState,                device->lpVtbl->CreateRasterizerState,                CreateRasterizerState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateSamplerState,                   device->lpVtbl->CreateSamplerState,                   CreateSamplerState);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateQuery,                          device->lpVtbl->CreateQuery,                          CreateQuery);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreatePredicate,                      device->lpVtbl->CreatePredicate,                      CreatePredicate);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateCounter,                        device->lpVtbl->CreateCounter,                        CreateCounter);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDeferredContext,                device->lpVtbl->CreateDeferredContext,                CreateDeferredContext);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OpenSharedResource,                   device->lpVtbl->OpenSharedResource,                   OpenSharedResource);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CheckFormatSupport,                   device->lpVtbl->CheckFormatSupport,                   CheckFormatSupport);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CheckMultisampleQualityLevels,        device->lpVtbl->CheckMultisampleQualityLevels,        CheckMultisampleQualityLevels);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CheckCounterInfo,                     device->lpVtbl->CheckCounterInfo,                     CheckCounterInfo);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CheckCounter,                         device->lpVtbl->CheckCounter,                         CheckCounter);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CheckFeatureSupport,                  device->lpVtbl->CheckFeatureSupport,                  CheckFeatureSupport);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetPrivateData,                       device->lpVtbl->GetPrivateData,                       GetPrivateData);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetPrivateData,                       device->lpVtbl->SetPrivateData,                       SetPrivateData);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetPrivateDataInterface,              device->lpVtbl->SetPrivateDataInterface,              SetPrivateDataInterface);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetFeatureLevel,                      device->lpVtbl->GetFeatureLevel,                      GetFeatureLevel);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetCreationFlags,                     device->lpVtbl->GetCreationFlags,                     GetCreationFlags);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetDeviceRemovedReason,               device->lpVtbl->GetDeviceRemovedReason,               GetDeviceRemovedReason);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetImmediateContext,                  device->lpVtbl->GetImmediateContext,                  GetImmediateContext);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.SetExceptionMode,                     device->lpVtbl->SetExceptionMode,                     SetExceptionMode);
-	cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetExceptionMode,                     device->lpVtbl->GetExceptionMode,                     GetExceptionMode);
-    if (supports_device1) {
-        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.GetImmediateContext1, device->lpVtbl->GetImmediateContext1, GetImmediateContext1);
-        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDeferredContext1, device->lpVtbl->CreateDeferredContext1, CreateDeferredContext1);
-        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateBlendState1, device->lpVtbl->CreateBlendState1, CreateBlendState1);
-        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateRasterizerState1, device->lpVtbl->CreateRasterizerState1, CreateRasterizerState1);
-        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.CreateDeviceContextState, device->lpVtbl->CreateDeviceContextState, CreateDeviceContextState);
-        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OpenSharedResource1, device->lpVtbl->OpenSharedResource1, OpenSharedResource1);
-        cHookMgr.Hook(&hook_id, (void**)&orig_vtable.OpenSharedResourceByName, device->lpVtbl->OpenSharedResourceByName, OpenSharedResourceByName);
-    }
+	HookBatch batch{};
+	if (!install_device_hooks(device, supports_device1, batch) ||
+			!enable_hooks(batch)) {
+		rollback_hooks(batch);
+		return false;
+	}
+	return true;
+}
 
+// Only one thread may run the installation body. Ready is published with
+// release semantics after orig_vtable, the map lock and every hook are ready;
+// Failed is terminal and readers return false without touching the map lock.
+static bool install_hooks(ID3D11Device1 *device)
+{
+	if (hooks_ready())
+		return true;
+	// A hook detour on this thread re-entering would otherwise wait for its
+	// own installation to finish.
+	if (installing_hooks_here)
+		return false;
+
+	std::unique_lock<std::mutex> lock(hook_state_mutex);
+	for (;;) {
+		const HookState state = hook_state.load(std::memory_order_acquire);
+		if (state == HookState::Ready)
+			return true;
+		if (state == HookState::Failed)
+			return false;
+		if (state == HookState::Installing) {
+			hook_state_cv.wait(lock);
+			continue;
+		}
+		hook_state.store(HookState::Installing, std::memory_order_relaxed);
+		break;
+	}
+	lock.unlock();
+
+	installing_hooks_here = true;
+	const bool installed = install_hooks_once(device);
+	installing_hooks_here = false;
+
+	{
+		std::lock_guard<std::mutex> publish(hook_state_mutex);
+		hook_state.store(installed ? HookState::Ready : HookState::Failed,
+			std::memory_order_release);
+	}
+	hook_state_cv.notify_all();
+
+	if (!installed)
+		LogInfo("F-182: device hook installation failed; hooks rolled back\n");
+	return installed;
 }
 
 // This provides another ID3D11Device1 interface for calling the original
@@ -1668,11 +1805,15 @@ static CONST_VTBL struct ID3D11Device1Vtbl trampoline_vtable = {
 
 ID3D11Device1* hook_device(ID3D11Device1 *orig_device, ID3D11Device1 *hacker_device)
 {
+	// Install before allocating the trampoline so a rolled back installation
+	// neither leaks the trampoline nor leaves a half-hooked device in the map.
+	if (!install_hooks(orig_device))
+		return orig_device;
+
 	ID3D11Device1Trampoline *trampoline_device = new ID3D11Device1Trampoline();
 	trampoline_device->lpVtbl = &trampoline_vtable;
 	trampoline_device->orig_this = orig_device;
 
-	install_hooks(orig_device);
 	EnterCriticalSectionPretty(&device_map_lock);
 	device_map[orig_device] = hacker_device;
 	LeaveCriticalSection(&device_map_lock);

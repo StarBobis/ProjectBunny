@@ -18,6 +18,56 @@
 #include "DirectXTK/Src/PlatformHelpers.h"
 #include "DirectXTK/Src/LoaderHelpers.h"
 
+static size_t texture2d_initial_debug_prefix(const D3D11_TEXTURE2D_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial)
+{
+	if (!desc || !desc->Width || !desc->Height || !desc->ArraySize || desc->SampleDesc.Count != 1 ||
+		desc->Width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || desc->Height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+		return 0;
+	bool first_row_only = false;
+	switch (desc->Format) {
+	case DXGI_FORMAT_420_OPAQUE:
+		return 0;
+	case DXGI_FORMAT_NV11:
+		if (desc->Width % 4) return 0;
+		// LoaderHelpers uses a deliberately enlarged NV11 plane-size approximation.
+		first_row_only = true;
+		break;
+	case DXGI_FORMAT_NV12:
+	case DXGI_FORMAT_P010:
+	case DXGI_FORMAT_P016:
+		if ((desc->Width | desc->Height) & 1) return 0;
+		break;
+	case DXGI_FORMAT_YUY2:
+	case DXGI_FORMAT_Y210:
+	case DXGI_FORMAT_Y216:
+		if (desc->Width & 1) return 0;
+		break;
+	}
+	size_t bytes = 0, row_bytes = 0, rows = 0;
+	DirectX::LoaderHelpers::GetSurfaceInfo(desc->Width, desc->Height, desc->Format, &bytes, &row_bytes, &rows);
+	if (!bytes || !row_bytes || !rows || initial->SysMemPitch < row_bytes)
+		return 0;
+	// Tight rows form one contiguous data range. Otherwise the gap after the
+	// first row is padding, not a promised readable part of the caller's data.
+	const size_t readable = !first_row_only && initial->SysMemPitch == row_bytes ? bytes : row_bytes;
+	return min<size_t>(16, readable);
+}
+
+void LogDebugTexture2DInitialData(const D3D11_TEXTURE2D_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial)
+{
+	if (!LogFile || gLogVerbosity < LogVerbosity::DEBUG || !initial || !initial->pSysMem)
+		return;
+	LogDebugNoNL("  pInitialData = %p->%p, SysMemPitch: %u, SysMemSlicePitch: %u ",
+		initial, initial->pSysMem, initial->SysMemPitch, initial->SysMemSlicePitch);
+	const size_t count = texture2d_initial_debug_prefix(desc, initial);
+	const auto *hex = static_cast<const uint8_t*>(initial->pSysMem);
+	for (size_t i = 0; i < count; ++i)
+		LogDebugNoNL(" %02hX", hex[i]);
+	if (!count)
+		LogDebugNoNL(" [data bytes unavailable]");
+	LogDebug("\n");
+}
+
 // Overloaded functions to log any kind of resource description (useful to call
 // from templates):
 
@@ -547,7 +597,7 @@ static size_t Texture1DLength(
 	// will return 0 if the texture is using some esoteric format. I don't
 	// think block compressed formats work on 1D textures because those
 	// operate on 4x4 blocks of pixels.
-	return dxgi_format_size(pDesc->Format) * mip_width;
+	return static_cast<size_t>(dxgi_format_size(pDesc->Format)) * mip_width;
 }
 
 static size_t Texture2DLength(
@@ -574,7 +624,7 @@ static size_t Texture2DLength(
 	if (!block_size) {
 		// Uncompressed texture - use the SysMemPitch to get
 		// the width (including any padding) in bytes.
-		return pInitialData->SysMemPitch * mip_height;
+		return static_cast<size_t>(pInitialData->SysMemPitch) * mip_height;
 	}
 
 	// In the case of compressed textures, we can't necessarily rely on
@@ -585,7 +635,7 @@ static size_t Texture2DLength(
 	padded_width = (mip_width + 3) & ~0x3;
 	padded_height = (mip_height + 3) & ~0x3;
 
-	return padded_width * padded_height / 16 * block_size;
+	return static_cast<size_t>(padded_width) * padded_height / 16 * block_size;
 }
 
 static size_t Texture3DLength(
@@ -606,7 +656,7 @@ static size_t Texture3DLength(
 	if (!block_size) {
 		// Uncompressed texture - use the SysMemSlicePitch to get the
 		// width*height (including any padding) in bytes.
-		return pInitialData->SysMemSlicePitch * mip_depth;
+		return static_cast<size_t>(pInitialData->SysMemSlicePitch) * mip_depth;
 	}
 
 	// Not sure if SysMemSlicePitch is reliable for compressed 3D textures.
@@ -616,7 +666,124 @@ static size_t Texture3DLength(
 	padded_width = (mip_width + 3) & ~0x3;
 	padded_height = (mip_height + 3) & ~0x3;
 
-	return padded_width * padded_height * mip_depth / 16 * block_size;
+	return static_cast<size_t>(padded_width) * padded_height * mip_depth / 16 * block_size;
+}
+
+// Arithmetic-only description of the first subresource the caller has
+// promised. This never touches pSysMem: a rejected plan means the hash
+// functions must return 0 without reading a single byte. The D3D11 dimension
+// constants are hard limits, and the pitch/slice pitch checks prove that the
+// declared layout covers the packed rows/slices the hash functions walk.
+struct TextureDataPlan {
+	bool ok;
+	size_t length;
+	const char *reason;
+};
+
+static TextureDataPlan RejectTextureData(const char *type, const char *reason,
+		const D3D11_SUBRESOURCE_DATA *initial, UINT width, UINT height = 0,
+		UINT depth = 0, DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN)
+{
+	LogWarning("Refusing to hash %s data: %s (width=%u height=%u depth=%u "
+		"format=\"%s\" pitch=%u slice_pitch=%u)\n",
+		type, reason, width, height, depth, TexFormatStr(format),
+		initial ? initial->SysMemPitch : 0, initial ? initial->SysMemSlicePitch : 0);
+	TextureDataPlan plan = {false, 0, reason};
+	return plan;
+}
+
+static TextureDataPlan Texture1DDataPlan(const D3D11_TEXTURE1D_DESC *desc,
+		const D3D11_SUBRESOURCE_DATA *initial)
+{
+	if (!desc || !initial || !initial->pSysMem)
+		return RejectTextureData("Texture1D", "missing texture description or initial data",
+			initial, desc ? desc->Width : 0, 0, 0,
+			desc ? desc->Format : DXGI_FORMAT_UNKNOWN);
+	if (!desc->Width || desc->Width > D3D11_REQ_TEXTURE1D_U_DIMENSION)
+		return RejectTextureData("Texture1D", "Width is outside the D3D11 texture limit",
+			initial, desc->Width, 0, 0, desc->Format);
+	if (!dxgi_format_size(desc->Format))
+		return RejectTextureData("Texture1D", "unsupported texture format",
+			initial, desc->Width, 0, 0, desc->Format);
+	const size_t length = Texture1DLength(desc, initial, 0);
+	if (length > INT_MAX)
+		return RejectTextureData("Texture1D", "texture data length exceeds INT_MAX",
+			initial, desc->Width, 0, 0, desc->Format);
+	TextureDataPlan plan = {true, length, nullptr};
+	return plan;
+}
+
+static TextureDataPlan Texture2DDataPlan(const D3D11_TEXTURE2D_DESC *desc,
+		const D3D11_SUBRESOURCE_DATA *initial)
+{
+	if (!desc || !initial || !initial->pSysMem)
+		return RejectTextureData("Texture2D", "missing texture description or initial data",
+			initial, desc ? desc->Width : 0, desc ? desc->Height : 0, 0,
+			desc ? desc->Format : DXGI_FORMAT_UNKNOWN);
+	if (!desc->Width || !desc->Height ||
+			desc->Width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+			desc->Height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+		return RejectTextureData("Texture2D",
+			"Width or Height is outside the D3D11 texture limit",
+			initial, desc->Width, desc->Height, 0, desc->Format);
+	if (!desc->ArraySize || desc->ArraySize > D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION)
+		return RejectTextureData("Texture2D", "ArraySize is outside the D3D11 texture limit",
+			initial, desc->Width, desc->Height, 0, desc->Format);
+	size_t slice_pitch = 0, row_pitch = 0, row_count = 0;
+	DirectX::LoaderHelpers::GetSurfaceInfo(desc->Width, desc->Height, desc->Format,
+		&slice_pitch, &row_pitch, &row_count);
+	if (!slice_pitch || !row_pitch || !row_count)
+		return RejectTextureData("Texture2D", "unsupported texture format or layout",
+			initial, desc->Width, desc->Height, 0, desc->Format);
+	if (initial->SysMemPitch < row_pitch)
+		return RejectTextureData("Texture2D",
+			"SysMemPitch is smaller than the packed row pitch",
+			initial, desc->Width, desc->Height, 0, desc->Format);
+	const size_t length = Texture2DLength(desc, initial, 0);
+	if (length > INT_MAX)
+		return RejectTextureData("Texture2D", "texture data length exceeds INT_MAX",
+			initial, desc->Width, desc->Height, 0, desc->Format);
+	TextureDataPlan plan = {true, length, nullptr};
+	return plan;
+}
+
+static TextureDataPlan Texture3DDataPlan(const D3D11_TEXTURE3D_DESC *desc,
+		const D3D11_SUBRESOURCE_DATA *initial)
+{
+	if (!desc || !initial || !initial->pSysMem)
+		return RejectTextureData("Texture3D", "missing texture description or initial data",
+			initial, desc ? desc->Width : 0, desc ? desc->Height : 0,
+			desc ? desc->Depth : 0, desc ? desc->Format : DXGI_FORMAT_UNKNOWN);
+	if (!desc->Width || !desc->Height || !desc->Depth ||
+			desc->Width > D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION ||
+			desc->Height > D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION ||
+			desc->Depth > D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION)
+		return RejectTextureData("Texture3D",
+			"Width, Height or Depth is outside the D3D11 texture limit",
+			initial, desc->Width, desc->Height, desc->Depth, desc->Format);
+	size_t slice_pitch = 0, row_pitch = 0, row_count = 0;
+	DirectX::LoaderHelpers::GetSurfaceInfo(desc->Width, desc->Height, desc->Format,
+		&slice_pitch, &row_pitch, &row_count);
+	if (!slice_pitch || !row_pitch || !row_count)
+		return RejectTextureData("Texture3D", "unsupported texture format or layout",
+			initial, desc->Width, desc->Height, desc->Depth, desc->Format);
+	if (initial->SysMemPitch < row_pitch)
+		return RejectTextureData("Texture3D",
+			"SysMemPitch is smaller than the packed row pitch",
+			initial, desc->Width, desc->Height, desc->Depth, desc->Format);
+	// Compressed 3D data is laid out in slices. Reading the packed, tight
+	// slice length as if it were contiguous would run past a smaller
+	// caller-declared slice pitch (the F-136 crash).
+	if (initial->SysMemSlicePitch < slice_pitch)
+		return RejectTextureData("Texture3D",
+			"SysMemSlicePitch is smaller than the packed slice pitch",
+			initial, desc->Width, desc->Height, desc->Depth, desc->Format);
+	const size_t length = Texture3DLength(desc, initial, 0);
+	if (length > INT_MAX)
+		return RejectTextureData("Texture3D", "texture data length exceeds INT_MAX",
+			initial, desc->Width, desc->Height, desc->Depth, desc->Format);
+	TextureDataPlan plan = {true, length, nullptr};
+	return plan;
 }
 
 static uint32_t hash_tex2d_data(uint32_t hash, const void *data, size_t length,
@@ -661,24 +828,26 @@ static uint32_t hash_tex2d_data(uint32_t hash, const void *data, size_t length,
 	DirectX::LoaderHelpers::GetSurfaceInfo(pDesc->Width, pDesc->Height, pDesc->Format, &slice_pitch, &row_pitch, &row_count);
 
 	uint8_t *sptr = (uint8_t*)data;
-	size_t msize = min(row_pitch, mapped_row_pitch);
+	size_t msize = min(row_pitch, static_cast<size_t>(mapped_row_pitch));
 
-	signed padding = (signed)mapped_row_pitch - (signed)row_pitch;
+	size_t padding = mapped_row_pitch > row_pitch ? mapped_row_pitch - row_pitch : 0;
 	uint8_t *zeroes = NULL;
 	if (zero_padding && padding > 0) {
 		zeroes = new uint8_t[padding];
 		memset(zeroes, 0, padding);
 	}
 
-	signed remaining = (signed)length;
+	size_t remaining = length;
 	for (size_t h = 0; h < row_count && remaining > 0; h++) {
-		hash = crc32c_hw(hash, sptr, min(msize, (unsigned)remaining));
+		const size_t row_bytes = min(msize, remaining);
+		hash = crc32c_hw(hash, sptr, row_bytes);
 		sptr += mapped_row_pitch;
-		remaining -= (signed)msize;
+		remaining -= row_bytes;
 
 		if (zeroes && remaining > 0) {
-			hash = crc32c_hw(hash, zeroes, min(padding, remaining));
-			remaining -= padding;
+			const size_t padding_bytes = min(padding, remaining);
+			hash = crc32c_hw(hash, zeroes, padding_bytes);
+			remaining -= padding_bytes;
 		}
 	}
 
@@ -693,13 +862,16 @@ uint32_t CalcTexture2DDataHash(
 {
 	uint32_t hash = 0;
 	size_t length_v12;
-	size_t length;
 
 	if (!pDesc || !pInitialData || !pInitialData->pSysMem)
 		return 0;
 
 	if (G->texture_hash_version)
 		return CalcTexture2DDataHashAccurate(pDesc, pInitialData);
+
+	const TextureDataPlan plan = Texture2DDataPlan(pDesc, pInitialData);
+	if (!plan.ok)
+		return 0;
 
 	// In 3DMigoto v1.2, this is what we were using as the length of the
 	// buffer in bytes. Unfortunately this is not right since pDesc->Width
@@ -710,12 +882,10 @@ uint32_t CalcTexture2DDataHash(
 	//
 	// The result is that we might not consider the entire buffer when
 	// calculating the hash (which may not be ideal, but it is generally
-	// acceptable), or we might overflow the buffer. If we overflow we
-	// might get an exception if there is nothing mapped after the buffer
-	// (which we catch and log), but we could just as easily process
-	// gargage after the buffer as being part of the texture, which would
-	// lead to us creating unpredictable hashes.
-	length_v12 = pDesc->Width * pDesc->Height * pDesc->ArraySize;
+	// acceptable). Texture2DDataPlan has already validated the D3D11
+	// dimensions and the declared pitch, so the lengths below cannot walk
+	// past the buffer the caller promised.
+	length_v12 = static_cast<size_t>(pDesc->Width) * pDesc->Height * pDesc->ArraySize;
 
 	// Compare the old broken length to the length of just the first item.
 	// If the broken length is shorter, we will just use that and skip
@@ -725,10 +895,9 @@ uint32_t CalcTexture2DDataHash(
 	//
 	// TODO: We might consider an ini setting to disable this fallback for
 	// new games, or possibly to force it for old games.
-	length = Texture2DLength(pDesc, &pInitialData[0], 0);
-	LogDebug("  Texture2D length: %Iu bad v1.2.1 length: %Iu\n", length, length_v12);
-	if (length_v12 <= length) {
-		if (length_v12 < length || pDesc->ArraySize > 1) {
+	LogDebug("  Texture2D length: %Iu bad v1.2.1 length: %Iu\n", plan.length, length_v12);
+	if (length_v12 <= plan.length) {
+		if (length_v12 < plan.length || pDesc->ArraySize > 1) {
 			LogDebug("  Using 3DMigoto v1.2.1 compatible Texture2D CRC calculation\n");
 		}
 		return hash_tex2d_data(hash, pInitialData[0].pSysMem, length_v12,
@@ -776,8 +945,7 @@ uint32_t CalcTexture2DDataHash(
 	// subresource. Changing this would break hash tracking and frame
 	// analysis de-duplication.
 
-	length = Texture2DLength(pDesc, &pInitialData[0], 0);
-	hash = hash_tex2d_data(hash, pInitialData[0].pSysMem, length,
+	hash = hash_tex2d_data(hash, pInitialData[0].pSysMem, plan.length,
 			pDesc, false, true, pInitialData[0].SysMemPitch);
 
 	return hash;
@@ -805,18 +973,27 @@ uint32_t CalcTexture2DDataHashAccurate(
 	if (!pDesc || !pInitialData || !pInitialData->pSysMem)
 		return 0;
 
+	const TextureDataPlan plan = Texture2DDataPlan(pDesc, pInitialData);
+	if (!plan.ok)
+		return 0;
+
 	// Passing length=INT_MAX, since that is an upper bound and
-	// hash_tex2d_data will work it out from DirectXTK
+	// hash_tex2d_data will work it out from DirectXTK. The plan above has
+	// already bounded the rows this can walk.
 	hash = hash_tex2d_data(hash, pInitialData[0].pSysMem, INT_MAX,
 			pDesc, false, true, pInitialData[0].SysMemPitch);
 
 	return hash;
 }
 
-// Must be called with the critical section held to protect mResources against
-// simultaneous reads & modifications (hmm, tempted to implement a lock free
-// map given that it's add only, or use RCU). Is there anything on Windows like
-// lockdep to statically prove this is called with the lock held?
+// Returns a borrowed pointer into G->mResources, or NULL if the resource is
+// not tracked. This function takes mResourcesLock itself, but that only
+// protects the map lookup; the entry remains valid only while it is not
+// erased. The normal erase path is the resource's last COM reference being
+// released (ResourceReleaseTracker::Release), not a config reload.
+// The caller must hold a live COM reference to `resource` while using the
+// pointer and must not carry it across an unlocked blocking COM/GPU call.
+// Access to mutable fields (hash, etc.) is separately protected by G.
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource)
 {
 	std::unordered_map<ID3D11Resource *, ResourceHandleInfo>::iterator j;
@@ -833,8 +1010,10 @@ ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource)
 	return ret;
 }
 
-// Must be called with the critical section held to protect mResources against
-// simultaneous reads & modifications
+// orig_hash is written once when the resource is registered and never
+// changes, so no G is required for this read; GetResourceHandleInfo protects
+// only the mResources lookup itself. The caller's resource reference must
+// still keep the entry alive while the value is used.
 uint32_t GetOrigResourceHash(ID3D11Resource *resource)
 {
 	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
@@ -844,8 +1023,9 @@ uint32_t GetOrigResourceHash(ID3D11Resource *resource)
 	return 0;
 }
 
-// Must be called with the critical section held to protect mResources against
-// simultaneous reads & modifications
+// Caller must hold G->mCriticalSection while reading the mutable hash field
+// and must hold a live resource reference; GetResourceHandleInfo only
+// protects the mResources lookup itself.
 uint32_t GetResourceHash(ID3D11Resource *resource)
 {
 	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
@@ -869,13 +1049,14 @@ uint32_t CalcTexture1DDataHash(
 	const D3D11_TEXTURE1D_DESC *pDesc,
 	const D3D11_SUBRESOURCE_DATA *pInitialData)
 {
-	size_t length;
-
 	if (!pDesc || !pInitialData || !pInitialData->pSysMem)
 		return 0;
 
-	length = Texture1DLength(pDesc, &pInitialData[0], 0);
-	return crc32c_hw(0, pInitialData[0].pSysMem, length);
+	const TextureDataPlan plan = Texture1DDataPlan(pDesc, pInitialData);
+	if (!plan.ok)
+		return 0;
+
+	return crc32c_hw(0, pInitialData[0].pSysMem, plan.length);
 }
 
 uint32_t CalcTexture3DDataHash(
@@ -884,9 +1065,12 @@ uint32_t CalcTexture3DDataHash(
 {
 	uint32_t hash = 0;
 	size_t length_v12;
-	size_t length;
 
 	if (!pDesc || !pInitialData || !pInitialData->pSysMem)
+		return 0;
+
+	const TextureDataPlan plan = Texture3DDataPlan(pDesc, pInitialData);
+	if (!plan.ok)
 		return 0;
 
 	// In 3DMigoto v1.2, this is what we were using as the length of the
@@ -896,12 +1080,10 @@ uint32_t CalcTexture3DDataHash(
 	//
 	// The result is that we might not consider the entire buffer when
 	// calculating the hash (which may not be ideal, but it is generally
-	// acceptable), or we might overflow the buffer. If we overflow we
-	// might get an exception if there is nothing mapped after the buffer
-	// (which we catch and log), but we could just as easily process
-	// gargage after the buffer as being part of the texture, which would
-	// lead to us creating unpredictable hashes.
-	length_v12 = pDesc->Width * pDesc->Height * pDesc->Depth;
+	// acceptable). Texture3DDataPlan has already validated the D3D11
+	// dimensions, SysMemPitch and SysMemSlicePitch, so neither branch below
+	// can read outside the layout the caller promised.
+	length_v12 = static_cast<size_t>(pDesc->Width) * pDesc->Height * pDesc->Depth;
 
 	// Compare the old broken length to the actual length. If the broken
 	// length is shorter, we will just use that. While not ideal, this will
@@ -910,10 +1092,9 @@ uint32_t CalcTexture3DDataHash(
 	//
 	// TODO: We might consider an ini setting to disable this fallback for
 	// new games, or possibly to force it for old games.
-	length = Texture3DLength(pDesc, &pInitialData[0], 0);
-	LogDebug("  Texture3D length: %Iu bad v1.2.1 length: %Iu\n", length, length_v12);
-	if (length_v12 <= length) {
-		if (length_v12 < length) {
+	LogDebug("  Texture3D length: %Iu bad v1.2.1 length: %Iu\n", plan.length, length_v12);
+	if (length_v12 <= plan.length) {
+		if (length_v12 < plan.length) {
 			LogDebug("  Using 3DMigoto v1.2.1 compatible Texture3D CRC calculation\n");
 		}
 		return crc32c_hw(hash, pInitialData[0].pSysMem, length_v12);
@@ -930,7 +1111,7 @@ uint32_t CalcTexture3DDataHash(
 
 	LogDebug("  Using 3DMigoto v1.2.9+ Texture3D CRC calculation\n");
 
-	hash = crc32c_hw(hash, pInitialData[0].pSysMem, length);
+	hash = crc32c_hw(hash, pInitialData[0].pSysMem, plan.length);
 
 	return hash;
 }
@@ -1112,6 +1293,7 @@ void UpdateResourceHashFromCPU(ID3D11Resource *resource,
 	D3D11_TEXTURE3D_DESC *desc3D;
 	uint32_t old_data_hash, old_hash;
 	ResourceHandleInfo *info = NULL;
+	TextureDataPlan plan = {false, 0, nullptr};
 
 	if (!resource || !data)
 		return;
@@ -1147,6 +1329,21 @@ void UpdateResourceHashFromCPU(ID3D11Resource *resource,
 	old_hash = info->hash;
 
 	resource->GetType(&dim);
+
+	// Validate the updated/mapped layout before anything reads it. A refused
+	// update must keep the previous hash: 0 is the "not hashed" sentinel, so
+	// publishing it here would silently change TextureOverride matching.
+	switch (dim) {
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+			plan = Texture2DDataPlan(&info->desc2D, &initialData);
+			break;
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+			plan = Texture3DDataPlan(&info->desc3D, &initialData);
+			break;
+	}
+	if (!plan.ok)
+		goto out_unlock;
+
 	switch (dim) {
 		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
 			tex2D = (ID3D11Texture2D*)resource;
@@ -1658,6 +1855,9 @@ static bool matches_draw_info(TextureOverride *tex_override, DrawCallInfo *call_
 	return true;
 }
 
+// Caller must hold G->mCriticalSection across this call and while consuming
+// `matches`: the function only holds G while collecting, and the returned
+// TextureOverride* point into mTextureOverrideMap, which reload clears under G.
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
     CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
@@ -1686,6 +1886,8 @@ static uint32_t get_hash_for_resource(ID3D11Resource* resource)
 	return hash;
 }
 
+// Caller must hold G->mCriticalSection. The returned vector belongs to the
+// draw maps and is rebuilt under G on reload; consume it before unlocking.
 TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info)
 {
 	if (call_info->IndexCount)
@@ -1787,6 +1989,7 @@ void InvalidateTextureOverrideCandidates()
     for (auto& entry : G->mResources) {
         auto& info = entry.second;
         info.texture_override_candidates_valid = info.texture_override_hash_valid = false;
+        info.has_override_candidate_valid = false;
         info.texture_override_candidates.hash_matches = nullptr;
         info.texture_override_candidates.fuzzy_matches.clear();
     }
@@ -1841,7 +2044,56 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
         info->texture_override_hash = hash;
         info->texture_override_hash_valid = true;
     }
+    info->has_override_candidate = candidates.hash_matches != nullptr ||
+        !candidates.fuzzy_matches.empty() ||
+        !G->mFuzzyTextureOverrides.empty();
+    info->has_override_candidate_valid = true;
     return &candidates;
+}
+
+bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_info, bool region_hash_possible)
+{
+    if (!resource)
+        return false;
+    if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+        return false;
+    if (region_hash_possible)
+        return true;
+    const bool fuzzy_possible = !G->mFuzzyTextureOverrides.empty();
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        auto found = G->mResources.find(resource);
+        if (found == G->mResources.end())
+            return false;
+        const ResourceHandleInfo& info = found->second;
+        // Never let a hash-only negative cache suppress fuzzy overrides.
+        if (!fuzzy_possible &&
+            info.has_override_candidate_valid &&
+            info.texture_override_candidates_valid &&
+            info.texture_override_hash_valid &&
+            info.texture_override_hash == info.hash &&
+            info.texture_override_resolution_width == G->mResolutionInfo.width &&
+            info.texture_override_resolution_height == G->mResolutionInfo.height &&
+            !info.has_override_candidate)
+            return false;
+    }
+
+    TextureOverrideCandidates* candidates = get_texture_override_candidates(resource);
+    if (!candidates)
+        return false;
+
+    if (candidates->hash_matches) {
+        for (auto& match : *candidates->hash_matches)
+            if (matches_draw_info(&match, call_info))
+                return true;
+    }
+    for (const auto& candidate : candidates->fuzzy_matches) {
+        if ((!candidate.dynamic_matcher ||
+             MatchesResourceDescriptor(*candidate.dynamic_matcher, candidates->descriptor)) &&
+            matches_draw_info(candidate.texture_override, call_info))
+            return true;
+    }
+    return false;
 }
 
 static void AppendFuzzyCandidates(const TextureOverrideCandidates& candidates, TextureOverrideMatches* matches, DrawCallInfo* call_info)
@@ -1854,6 +2106,9 @@ static void AppendFuzzyCandidates(const TextureOverrideCandidates& candidates, T
 
 // The region path has already selected its exact region hash; never append
 // the cached whole-resource exact matches here.
+// This overload holds G only while collecting. The caller must still hold G
+// when it consumes `matches`; the ComPtr below keeps the resource alive for
+// the lookup, not the returned config nodes.
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
 {
     if (!resource || !matches) return;
@@ -1866,6 +2121,9 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, Texture
     sample.Finish(matches->size() > before);
 }
 
+// This overload holds G only while collecting. The caller must still hold G
+// when it consumes `matches`; the ComPtr below keeps the resource alive for
+// the lookup, not the returned config nodes.
 void find_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
 {
     if (!resource || !matches) return;
@@ -2354,6 +2612,11 @@ uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset
 		return 0;
 	}
 
+	// Keep the COM resource alive across the unlocked CacheBufferData GPU
+	// readback below. Without this, the last external reference can release
+	// the tracker and erase mResources while handle_info is still in use.
+	Microsoft::WRL::ComPtr<ID3D11Buffer> buffer_lifetime(buffer);
+
     // Copy the fast-cache value before taking G; never hold L3 across G,
     // resource-map locks, COM, or GPU calls.
 	RegionHashKeyL3 level_3_cache_key{ (uint64_t)buffer, offset, size };
@@ -2556,6 +2819,10 @@ bool TryGetSpatialHash(HackerContext* context, ID3D11Buffer* buffer,
     hash = 0;
     if (!context || !buffer || !std::isfinite(cell_size) || cell_size <= 0)
         return false;
+    // Same lifetime guard as GetRegionHash: CacheBufferData releases G for a
+    // GPU readback, so the caller's resource must not be allowed to vanish
+    // while `info` is still dereferenced after re-entering G.
+    Microsoft::WRL::ComPtr<ID3D11Buffer> buffer_lifetime(buffer);
     EnterCriticalSectionPretty(&G->mCriticalSection);
     ResourceHandleInfo* info = custom_resource ? custom_resource->GetHandleInfo() : GetResourceHandleInfo(buffer);
     if (!info) {

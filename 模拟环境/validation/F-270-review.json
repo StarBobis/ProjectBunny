@@ -1,0 +1,112 @@
+{
+  "id": "F-270",
+  "status": "static-reviewed-no-active-defect-in-inspected-x64-export-path",
+  "utc": "2026-11-15T17:55:57.722575+00:00",
+  "summary": "F270仅按已检x64公开路径静态归N：68个KMT出口均跳向GDI32同名IAT，29个报告C++零桩未绑定。不改生产代码，不增加已修复数；F160本地CoreCreateDevice宽度风险保留，完整私有ABI待证。",
+  "scope": "Archived x64 Release d3d11/dxgi PE export mechanism; no new DLL load/call or full run",
+  "fromGroup": "C",
+  "toGroup": "N",
+  "sourceCommit": "bb1aa6c90e5e15cc1c13f9ef0144a3d1e40598a0",
+  "archiveCheckedUtc": "2026-11-15T17:38:26.645007+00:00",
+  "productionCodeChanged": false,
+  "newSpecialOrFullRunExecuted": false,
+  "countAsRepaired": false,
+  "currentBuiltImagesRechecked": false,
+  "targetGameValidated": false,
+  "archiveEvidenceSummary": "build/report-f270-prep/evidence-summary.json",
+  "archiveEvidenceSummarySha256": "6FEEFF32D631C0CBC4F51F90699E632F3F0B2588162A027099B127BAF8F00D46",
+  "evidenceFiles": [
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\mapping.json",
+      "sha256": "6CD96F61DD74756E2826AAEA67B69433E0FCF86DB29386AACFDB8E4A34AFC29A"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\mapping.tsv",
+      "sha256": "EC29D33B0ED13795D9768BCECF7C19A20FD397B5755AEFEA0F55CB50887E5389"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\findings.txt",
+      "sha256": "ADB205325EF9E4C29D2BCDA4D924C447BD2F5AAEB7D499C2957F82D94AC0932D"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\artifact-manifest.json",
+      "sha256": "E0C843F95ABED84802281FD7C6CC017ED6095469697A3B872E3E4A35DF0F3C74"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\build-info-bb1aa6c.json",
+      "sha256": "B18BAE73520E499C7BB9C35E9720361E87ACFA7DC052501AD1BD6F01CC2BCCB0"
+    },
+    {
+      "path": "模拟环境\\build\\w\\r\\模拟环境\\build\\adversarial-F270-attribution\\result.json",
+      "sha256": "B37618A06ACE58B1DA407FB7459A61673E13D1A8361886A375F1CA80360D520B"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\evidence-d3d11.dll",
+      "sha256": "9B21A6975062D2B8A2A58A4C8C52D15D64BDBA416E69CED4C9F2B6528851FACA"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\evidence-dxgi.dll",
+      "sha256": "1BA9CDD0FD58A11B143B27DF4BB4943A31E035DC727FBBD658A4AA287ECE4F69"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\proxy-core-create-device-disassembly.txt",
+      "sha256": "BC656E0A3EEC56E0EBCF5037DF67FA9B0FD2B84127968FF6AFAC239E18A220F4"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\system-core-create-device-disassembly.txt",
+      "sha256": "C2EF1D0E0A1F2EE2EF8C2E9534ED61E8EED7E841F836A80EE203A219F8F65346"
+    },
+    {
+      "path": "模拟环境\\build\\w\\i\\build\\abi-f160-f270\\existing-F291-kmt-binding.stdout.txt",
+      "sha256": "2E62DAF4DE91EF5C3C9EEE66E23A6B4991C5BC08E326397D9126430BF362FDF0"
+    }
+  ],
+  "exportCounts": {
+    "d3d11": 44,
+    "dxgi": 45,
+    "KmtPublicEndpoints": 68,
+    "distinctSdkNtstatusPointerSignatures": 34,
+    "bypassedDxgiZeroStubs": 29
+  },
+  "F160": {
+    "suggestedGroup": "C",
+    "blanketWithdrawalAllowed": false,
+    "remainingLocalExport": "D3D11CoreCreateDevice",
+    "proxyRva": "0x559A0",
+    "completePrivateAbiProven": false
+  },
+  "limitations": [
+    "No new dynamic KMT/private-entry invocation",
+    "No current rebuilt DLL recheck",
+    "No x86/Debug/other-toolchain or target-game verification",
+    "Disk import names do not certify live provider paths for every process"
+  ],
+  "existingF291DynamicEvidence": "Only its original GetSharedPrimaryHandle entry; not 68 new dynamic tests",
+  "countsBefore": {
+    "A": 23,
+    "B": 41,
+    "C": 29,
+    "R": 26,
+    "X": 4,
+    "E": 8,
+    "D12": 4,
+    "N": 7
+  },
+  "countsAfter": {
+    "A": 23,
+    "B": 41,
+    "C": 28,
+    "R": 26,
+    "X": 4,
+    "E": 8,
+    "D12": 4,
+    "N": 8
+  },
+  "activeCandidatesBefore": 119,
+  "activeCandidatesAfter": 118,
+  "eligibleDefectsBefore": 93,
+  "eligibleDefectsAfter": 92,
+  "eligiblePerformanceItems": 4,
+  "completedListUnchanged": true,
+  "commitLookup": "git log --fixed-strings --grep=F-270"
+}

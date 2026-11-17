@@ -464,11 +464,88 @@ void wrap_swap_chain(HackerDevice *hackerDevice,
 	}
 	else								// Upscaling case
 	{
-		swapchainWrap = new HackerUpscalingSwapChain(origSwapChain, hackerDevice, hackerContext,
-			origSwapChainDesc, overrideSwapChainDesc->BufferDesc.Width, overrideSwapChainDesc->BufferDesc.Height);
-		LogInfo("  HackerUpscalingSwapChain %p created to wrap %p.\n", swapchainWrap, origSwapChain);
+		// Snapshot the user's original intent.  A failed fake-resource
+		// creation below clears G->SCREEN_UPSCALING, but the fullscreen
+		// restore must still follow what the user asked for.
+		const int requestedUpscaling = G->SCREEN_UPSCALING;
+		IDXGISwapChain1 *fakeSwapChain = nullptr;
+		ID3D11Texture2D *fakeBackBuffer = nullptr;
 
-		if (G->SCREEN_UPSCALING == 2 || !origSwapChainDesc->Windowed)
+		// F-113: create the fake resources before the wrapper.  This is the
+		// same DXGI/D3D work the constructor used to do; on success the
+		// wrapper below carries the same resources and values as before.
+		const HRESULT upscaleHr = HackerUpscalingSwapChain::CreateFakeSwapChain(
+			origSwapChain, hackerDevice, origSwapChainDesc,
+			&fakeSwapChain, &fakeBackBuffer);
+
+		if (SUCCEEDED(upscaleHr))
+		{
+			swapchainWrap = new HackerUpscalingSwapChain(origSwapChain, hackerDevice, hackerContext,
+				fakeSwapChain, fakeBackBuffer,
+				overrideSwapChainDesc->BufferDesc.Width, overrideSwapChainDesc->BufferDesc.Height);
+			LogInfo("  HackerUpscalingSwapChain %p created to wrap %p.\n", swapchainWrap, origSwapChain);
+		}
+		else
+		{
+			// Failure only: never hand a half-initialised upscaling object to
+			// the game (its GetBuffer/ResizeBuffers would DoubleBeepExit).
+			if (fakeSwapChain)
+			{
+				fakeSwapChain->Release();
+				fakeSwapChain = nullptr;
+			}
+			if (fakeBackBuffer)
+			{
+				fakeBackBuffer->Release();
+				fakeBackBuffer = nullptr;
+			}
+
+			LogOverlay(LOG_DIRE, "*** Upscaling disabled: fake swap chain creation failed (%08x); "
+				"falling back to plain HackerSwapChain.\n", upscaleHr);
+			BeepFailure2();
+			G->SCREEN_UPSCALING = 0;
+
+
+			// Do NOT simplify these guards: the BufferCount=0 regression case pins
+			// them. Removing them re-introduces 0xC0000005 inside System32 dxgi.dll
+			// (RVA 0x33e76) on the fallback path.
+
+			// Best effort: put the real chain back to the game desc, but only
+			// when the desc is usable.  A bad injected desc (BufferCount=0,
+			// zero size, unknown format) must skip the resize entirely instead
+			// of handing DXGI an invalid call.
+			if (origSwapChain && origSwapChainDesc &&
+				origSwapChainDesc->BufferCount > 0 &&
+				origSwapChainDesc->BufferDesc.Width > 0 &&
+				origSwapChainDesc->BufferDesc.Height > 0)
+			{
+				DXGI_SWAP_CHAIN_DESC realDesc{};
+				DXGI_FORMAT resizeFormat = origSwapChainDesc->BufferDesc.Format;
+				if (SUCCEEDED(origSwapChain->GetDesc(&realDesc)) &&
+					realDesc.BufferDesc.Format != DXGI_FORMAT_UNKNOWN)
+					resizeFormat = realDesc.BufferDesc.Format;
+				if (resizeFormat != DXGI_FORMAT_UNKNOWN)
+				{
+					const HRESULT resizeHr = origSwapChain->ResizeBuffers(
+						origSwapChainDesc->BufferCount,
+						origSwapChainDesc->BufferDesc.Width,
+						origSwapChainDesc->BufferDesc.Height,
+						resizeFormat, 0);
+					if (FAILED(resizeHr))
+						LogOverlay(LOG_DIRE, "*** Upscaling fallback: resize to game desc failed (%08x); "
+							"the game may render into a sub-rect.\n", resizeHr);
+				}
+				else
+					LogOverlay(LOG_DIRE, "*** Upscaling fallback: resize skipped (unknown format).\n");
+			}
+			else
+				LogOverlay(LOG_DIRE, "*** Upscaling fallback: resize skipped (invalid game desc).\n");
+
+			swapchainWrap = new HackerSwapChain(origSwapChain, hackerDevice, hackerContext);
+			LogInfo("  HackerSwapChain %p created as upscaling fallback of %p.\n", swapchainWrap, origSwapChain);
+		}
+
+		if (origSwapChainDesc && (requestedUpscaling == 2 || !origSwapChainDesc->Windowed))
 		{
 			// Some games react very strange (like render nothing) if set full screen state is called here)
 			// Other games like The Witcher 3 need the call to ensure entering the full screen on start
@@ -1246,3 +1323,4 @@ HRESULT __stdcall Hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFa
 //}
 //
 //
+

@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <new>
+#include <cerrno>
+#include <climits>
 
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
@@ -73,11 +76,13 @@ extern CRITICAL_SECTION resource_creation_mode_lock;
 
 // -----------------------------------------------------------------------------------------------
 
-// Create hash code for textures or buffers.  
+// Create hash code for textures or buffers.
 
-// Wrapped in try/catch because it can crash in Dirt Rally,
-// because of noncontiguous or non-mapped memory for the texture.  Not sure this
-// is the best strategy.
+// The caller must guarantee that [buffer, buffer + length) is readable for the
+// duration of this call. This function is not an SEH/access-violation barrier:
+// this DLL is built with /EHsc, so catch(...) can only see C++ exceptions, and
+// crc32c_append neither allocates nor throws. Do not add __try/__except or
+// return 0 here to hide a bad caller - validate the length where it is derived.
 
 // Now switching to use crc32_append instead of fnv_64_buf for performance. This
 // implementation of crc32c uses the SSE 4.2 instructions in the CPU to calculate,
@@ -86,20 +91,9 @@ extern CRITICAL_SECTION resource_creation_mode_lock;
 // Not changing shader hash calculation as there are thousands of shaders already
 // in the field, and there is no known bottleneck for that calculation.
 
-static uint32_t crc32c_hw(uint32_t seed, const void *buffer, size_t length)
+static uint32_t crc32c_hw(uint32_t seed, const void *buffer, size_t length) noexcept
 {
-	try
-	{
-		const uint8_t *cast_buffer = static_cast<const uint8_t*>(buffer);
-
-		return crc32c_append(seed, cast_buffer, length);
-	}
-	catch (...)
-	{
-		// Fatal error, but catch it and return null for hash.
-		LogInfo("   ******* Exception caught while calculating crc32c_hw hash ******\n");
-		return 0;
-	}
+	return crc32c_append(seed, static_cast<const uint8_t*>(buffer), length);
 }
 
 
@@ -134,7 +128,7 @@ static UINT64 fnv_64_buf(const void *buf, size_t len)
 static char *RightStripA(char *buf)
 {
 	char *end = buf + strlen(buf) - 1;
-	while (end > buf && isspace(*end))
+	while (end > buf && isspace(static_cast<unsigned char>(*end)))
 		end--;
 	*(end + 1) = 0;
 	return end;
@@ -148,12 +142,30 @@ static wchar_t *RightStripW(wchar_t *buf)
 	return end;
 }
 
+template<size_t Size>
+static bool ConvertStringParameter(const wchar_t *value, char (&buffer)[Size])
+{
+	size_t required = 0, converted = 0;
+	errno_t error = wcstombs_s(&required, nullptr, 0, value, 0);
+	if (!error && required > Size)
+		error = ERANGE;
+	if (!error)
+		error = wcstombs_s(&converted, buffer, Size, value, _TRUNCATE);
+	if (error || converted != required) {
+		buffer[0] = 0;
+		LogInfo("WARNING: Parameter conversion failed or exceeded %zu bytes (error %d)\n", Size, error);
+		return false;
+	}
+	return true;
+}
+
 static char *readStringParameter(wchar_t *val)
 {
 	static char buf[MAX_PATH];
-	wcstombs(buf, val, MAX_PATH);
+	if (!ConvertStringParameter(val, buf) || !buf[0])
+		return buf;
 	RightStripA(buf);
-	char *start = buf; while (isspace(*start)) start++;
+	char *start = buf; while (isspace(static_cast<unsigned char>(*start))) start++;
 	return start;
 }
 
@@ -769,7 +781,7 @@ static string BinaryToAsmText(const void *pShaderBytecode, size_t BytecodeLength
 	vector<byte> disassembly;
 	HRESULT r;
 
-	comments = "//   using 3Dmigoto v" + string(VER_FILE_VERSION_STR) + " on " + LogTime() + "//\n";
+	comments = "//   using 3Dmigoto v" + string(MigotoFileVersionString()) + " on " + LogTime() + "//\n";
 	memcpy(byteCode.data(), pShaderBytecode, BytecodeLength);
 
 #if MIGOTO_DX == 9
@@ -799,7 +811,7 @@ static string BinaryToAsmText(const void *pShaderBytecode, size_t BytecodeLength
 
 //static string GetShaderModel(const void *pShaderBytecode)
 //{
-//	Shader *shader = DecodeDXBC((uint32_t*)pShaderBytecode);
+//	Shader *shader = DecodeDXBC(pShaderBytecode, bytecodeSize);
 //	if (shader == nullptr)
 //		return "";
 //
@@ -869,26 +881,73 @@ static string GetShaderModel(const void *pShaderBytecode, size_t bytecodeLength)
 
 static HRESULT CreateTextFile(wchar_t *fullPath, string *asmText, bool overwrite)
 {
-	FILE *f;
+	try {
+		if (!overwrite && GetFileAttributesW(fullPath) != INVALID_FILE_ATTRIBUTES)
+			return HRESULT_FROM_WIN32(ERROR_FILE_EXISTS);
 
-	if (!overwrite) {
-		_wfopen_s(&f, fullPath, L"rb");
-		if (f)
-		{
-			fclose(f);
-			LogInfoW(L"    CreateTextFile error: file already exists %s\n", fullPath);
-			return ERROR_FILE_EXISTS;
+		wstring destination(fullPath);
+		const size_t separator = destination.find_last_of(L"/\\");
+		wstring directory = separator == wstring::npos ? L"" : destination.substr(0, separator + 1);
+		if (separator == wstring::npos && destination.size() >= 2 && destination[1] == L':')
+			directory = destination.substr(0, 2);
+		static volatile LONG sequence = 0;
+		wstring temporary;
+		HANDLE file = INVALID_HANDLE_VALUE;
+		DWORD error = ERROR_FILE_EXISTS;
+		for (unsigned attempt = 0; attempt < 32; ++attempt) {
+			wchar_t name[13];
+			swprintf_s(name, ARRAYSIZE(name), L"%08lx.tmp", GetCurrentProcessId() ^ static_cast<DWORD>(InterlockedIncrement(&sequence)));
+			temporary = directory + name;
+			file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file != INVALID_HANDLE_VALUE)
+				break;
+			error = GetLastError();
+			if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+				return HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE);
 		}
-	}
+		if (file == INVALID_HANDLE_VALUE)
+			return HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE);
 
-	_wfopen_s(&f, fullPath, L"wb");
-	if (f)
-	{
-		fwrite(asmText->data(), 1, asmText->size(), f);
-		fclose(f);
+		// All allocations precede acquiring the handle. Never publish partial
+		// bytes, and only remove the staging file created by this invocation.
+		error = ERROR_SUCCESS;
+		for (size_t offset = 0; offset < asmText->size();) {
+			const size_t remaining = asmText->size() - offset;
+			const DWORD count = static_cast<DWORD>(remaining > 1024 * 1024 ? 1024 * 1024 : remaining);
+			DWORD written = 0;
+			if (!WriteFile(file, asmText->data() + offset, count, &written, nullptr)) {
+				error = GetLastError();
+				if (!error) error = ERROR_WRITE_FAULT;
+				break;
+			}
+			if (written != count) {
+				error = ERROR_WRITE_FAULT;
+				break;
+			}
+			offset += written;
+		}
+		if (!error && !FlushFileBuffers(file)) {
+			error = GetLastError();
+			if (!error) error = ERROR_WRITE_FAULT;
+		}
+		const BOOL closed = CloseHandle(file);
+		if (!closed && !error) {
+			error = GetLastError();
+			if (!error) error = ERROR_WRITE_FAULT;
+		}
+		if (!error && !MoveFileExW(temporary.c_str(), fullPath,
+			MOVEFILE_WRITE_THROUGH | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0))) {
+			error = GetLastError();
+			if (!error) error = ERROR_GEN_FAILURE;
+		}
+		if (error) {
+			DeleteFileW(temporary.c_str());
+			return HRESULT_FROM_WIN32(error);
+		}
+		return S_OK;
+	} catch (const std::bad_alloc&) {
+		return E_OUTOFMEMORY;
 	}
-
-	return S_OK;
 }
 
 // Get shader type from asm, first non-commented line.  CS, PS, VS.
@@ -931,43 +990,43 @@ static HRESULT CreateHLSLTextFile(UINT64 hash, string hlslText)
 // Parses the name of one of the IniParam constants: x, y, z, w, x1, y1, ..., z7, w7
 static bool ParseIniParamName(const wchar_t *name, int *idx, float DirectX::XMFLOAT4::**component)
 {
-	int ret, len1, len2;
-	wchar_t component_chr;
-	size_t length = wcslen(name);
-
-	ret = swscanf_s(name, L"%lc%n%u%n", &component_chr, 1, &len1, idx, &len2);
-
-	// May or may not have matched index. Make sure entire string was
-	// matched either way and check index is valid if it was matched:
-	if (ret == 1 && len1 == length) {
-		*idx = 0;
-	} else if (ret == 2 && len2 == length) {
-#if MIGOTO_DX == 9
-		// Added gating for this DX9 specific limitation that we definitely do
-		// not want to enforce in DX11 as that would break a bunch of mods -DSS
-		if (*idx >= 225)
-			return false;
-#endif // MIGOTO_DX == 9
-	} else {
+	if (!name || !idx || !component || !*name)
 		return false;
-	}
-
-	switch (towlower(component_chr)) {
+	float DirectX::XMFLOAT4::*parsed_component;
+	switch (towlower(name[0])) {
 		case L'x':
-			*component = &DirectX::XMFLOAT4::x;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::x;
+			break;
 		case L'y':
-			*component = &DirectX::XMFLOAT4::y;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::y;
+			break;
 		case L'z':
-			*component = &DirectX::XMFLOAT4::z;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::z;
+			break;
 		case L'w':
-			*component = &DirectX::XMFLOAT4::w;
-			return true;
+			parsed_component = &DirectX::XMFLOAT4::w;
+			break;
+		default:
+			return false;
 	}
-
-	return false;
+	int parsed_index = 0;
+	if (name[1]) {
+		wchar_t *end = nullptr;
+		errno = 0;
+		const long long value = wcstoll(name + 1, &end, 10);
+		// Every consumer reserves index + 1 in a signed int. Keep the
+		// existing nonnegative scanf forms, without wrapping or truncating.
+		if (end == name + 1 || *end || errno == ERANGE || value < 0 || value >= INT_MAX)
+			return false;
+		parsed_index = static_cast<int>(value);
+	}
+#if MIGOTO_DX == 9
+	if (parsed_index >= 225)
+		return false;
+#endif
+	*idx = parsed_index;
+	*component = parsed_component;
+	return true;
 }
 
 // -----------------------------------------------------------------------------------------------

@@ -1,0 +1,29 @@
+{
+  "id": "F-281",
+  "status": "pending-native-modifier-validation",
+  "summary": "新增原生NEG合法，但公开链先因-l多词收集失败，未到新fallback；positive失败归属已纠正为重建shader的UINT marker，original XY没有保存。候选继续hold，不计完成。",
+  "candidatePatchSha256": "C27CF20336AEB7026D1CA3A99CD2601CC3D2A2A1706B1DA35C28A2A86CC14735",
+  "productionCodeChanged": false,
+  "rootFullExecuted": false,
+  "countAsRepaired": false,
+  "originalReview": "validation/F-281-candidate-review.json",
+  "probeHandoff": "build/w/j/模拟环境/build/f281-raw-uint/handoff.md",
+  "clarification": "build/w/j/模拟环境/build/f281-raw-uint/results-clarification.json",
+  "clarificationSha256": "27EE89C65DD47E1FB67223EEE8762C589B392CB79A1F17A391766BF1DF3E1D2D",
+  "clarificationText": "build/w/j/模拟环境/build/f281-raw-uint/CLARIFICATION-positive-attribution.md",
+  "clarificationTextSha256": "FCE2BB6109E776E2836936E392C74C39C189F71FB8A65CE6D886E6007F82D5CF",
+  "nativeModifierLegal": true,
+  "canonicalModifierPreserved": true,
+  "outerFallbackReached": false,
+  "positiveOriginalXYSaved": false,
+  "positiveOriginalMarkerPassed": true,
+  "positiveObservedFailureStage": "replacement UINT marker, not original",
+  "positiveReplacementObserved": [
+    "0x80000000",
+    "0x00000001",
+    "0x00000000",
+    "0x00000000"
+  ],
+  "result": "Not an equivalence PASS. Do not infer missing original XY, do not call the static outer-negation concern a reproduced public-chain numeric regression.",
+  "nextEvidence": "Need a legal public input that reaches the fallback and independently comparable native raw output; preserve all existing marker and equality assertions."
+}

@@ -15,10 +15,13 @@
 #include "HackerDevice.h"
 #include "HookedDevice.h"
 #include "FrameAnalysis.h"
+#include "ShaderHeader.h"
 
 #include <D3Dcompiler.h>
 #include <wrl/client.h>
 #include <codecvt>
+#include <cmath>
+#include <limits>
 
 #include "log.h"
 #include "util.h"
@@ -248,6 +251,21 @@ HackerDevice::HackerDevice(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pConte
 	mOrigContext1 = pContext1;
 	// Must be done after mOrigDevice1 is set:
 	mUnknown = register_hacker_device(this);
+}
+
+// F-112 (A): HackerDevice owns one reference to the captured z buffer SRV.
+// Release it before the object goes away; clear the pointer afterwards so a
+// later reader cannot observe a released value.
+long HackerDevice::ReleaseZBufferResourceView()
+{
+	if (!mZBufferResourceView)
+		return -1;
+
+	ID3D11ShaderResourceView *view = mZBufferResourceView;
+	long result = view->Release();
+	mZBufferResourceView = nullptr;
+	LogInfo("  releasing z buffer resource view, result = %d\n", result);
+	return result;
 }
 
 HRESULT HackerDevice::CreateIniParamResources()
@@ -688,12 +706,18 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 
 		DWORD srcDataSize = GetFileSize(f, 0);
 		char *srcData = new char[srcDataSize];
-		DWORD readSize;
-		FILETIME ftWrite;
-		if (!ReadFile(f, srcData, srcDataSize, &readSize, 0)
-			|| !GetFileTime(f, NULL, NULL, &ftWrite)
-			|| srcDataSize != readSize)
+		DWORD readSize = 0;
+		FILETIME ftWrite{};
+		if (!ReadFile(f, srcData, srcDataSize, &readSize, 0) || srcDataSize != readSize) {
 			LogInfo("    Error reading file.\n");
+			CloseHandle(f);
+			delete[] srcData;
+			return false;
+		}
+		if (!GetFileTime(f, NULL, NULL, &ftWrite)) {
+			LogInfo("    Shader input timestamp unavailable.\n");
+			ftWrite = {};
+		}
 		CloseHandle(f);
 		LogInfo("    Source code loaded. Size = %d\n", srcDataSize);
 
@@ -710,8 +734,7 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 			// Any HLSL compiled shaders are reloading candidates, if moved to ShaderFixes
 			pShaderModel = shaderModel;
 			pTimeStamp = ftWrite;
-			std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-			pHeaderLine = utf8_to_utf16.from_bytes(srcData, strchr(srcData, '\n'));
+			pHeaderLine = ReadShaderHeaderLine(srcData, readSize);
 
 			// Way too many obscure interractions in this function, using another
 			// temporary variable to not modify anything already here and reduce
@@ -755,8 +778,9 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 			{
 				LPVOID errMsg = errorMsgs->GetBufferPointer();
 				SIZE_T errSize = errorMsgs->GetBufferSize();
+				const SIZE_T textSize = errSize ? errSize - 1 : 0;
 				LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
-				fwrite(errMsg, 1, errSize - 1, LogFile);
+				if (textSize) fwrite(errMsg, 1, textSize, LogFile);
 				LogInfo("---------------------------------------------- END ----------------------------------------------\n");
 			}
 
@@ -818,12 +842,17 @@ static bool ReplaceASMShader(__in UINT64 hash, const wchar_t *pShaderType, const
 
 		DWORD srcDataSize = GetFileSize(f, 0);
 		vector<char> asmTextBytes(srcDataSize);
-		DWORD readSize;
-		FILETIME ftWrite;
-		if (!ReadFile(f, asmTextBytes.data(), srcDataSize, &readSize, 0)
-			|| !GetFileTime(f, NULL, NULL, &ftWrite)
-			|| srcDataSize != readSize)
+		DWORD readSize = 0;
+		FILETIME ftWrite{};
+		if (!ReadFile(f, asmTextBytes.data(), srcDataSize, &readSize, 0) || srcDataSize != readSize) {
 			LogInfo("    Error reading file.\n");
+			CloseHandle(f);
+			return false;
+		}
+		if (!GetFileTime(f, NULL, NULL, &ftWrite)) {
+			LogInfo("    Shader input timestamp unavailable.\n");
+			ftWrite = {};
+		}
 		CloseHandle(f);
 		LogInfo("    Asm source code loaded. Size = %d\n", srcDataSize);
 
@@ -838,8 +867,7 @@ static bool ReplaceASMShader(__in UINT64 hash, const wchar_t *pShaderType, const
 			// Any ASM shaders are reloading candidates, if moved to ShaderFixes
 			pShaderModel = shaderModel;
 			pTimeStamp = ftWrite;
-			std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-			pHeaderLine = utf8_to_utf16.from_bytes(asmTextBytes.data(), strchr(asmTextBytes.data(), '\n'));
+			pHeaderLine = ReadShaderHeaderLine(asmTextBytes.data(), readSize);
 
 			vector<byte> byteCode(pBytecodeLength);
 			memcpy(byteCode.data(), pShaderBytecode, pBytecodeLength);
@@ -952,6 +980,7 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 
 	ParseParameters p;
 	p.bytecode = pShaderBytecode;
+	p.bytecodeSize = BytecodeLength;
 	p.decompiled = asmText.c_str();
 	p.decompiledSize = asmText.size();
 	p.ZeroOutput = false;
@@ -1021,21 +1050,24 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 	{
 		LPVOID errMsg = pErrorMsgs->GetBufferPointer();
 		SIZE_T errSize = pErrorMsgs->GetBufferSize();
+		const SIZE_T textSize = errSize ? errSize - 1 : 0;
 		LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
-		fwrite(errMsg, 1, errSize - 1, LogFile);
+		if (textSize) fwrite(errMsg, 1, textSize, LogFile);
 		LogInfo("------------------------------------------- HLSL code -------------------------------------------\n");
 		fwrite(decompiledCode.c_str(), 1, decompiledCode.size(), LogFile);
 		LogInfo("\n---------------------------------------------- END ----------------------------------------------\n");
 
 		// And write the errors to the HLSL file as comments too, as a more convenient spot to see them.
-		fprintf_s(fw, "\n\n/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~ HLSL errors ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
-		fwrite(errMsg, 1, errSize - 1, fw);
-		fprintf_s(fw, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/\n");
+		if (fw) {
+			fprintf_s(fw, "\n\n/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~ HLSL errors ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
+			if (textSize) fwrite(errMsg, 1, textSize, fw);
+			fprintf_s(fw, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/\n");
+		}
 	}
 
 	// If requested by .ini, also write the newly re-compiled assembly code to the file.  This gives a direct
 	// comparison between original ASM, and recompiled ASM.
-	if ((G->EXPORT_HLSL >= 3) && pCompiledOutput)
+	if (fw && (G->EXPORT_HLSL >= 3) && pCompiledOutput)
 	{
 		asmText = BinaryToAsmText(pCompiledOutput->GetBufferPointer(), pCompiledOutput->GetBufferSize(), G->patch_cb_offsets);
 		if (asmText.empty())
@@ -1067,12 +1099,17 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 	if (fw)
 	{
 		// Any HLSL compiled shaders are reloading candidates, if moved to ShaderFixes
-		FILETIME ftWrite;
-		GetFileTime(fw, NULL, NULL, &ftWrite);
+		const bool write_ok = !ferror(fw);
+		const int close_result = fclose(fw);
+		fw = nullptr;
+		FILETIME ftWrite{};
+		WIN32_FILE_ATTRIBUTE_DATA attributes{};
+		if (write_ok && close_result == 0 && GetFileAttributesExW(val, GetFileExInfoStandard, &attributes))
+			ftWrite = attributes.ftLastWriteTime;
+		else
+			LogWarning("    unable to obtain completed HLSL export timestamp for %S\n", val);
 		foundShaderModel = shaderModel;
 		timeStamp = ftWrite;
-
-		fclose(fw);
 	}
 
 	return !!pCode;
@@ -1221,9 +1258,9 @@ HRESULT HackerDevice::ReplaceShaderFromShaderFixes(UINT64 hash,
 
 	if (G->hunting) {
 		// Hunting mode:  keep byteCode around for possible replacement or marking
-		ID3DBlob* blob;
-		hr = D3DCreateBlob(BytecodeLength, &blob);
-		if (SUCCEEDED(hr)) {
+		ID3DBlob* blob = nullptr;
+		const HRESULT capture_hr = D3DCreateBlob(BytecodeLength, &blob);
+		if (SUCCEEDED(capture_hr)) {
 			// We save the *original* shader bytecode, not the replaced shader,
 			// because we will use this in CopyToFixes and ShaderRegex in the
 			// event that the shader is deleted.
@@ -1231,6 +1268,16 @@ HRESULT HackerDevice::ReplaceShaderFromShaderFixes(UINT64 hash,
 			EnterCriticalSectionPretty(&G->mCriticalSection);
 			RegisterForReload(*ppShader, hash, shaderType, shaderModel, pClassLinkage, blob, ftWrite, headerLine, false);
 			LeaveCriticalSection(&G->mCriticalSection);
+		} else {
+			// Optional retention: never clobber the successful native shader HRESULT.
+			// D3DCreateBlob does not normally return a blob on failure, but release
+			// one defensively in case it does, so this branch cannot leak.
+			if (blob) {
+				blob->Release();
+				blob = nullptr;
+			}
+			LogWarning("Optional shader bytecode retention failed: hr=0x%08x; preserving native shader success.\n",
+				static_cast<unsigned>(capture_hr));
 		}
 	}
 
@@ -1240,7 +1287,7 @@ HRESULT HackerDevice::ReplaceShaderFromShaderFixes(UINT64 hash,
 		(hash, shaderType, *ppShader, pShaderBytecode, BytecodeLength, pClassLinkage);
 
 out_delete:
-	delete replaceShader;
+	delete[] replaceShader;
 	return hr;
 }
 
@@ -1282,9 +1329,9 @@ HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 	// regex engine counts as deferred, though that may change with optimisations in the future.
 	if (G->hunting || !shader_regex_groups.empty()) {
 		EnterCriticalSectionPretty(&G->mCriticalSection);
-			ID3DBlob* blob;
-			hr = D3DCreateBlob(BytecodeLength, &blob);
-			if (SUCCEEDED(hr)) {
+			ID3DBlob* blob = nullptr;
+			const HRESULT capture_hr = D3DCreateBlob(BytecodeLength, &blob);
+			if (SUCCEEDED(capture_hr)) {
 				memcpy(blob->GetBufferPointer(), pShaderBytecode, blob->GetBufferSize());
 				RegisterForReload(*ppShader, hash, shaderType, "bin", pClassLinkage, blob, {0}, L"", true);
 
@@ -1300,6 +1347,9 @@ HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 					(*ppShader)->AddRef();
 					G->mOriginalShaders[*ppShader] = *ppShader;
 				}
+			} else {
+				LogWarning("Optional shader bytecode retention failed: hr=0x%08x; preserving native shader success.\n",
+					static_cast<unsigned>(capture_hr));
 			}
 		LeaveCriticalSection(&G->mCriticalSection);
 	}
@@ -1446,6 +1496,11 @@ STDMETHODIMP_(ULONG) HackerDevice::Release(THIS)
 		LogInfo("  deleting self\n");
 
 		unregister_hacker_device(this);
+
+		// F-112 (A): drop the retained z buffer SRV reference before the
+		// object is destroyed. ReleaseZBufferResourceView() releases first and
+		// clears mZBufferResourceView afterwards.
+		ReleaseZBufferResourceView();
 
 		if (mIniResourceView)
 		{
@@ -1890,36 +1945,51 @@ static bool check_texture_override_iteration(TextureOverride *textureOverride)
 // buffer to be unstructured to allow it to be steroised when
 // StereoFlagsDX10=0x000C000.
 
-template <typename DescType>
-static void override_resource_desc_common_2d_3d(DescType *desc, TextureOverride *textureOverride)
+static bool override_resource_dimension(UINT* dimension, int absolute, float multiplier,
+		const char* name, const TextureOverride* textureOverride)
 {
-	if (textureOverride->format != -1) {
-		LogInfo("  setting custom format to %d\n", textureOverride->format);
-		desc->Format = (DXGI_FORMAT) textureOverride->format;
+	if (absolute != -1) {
+		if (absolute < 0) {
+			LogWarning("ERROR: Invalid resource override [%S]: %s=%d\n", textureOverride->ini_section.c_str(), name, absolute);
+			return false;
+		}
+		*dimension = static_cast<UINT>(absolute);
+		LogInfo("  setting custom %s to %u\n", name, *dimension);
 	}
-
-	if (textureOverride->width != -1) {
-		LogInfo("  setting custom width to %d\n", textureOverride->width);
-		desc->Width = textureOverride->width;
+	if (multiplier != 1.0f) {
+		// Retain the original float product and truncation for valid values.
+		const float scaled = *dimension * multiplier;
+		if (!std::isfinite(scaled) || scaled < 0 ||
+			static_cast<double>(scaled) > static_cast<double>((std::numeric_limits<UINT>::max)())) {
+			LogWarning("ERROR: Invalid resource override [%S]: %s_multiply=%g produces %g\n",
+				textureOverride->ini_section.c_str(), name, multiplier, scaled);
+			return false;
+		}
+		*dimension = static_cast<UINT>(scaled);
+		LogInfo("  multiplying custom %s by %f to %u\n", name, multiplier, *dimension);
 	}
-
-	if (textureOverride->width_multiply != 1.0f) {
-		desc->Width = (UINT)(desc->Width * textureOverride->width_multiply);
-		LogInfo("  multiplying custom width by %f to %d\n", textureOverride->width_multiply, desc->Width);
-	}
-
-	if (textureOverride->height != -1) {
-		LogInfo("  setting custom height to %d\n", textureOverride->height);
-		desc->Height = textureOverride->height;
-	}
-
-	if (textureOverride->height_multiply != 1.0f) {
-		desc->Height = (UINT)(desc->Height * textureOverride->height_multiply);
-		LogInfo("  multiplying custom height by %f to %d\n", textureOverride->height_multiply, desc->Height);
-	}
+	return true;
 }
 
-static void override_resource_desc(D3D11_BUFFER_DESC *desc, TextureOverride *textureOverride) {
+template <typename DescType>
+static bool override_resource_desc_common_2d_3d(DescType *desc, TextureOverride *textureOverride)
+{
+	bool valid = true;
+	if (textureOverride->format != -1) {
+		if (textureOverride->format < 0) {
+			LogWarning("ERROR: Invalid resource override [%S]: format=%d\n", textureOverride->ini_section.c_str(), textureOverride->format);
+			valid = false;
+		} else {
+			LogInfo("  setting custom format to %d\n", textureOverride->format);
+			desc->Format = static_cast<DXGI_FORMAT>(textureOverride->format);
+		}
+	}
+	const bool width_valid = override_resource_dimension(&desc->Width, textureOverride->width, textureOverride->width_multiply, "width", textureOverride);
+	const bool height_valid = override_resource_dimension(&desc->Height, textureOverride->height, textureOverride->height_multiply, "height", textureOverride);
+	return valid && width_valid && height_valid;
+}
+
+static bool override_resource_desc(D3D11_BUFFER_DESC *desc, TextureOverride *textureOverride) {
 	if (textureOverride->override_byte_width != -1) {
 		if (desc->ByteWidth < textureOverride->override_byte_width) {
 			LogInfo("  resizing buffer: %d->%d\n", desc->ByteWidth, textureOverride->override_byte_width);
@@ -1927,22 +1997,27 @@ static void override_resource_desc(D3D11_BUFFER_DESC *desc, TextureOverride *tex
 			desc->ByteWidth = textureOverride->override_byte_width;
 		}
 	}
+	return true;
 }
-static void override_resource_desc(D3D11_TEXTURE1D_DESC *desc, TextureOverride *textureOverride) {}
-static void override_resource_desc(D3D11_TEXTURE2D_DESC *desc, TextureOverride *textureOverride)
+static bool override_resource_desc(D3D11_TEXTURE1D_DESC *desc, TextureOverride *textureOverride) { return true; }
+static bool override_resource_desc(D3D11_TEXTURE2D_DESC *desc, TextureOverride *textureOverride)
 {
-	override_resource_desc_common_2d_3d(desc, textureOverride);
+	return override_resource_desc_common_2d_3d(desc, textureOverride);
 }
-static void override_resource_desc(D3D11_TEXTURE3D_DESC *desc, TextureOverride *textureOverride)
+static bool override_resource_desc(D3D11_TEXTURE3D_DESC *desc, TextureOverride *textureOverride)
 {
-	override_resource_desc_common_2d_3d(desc, textureOverride);
+	return override_resource_desc_common_2d_3d(desc, textureOverride);
 }
 
 template <typename DescType>
 static const DescType* process_texture_override(uint32_t hash,
 		const DescType *origDesc,
-		DescType *newDesc)
+		DescType *newDesc, bool& valid)
 {
+	// Consume configuration pointers and iteration state before reload can
+	// replace them. Only the caller-owned descriptor survives this scope.
+	CriticalSectionGuard(&G->mCriticalSection);
+	valid = true;
 	TextureOverrideMatches matches;
 	TextureOverride *textureOverride = NULL;
 	const DescType* ret = origDesc;
@@ -1975,11 +2050,22 @@ static const DescType* process_texture_override(uint32_t hash,
 			if (!check_texture_override_iteration(textureOverride))
 				continue;
 
-			override_resource_desc(newDesc, textureOverride);
+			if (!override_resource_desc(newDesc, textureOverride))
+				valid = false;
 		}
 	}
 
 	return ret;
+}
+
+template <typename DescType>
+static void log_resource_override_failure(HRESULT result, uint32_t hash, const DescType* original, const DescType* overridden)
+{
+	if (FAILED(result) && original != overridden) {
+		char description[256];
+		StrResourceDesc(description, sizeof(description), overridden);
+		LogWarning("ERROR: Resource creation failed with matching TextureOverride: hash=%08x, HRESULT=%08lx, descriptor=%s\n", hash, static_cast<unsigned long>(result), description);
+	}
 }
 
 STDMETHODIMP HackerDevice::CreateBuffer(THIS_
@@ -2006,7 +2092,12 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 		hash = crc32c_hw(hash, pDesc, sizeof(D3D11_BUFFER_DESC));
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppBuffer) *ppBuffer = nullptr;
+		return E_INVALIDARG;
+	}
 
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateBuffer(pNewDesc, pInitialData, ppBuffer);
@@ -2062,7 +2153,12 @@ STDMETHODIMP HackerDevice::CreateTexture1D(THIS_
 	LogDebug("  InitialData = %p, hash = %08lx\n", pInitialData, hash);
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppTexture1D) *ppTexture1D = nullptr;
+		return E_INVALIDARG;
+	}
 
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateTexture1D(pNewDesc, pInitialData, ppTexture1D);
@@ -2128,15 +2224,7 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 	LogDebug("HackerDevice::CreateTexture2D called with parameters\n");
 	if (pDesc)
 		LogDebugResourceDesc(pDesc);
-	if (pInitialData && pInitialData->pSysMem)
-	{
-		LogDebugNoNL("  pInitialData = %p->%p, SysMemPitch: %u, SysMemSlicePitch: %u ",
-			pInitialData, pInitialData->pSysMem, pInitialData->SysMemPitch, pInitialData->SysMemSlicePitch);
-		const uint8_t* hex = static_cast<const uint8_t*>(pInitialData->pSysMem);
-		for (size_t i = 0; i < 16; i++)
-			LogDebugNoNL(" %02hX", hex[i]);
-		LogDebug("\n");
-	}
+	LogDebugTexture2DInitialData(pDesc, pInitialData);
 
 	// Rectangular depth stencil textures of at least 640x480 may indicate
 	// the game's resolution, for games that upscale to their swap chains:
@@ -2175,12 +2263,18 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 	LogDebug("  InitialData = %p, hash = %08lx\n", pInitialData, hash);
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppTexture2D) *ppTexture2D = nullptr;
+		return E_INVALIDARG;
+	}
 
 	// Actual creation:
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateTexture2D(pNewDesc, pInitialData, ppTexture2D);
 	UnlockResourceCreationMode();
+	log_resource_override_failure(hr, hash, pDesc, pNewDesc);
 
 	if (ppTexture2D) LogDebug("  returns result = %x, handle = %p\n", hr, *ppTexture2D);
 
@@ -2253,11 +2347,17 @@ STDMETHODIMP HackerDevice::CreateTexture3D(THIS_
 	LogInfo("  InitialData = %p, hash = %08lx\n", pInitialData, hash);
 
 	// Override custom settings?
-	pNewDesc = process_texture_override(hash, pDesc, &newDesc);
+	bool override_valid;
+	pNewDesc = process_texture_override(hash, pDesc, &newDesc, override_valid);
+	if (!override_valid) {
+		if (ppTexture3D) *ppTexture3D = nullptr;
+		return E_INVALIDARG;
+	}
 
 	LockResourceCreationMode();
 	HRESULT hr = mOrigDevice1->CreateTexture3D(pNewDesc, pInitialData, ppTexture3D);
 	UnlockResourceCreationMode();
+	log_resource_override_failure(hr, hash, pDesc, pNewDesc);
 
 	// Register texture.
 	if (hr == S_OK && ppTexture3D)
@@ -2298,18 +2398,31 @@ STDMETHODIMP HackerDevice::CreateShaderResourceView(THIS_
 
 	HRESULT hr = mOrigDevice1->CreateShaderResourceView(pResource, pDesc, ppSRView);
 
-	// Check for depth buffer view.
-	if (hr == S_OK && G->ZBufferHashToInject && ppSRView)
+	// Check for depth buffer view. The hash lookup runs under mResourcesLock;
+	// AddRef/Release on the view are COM calls and happen outside that lock
+	// (same rule as the tracker installation in CreateTexture2D).
+	if (hr == S_OK && G->ZBufferHashToInject && ppSRView && *ppSRView)
 	{
+		bool match = false;
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 		unordered_map<ID3D11Resource *, ResourceHandleInfo>::iterator i = lookup_resource_handle_info(pResource);
-		if (i != G->mResources.end() && i->second.hash == G->ZBufferHashToInject)
-		{
-			LogInfo("  resource view of z buffer found: handle = %p, hash = %08lx\n", *ppSRView, i->second.hash);
-
-			mZBufferResourceView = *ppSRView;
-		}
+		match = i != G->mResources.end() && i->second.hash == G->ZBufferHashToInject;
 		LeaveCriticalSection(&G->mResourcesLock);
+
+		if (match)
+		{
+			LogInfo("  resource view of z buffer found: handle = %p, hash = %08lx\n",
+				*ppSRView, G->ZBufferHashToInject);
+
+			// F-112 (A): keep one reference of our own. AddRef the new view
+			// before replacing, then release the previous value exactly once.
+			ID3D11ShaderResourceView *view = *ppSRView;
+			view->AddRef();
+			ID3D11ShaderResourceView *previous = mZBufferResourceView;
+			mZBufferResourceView = view;
+			if (previous)
+				previous->Release();
+		}
 	}
 
 	LogDebug("  returns result = %x\n", hr);
