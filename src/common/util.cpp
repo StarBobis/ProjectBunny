@@ -516,7 +516,7 @@ void restore_om_state(IDirect3DDevice9 *device, struct OMState *state)
 		state->dsv->Release();
 }
 #elif MIGOTO_DX == 11
-void save_om_state(ID3D11DeviceContext *context, struct OMState *state)
+void save_om_state(ID3D11DeviceContext *context, struct OMState *state, ID3D11UnorderedAccessView** captured_uavs)
 {
 	int i;
 
@@ -541,7 +541,15 @@ void save_om_state(ID3D11DeviceContext *context, struct OMState *state)
 
 	// Finally get all the UAVs. Since we already retrieved the RTVs and
 	// DSV we can skip getting them:
-	context->OMGetRenderTargetsAndUnorderedAccessViews(0, NULL, NULL, state->UAVStartSlot, state->NumUAVs, state->uavs);
+	if (captured_uavs) {
+		for (UINT slot = 0; slot < state->NumUAVs; ++slot) {
+			auto& view = captured_uavs[state->UAVStartSlot + slot];
+			state->uavs[slot] = view;
+			view = nullptr;
+		}
+	} else {
+		context->OMGetRenderTargetsAndUnorderedAccessViews(0, NULL, NULL, state->UAVStartSlot, state->NumUAVs, state->uavs);
+	}
 }
 
 void restore_om_state(ID3D11DeviceContext *context, struct OMState *state)

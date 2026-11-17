@@ -1594,6 +1594,31 @@ static void test_compute_references()
     auto input_buffer = CreateComputeTestBuffer(device, D3D11_BIND_SHADER_RESOURCE, {5, 8, 11, 13});
     auto first_output = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {});
     auto second_output = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {});
+    D3D11_TEXTURE2D_DESC color_desc{};
+    color_desc.Width = color_desc.Height = 4;
+    color_desc.MipLevels = color_desc.ArraySize = color_desc.SampleDesc.Count = 1;
+    color_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    color_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    D3D11_TEXTURE2D_DESC depth_desc = color_desc;
+    depth_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ComPtr<ID3D11Texture2D> color, depth;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    ComPtr<ID3D11DepthStencilView> dsv;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&color_desc, nullptr, &color)) &&
+        SUCCEEDED(device.native->CreateTexture2D(&depth_desc, nullptr, &depth)) &&
+        SUCCEEDED(device.native->CreateRenderTargetView(color.Get(), nullptr, &rtv)) &&
+        SUCCEEDED(device.native->CreateDepthStencilView(depth.Get(), nullptr, &dsv)),
+        "compute ref: create the caller's color and depth targets");
+    auto* color_target = rtv.Get();
+    device.context->OMSetRenderTargets(1, &color_target, dsv.Get());
+    const auto check_om_targets = [&]() {
+        ComPtr<ID3D11RenderTargetView> color_view;
+        ComPtr<ID3D11DepthStencilView> depth_view;
+        device.context->OMGetRenderTargets(1, color_view.GetAddressOf(), depth_view.GetAddressOf());
+        require_batch(color_view.Get() == rtv.Get() && depth_view.Get() == dsv.Get(),
+            "compute ref: caller's RTV and DSV are preserved");
+    };
     CustomResource input, output;
     const auto set_resource = [&](CustomResource& target, ID3D11Buffer* buffer, DXGI_FORMAT format) {
         if (target.resource) target.resource->Release();
@@ -1652,9 +1677,11 @@ static void test_compute_references()
     require_batch(stats.compute_ref_hits == 0 && stats.literal_dispatches == 1 && stats.set_calls == 1,
         "compute ref: cold path builds the views and batches the SRV slots");
     run.run(&device.state);
-    require_batch(stats.compute_ref_hits == 2 && stats.literal_dispatches == 2 && stats.om_saves == 2 &&
-        stats.om_restores == 2 && ReadComputeTestBuffer(device, first_output.Get()) == std::array<UINT, 4>{10, 16, 0, 0},
-        "compute ref: warm SRV/UAV reuse still dispatches twice and preserves OM protection");
+    require_batch(stats.compute_ref_hits == 2 && stats.literal_dispatches == 2 && stats.om_uav_probes == 2 &&
+        stats.om_saves == 0 && stats.om_restores == 0 &&
+        ReadComputeTestBuffer(device, first_output.Get()) == std::array<UINT, 4>{10, 16, 0, 0},
+        "compute ref: both dispatches run while disjoint outputs need only one OM query each");
+    check_om_targets();
 
     set_resource(output, second_output.Get(), DXGI_FORMAT_R32_UINT);
     require_batch(dispatch->args[0].parse(&runtime_count, &ini_namespace, &scope) && !dispatch->optimise(device.device),
@@ -1665,11 +1692,55 @@ static void test_compute_references()
         ReadComputeTestBuffer(device, second_output.Get()) == std::array<UINT, 4>{5, 0, 0, 0},
         "compute ref: replacement UAV bypasses the cache and dynamic dispatch uses its runtime count");
 
+    D3D11_UNORDERED_ACCESS_VIEW_DESC om_view_desc{};
+    om_view_desc.Format = DXGI_FORMAT_R32_UINT;
+    om_view_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+    om_view_desc.Buffer.NumElements = 4;
+    ComPtr<ID3D11UnorderedAccessView> disjoint_uav, aliased_uav;
+    require_batch(SUCCEEDED(device.native->CreateUnorderedAccessView(first_output.Get(), &om_view_desc, &disjoint_uav)) &&
+        SUCCEEDED(device.native->CreateUnorderedAccessView(second_output.Get(), &om_view_desc, &aliased_uav)),
+        "compute ref: create disjoint and aliased OM UAVs");
+    const auto set_om_uav = [&](UINT slot, ID3D11UnorderedAccessView* view) {
+        std::array<ID3D11UnorderedAccessView*, D3D11_1_UAV_SLOT_COUNT> views{};
+        views[slot - 1] = view;
+        device.context->OMSetRenderTargetsAndUnorderedAccessViews(1, &color_target, dsv.Get(), 1, slot, views.data(), nullptr);
+    };
+    const auto check_om_uav = [&](UINT slot, ID3D11UnorderedAccessView* expected) {
+        ComPtr<ID3D11UnorderedAccessView> actual;
+        device.context->OMGetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, slot, 1, actual.GetAddressOf());
+        require_batch(actual.Get() == expected, "compute ref: OM UAV has the expected native binding");
+    };
+
+    set_om_uav(1, disjoint_uav.Get());
+    run.run(&device.state);
+    require_batch(stats.om_uav_probes == 4 && stats.om_saves == 0 && stats.om_restores == 0,
+        "compute ref: a disjoint OM UAV avoids save and restore");
+    check_om_uav(1, disjoint_uav.Get());
+    check_om_targets();
+
+    set_om_uav(1, aliased_uav.Get());
+    run.run(&device.state);
+    require_batch(stats.om_uav_probes == 5 && stats.om_saves == 1 && stats.om_restores == 1,
+        "compute ref: an overlapping OM UAV takes the snapshot and restore path");
+    check_om_uav(1, aliased_uav.Get());
+    check_om_targets();
+
+    if (device.native->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1) {
+        constexpr UINT extended_slot = 12;
+        set_om_uav(extended_slot, disjoint_uav.Get());
+        check_om_uav(extended_slot, disjoint_uav.Get());
+        run.run(&device.state);
+        require_batch(stats.om_uav_probes == 6 && stats.om_saves == 2 && stats.om_restores == 2,
+            "compute ref: an extended OM UAV slot keeps the legacy restore behavior");
+    }
+    set_om_uav(1, nullptr);
+
+    const unsigned hits_before_null = stats.compute_ref_hits;
     output.is_null = true;
     output_ref->run(&device.state);
     ComPtr<ID3D11UnorderedAccessView> bound;
     device.context->CSGetUnorderedAccessViews(0, 1, bound.GetAddressOf());
-    require_batch(!bound && stats.compute_ref_hits == 3, "compute ref: a null source unbinds the slot");
+    require_batch(!bound && stats.compute_ref_hits == hits_before_null, "compute ref: a null source unbinds the slot");
 
     auto dual_bind_buffer = CreateComputeTestBuffer(device, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, {});
     set_resource(output, dual_bind_buffer.Get(), DXGI_FORMAT_R32_UINT);

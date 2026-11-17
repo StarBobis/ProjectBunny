@@ -56,6 +56,7 @@ struct ShaderResourceBatchStats {
 	unsigned cb_get_calls = 0, cb_set_calls = 0, cb1_set_calls = 0;
 	unsigned uav_get_calls = 0, uav_set_calls = 0;
 	unsigned om_saves = 0, om_restores = 0;
+	unsigned om_uav_probes = 0;
 	unsigned compute_ref_hits = 0, literal_dispatches = 0;
 };
 
@@ -1123,7 +1124,8 @@ public:
 			UINT stride,
 			UINT offset,
 			DXGI_FORMAT format,
-			UINT buf_size, bool size_is_length=false, const ResourceOriginalMetadata* original_metadata=nullptr);
+			UINT buf_size, bool size_is_length=false, const ResourceOriginalMetadata* original_metadata=nullptr,
+			UINT compute_om_uav_slots=0);
 
 	// Caller holds G across lookup and consumption of the matches.
 	void FindTextureOverrides(
@@ -1257,6 +1259,7 @@ class ResourceCopyOperation : public CommandListCommand {
 	ID3D11Resource* compute_ref_resource = nullptr;
 	ID3D11Device1* compute_ref_device = nullptr;
 	ResourceCopyTargetType compute_ref_type = ResourceCopyTargetType::EMPTY;
+	UINT compute_ref_om_uav_slots = 0;
 	ID3D11View* cached_view = nullptr;
 public:
 	ResourceCopyTarget src;

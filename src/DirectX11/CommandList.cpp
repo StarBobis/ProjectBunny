@@ -2645,7 +2645,7 @@ static DXGI_FORMAT GetTextureFormat(ID3D11Resource* resource, D3D11_RESOURCE_DIM
 }
 
 static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource* resource, ID3D11View* view,
-    UINT* stride, UINT* offset, UINT* buf_size, DXGI_FORMAT* format)
+    UINT* stride, UINT* offset, UINT* buf_size, DXGI_FORMAT* format, bool* buffer_cannot_bind_om_target = nullptr)
 {
     D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     resource->GetType(&dimension);
@@ -2653,6 +2653,12 @@ static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource* resou
     if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
         D3D11_BUFFER_DESC desc = {};
         static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+        if (buffer_cannot_bind_om_target) {
+            constexpr UINT aliasable_flags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
+                D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_TILED;
+            *buffer_cannot_bind_om_target = !(desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
+                !(desc.MiscFlags & aliasable_flags);
+        }
         physical_bytes = desc.ByteWidth;
         // Preserve explicit caller metadata (including CB bound length) while
         // retaining the existing whole-buffer fallback when no size was supplied.
@@ -3300,6 +3306,36 @@ class CustomShaderStateScope {
 	bool viewport_saved = false;
 	bool outputs_saved = false;
 
+	static bool MayOverlapOmUav(ID3D11UnorderedAccessView* compute_view, ID3D11UnorderedAccessView* const* views, UINT count)
+	{
+		// The legacy restore only covers the first eight slots. Preserve its
+		// behavior whenever the runtime reports an extended OM binding.
+		for (UINT slot = D3D11_PS_CS_UAV_REGISTER_COUNT; slot < count; ++slot)
+			if (views[slot])
+				return true;
+		Microsoft::WRL::ComPtr<ID3D11Resource> compute_resource;
+		Microsoft::WRL::ComPtr<IUnknown> source_identity;
+		for (UINT slot = 0; slot < D3D11_PS_CS_UAV_REGISTER_COUNT; ++slot) {
+			if (!views[slot])
+				continue;
+			if (!compute_resource) {
+				compute_view->GetResource(compute_resource.GetAddressOf());
+				if (!compute_resource)
+					return true;
+			}
+			Microsoft::WRL::ComPtr<ID3D11Resource> bound_resource;
+			views[slot]->GetResource(bound_resource.GetAddressOf());
+			if (!bound_resource || bound_resource.Get() == compute_resource.Get())
+				return true;
+			if (!source_identity && (FAILED(compute_resource.As(&source_identity)) || !source_identity))
+				return true;
+			Microsoft::WRL::ComPtr<IUnknown> bound_identity;
+			if (FAILED(bound_resource.As(&bound_identity)) || !bound_identity || bound_identity.Get() == source_identity.Get())
+				return true;
+		}
+		return false;
+	}
+
 public:
 	explicit CustomShaderStateScope(CommandListState* state)
 		: state(state), previous(state->custom_shader_scope)
@@ -3315,14 +3351,35 @@ public:
 		viewport_saved = true;
 	}
 
-	void SaveOutputs()
+	void SaveOutputs(ID3D11UnorderedAccessView** captured_uavs = nullptr)
 	{
 		if (outputs_saved)
 			return;
-		save_om_state(state->mOrigContext1, &outputs);
+		save_om_state(state->mOrigContext1, &outputs, captured_uavs);
 		outputs_saved = true;
 		if (state->slot_batch_stats)
 			++state->slot_batch_stats->om_saves;
+	}
+
+	void SaveOutputsBeforeComputeUav(ID3D11UnorderedAccessView* view, UINT om_uav_slots)
+	{
+		if (outputs_saved)
+			return;
+		if (!om_uav_slots || !state->mHackerContext ||
+			state->mHackerContext->GetPassThroughOrigContext1() != state->mOrigContext1 ||
+			state->mOrigContext1->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) {
+			SaveOutputs();
+			return;
+		}
+		// The UAV's backing buffer cannot be bound as an RTV or DSV.
+		// Only the OM UAV bindings can alias it. Read them live; nothing
+		// about the context's bindings is cached between commands.
+		RetainedBindings<ID3D11UnorderedAccessView, D3D11_1_UAV_SLOT_COUNT> views(om_uav_slots);
+		state->mOrigContext1->OMGetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, om_uav_slots, views.values);
+		if (state->slot_batch_stats)
+			++state->slot_batch_stats->om_uav_probes;
+		if (MayOverlapOmUav(view, views.values, om_uav_slots))
+			SaveOutputs(views.values);
 	}
 
 	void Restore()
@@ -10370,7 +10427,7 @@ void ResourceCopyTarget::SetResource(
 		UINT stride,
 		UINT offset,
 		DXGI_FORMAT format,
-		UINT buf_size, bool size_is_length, const ResourceOriginalMetadata* original_metadata)
+		UINT buf_size, bool size_is_length, const ResourceOriginalMetadata* original_metadata, UINT compute_om_uav_slots)
 {
 	ID3D11DeviceContext1 *mOrigContext1 = state->mOrigContext1;
 	ID3D11Buffer *buf = NULL;
@@ -10553,8 +10610,8 @@ void ResourceCopyTarget::SetResource(
 			return;
 		case L'c':
 			// TODO: Allow pUAVInitialCounts to optionally be set
-			if (unordered_view)
-				BeforeCustomShaderOutputWrite(state);
+			if (unordered_view && state->custom_shader_scope)
+				state->custom_shader_scope->SaveOutputsBeforeComputeUav(unordered_view, compute_om_uav_slots);
 			mOrigContext1->CSSetUnorderedAccessViews(slot, 1, &unordered_view, &uav_counter);
 			return;
 		default:
@@ -12503,6 +12560,7 @@ void ResourceCopyOperation::ClearCachedView()
 	cached_view = nullptr;
 	compute_ref_resource = nullptr;
 	compute_ref_device = nullptr;
+	compute_ref_om_uav_slots = 0;
 }
 
 ResourceStagingOperation::ResourceStagingOperation()
@@ -12844,10 +12902,12 @@ static ResourceCopyTargetType EquivTarget(ResourceCopyTargetType type)
 
 static void PublishResourceBinding(ResourceCopyTarget& destination, CommandListState* state,
     ID3D11Resource* resource, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT size,
-    DeferredBinding* deferred, bool size_is_length = false, ResourceOriginalMetadata original_metadata = {})
+    DeferredBinding* deferred, bool size_is_length = false, ResourceOriginalMetadata original_metadata = {},
+    UINT compute_om_uav_slots = 0)
 {
     if (!deferred) {
-        destination.SetResource(state, resource, view, stride, offset, format, size, size_is_length, &original_metadata);
+        destination.SetResource(state, resource, view, stride, offset, format, size, size_is_length, &original_metadata,
+            compute_om_uav_slots);
         return;
     }
     // A native SRV batch consumes only the view, which retains its resource.
@@ -12907,7 +12967,8 @@ void ResourceCopyOperation::CopyResourceToResource(
 		++Profiling::resource_reference_copies;
 		if (state->slot_batch_stats)
 			++state->slot_batch_stats->compute_ref_hits;
-		PublishResourceBinding(dst, state, src_resource, cached_view, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred);
+		PublishResourceBinding(dst, state, src_resource, cached_view, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred,
+			false, {}, compute_ref_om_uav_slots);
 		return;
 	}
 	compute_ref_resource = nullptr;
@@ -12989,7 +13050,10 @@ void ResourceCopyOperation::CopyResourceToResource(
         cached_source_size_is_length != source_size_is_length ||
         (dst_custom_resource && (preserve_source_view || (!(options & ResourceCopyOptions::COPY_MASK) && src_view)) &&
             (dst_custom_resource->override_format != static_cast<DXGI_FORMAT>(-1) || dst_custom_resource->override_stride != -1));
-	FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format);
+	bool buffer_cannot_bind_om_target = false;
+	FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format,
+		plain_compute_ref && dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && !deferred ?
+		&buffer_cannot_bind_om_target : nullptr);
 	if (selected_window) {
 		offset = selected_offset;
 		buf_src_size = selected_size;
@@ -13110,12 +13174,20 @@ void ResourceCopyOperation::CopyResourceToResource(
 		buf_dst_size = 0;
 	}
 
-	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred, selected_window, original_metadata);
+	UINT compute_om_uav_slots = 0;
 	if (plain_compute_ref && dst_view && dst_view == cached_view) {
+		if (buffer_cannot_bind_om_target) {
+			const auto level = state->mOrigDevice1->GetFeatureLevel();
+			if (level >= D3D_FEATURE_LEVEL_11_0)
+				compute_om_uav_slots = level >= D3D_FEATURE_LEVEL_11_1 ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
+		}
 		compute_ref_resource = dst_resource;
 		compute_ref_device = state->mOrigDevice1;
 		compute_ref_type = dst.type;
+		compute_ref_om_uav_slots = compute_om_uav_slots;
 	}
+	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred,
+		selected_window, original_metadata, compute_om_uav_slots);
 
 	if (options & ResourceCopyOptions::SET_VIEWPORT)
 		SetViewportFromResource(state, dst_resource);
