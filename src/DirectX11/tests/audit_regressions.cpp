@@ -1523,6 +1523,33 @@ public:
     }
 };
 
+class CheckRenderTargetCommand final : public CommandListCommand {
+    ID3D11RenderTargetView* expected;
+public:
+    explicit CheckRenderTargetCommand(ID3D11RenderTargetView* expected) : expected(expected) {}
+    void run(CommandListState* state) override
+    {
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> bound;
+        state->mOrigContext1->OMGetRenderTargets(1, bound.GetAddressOf(), nullptr);
+        dx11_slot_test::require_batch(bound.Get() == expected,
+            "custom shader: render target matches the active calling scope");
+    }
+};
+
+class BindComputeOutputCommand final : public CommandListCommand {
+    ID3D11Resource* resource;
+    ID3D11UnorderedAccessView* view;
+public:
+    BindComputeOutputCommand(ID3D11Resource* resource, ID3D11UnorderedAccessView* view) : resource(resource), view(view) {}
+    void run(CommandListState* state) override
+    {
+        ResourceCopyTarget target;
+        target.type = ResourceCopyTargetType::UNORDERED_ACCESS_VIEW;
+        target.shader_type = L'c';
+        target.SetResource(state, resource, view, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+    }
+};
+
 class AutoTextureTestScope {
 public:
     std::vector<AutoCheckTextureSlot> saved_slots = G->auto_check_texture_slots;
@@ -1901,6 +1928,53 @@ void test_dx11_auto_texture_check_regression()
         require_batch(blend_state && inner.blend_state == blend_state && inner.blend_sample_mask == 0xaa &&
             !std::memcmp(inner.blend_factor, second, sizeof(second)),
             "custom shader: a repeated merge refreshes dynamic blend parameters");
+    }
+
+    {
+        auto output_desc = desc;
+        output_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
+        ComPtr<ID3D11Texture2D> output;
+        ComPtr<ID3D11RenderTargetView> rtv;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+        require_batch(SUCCEEDED(device.native->CreateTexture2D(&output_desc, nullptr, &output)) &&
+            SUCCEEDED(device.native->CreateRenderTargetView(output.Get(), nullptr, &rtv)) &&
+            SUCCEEDED(device.native->CreateUnorderedAccessView(output.Get(), nullptr, &uav)),
+            "custom shader: create real aliased OM/CS output views");
+        auto* raw = rtv.Get();
+        device.context->OMSetRenderTargets(1, &raw, nullptr);
+        const auto original_target = std::make_shared<CheckRenderTargetCommand>(raw);
+
+        CustomShader outer, inner;
+        RunCustomShaderCommand run_outer;
+        run_outer.custom_shader = &outer;
+        ShaderResourceBatchStats stats;
+        state.slot_batch_stats = &stats;
+        outer.command_list.commands = {std::make_shared<BindComputeOutputCommand>(nullptr, nullptr), original_target};
+        run_outer.run(&state);
+        require_batch(stats.om_saves == 0 && stats.om_restores == 0,
+            "custom shader: a null compute UAV bind needs no OM snapshot");
+
+        auto clear_output = std::make_shared<ResourceCopyOperation>();
+        clear_output->src.type = ResourceCopyTargetType::EMPTY;
+        clear_output->dst.type = ResourceCopyTargetType::RENDER_TARGET;
+        clear_output->dst.slot = 0;
+        inner.command_list.commands = {clear_output, std::make_shared<CheckRenderTargetCommand>(nullptr)};
+        auto run_inner = std::make_shared<RunCustomShaderCommand>();
+        run_inner->custom_shader = &inner;
+        outer.command_list.commands = {run_inner, original_target};
+        run_outer.run(&state);
+        require_batch(stats.om_saves == 1 && stats.om_restores == 1,
+            "custom shader: only the nested output writer saves and restores OM");
+
+        outer.command_list.commands = {std::make_shared<BindComputeOutputCommand>(output.Get(), uav.Get())};
+        run_outer.run(&state);
+        original_target->run(&state);
+        require_batch(stats.om_saves == 2 && stats.om_restores == 2,
+            "custom shader: retain OM restoration for a compute UAV alias");
+        state.slot_batch_stats = nullptr;
+        device.context->OMSetRenderTargets(0, nullptr, nullptr);
+        ID3D11UnorderedAccessView* empty = nullptr;
+        device.context->CSSetUnorderedAccessViews(0, 1, &empty, nullptr);
     }
 
     // A.4: 2000 draws, 20 candidate resources, 1980 no-candidate resources.

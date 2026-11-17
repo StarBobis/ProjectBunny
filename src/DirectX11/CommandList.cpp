@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string_view>
 #include <typeinfo>
+#include <utility>
 #include <cmath>
 #include <wrl/client.h>
 #include "HackerDevice.h"
@@ -1227,11 +1228,11 @@ static uint64_t AutoCheckTextureSlotKey(const ResourceCopyTarget& target)
 namespace {
 
 template<typename T, size_t Capacity>
-class DrawOverrideBindings {
+class RetainedBindings {
 	unsigned count;
 public:
 	T* values[Capacity];
-	explicit DrawOverrideBindings(unsigned count) : count(count)
+	explicit RetainedBindings(unsigned count) : count(count)
 	{
 		std::fill_n(values, count, nullptr);
 	}
@@ -1241,7 +1242,9 @@ public:
 			if (values[i]) values[i]->Release();
 		count = 0;
 	}
-	~DrawOverrideBindings() { clear(); }
+	~RetainedBindings() { clear(); }
+	RetainedBindings(const RetainedBindings&) = delete;
+	RetainedBindings& operator=(const RetainedBindings&) = delete;
 };
 
 // Caller holds G for the slot configuration and TextureOverride candidates.
@@ -1255,14 +1258,14 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 		return HasTextureOverrideCandidate(buffer.Get(), info, G->track_region_hashes);
 	}
 	if (first.type == ResourceCopyTargetType::VERTEX_BUFFER) {
-		DrawOverrideBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+		RetainedBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 		context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
 		for (unsigned i = 0; i < range.count; ++i)
 			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
 				return true;
 		return false;
 	}
-	DrawOverrideBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+	RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 	switch (first.shader_type) {
 	case L'p': context->PSGetShaderResources(first.slot, range.count, bindings.values); break;
 	case L'v': context->VSGetShaderResources(first.slot, range.count, bindings.values); break;
@@ -1518,7 +1521,7 @@ public:
 			return;
 
 		const auto count = static_cast<unsigned>(checks.size());
-		DrawOverrideBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(count);
+		RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(count);
 		const auto& first = checks.front()->target;
 		GetShaderResourcesBatch(state, first.shader_type, first.slot, count, bindings.values);
 		for (unsigned i = 0; i < count; ++i) {
@@ -2724,12 +2727,15 @@ void UpscalingFlipBBCommand::run(CommandListState *state)
 	G->bb_is_upscaling_bb = false;
 }
 
+static void BeforeCustomShaderOutputWrite(CommandListState* state);
+
 void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 {
 	COMMAND_LIST_LOG(state, "[%S] special = draw_3dmigoto_overlay\n", ini_section.c_str());
 
 	HackerSwapChain *mHackerSwapChain = state->mHackerDevice->GetHackerSwapChain();
 	if (mHackerSwapChain && mHackerSwapChain->mOverlay) {
+		BeforeCustomShaderOutputWrite(state);
 		mHackerSwapChain->mOverlay->DrawOverlay();
 		G->suppress_overlay = true;
 	}
@@ -3261,42 +3267,66 @@ struct saved_shader_inst
 	}
 };
 
-class CustomShaderViewportScope {
+class CustomShaderStateScope {
 	CommandListState* state;
-	CustomShaderViewportScope* previous;
-	UINT count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+	CustomShaderStateScope* previous;
+	UINT viewport_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
 	D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-	bool captured = false;
+	struct OMState outputs;
+	bool viewport_saved = false;
+	bool outputs_saved = false;
 
 public:
-	explicit CustomShaderViewportScope(CommandListState* state)
-		: state(state), previous(state->viewport_scope)
+	explicit CustomShaderStateScope(CommandListState* state)
+		: state(state), previous(state->custom_shader_scope)
 	{
-		state->viewport_scope = this;
+		state->custom_shader_scope = this;
 	}
 
-	void Capture()
+	void SaveViewports()
 	{
-		if (captured)
+		if (viewport_saved)
 			return;
-		state->mOrigContext1->RSGetViewports(&count, viewports);
-		captured = true;
+		state->mOrigContext1->RSGetViewports(&viewport_count, viewports);
+		viewport_saved = true;
+	}
+
+	void SaveOutputs()
+	{
+		if (outputs_saved)
+			return;
+		save_om_state(state->mOrigContext1, &outputs);
+		outputs_saved = true;
+		if (state->slot_batch_stats)
+			++state->slot_batch_stats->om_saves;
 	}
 
 	void Restore()
 	{
-		if (captured) {
-			state->mOrigContext1->RSSetViewports(count, viewports);
-			captured = false;
+		if (viewport_saved) {
+			state->mOrigContext1->RSSetViewports(viewport_count, viewports);
+			viewport_saved = false;
+		}
+		if (outputs_saved) {
+			restore_om_state(state->mOrigContext1, &outputs);
+			outputs_saved = false;
+			if (state->slot_batch_stats)
+				++state->slot_batch_stats->om_restores;
 		}
 	}
 
-	~CustomShaderViewportScope()
+	~CustomShaderStateScope()
 	{
 		Restore();
-		state->viewport_scope = previous;
+		state->custom_shader_scope = previous;
 	}
 };
+
+static void BeforeCustomShaderOutputWrite(CommandListState* state)
+{
+	if (state->custom_shader_scope)
+		state->custom_shader_scope->SaveOutputs();
+}
 
 void RunCustomShaderCommand::run(CommandListState *state)
 {
@@ -3315,7 +3345,6 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	UINT saved_sample_mask;
 	UINT saved_stencil_ref;
 	bool saved_post;
-	struct OMState om_state;
 	UINT i;
 	D3D11_PRIMITIVE_TOPOLOGY saved_topology;
 	UINT num_sampler = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
@@ -3397,9 +3426,9 @@ void RunCustomShaderCommand::run(CommandListState *state)
 		mOrigContext1->PSGetSamplers(0, num_sampler, saved_sampler_states);
 		mOrigContext1->PSSetSamplers(0, 1, &custom_shader->sampler_state); //just one slot for the moment TODO: allow more via *.ini file
 	}
-	CustomShaderViewportScope viewport_scope(state);
-	// Save all RTVs, UAVs and DSVs for the command lists below.
-	save_om_state(state->mOrigContext1, &om_state);
+	CustomShaderStateScope shader_scope(state);
+	if (G->analyse_frame)
+		shader_scope.SaveOutputs();
 
 	// Run the command lists. This should generally include a draw or
 	// dispatch call, or call out to another command list which does.
@@ -3436,8 +3465,7 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	if (custom_shader->sampler_override)
 		mOrigContext1->PSSetSamplers(0, num_sampler, saved_sampler_states);
 
-	viewport_scope.Restore();
-	restore_om_state(mOrigContext1, &om_state);
+	shader_scope.Restore();
 
 	if (saved_vs)
 		saved_vs->Release();
@@ -10451,6 +10479,7 @@ void ResourceCopyTarget::SetResource(
         UINT so_offsets[D3D11_SO_STREAM_COUNT];
         std::fill_n(so_offsets, D3D11_SO_STREAM_COUNT, UINT(-1));
         so_offsets[slot] = offset;
+		BeforeCustomShaderOutputWrite(state);
         mOrigContext1->SOSetTargets(D3D11_SO_STREAM_COUNT, so_bufs, so_offsets);
 
 		release_slots(so_bufs, D3D11_SO_STREAM_COUNT, slot);
@@ -10458,6 +10487,7 @@ void ResourceCopyTarget::SetResource(
 		break;
 
 	case ResourceCopyTargetType::RENDER_TARGET:
+		BeforeCustomShaderOutputWrite(state);
 		mOrigContext1->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, &depth_view);
 
 		if (render_view[slot])
@@ -10473,6 +10503,7 @@ void ResourceCopyTarget::SetResource(
 		break;
 
 	case ResourceCopyTargetType::DEPTH_STENCIL_TARGET:
+		BeforeCustomShaderOutputWrite(state);
 		mOrigContext1->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, &depth_view);
 
 		if (depth_view)
@@ -10491,11 +10522,14 @@ void ResourceCopyTarget::SetResource(
 		case L'p':
 			// XXX: Not clear if this will unbind other UAVs or not?
 			// TODO: Allow pUAVInitialCounts to optionally be set
+			BeforeCustomShaderOutputWrite(state);
 			mOrigContext1->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL,
 				NULL, NULL, slot, 1, &unordered_view, &uav_counter);
 			return;
 		case L'c':
 			// TODO: Allow pUAVInitialCounts to optionally be set
+			if (unordered_view)
+				BeforeCustomShaderOutputWrite(state);
 			mOrigContext1->CSSetUnorderedAccessViews(slot, 1, &unordered_view, &uav_counter);
 			return;
 		default:
@@ -12420,8 +12454,8 @@ static void SetViewportFromResource(CommandListState *state, ID3D11Resource *res
 			viewport.Height = (float)tex3d_desc.Height;
 	}
 
-	if (state->viewport_scope)
-		state->viewport_scope->Capture();
+	if (state->custom_shader_scope)
+		state->custom_shader_scope->SaveViewports();
 	state->mOrigContext1->RSSetViewports(1, &viewport);
 }
 
@@ -13197,26 +13231,22 @@ void ShaderResourceBindBatch::run(CommandListState* state)
         return;
     }
     using View = Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>;
-    std::array<View, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views;
-    std::array<bool, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> assigned = {};
-    ID3D11ShaderResourceView* raw[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+    RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views(count);
+    bool assigned[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+    std::fill_n(assigned, count, false);
     bool published = false;
     auto flush = [&]() {
         if (!published) return;
         // Eligible operations cannot observe intermediate SRV bindings. Fetch
         // original views only if a gap/failed/conditional write needs them.
-        const auto span_end = assigned.begin() + count;
-        const bool prefetch_current_bindings = std::find(assigned.begin(), span_end, false) != span_end;
-        if (prefetch_current_bindings) {
-            GetShaderResourcesBatch(state, shader_type, first_slot, count, raw);
-            for (UINT i = 0; i < count; ++i) {
-                View original;
-                original.Attach(raw[i]);
-                if (!assigned[i]) views[i] = std::move(original);
-            }
+        if (std::find(assigned, assigned + count, false) != assigned + count) {
+            RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> original(count);
+            GetShaderResourcesBatch(state, shader_type, first_slot, count, original.values);
+            for (UINT i = 0; i < count; ++i)
+                if (!assigned[i])
+                    views.values[i] = std::exchange(original.values[i], nullptr);
         }
-        for (UINT i = 0; i < count; ++i) raw[i] = views[i].Get();
-        SetShaderResourcesBatch(state, shader_type, first_slot, count, raw);
+        SetShaderResourcesBatch(state, shader_type, first_slot, count, views.values);
     };
     try {
         for (const auto& operation : operations) {
@@ -13227,7 +13257,8 @@ void ShaderResourceBindBatch::run(CommandListState* state)
             if (index >= count) continue;
             View view;
             if (binding.view && FAILED(binding.view.As(&view))) continue;
-            views[index] = std::move(view);
+            if (views.values[index]) views.values[index]->Release();
+            views.values[index] = view.Detach();
             assigned[index] = true;
             published = true;
         }
@@ -13247,16 +13278,15 @@ void ShaderResourceFetchBatch::run(CommandListState* state)
         for (const auto& operation : operations) operation->run(state);
         return;
     }
-    std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views;
-    ID3D11ShaderResourceView* raw[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
-    GetShaderResourcesBatch(state, shader_type, first_slot, count, raw);
-    for (UINT i = 0; i < count; ++i) views[i].Attach(raw[i]);
+    RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views(count);
+    GetShaderResourcesBatch(state, shader_type, first_slot, count, views.values);
     for (const auto& operation : operations) {
         const UINT index = operation->BatchTarget(BatchDirection::Fetch).slot - first_slot;
         if (index >= count) continue;
         Microsoft::WRL::ComPtr<ID3D11Resource> resource;
-        if (views[index]) views[index]->GetResource(resource.GetAddressOf());
-        operation->RunWithSource(state, resource.Get(), views[index].Get());
+        auto* view = views.values[index];
+        if (view) view->GetResource(resource.GetAddressOf());
+        operation->RunWithSource(state, resource.Get(), view);
     }
 }
 
@@ -13586,7 +13616,6 @@ static void SetSlotRange(CommandListState *state, ResourceCopyTarget &target, un
 	UINT cb_first[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
 	UINT cb_counts[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
 	bool cb_regions = false;
-	std::fill_n(uav_counters, D3D11_1_UAV_SLOT_COUNT, (UINT)-1);
 
 	if (target.type == ResourceCopyTargetType::CONSTANT_BUFFER) {
 		// Same split as SetResource(): a region of a buffer needs
@@ -13615,11 +13644,16 @@ static void SetSlotRange(CommandListState *state, ResourceCopyTarget &target, un
 		break;
 	case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
         if (state->slot_batch_stats) ++state->slot_batch_stats->uav_set_calls;
-		if (target.shader_type == L'c')
+		std::fill_n(uav_counters, count, UINT(-1));
+		if (target.shader_type == L'c') {
+			if (state->custom_shader_scope && std::any_of(views, views + count, [](auto* view) { return view != nullptr; }))
+				BeforeCustomShaderOutputWrite(state);
 			context->CSSetUnorderedAccessViews(first, count, (ID3D11UnorderedAccessView *const *)views, uav_counters);
-		else
+		} else {
+			BeforeCustomShaderOutputWrite(state);
 			context->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL,
 				first, count, (ID3D11UnorderedAccessView *const *)views, uav_counters);
+		}
 		break;
 	case ResourceCopyTargetType::CONSTANT_BUFFER:
 		if (cb_regions) {

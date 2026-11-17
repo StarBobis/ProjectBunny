@@ -55,9 +55,10 @@ struct ShaderResourceBatchStats {
 	unsigned set_calls = 0;
 	unsigned cb_get_calls = 0, cb_set_calls = 0, cb1_set_calls = 0;
 	unsigned uav_get_calls = 0, uav_set_calls = 0;
+	unsigned om_saves = 0, om_restores = 0;
 };
 
-class CustomShaderViewportScope;
+class CustomShaderStateScope;
 
 class CommandListState {
 public:
@@ -105,7 +106,7 @@ public:
 	LARGE_INTEGER profiling_time_recursive;
 	// Optional per-invocation diagnostics, updated next to actual API calls.
 	ShaderResourceBatchStats* slot_batch_stats = nullptr;
-	CustomShaderViewportScope* viewport_scope = nullptr;
+	CustomShaderStateScope* custom_shader_scope = nullptr;
 
 	// Anything that needs to be updated at the end of the command list:
 	bool update_params;
