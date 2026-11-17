@@ -6,7 +6,6 @@
 #include "lock.h"
 
 #include "CommandList.h"
-#include <d3d11_4.h>
 #include <type_traits>
 
 #include <DDSTextureLoader.h>
@@ -439,10 +438,8 @@ void optimise_command_lists(HackerDevice *device)
 
 	BuildAutoCheckSlotCoverage();
 
-	for (CommandList* command_list : registered_command_lists) {
+	for (CommandList* command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
-		merge_store_readbacks(command_list);
-	}
 
 	Profiling::update_cto_warning(!ignore_cto_post);
 
@@ -2394,91 +2391,7 @@ void DrawCommand::run(CommandListState *state)
 	}
 }
 
-struct StoreReadbackPair {
-    const StoreCommand* second;
-    uint64_t second_byte_offset;
-    Microsoft::WRL::ComPtr<ID3D11Resource> resource;
-    float second_value = 0.0f;
-};
-
-namespace {
-
-struct StoreReadbackRange {
-    uint64_t begin, end;
-};
-
-StoreReadbackRange StoreRange(const D3D11_BUFFER_DESC& desc, uint64_t byte_offset)
-{
-    const auto end = byte_offset + sizeof(float);
-    if (!(desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED))
-        return {byte_offset, end};
-    const uint64_t stride = desc.StructureByteStride;
-    return {(byte_offset / stride) * stride, ((end + stride - 1) / stride) * stride};
-}
-
-enum class StoreReadbackResult { Success, Unavailable, WrongDevice };
-
-bool CanCombineStoreReads(CommandListState* state, const D3D11_BUFFER_DESC& desc)
-{
-    constexpr UINT aliasable_flags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
-        D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_TILED;
-    const auto cache_policy = static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed));
-    if ((desc.MiscFlags & aliasable_flags) || (desc.BindFlags & cache_policy))
-        return false;
-
-    // A protected immediate context can receive writes from another thread
-    // between the original reads. Keep the individual reads in that case.
-    Microsoft::WRL::ComPtr<ID3D11Multithread> multithread;
-    return SUCCEEDED(state->mOrigContext1->QueryInterface(IID_PPV_ARGS(multithread.GetAddressOf()))) &&
-        multithread && !multithread->GetMultithreadProtected();
-}
-
-StoreReadbackResult ReadStoreRange(CommandListState* state, ID3D11Resource* resource, IUnknown* source_identity,
-    StoreReadbackRange range, uint64_t byte_offset, float& value, StoreReadbackPair* pair = nullptr)
-{
-    const auto size = static_cast<UINT>(range.end - range.begin);
-    ID3D11Buffer* staging = state->mHackerContext->GetReadbackBuffer(size);
-    if (!staging)
-        return StoreReadbackResult::Unavailable;
-
-    Microsoft::WRL::ComPtr<ID3D11Device> staging_device;
-    Microsoft::WRL::ComPtr<IUnknown> staging_identity;
-    staging->GetDevice(staging_device.GetAddressOf());
-    if (FAILED(staging_device.As(&staging_identity)) || staging_identity.Get() != source_identity)
-        return StoreReadbackResult::WrongDevice;
-
-    D3D11_BOX box{};
-    box.left = static_cast<UINT>(range.begin);
-    box.right = static_cast<UINT>(range.end);
-    box.bottom = box.back = 1;
-    state->mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, resource, 0, &box);
-    if (auto* stats = state->slot_batch_stats) {
-        ++stats->store_readback_maps;
-        stats->store_readback_bytes += size;
-    }
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    Profiling::Sample sample(Profiling::readback_map_overhead, false);
-    const HRESULT result = state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
-    sample.Finish(false);
-    if (FAILED(result))
-        return StoreReadbackResult::Unavailable;
-
-    const auto* bytes = static_cast<const uint8_t*>(mapped.pData);
-    memcpy(&value, bytes + (byte_offset - range.begin), sizeof(value));
-    if (pair)
-        memcpy(&pair->second_value, bytes + (pair->second_byte_offset - range.begin), sizeof(pair->second_value));
-    state->mOrigContext1->Unmap(staging, 0);
-    return StoreReadbackResult::Success;
-}
-
-} // namespace
-
 void StoreCommand::run(CommandListState* state)
-{
-    RunWithReadback(state, nullptr);
-}
-
-void StoreCommand::RunWithReadback(CommandListState* state, StoreReadbackPair* pair)
 {
 	if ((!var && !pool_var.custom_resource_pool) || (var && (var->flags & VariableFlags::LOCKED)) || !offset_expression || !state ||
 		!state->mHackerDevice || !state->mHackerContext || !state->mOrigContext1 || !state->mOrigDevice1 ||
@@ -2528,42 +2441,54 @@ void StoreCommand::RunWithReadback(CommandListState* state, StoreReadbackPair* p
         return;
     }
 
-    if ((desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) && !desc.StructureByteStride)
-        return;
-    const auto range = StoreRange(desc, byte_offset);
-    if (range.end > desc.ByteWidth || range.end <= range.begin) {
+    uint64_t copy_offset = byte_offset;
+    uint64_t copy_end = byte_offset + sizeof(float);
+    if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) {
+        const uint64_t stride = desc.StructureByteStride;
+        if (!stride) return;
+        copy_offset = (byte_offset / stride) * stride;
+        copy_end = ((copy_end + stride - 1) / stride) * stride;
+    }
+    if (copy_end > desc.ByteWidth || copy_end <= copy_offset) {
         SetOutputValue(state, 0.0f);
         return;
     }
+    const UINT copy_size = static_cast<UINT>(copy_end - copy_offset);
+    const size_t value_offset = static_cast<size_t>(byte_offset - copy_offset);
+
 	float cached_value;
 	if (TryReadResourceDataCache(resource.Get(), byte_offset, &cached_value, sizeof(cached_value))) {
 		SetOutputValue(state, cached_value);
 		return;
 	}
-	if (pair && this == pair->second && pair->resource.Get() == resource.Get() && pair->second_byte_offset == byte_offset) {
-        SetOutputValue(state, pair->second_value);
+	ID3D11Buffer* staging = state->mHackerContext->GetReadbackBuffer(copy_size);
+	if (!staging) {
+        SetOutputValue(state, 0.0f);
         return;
     }
+	Microsoft::WRL::ComPtr<ID3D11Device> staging_device;
+	Microsoft::WRL::ComPtr<IUnknown> staging_identity;
+	staging->GetDevice(staging_device.GetAddressOf());
+	if (FAILED(staging_device.As(&staging_identity)) || staging_identity.Get() != source_identity.Get())
+		return;
 
-    float value = 0.0f;
-    if (pair && this != pair->second && pair->second_byte_offset + sizeof(float) <= desc.ByteWidth) {
-        const auto second_range = StoreRange(desc, pair->second_byte_offset);
-        const StoreReadbackRange combined{(std::min)(range.begin, second_range.begin), (std::max)(range.end, second_range.end)};
-        // Only combine overlapping or adjacent copy ranges. Keep the original
-        // transfers for distant reads and for any failure of the wider read.
-        if (combined.end <= desc.ByteWidth && combined.end - combined.begin <=
-            (range.end - range.begin) + (second_range.end - second_range.begin) &&
-            CanCombineStoreReads(state, desc) &&
-            ReadStoreRange(state, resource.Get(), source_identity.Get(), combined, byte_offset, value, pair) == StoreReadbackResult::Success) {
-            pair->resource = resource;
-            SetOutputValue(state, value);
-            return;
-        }
+	D3D11_BOX box = {};
+	box.left = static_cast<UINT>(copy_offset);
+	box.right = static_cast<UINT>(copy_end);
+	box.bottom = box.back = 1;
+	state->mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, resource.Get(), 0, &box);
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	Profiling::Sample sample(Profiling::readback_map_overhead, false);
+	const HRESULT result = state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+	sample.Finish(false);
+	if (FAILED(result)) {
+        SetOutputValue(state, 0.0f);
+        return;
     }
-
-    const auto result = ReadStoreRange(state, resource.Get(), source_identity.Get(), range, byte_offset, value);
-    if (result != StoreReadbackResult::WrongDevice)
-        SetOutputValue(state, value);
+	float value;
+	memcpy(&value, static_cast<const uint8_t*>(mapped.pData) + value_offset, sizeof(value));
+	state->mOrigContext1->Unmap(staging, 0);
+	SetOutputValue(state, value);
 }
 
 void StoreCommand::SetOutputValue(CommandListState* state, float value)
@@ -2588,93 +2513,6 @@ void StoreCommand::SetOutputValue(CommandListState* state, float value)
 	if (memcmp(&destination->fval, &value, sizeof(value)) != 0 && (destination->flags & VariableFlags::PERSIST))
 		G->user_config_dirty |= 1;
 	destination->fval = value;
-}
-
-namespace {
-
-bool IsScalarStoreExpression(const CommandListEvaluatable* expression)
-{
-    if (const auto* operand = dynamic_cast<const CommandListOperand*>(expression))
-        return operand->type == ParamOverrideType::VALUE || operand->type == ParamOverrideType::VARIABLE;
-    const auto* op = dynamic_cast<const CommandListOperator*>(expression);
-    if (!op || !op->rhs)
-        return false;
-    const auto& token = op->token;
-    return (token == L"+" || token == L"-" || token == L"*" || token == L"/" ||
-        token == L">>" || token == L"<<" || token == L"&" || token == L"|" || token == L"^") &&
-        (!op->lhs || IsScalarStoreExpression(op->lhs.get())) && IsScalarStoreExpression(op->rhs.get());
-}
-
-const CommandListOperand* LiteralStoreOffset(const StoreCommand* store)
-{
-    if (!store || !store->var || !store->offset_expression || store->src.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
-        store->src.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE || store->src.custom_resource_pool)
-        return nullptr;
-    const auto* operand = dynamic_cast<const CommandListOperand*>(store->offset_expression->evaluatable.get());
-    if (!operand || operand->type != ParamOverrideType::VALUE)
-        return nullptr;
-    const double index = operand->val;
-    return std::isfinite(index) && index >= 0 && index <= UINT32_MAX ? operand : nullptr;
-}
-
-class StoreReadbackBatch final : public CommandListCommand {
-public:
-    CommandList::Commands commands;
-    uint64_t second_byte_offset = 0;
-
-    void run(CommandListState* state) override
-    {
-        const auto mode = Profiling::mode.load(std::memory_order_relaxed);
-        const bool combine = !G->analyse_frame && mode != Profiling::Mode::TOP_COMMANDS;
-        StoreReadbackPair pair{static_cast<const StoreCommand*>(commands.back().get()), second_byte_offset};
-        command_list_profiling_state profiling_state;
-        for (const auto& command : commands) {
-            if (state->aborted)
-                break;
-            profile_command_list_cmd_start(command.get(), &profiling_state);
-            if (combine && (command == commands.front() || command == commands.back()))
-                static_cast<StoreCommand*>(command.get())->RunWithReadback(state, &pair);
-            else
-                command->run(state);
-            profile_command_list_cmd_end(command.get(), state, &profiling_state);
-        }
-    }
-};
-
-} // namespace
-
-void merge_store_readbacks(CommandList* command_list)
-{
-    auto& commands = command_list->commands;
-    for (size_t i = 0; i + 1 < commands.size(); ++i) {
-        auto* first = dynamic_cast<StoreCommand*>(commands[i].get());
-        if (!LiteralStoreOffset(first))
-            continue;
-
-        // Scalar assignments can consume the first result in place. Stop at
-        // any other command or expression that could observe or change GPU state.
-        size_t next = i + 1;
-        for (; next < commands.size(); ++next) {
-            const auto* assignment = dynamic_cast<VariableAssignment*>(commands[next].get());
-            if (!assignment || !IsScalarStoreExpression(assignment->expression.evaluatable.get()))
-                break;
-        }
-        if (next == commands.size())
-            break;
-
-        auto* second = dynamic_cast<StoreCommand*>(commands[next].get());
-        const auto* offset = LiteralStoreOffset(second);
-        const auto* source = first->src.GetCustomResource(nullptr);
-        if (!offset || second == first || !source || second->src.GetCustomResource(nullptr) != source)
-            continue;
-
-        auto batch = std::make_shared<StoreReadbackBatch>();
-        batch->ini_line = first->ini_line + L" (paired readback)";
-        batch->second_byte_offset = static_cast<uint64_t>(offset->val) * sizeof(float);
-        batch->commands.assign(commands.begin() + i, commands.begin() + next + 1);
-        commands[i] = std::move(batch);
-        commands.erase(commands.begin() + i + 1, commands.begin() + next + 1);
-    }
 }
 
 void SkipCommand::run(CommandListState *state)

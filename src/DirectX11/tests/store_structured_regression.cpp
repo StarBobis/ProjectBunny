@@ -3,8 +3,6 @@
 #include "HackerDevice.h"
 #include "IniHandler.h"
 #include "globals.h"
-#include "cache_policy_test_scope.h"
-#include <d3d11_4.h>
 #include <d3d11sdklayers.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -243,127 +241,6 @@ void test_raw_window(StructuredStoreDevice& device, StoreVariables& variables)
         "source unbind cannot reuse stale structured/RAW staging data");
     verify_debug_errors(queue.Get());
 }
-
-class RewriteStoreBuffer final : public CommandListCommand {
-    ID3D11Buffer* buffer;
-    const float* values;
-public:
-    RewriteStoreBuffer(ID3D11Buffer* buffer, const float* values) : buffer(buffer), values(values) {}
-    void run(CommandListState* state) override
-    {
-        state->mOrigContext1->UpdateSubresource(buffer, 0, nullptr, values, 0, 0);
-    }
-};
-
-void test_paired_store(StructuredStoreDevice& device, StoreVariables& variables)
-{
-    DataCacheTestScope policy(DataCacheBindFlags::INVALID);
-    const auto saved_mode = Profiling::mode.exchange(Profiling::Mode::NONE);
-    const bool saved_analysis = G->analyse_frame;
-    G->analyse_frame = false;
-    static constexpr wchar_t name[] = L"resourcestore_pair_regression";
-    const auto erase_resource = [](CustomResource*) { customResources.erase(name); };
-    auto [it, inserted] = customResources.try_emplace(name);
-    check(inserted, "paired Store resource fixture name is unique");
-    std::unique_ptr<CustomResource, decltype(erase_resource)> resource(&it->second, erase_resource);
-
-    float values[24]{};
-    values[7] = static_cast<float>((23 << 14) | (45 << 7) | 67);
-    values[15] = static_cast<float>((98 << 16) | (76 << 8) | 54);
-    values[23] = 807.25f;
-    D3D11_BUFFER_DESC desc{};
-    desc.ByteWidth = sizeof(values);
-    desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-    desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-    desc.StructureByteStride = 32;
-    D3D11_SUBRESOURCE_DATA input{};
-    input.pSysMem = values;
-    ComPtr<ID3D11Buffer> buffer;
-    check(SUCCEEDED(device.native->CreateBuffer(&desc, &input, &buffer)), "create actual health-bar-shaped structured buffer");
-    resource->name = name;
-    resource->resource = buffer.Get();
-    buffer->AddRef();
-    resource->device = device.native.Get();
-    resource->is_null = false;
-    resource->substantiated = true;
-
-    ComPtr<ID3D11InfoQueue> queue;
-    device.native.As(&queue);
-    if (queue) queue->ClearStoredMessages();
-
-    const auto build = [&](CommandList& commands, UINT second_index, const std::shared_ptr<CommandListCommand>& barrier = {}) {
-        const std::wstring source = variables.output_name + L", " + name + L", ";
-        check(parse_store(commands, source + L"7"), "parse actual first store");
-        std::wstring rhs = L"(" + variables.output_name + L" >> 14) & 127";
-        const std::wstring ns, raw = variables.index_name + L" = " + rhs;
-        CommandListScope scope;
-        commands.scope = &scope;
-        check(ParseCommandListVariableAssignment(L"CommandListPairedStore", variables.index_name.c_str(), &rhs, &raw,
-            &commands, &commands, nullptr, &ns), "parse a scalar reader of the first store's value");
-        if (barrier)
-            commands.commands.push_back(barrier);
-        check(parse_store(commands, source + std::to_wstring(second_index)), "parse actual second store");
-        merge_store_readbacks(&commands);
-    };
-    const auto execute_batch = [&](CommandList& commands) {
-        ShaderResourceBatchStats stats;
-        CommandListState state;
-        state.mHackerDevice = device.device;
-        state.mHackerContext = device.wrapper.get();
-        state.mOrigDevice1 = device.native.Get();
-        state.mOrigContext1 = device.context.Get();
-        state.slot_batch_stats = &stats;
-        for (const auto& command : commands.commands)
-            command->run(&state);
-        return stats;
-    };
-
-    CommandList paired;
-    build(paired, 15);
-    check(paired.commands.size() == 1, "scalar consumer between fixed stores is eligible for the real merge pass");
-    auto stats = execute_batch(paired);
-    check(stats.store_readback_maps == 1 && stats.store_readback_bytes == 64 &&
-        variables.index().fval == 23 && variables.output().fval == values[15],
-        "one native map publishes the same two values in their original order");
-
-    G->analyse_frame = true;
-    stats = execute_batch(paired);
-    G->analyse_frame = false;
-    check(stats.store_readback_maps == 2 && variables.index().fval == 23 && variables.output().fval == values[15],
-        "frame analysis keeps the two original reads and results");
-
-    ComPtr<ID3D11Multithread> multithread;
-    if (SUCCEEDED(device.context.As(&multithread))) {
-        const BOOL was_protected = multithread->SetMultithreadProtected(TRUE);
-        stats = execute_batch(paired);
-        multithread->SetMultithreadProtected(was_protected);
-        check(stats.store_readback_maps == 2 && variables.index().fval == 23 && variables.output().fval == values[15],
-            "a multithread-protected context keeps the reads separate");
-    }
-
-    CommandList distant, invalid;
-    build(distant, 23);
-    stats = execute_batch(distant);
-    check(stats.store_readback_maps == 2 && stats.store_readback_bytes == 64 && variables.output().fval == values[23],
-        "distant structures retain separate narrow reads");
-    build(invalid, 24);
-    stats = execute_batch(invalid);
-    check(stats.store_readback_maps == 1 && stats.store_readback_bytes == 32 && variables.output().fval == 0.0f,
-        "out-of-range second store leaves the first read narrow and still publishes zero");
-
-    float changed[24]{};
-    changed[15] = 255.25f;
-    CommandList writes_between;
-    build(writes_between, 15, std::make_shared<RewriteStoreBuffer>(buffer.Get(), changed));
-    check(writes_between.commands.size() == 4, "a GPU write separates the stores during optimization");
-    stats = execute_batch(writes_between);
-    check(stats.store_readback_maps == 2 && variables.index().fval == 23 && variables.output().fval == changed[15],
-        "separated stores see the old and new GPU contents at their own positions");
-    verify_debug_errors(queue.Get());
-    G->analyse_frame = saved_analysis;
-    Profiling::mode = saved_mode;
-    std::fputs("PASS: paired health-bar Store uses one 64-byte read, preserves ordering and falls back across writes or gaps\n", stderr);
-}
 } // namespace
 
 void test_dx11_store_structured_regression()
@@ -374,7 +251,6 @@ void test_dx11_store_structured_regression()
         test_structured_stride(device, variables, 12);
         test_structured_stride(device, variables, 16);
         test_raw_window(device, variables);
-        test_paired_store(device, variables);
         std::fputs("PASS: real structured stride12/16 Store alignment, windows, bounds and RAW fallback\n", stderr);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL structured Store: %s\n", error.what());
