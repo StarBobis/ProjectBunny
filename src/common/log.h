@@ -17,36 +17,64 @@ extern bool gLogDebug;
 // logging framework.
 
 #if MIGOTO_DX == 11
+#include "DirectX11/McpDiagnostics.h"
+#include <cstdio>
+#include <cwchar>
+
 // DX11 levels are independent of the DX12 logging contract.
 enum class LogVerbosity : signed char {
     INVALID = -1, DISABLED = 0, WARNING = 1, INFO = 2, DEBUG = 3
 };
 extern LogVerbosity gLogVerbosity;
 
+inline bool Dx11LogEnabled(LogVerbosity level) noexcept
+{
+    return (LogFile && gLogVerbosity >= level) ||
+        (Dx11Diagnostics::attached.load(std::memory_order_relaxed) &&
+            Dx11Diagnostics::WantsLog(static_cast<unsigned>(level)));
+}
+
+inline void Dx11WriteLogV(LogVerbosity level, const char* format, va_list args)
+{
+    if (Dx11Diagnostics::attached.load(std::memory_order_relaxed))
+        Dx11Diagnostics::RecordLog(static_cast<unsigned>(level), format, args);
+    if (LogFile && gLogVerbosity >= level) vfprintf(LogFile, format, args);
+}
+
+inline void Dx11WriteLogV(LogVerbosity level, const wchar_t* format, va_list args)
+{
+    if (Dx11Diagnostics::attached.load(std::memory_order_relaxed))
+        Dx11Diagnostics::RecordLog(static_cast<unsigned>(level), format, args);
+    if (LogFile && gLogVerbosity >= level) vfwprintf(LogFile, format, args);
+}
+
+template<class Char>
+inline void Dx11WriteLog(LogVerbosity level, const Char* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    Dx11WriteLogV(level, format, args);
+    va_end(args);
+}
+
+#define DX11_VLOG(level, fmt, args) \
+    do { if (Dx11LogEnabled(LogVerbosity::level)) Dx11WriteLogV(LogVerbosity::level, fmt, args); } while (0)
+
 #define LogWarning(fmt, ...) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::WARNING) fprintf(LogFile, fmt, __VA_ARGS__); } while (0)
-#define vLogWarning(fmt, args) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::WARNING) vfprintf(LogFile, fmt, args); } while (0)
-#define LogWarningW(fmt, ...) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::WARNING) fwprintf(LogFile, fmt, __VA_ARGS__); } while (0)
-#define vLogWarningW(fmt, args) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::WARNING) vfwprintf(LogFile, fmt, args); } while (0)
+    do { if (Dx11LogEnabled(LogVerbosity::WARNING)) Dx11WriteLog(LogVerbosity::WARNING, fmt, __VA_ARGS__); } while (0)
+#define LogWarningW LogWarning
+#define vLogWarning(fmt, args) DX11_VLOG(WARNING, fmt, args)
+#define vLogWarningW vLogWarning
 #define LogInfo(fmt, ...) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::INFO) fprintf(LogFile, fmt, __VA_ARGS__); } while (0)
-#define vLogInfo(fmt, args) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::INFO) vfprintf(LogFile, fmt, args); } while (0)
-#define LogInfoW(fmt, ...) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::INFO) fwprintf(LogFile, fmt, __VA_ARGS__); } while (0)
-#define vLogInfoW(fmt, args) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::INFO) vfwprintf(LogFile, fmt, args); } while (0)
+    do { if (Dx11LogEnabled(LogVerbosity::INFO)) Dx11WriteLog(LogVerbosity::INFO, fmt, __VA_ARGS__); } while (0)
+#define LogInfoW LogInfo
+#define vLogInfo(fmt, args) DX11_VLOG(INFO, fmt, args)
+#define vLogInfoW vLogInfo
 #define LogDebug(fmt, ...) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::DEBUG) fprintf(LogFile, fmt, __VA_ARGS__); } while (0)
-#define vLogDebug(fmt, args) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::DEBUG) vfprintf(LogFile, fmt, args); } while (0)
-#define LogDebugW(fmt, ...) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::DEBUG) fwprintf(LogFile, fmt, __VA_ARGS__); } while (0)
-#define vLogDebugW(fmt, args) \
-    do { if (LogFile && gLogVerbosity >= LogVerbosity::DEBUG) vfwprintf(LogFile, fmt, args); } while (0)
+    do { if (Dx11LogEnabled(LogVerbosity::DEBUG)) Dx11WriteLog(LogVerbosity::DEBUG, fmt, __VA_ARGS__); } while (0)
+#define LogDebugW LogDebug
+#define vLogDebug(fmt, args) DX11_VLOG(DEBUG, fmt, args)
+#define vLogDebugW vLogDebug
 #else
 #define LogInfo(fmt, ...) \
 	do { if (LogFile) fprintf(LogFile, fmt, __VA_ARGS__); } while (0)

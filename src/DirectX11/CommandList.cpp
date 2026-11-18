@@ -12,6 +12,7 @@
 #include <WICTextureLoader.h>
 #include <algorithm>
 #include <iterator>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <typeinfo>
@@ -21,6 +22,7 @@
 #include "HackerDevice.h"
 #include "ShaderBindings.h"
 #include "HackerContext.h"
+#include "McpAgent.h"
 #include "Override.h"
 #include "D3D11Wrapper.h"
 #include "IniHandler.h"
@@ -2120,6 +2122,23 @@ static UINT get_index_count_from_current_ib(ID3D11DeviceContext *mOrigContext1)
 	return 0;
 }
 
+class McpDrawProbe {
+	HackerContext* context;
+	DrawCallInfo call;
+public:
+	McpDrawProbe(CommandListState* state, const DrawCallInfo& info) :
+		context(Dx11Mcp::capture_armed.load(std::memory_order_relaxed) ? state->mHackerContext : nullptr),
+		call(info)
+	{
+		if (context) Dx11Mcp::OnDraw(context, call, true);
+	}
+	~McpDrawProbe()
+	{
+		if (context && Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(context, call, true, true);
+	}
+};
+
 void DrawCommand::do_indirect_draw_call(CommandListState *state, char *name,
 		void (__stdcall ID3D11DeviceContext::*IndirectDrawCall)(THIS_
 		ID3D11Buffer *pBufferForArgs,
@@ -2145,9 +2164,19 @@ void DrawCommand::do_indirect_draw_call(CommandListState *state, char *name,
 
 	COMMAND_LIST_LOG(state, "[%S] %s(%p, %u)\n", ini_section.c_str(), name, resource, arg);
 
+	std::optional<McpDrawProbe> probe;
+	auto* buffer = static_cast<ID3D11Buffer*>(resource);
+	if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed)) {
+		const auto call = IndirectDrawCall == &ID3D11DeviceContext::DispatchIndirect ? DrawCall::DispatchIndirect :
+			(IndirectDrawCall == &ID3D11DeviceContext::DrawIndexedInstancedIndirect ?
+				DrawCall::DrawIndexedInstancedIndirect : DrawCall::DrawInstancedIndirect);
+		probe.emplace(state, DrawCallInfo(call, 0, 0, 0, 0, 0, 0, &buffer, arg));
+	}
+
     InvalidatePipelineResourceDataCaches(state->mOrigContext1,
         IndirectDrawCall == &ID3D11DeviceContext::DispatchIndirect);
 	(state->mOrigContext1->*IndirectDrawCall)((ID3D11Buffer*)resource, arg);
+	probe.reset();
 
 	resource->Release();
 }
@@ -2233,6 +2262,7 @@ void DrawCommand::run(CommandListState *state)
 			COMMAND_LIST_LOG(state, "[%S] Draw(%u, %u)\n", ini_section.c_str(), eargs[0], eargs[1]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+			    McpDrawProbe probe(state, DrawCallInfo(DrawCall::Draw, eargs[0], 0, 0, eargs[1], 0, 0, nullptr, 0));
 			    mOrigContext1->Draw(eargs[0], eargs[1]);
 			}
 			break;
@@ -2240,6 +2270,7 @@ void DrawCommand::run(CommandListState *state)
 			COMMAND_LIST_LOG(state, "[%S] DrawAuto()\n", ini_section.c_str());
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+			    McpDrawProbe probe(state, DrawCallInfo(DrawCall::DrawAuto, 0, 0, 0, 0, 0, 0, nullptr, 0));
 			    mOrigContext1->DrawAuto();
 			}
 			break;
@@ -2248,6 +2279,7 @@ void DrawCommand::run(CommandListState *state)
 			COMMAND_LIST_LOG(state, "[%S] DrawIndexed(%u, %u, %i)\n", ini_section.c_str(), eargs[0], eargs[1], (INT)eargs[2]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+			    McpDrawProbe probe(state, DrawCallInfo(DrawCall::DrawIndexed, 0, eargs[0], 0, eargs[2], eargs[1], 0, nullptr, 0));
 			    mOrigContext1->DrawIndexed(eargs[0], eargs[1], (INT)eargs[2]);
 			}
 			break;
@@ -2256,6 +2288,7 @@ void DrawCommand::run(CommandListState *state)
 			COMMAND_LIST_LOG(state, "[%S] DrawIndexedInstanced(%u, %u, %u, %i, %u)\n", ini_section.c_str(), eargs[0], eargs[1], eargs[2], (INT)eargs[3], eargs[4]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+			    McpDrawProbe probe(state, DrawCallInfo(DrawCall::DrawIndexedInstanced, 0, eargs[0], eargs[1], eargs[3], eargs[2], eargs[4], nullptr, 0));
 			    mOrigContext1->DrawIndexedInstanced(eargs[0], eargs[1], eargs[2], (INT)eargs[3], eargs[4]);
 			}
 			break;
@@ -2264,6 +2297,7 @@ void DrawCommand::run(CommandListState *state)
 			COMMAND_LIST_LOG(state, "[%S] DrawInstanced(%u, %u, %u, %u)\n", ini_section.c_str(), eargs[0], eargs[1], eargs[2], eargs[3]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+			    McpDrawProbe probe(state, DrawCallInfo(DrawCall::DrawInstanced, eargs[0], 0, eargs[1], eargs[2], 0, eargs[3], nullptr, 0));
 			    mOrigContext1->DrawInstanced(eargs[0], eargs[1], eargs[2], eargs[3]);
 			}
 			break;
@@ -2272,6 +2306,7 @@ void DrawCommand::run(CommandListState *state)
 			COMMAND_LIST_LOG(state, "[%S] Dispatch(%u, %u, %u)\n", ini_section.c_str(), eargs[0], eargs[1], eargs[2]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, true);
+			    McpDrawProbe probe(state, DrawCallInfo(DrawCall::Dispatch, 0, 0, 0, 0, 0, 0, nullptr, 0, eargs[0], eargs[1], eargs[2]));
 			    mOrigContext1->Dispatch(eargs[0], eargs[1], eargs[2]);
 			}
 			break;
@@ -2294,6 +2329,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> DrawIndexedInstanced(%u, %u, %u, %i, %u)\n", ini_section.c_str(), info->IndexCount, info->InstanceCount, info->FirstIndex, info->FirstVertex, info->FirstInstance);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->DrawIndexedInstanced(info->IndexCount, info->InstanceCount, info->FirstIndex, info->FirstVertex, info->FirstInstance);
 					}
 					break;
@@ -2301,6 +2337,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> DrawInstanced(%u, %u, %u, %u)\n", ini_section.c_str(), info->VertexCount, info->InstanceCount, info->FirstVertex, info->FirstInstance);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->DrawInstanced(info->VertexCount, info->InstanceCount, info->FirstVertex, info->FirstInstance);
 					}
 					break;
@@ -2308,6 +2345,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> DrawIndexed(%u, %u, %i)\n", ini_section.c_str(), info->IndexCount, info->FirstIndex, info->FirstVertex);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->DrawIndexed(info->IndexCount, info->FirstIndex, info->FirstVertex);
 					}
 					break;
@@ -2315,6 +2353,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> Draw(%u, %u)\n", ini_section.c_str(), info->VertexCount, info->FirstVertex);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->Draw(info->VertexCount, info->FirstVertex);
 					}
 					break;
@@ -2326,6 +2365,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> DrawInstancedIndirect(0x%p, %u)\n", ini_section.c_str(), *info->indirect_buffer, info->args_offset);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->DrawInstancedIndirect(*info->indirect_buffer, info->args_offset);
 					}
 					break;
@@ -2337,6 +2377,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> DrawIndexedInstancedIndirect(0x%p, %u)\n", ini_section.c_str(), *info->indirect_buffer, info->args_offset);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->DrawIndexedInstancedIndirect(*info->indirect_buffer, info->args_offset);
 					}
 					break;
@@ -2348,6 +2389,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> DispatchIndirect(0x%p, %u)\n", ini_section.c_str(), *info->indirect_buffer, info->args_offset);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, true);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->DispatchIndirect(*info->indirect_buffer, info->args_offset);
 					}
 					break;
@@ -2355,6 +2397,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> Dispatch(%u, %u, %u)\n", ini_section.c_str(), info->ThreadGroupCountX, info->ThreadGroupCountY, info->ThreadGroupCountZ);
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, true);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->Dispatch(info->ThreadGroupCountX, info->ThreadGroupCountY, info->ThreadGroupCountZ);
 					}
 					break;
@@ -2362,6 +2405,7 @@ void DrawCommand::run(CommandListState *state)
 					COMMAND_LIST_LOG(state, "[%S] Draw = from_caller -> DrawAuto()\n", ini_section.c_str());
 					{
 					    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+					    McpDrawProbe probe(state, *info);
 					    mOrigContext1->DrawAuto();
 					}
 					break;
@@ -2376,6 +2420,7 @@ void DrawCommand::run(CommandListState *state)
 			if (auto_count)
 				{
 				    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+				    McpDrawProbe probe(state, DrawCallInfo(DrawCall::Draw, auto_count, 0, 0, 0, 0, 0, nullptr, 0));
 				    mOrigContext1->Draw(auto_count, 0);
 				}
 			else
@@ -2387,6 +2432,7 @@ void DrawCommand::run(CommandListState *state)
 			if (auto_count)
 				{
 				    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+				    McpDrawProbe probe(state, DrawCallInfo(DrawCall::DrawIndexed, 0, auto_count, 0, 0, 0, 0, nullptr, 0));
 				    mOrigContext1->DrawIndexed(auto_count, 0, 0);
 				}
 			else
@@ -2402,6 +2448,7 @@ void DrawCommand::run(CommandListState *state)
 			if (auto_count)
 				{
 				    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+				    McpDrawProbe probe(state, DrawCallInfo(DrawCall::DrawIndexedInstanced, 0, auto_count, info->InstanceCount, 0, 0, info->FirstInstance, nullptr, 0));
 				    mOrigContext1->DrawIndexedInstanced(auto_count, info->InstanceCount, 0, 0, info->FirstInstance);
 				}
 			else
@@ -3118,39 +3165,54 @@ void CustomShader::substantiate(ID3D11Device *mOrigDevice1)
 		return;
 	substantiated = true;
 
+	const auto remember_shader = [&](ID3D11DeviceChild* shader, ID3DBlob* blob, const wchar_t* stage) {
+		if (shader && Dx11Mcp::enabled.load(std::memory_order_relaxed)) {
+			const auto bytes = blob->GetBufferPointer();
+			const auto size = blob->GetBufferSize();
+			Dx11Mcp::RememberShader(shader, ComputeDx11ShaderHash(bytes, size), stage,
+				bytes, size, command_list.ini_section.c_str());
+		}
+	};
+
 	if (vs_bytecode) {
 		mOrigDevice1->CreateVertexShader(vs_bytecode->GetBufferPointer(), vs_bytecode->GetBufferSize(), NULL, &vs);
 		CleanupShaderMaps(vs);
+		remember_shader(vs, vs_bytecode, L"vs");
 		vs_bytecode->Release();
 		vs_bytecode = NULL;
 	}
 	if (hs_bytecode) {
 		mOrigDevice1->CreateHullShader(hs_bytecode->GetBufferPointer(), hs_bytecode->GetBufferSize(), NULL, &hs);
 		CleanupShaderMaps(hs);
+		remember_shader(hs, hs_bytecode, L"hs");
 		hs_bytecode->Release();
 		hs_bytecode = NULL;
 	}
 	if (ds_bytecode) {
 		mOrigDevice1->CreateDomainShader(ds_bytecode->GetBufferPointer(), ds_bytecode->GetBufferSize(), NULL, &ds);
 		CleanupShaderMaps(ds);
+		remember_shader(ds, ds_bytecode, L"ds");
 		ds_bytecode->Release();
 		ds_bytecode = NULL;
 	}
 	if (gs_bytecode) {
 		mOrigDevice1->CreateGeometryShader(gs_bytecode->GetBufferPointer(), gs_bytecode->GetBufferSize(), NULL, &gs);
 		CleanupShaderMaps(gs);
+		remember_shader(gs, gs_bytecode, L"gs");
 		gs_bytecode->Release();
 		gs_bytecode = NULL;
 	}
 	if (ps_bytecode) {
 		mOrigDevice1->CreatePixelShader(ps_bytecode->GetBufferPointer(), ps_bytecode->GetBufferSize(), NULL, &ps);
 		CleanupShaderMaps(ps);
+		remember_shader(ps, ps_bytecode, L"ps");
 		ps_bytecode->Release();
 		ps_bytecode = NULL;
 	}
 	if (cs_bytecode) {
 		mOrigDevice1->CreateComputeShader(cs_bytecode->GetBufferPointer(), cs_bytecode->GetBufferSize(), NULL, &cs);
 		CleanupShaderMaps(cs);
+		remember_shader(cs, cs_bytecode, L"cs");
 		cs_bytecode->Release();
 		cs_bytecode = NULL;
 	}

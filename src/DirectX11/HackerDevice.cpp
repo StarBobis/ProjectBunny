@@ -13,6 +13,7 @@
 #include "lock.h"
 
 #include "HackerDevice.h"
+#include "McpAgent.h"
 #include "HookedDevice.h"
 #include "FrameAnalysis.h"
 #include "ShaderHeader.h"
@@ -2472,7 +2473,7 @@ static uint32_t hash_shader_bytecode(struct dxbc_header *header, SIZE_T Bytecode
 	return hash;
 }
 
-static UINT64 hash_shader(const void *pShaderBytecode, SIZE_T BytecodeLength)
+uint64_t ComputeDx11ShaderHash(const void *pShaderBytecode, size_t BytecodeLength)
 {
 	UINT64 hash = 0;
 	struct dxbc_header *header = (struct dxbc_header *)pShaderBytecode;
@@ -2579,7 +2580,7 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 	}
 
 	// Calculate hash
-	hash = hash_shader(pShaderBytecode, BytecodeLength);
+	hash = ComputeDx11ShaderHash(pShaderBytecode, BytecodeLength);
 
 	CacheShaderBindings(hash, pShaderBytecode, BytecodeLength);
 
@@ -2600,6 +2601,8 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 		LeaveCriticalSection(&G->mCriticalSection);
 	}
 
+	if (SUCCEEDED(hr) && Dx11Mcp::enabled.load(std::memory_order_relaxed))
+		Dx11Mcp::RememberShader(*ppShader, hash, shaderType, pShaderBytecode, BytecodeLength);
 	LogInfo("  returns result = %x, handle = %p\n", hr, *ppShader);
 
 	return hr;
@@ -2667,6 +2670,10 @@ STDMETHODIMP HackerDevice::CreateGeometryShaderWithStreamOutput(THIS_
 
 	HRESULT hr = mOrigDevice1->CreateGeometryShaderWithStreamOutput(pShaderBytecode, BytecodeLength, pSODeclaration,
 		NumEntries, pBufferStrides, NumStrides, RasterizedStream, pClassLinkage, ppGeometryShader);
+	if (SUCCEEDED(hr) && ppGeometryShader && *ppGeometryShader && pShaderBytecode &&
+		Dx11Mcp::enabled.load(std::memory_order_relaxed))
+		Dx11Mcp::RememberShader(*ppGeometryShader, ComputeDx11ShaderHash(pShaderBytecode, BytecodeLength),
+			L"gs", pShaderBytecode, BytecodeLength, L"stream_output");
 	LogInfo("  returns result = %x, handle = %p\n", hr, (ppGeometryShader ? *ppGeometryShader : NULL));
 
 	return hr;

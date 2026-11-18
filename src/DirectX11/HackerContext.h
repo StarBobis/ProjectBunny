@@ -2,7 +2,9 @@
 
 #include <d3d11_1.h>
 #include <INITGUID.h>
+#include <mutex>
 #include <set>
+#include <wrl/client.h>
 
 #include "DrawCallInfo.h"
 #include "TextureUploadTracking.h"
@@ -167,6 +169,9 @@ private:
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
 	typedef std::unordered_map<ID3D11Resource*, std::unordered_map<UINT, MappedResourceInfo>> MappedResources;
 	MappedResources mMappedResources;
+	mutable std::mutex mMappedBufferLock;
+	std::vector<Microsoft::WRL::ComPtr<ID3D11Resource>> mMappedBuffers;
+	bool mBufferMapTrackingIncomplete = false;
 	DHash64Gpu mDHasher;
     TextureUploadTracker mTextureUploads;
 	unsigned draw_number = 0;
@@ -302,6 +307,7 @@ public:
 	std::vector<AutoCheckTextureDrawScope> auto_check_texture_scopes;
 
 	ID3D11Buffer* GetReadbackBuffer(UINT size);
+	bool IsBufferMapped(const ID3D11Resource* buffer) const;
 
 	// Takes ownership of the caller's layout reference (also when replacing a pending override).
 	void DeferInputLayoutOverride(HackerInputLayout* pInputLayout);

@@ -71,6 +71,7 @@
 #include "IniHandler.h"
 #include "CommandList.h"
 #include "profiling.h"
+#include "McpAgent.h"
 #include "cursor.h" // For InstallHookLate
 
 
@@ -197,6 +198,7 @@ IDXGISwapChain1* HackerSwapChain::GetOrigSwapChain1()
 
 void HackerSwapChain::RunFrameActions()
 {
+	Dx11Diagnostics::OnPresent(G->frame_no);
 	LogDebug("Running frame actions.  Device: %p\n", mHackerDevice);
 
 	// Regardless of log settings, since this runs every frame, let's flush the log
@@ -242,6 +244,7 @@ void HackerSwapChain::RunFrameActions()
 
 	CurrentTransition.UpdatePresets(mHackerDevice);
 	CurrentTransition.UpdateTransitions(mHackerDevice);
+	Dx11Mcp::OnPresent(mHackerDevice, mHackerContext);
 
 	// The config file is not safe to reload from within the input handler
 	// since it needs to change the key bindings, so it sets this flag

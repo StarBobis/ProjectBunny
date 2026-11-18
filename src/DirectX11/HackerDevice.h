@@ -1,5 +1,10 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
+uint64_t ComputeDx11ShaderHash(const void* bytecode, size_t size);
+
 #include <unordered_map>
 
 #include <d3d11_1.h>
