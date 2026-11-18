@@ -116,7 +116,7 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 	// still accesses these it is more safer to leave this in place (more
 	// resistant to code changes in the swap chain breaking this).
 
-	mFont = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 60.0f, true);
+	mFont = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 40.0f, true);
 	mFontNotifications = std::make_unique<OverlayTextFont>(mOrigDevice, L"Microsoft YaHei UI", 18.0f);
 	mFontProfiling = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 14.0f);
 

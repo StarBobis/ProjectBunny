@@ -125,10 +125,10 @@ void TestHuntingTextSize(BatchDevice& device, HWND window, const std::filesystem
     G->mSelectedVertexShaderPos = oldPosition;
     if (shader.second) G->mVisitedVertexShaders.erase(shader.first);
 
-    OverlayTextFont expected(device.native.Get(), L"Consolas", 60.0f, true);
+    OverlayTextFont expected(device.native.Get(), L"Consolas", 40.0f, true);
     expected.SetViewport(previewWidth, previewHeight);
     require_batch(DirectX::XMVectorGetY(overlay.mFont->MeasureString(L"VS:1/1")) ==
-        DirectX::XMVectorGetY(expected.MeasureString(L"VS:1/1")), "overlay: hunting uses a 60 pixel font");
+        DirectX::XMVectorGetY(expected.MeasureString(L"VS:1/1")), "overlay: hunting uses a 40 pixel font");
 
     unsigned width, height;
     const auto pixels = ReadPixels(device, chain.Get(), width, height);
@@ -142,13 +142,13 @@ void TestHuntingTextSize(BatchDevice& device, HWND window, const std::filesystem
             break;
         }
     }
-    require_batch(topRows >= 35 && bottomRows >= 35, "overlay: enlarged green heading and footer are visible at 1440p");
+    require_batch(topRows >= 25 && bottomRows >= 25, "overlay: enlarged green heading and footer are visible at 1440p");
     std::printf("Hunting overlay WARP at 1440p: %u green rows near the top, %u in the lower half\n", topRows, bottomRows);
     ComScope pngCom;
     ComPtr<ID3D11Texture2D> backbuffer;
     require_batch(static_cast<bool>(pngCom) && SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) &&
         SUCCEEDED(DirectX::SaveWICTextureToFile(device.context.Get(), backbuffer.Get(), GUID_ContainerFormatPng,
-            (directory / L"overlay-hunting-60px-2560x1440.png").c_str())), "overlay: save actual enlarged hunting text");
+            (directory / L"overlay-hunting-40px-2560x1440.png").c_str())), "overlay: save actual enlarged hunting text");
 }
 
 void TestLongProfilingReport(BatchDevice& device, HWND window)
