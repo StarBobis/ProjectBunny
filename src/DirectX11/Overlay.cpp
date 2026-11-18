@@ -116,7 +116,7 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 	// still accesses these it is more safer to leave this in place (more
 	// resistant to code changes in the swap chain breaking this).
 
-	mFont = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 20.0f, true);
+	mFont = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 60.0f, true);
 	mFontNotifications = std::make_unique<OverlayTextFont>(mOrigDevice, L"Microsoft YaHei UI", 18.0f);
 	mFontProfiling = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 14.0f);
 
@@ -616,6 +616,9 @@ std::wstring FormatSet(const std::set<uint32_t>& s, const std::wstring& sep, con
 
 void Overlay::DrawShaderInfoLine(char *type, UINT64 selectedShader, float *y, bool shader)
 {
+	if (*y >= mResolution.y)
+		return;
+
 	wchar_t osdString[maxstring];
 	Vector2 strSize;
 	Vector2 textPosition;
@@ -853,8 +856,11 @@ void Overlay::DrawOverlay(void)
 				// Bottom of screen
 				CreateInfoString(osdString);
 				strSize = mFont->MeasureString(osdString);
-				textPosition = Vector2(float(mResolution.x - strSize.x) / 2, float(mResolution.y - strSize.y - 10));
-				DrawOutlinedString(mFont.get(), osdString, textPosition, DirectX::Colors::LimeGreen);
+				const float bottomY = (std::max)(y, float(mResolution.y) - strSize.y - 10);
+				if (bottomY < mResolution.y) {
+					textPosition = Vector2(float(mResolution.x - strSize.x) / 2, bottomY);
+					DrawOutlinedString(mFont.get(), osdString, textPosition, DirectX::Colors::LimeGreen);
+				}
 			}
 
 			if (has_notice)
