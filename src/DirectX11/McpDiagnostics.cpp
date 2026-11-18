@@ -39,6 +39,7 @@ std::atomic_flag opening = ATOMIC_FLAG_INIT;
 std::atomic<bool> first_frame{true};
 std::atomic<unsigned> config_loads{0};
 std::atomic<ULONGLONG> next_heartbeat{0};
+constexpr ULONGLONG PresentHeartbeatMs = 1000; // Keep in sync with the bridge's Present threshold.
 std::atomic<ULONGLONG> next_identity{0};
 std::atomic<ULONGLONG> next_attach{0};
 uint64_t process_start;
@@ -144,7 +145,7 @@ void OnPresent(unsigned frame) noexcept
         Phase("first_present");
     if (!attached.load(std::memory_order_relaxed)) return;
     if (auto due = next_heartbeat.load(std::memory_order_relaxed);
-        tick >= due && next_heartbeat.compare_exchange_strong(due, tick + 1000, std::memory_order_relaxed)) {
+        tick >= due && next_heartbeat.compare_exchange_strong(due, tick + PresentHeartbeatMs, std::memory_order_relaxed)) {
         // A new observer may have missed the original attach in a full ring.
         if (auto identity_due = next_identity.load(std::memory_order_relaxed);
             tick >= identity_due && IsActive(channel.load(std::memory_order_acquire)) &&

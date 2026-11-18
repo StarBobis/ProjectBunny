@@ -45,6 +45,8 @@ DX11 DLL 可以通过本机 MCP 触发现有按键动作，并按狩猎 hash、�
 
 循环调用 `dx11_monitor_poll`，把上次的 `next_seq` 传给 `after_seq`，并可指定 `wait_ms` 等待新事件。启动时会收到 DLL 加载、配置解析和 D3D11 初始化的阶段及日志，进入渲染后会收到 Present 心跳。结果中的 `no_progress` 表示已超过设定时间没有阶段或帧进展，`phase` 会保留最后一个检查点。进程退出后会返回退出状态和可用的退出码，之前接收的记录仍可读取。
 
+`stall_ms` 用于启动阶段。进入 Present 后，桥按一秒心跳计算渲染阈值，最低为 2000 ms。启动返回 `present_stall_ms`，会话状态返回当前适用的 `stall_threshold_ms`。
+
 默认采集启动 INFO 和运行时 WARNING，可以按需设 `level: "info"` 或 `"debug"`。高频日志超过缓冲上限时，结果会报告丢失数。结束时调用 `dx11_monitor_stop`，同一个桥进程仍可查询最近记录。换桥后可以从仍存活的进程身份或 DLL 定期发布的身份记录重新关联会话。若 Windows 在执行 DLL 加载入口前就终止进程，此时没有 DLL 内部记录可采集。
 
 ## 定点读取
@@ -52,6 +54,8 @@ DX11 DLL 可以通过本机 MCP 触发现有按键动作，并按狩猎 hash、�
 1. 从 `dx11_hunting` 读取当前选中的 IB/VB hash，或使用 overlay 给出的 hash。
 2. 调用 `dx11_capture`，例如 `{"kind":"ib","hash":"1234abcd","frames":30}`，等待指定 hash 在接下来的帧中出现。已知 shader stage、slot、draw 序号或 `resource_id` 时可以继续缩小范围。
 3. 用 `dx11_capture_status` 查询捕获 ID。状态为 `ready` 后，用 `dx11_capture_bytes` 分块读取，或用 `dx11_capture_save` 保存整份数据。新任务会替换上一个已结束的结果，需先保存想保留的内容。
+
+设备或上下文切换会移交 Live 控制。旧上下文仍在等待匹配的抓取会结束为 `device_changed`，可在新上下文重新定位后发起抓取。缓冲区在有效 Map 期间返回 `mapped`，即使期间热重载切换了 MCP 开关。Unmap 完成后可重新读取。
 
 `hash_mode` 可指定 `resource` 或 `region`。资源 hash 沿用狩猎系统的资源标识，动态缓冲区每帧的字节仍会变化。区域 hash 沿用 Hunting 的范围算法，捕获结果记录命中时的区域和格式。相同 hash 的实例可用 draw、slot 或 `resource_id` 区分。未登记在 Hunting 的资源使用绑定位置或资源 ID 定位。
 

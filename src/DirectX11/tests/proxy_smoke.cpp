@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include "DX11ResourceIds.h"
@@ -141,7 +142,7 @@ int serve_mcp_fixture(const wchar_t* library)
 {
     HMODULE proxy = LoadLibraryW(library);
     check(proxy != nullptr, "load DX11 proxy for MCP");
-    ProxyOverlayWindow window;
+    auto window = std::make_unique<ProxyOverlayWindow>();
     const auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>(
         GetProcAddress(proxy, "D3D11CreateDeviceAndSwapChain"));
     check(create != nullptr, "resolve DX11 swapchain entry point");
@@ -152,13 +153,10 @@ int serve_mcp_fixture(const wchar_t* library)
     desc.SampleDesc.Count = 1;
     desc.BufferCount = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    desc.OutputWindow = window.handle;
     desc.Windowed = TRUE;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGISwapChain> chain;
-    check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
-        D3D11_SDK_VERSION, &desc, &chain, &device, nullptr, &context)), "create MCP WARP swapchain");
     D3D11_BUFFER_DESC index_desc{};
     index_desc.ByteWidth = 16;
     index_desc.Usage = D3D11_USAGE_DYNAMIC;
@@ -167,22 +165,72 @@ int serve_mcp_fixture(const wchar_t* library)
     const UINT initial[] = {100, 1, 2, 3};
     D3D11_SUBRESOURCE_DATA data{initial, 0, 0};
     ComPtr<ID3D11Buffer> index;
-    check(SUCCEEDED(device->CreateBuffer(&index_desc, &data, &index)), "create MCP dynamic IB");
-    const auto stop = std::filesystem::path(library).parent_path() / L"stop";
-    const auto deadline = GetTickCount64() + 45000;
-    for (UINT counter = 0; GetTickCount64() < deadline && !std::filesystem::exists(stop); ++counter) {
-        D3D11_MAPPED_SUBRESOURCE mapping{};
-        check(SUCCEEDED(context->Map(index.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping)), "update MCP dynamic IB");
-        const UINT bytes[] = {counter, 1, 2, 3};
-        memcpy(mapping.pData, bytes, sizeof(bytes));
-        context->Unmap(index.Get(), 0);
+    const auto fixture = std::filesystem::path(library).parent_path();
+    const auto stop = fixture / L"stop";
+    const auto make_device = [&] {
+        desc.OutputWindow = window->handle;
+        check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+            D3D11_SDK_VERSION, &desc, &chain, &device, nullptr, &context)), "create MCP WARP swapchain");
+        check(SUCCEEDED(device->CreateBuffer(&index_desc, &data, &index)), "create MCP dynamic IB");
         context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, sizeof(UINT));
-        context->Draw(3, 0);
-        context->DrawIndexed(3, 0, 0);
-        context->DrawIndexedInstanced(2, 1, 1, 0, 0);
-        check(SUCCEEDED(chain->Present(0, 0)), "pump DX11 MCP on Present");
+    };
+    make_device();
+    const auto deadline = GetTickCount64() + 45000;
+    bool holding_map = false, device_switched = false;
+    unsigned replacement_frames = 0;
+    for (UINT counter = 0; GetTickCount64() < deadline && !std::filesystem::exists(stop); ++counter) {
+        if (std::filesystem::exists(fixture / L"pause-present")) {
+            Sleep(10);
+            continue;
+        }
+        if (!device_switched && std::filesystem::exists(fixture / L"switch-device")) {
+            check(!holding_map, "switch fixture device only after Unmap");
+            context->ClearState();
+            context->Flush();
+            index.Reset();
+            chain.Reset();
+            context.Reset();
+            device.Reset();
+            window = std::make_unique<ProxyOverlayWindow>();
+            make_device();
+            device_switched = true;
+        }
+        if (std::filesystem::exists(fixture / L"hold-map")) {
+            if (!holding_map) {
+                D3D11_MAPPED_SUBRESOURCE mapping{};
+                check(SUCCEEDED(context->Map(index.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping)), "hold MCP fixture mapping");
+                memcpy(mapping.pData, initial, sizeof(initial));
+                holding_map = true;
+                std::ofstream(fixture / L"map-held").put('1');
+            }
+        } else {
+            if (holding_map) {
+                context->Unmap(index.Get(), 0);
+                holding_map = false;
+                std::ofstream(fixture / L"map-released").put('1');
+            }
+            if (!std::filesystem::exists(fixture / L"present-only")) {
+                D3D11_MAPPED_SUBRESOURCE mapping{};
+                check(SUCCEEDED(context->Map(index.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping)), "update MCP dynamic IB");
+                const UINT bytes[] = {counter, 1, 2, 3};
+                memcpy(mapping.pData, bytes, sizeof(bytes));
+                context->Unmap(index.Get(), 0);
+                context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, sizeof(UINT));
+                context->Draw(3, 0);
+                context->DrawIndexed(3, 0, 0);
+                context->DrawIndexedInstanced(2, 1, 1, 0, 0);
+            }
+        }
+        const HRESULT present = chain->Present(0, 0);
+        if (FAILED(present))
+            std::fprintf(stderr, "MCP fixture Present failed: 0x%08lx, device reason 0x%08lx\n",
+                static_cast<unsigned long>(present), static_cast<unsigned long>(device->GetDeviceRemovedReason()));
+        check(SUCCEEDED(present), "pump DX11 MCP on Present");
+        if (device_switched && ++replacement_frames == 20)
+            std::ofstream(fixture / L"replacement-presenting").put('1');
         Sleep(10);
     }
+    if (holding_map) context->Unmap(index.Get(), 0);
     return std::filesystem::exists(stop) ? 0 : 1;
 }
 

@@ -197,7 +197,8 @@ class Bridge:
                  self.monitor.start, {"target_exe": string("Executable file name, for example ZenlessZoneZero.exe."),
                                       "level": choice("Runtime log threshold. Startup includes info.", *LEVELS,
                                                       default="warning"),
-                                      "stall_ms": integer("Report no progress after this interval.", 100, 60000, 5000)},
+                                      "stall_ms": integer("Startup no-progress threshold. After Present the minimum is 2000 ms.",
+                                                          100, 60000, 5000)},
                  pipe=False)
         self.add("monitor_poll", "Read live startup/Present progress, in-memory log events and process exit status. "
                  "Call with the previous next_seq to continue, including while the game is hung or closed.",

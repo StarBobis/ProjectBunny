@@ -31,7 +31,6 @@ constexpr UINT ChunkLimit = 60 * 1024;
 constexpr uint64_t Any = UINT64_MAX;
 const GUID ShaderRecordGuid = {0x13ac641d, 0x6def, 0x4a3d, {0x82, 0xcc, 0x83, 0x32, 0x56, 0x13, 0xbb, 0xf8}};
 const GUID BufferRecordGuid = {0xeaec831c, 0xbb21, 0x4d21, {0x89, 0x4f, 0xff, 0xa1, 0x48, 0xb9, 0x30, 0x66}};
-const GUID BufferMappedGuid = {0x7a4fd75d, 0xf2c8, 0x4876, {0x96, 0xa2, 0xbb, 0x36, 0x91, 0xf0, 0x4b, 0xa3}};
 std::atomic<uint64_t> next_id{1};
 
 std::string Utf8(std::wstring_view value)
@@ -176,8 +175,11 @@ struct ProfileSnapshot {
 	std::string text;
 };
 ProfileSnapshot profile;
+// GPU readback and input callbacks can reenter OnDraw on the presenting
+// thread. Other rendering threads must not wait for that work to finish.
+std::recursive_mutex render_lock;
 std::atomic<DWORD> render_thread{0};
-HackerContext* render_context = nullptr;
+std::atomic<HackerContext*> render_context{nullptr};
 UINT injected_ordinal = 0;
 ULONGLONG retry_open = 0;
 
@@ -197,17 +199,11 @@ std::string DescribeCapture()
 		",\"fallback\":" + (fallback ? "\"native_f8\"" : "null") + "}";
 }
 
-bool IsMapped(ID3D11Buffer* buffer)
-{
-	unsigned char flag = 0;
-	UINT length = sizeof(flag);
-	return SUCCEEDED(buffer->GetPrivateData(BufferMappedGuid, &length, &flag)) && flag;
-}
-
-HRESULT ReadBuffer(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT begin, UINT length,
+HRESULT ReadBuffer(HackerContext* wrapper, ID3D11Buffer* buffer, UINT begin, UINT length,
 	std::vector<unsigned char>& bytes)
 {
-	if (IsMapped(buffer)) return DXGI_ERROR_WAS_STILL_DRAWING;
+	if (wrapper->IsBufferMapped(buffer)) return DXGI_ERROR_WAS_STILL_DRAWING;
+	auto* context = wrapper->GetPassThroughOrigContext1();
 	D3D11_BUFFER_DESC source_desc{};
 	buffer->GetDesc(&source_desc);
 	if (source_desc.MiscFlags & (D3D11_RESOURCE_MISC_TILED | D3D11_RESOURCE_MISC_HW_PROTECTED |
@@ -424,7 +420,7 @@ std::string DescribeDraw(HackerContext* wrapper, ID3D11DeviceContext* context, c
 	return out + "}";
 }
 
-void ReadBoundBuffer(ID3D11DeviceContext* context, const BufferBinding& binding, UINT total,
+void ReadBoundBuffer(HackerContext* context, const BufferBinding& binding, UINT total,
 	UINT offset, UINT requested_length)
 {
 	if (offset >= total || (requested_length && requested_length > total - offset)) {
@@ -552,7 +548,7 @@ std::string Invoke(HackerDevice* device, std::string_view key, std::string_view 
 	return invoked ? "{\"dispatched\":true}" : "{\"error\":\"binding is unavailable or disabled by input scope\"}";
 }
 
-std::string Process(HackerDevice* device, std::string_view request)
+std::string Process(HackerDevice* device, HackerContext* wrapper, std::string_view request)
 {
 	std::vector<std::string_view> fields;
 	while (true) {
@@ -678,7 +674,7 @@ std::string Process(HackerDevice* device, std::string_view request)
 		ComPtr<ID3D11Buffer> buffer;
 		if (FAILED(resource.As(&buffer)))
 			return ProtocolError("CUSTOM_RESOURCE_NOT_BUFFER", "Live resource is not a D3D11 buffer");
-		auto* context = render_context->GetPassThroughOrigContext1();
+		auto* context = wrapper->GetPassThroughOrigContext1();
 		ComPtr<ID3D11Device> source, target;
 		buffer->GetDevice(&source);
 		context->GetDevice(&target);
@@ -692,7 +688,7 @@ std::string Process(HackerDevice* device, std::string_view request)
 		capture.length = static_cast<UINT>(length);
 		capture.details = "{\"name\":" + Quote(fields[1]) + ",\"frame\":" + std::to_string(G->frame_no) +
 			",\"byte_width\":" + std::to_string(desc.ByteWidth) + ",\"offset\":" + std::to_string(offset) + "}";
-		ReadBoundBuffer(context, {std::move(buffer), CaptureKind::Srv, "", 0, 0, 0, DXGI_FORMAT_UNKNOWN},
+		ReadBoundBuffer(wrapper, {std::move(buffer), CaptureKind::Srv, "", 0, 0, 0, DXGI_FORMAT_UNKNOWN},
 			desc.ByteWidth, capture.offset, capture.length);
 		return DescribeCapture();
 	}
@@ -738,21 +734,22 @@ std::string Process(HackerDevice* device, std::string_view request)
 void OnPresent(HackerDevice* device, HackerContext* context)
 {
 	if (!enabled.load(std::memory_order_acquire) && !render_thread.load(std::memory_order_relaxed)) return;
-	const auto current_thread = GetCurrentThreadId();
-	DWORD none = 0;
-	render_thread.compare_exchange_strong(none, current_thread);
-	if (render_thread.load(std::memory_order_relaxed) != current_thread) return;
+	std::unique_lock lock(render_lock, std::try_to_lock);
+	if (!lock.owns_lock()) return;
 	if (!enabled.load(std::memory_order_acquire)) {
 		pipe.Close();
 		capture_armed.store(false, std::memory_order_release);
 		capture = {};
 		profile = {};
-		render_context = nullptr;
+		render_context.store(nullptr, std::memory_order_release);
 		render_thread.store(0, std::memory_order_release);
 		return;
 	}
-	if (!context || (render_context && render_context != context)) return;
-	render_context = context;
+	if (!context) return;
+	const auto previous = render_context.exchange(context, std::memory_order_acq_rel);
+	if (previous != context && capture_armed.load(std::memory_order_relaxed))
+		Complete("device_changed");
+	render_thread.store(GetCurrentThreadId(), std::memory_order_release);
 	injected_ordinal = 0;
 	if (capture_armed.load(std::memory_order_relaxed) &&
 		static_cast<int32_t>(G->frame_no - capture.until) >= 0) Complete("no_matching_draw");
@@ -784,7 +781,7 @@ void OnPresent(HackerDevice* device, HackerContext* context)
 			}
 			pipe.last_activity = now;
 			if (!count) return;
-			pipe.pending = Process(device, {buffer, count});
+			pipe.pending = Process(device, context, {buffer, count});
 			if (pipe.pending.size() > PipeSize)
 				pipe.pending = "{\"error\":\"response exceeds transport limit, narrow the query\"}";
 		}
@@ -799,9 +796,22 @@ void OnPresent(HackerDevice* device, HackerContext* context)
 	}
 }
 
+void OnContextDestroyed(HackerContext* context) noexcept
+{
+	// Retire the borrowed pointer without waiting on a rendering thread.
+	// The next Present cancels any pending capture before serving the pipe.
+	render_context.compare_exchange_strong(context, nullptr, std::memory_order_acq_rel);
+}
+
 void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, bool after)
 {
-	if (render_thread.load(std::memory_order_relaxed) != GetCurrentThreadId() || context != render_context)
+	const auto thread = GetCurrentThreadId();
+	if (render_thread.load(std::memory_order_relaxed) != thread)
+		return;
+	std::unique_lock lock(render_lock, std::try_to_lock);
+	if (!lock.owns_lock() || !capture_armed.load(std::memory_order_relaxed) ||
+		render_thread.load(std::memory_order_relaxed) != thread ||
+		context != render_context.load(std::memory_order_acquire))
 		return;
 	const bool compute = call.type == DrawCall::Dispatch || call.type == DrawCall::DispatchIndirect;
 	if (injected && !after) ++injected_ordinal;
@@ -829,7 +839,7 @@ void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, boo
 			uint32_t region_hash = 0;
 			const bool check_region = capture.hash != Any && (capture.hash_mode == "region" ||
 				(capture.hash_mode == "auto" && capture.hash != full_hash));
-			if (check_region && G->track_region_hashes && full_hash && !IsMapped(binding.buffer.Get())) {
+			if (check_region && G->track_region_hashes && full_hash && !context->IsBufferMapped(binding.buffer.Get())) {
 				if (binding.kind == CaptureKind::Index && binding.offset && call.IndexCount) {
 					region_offset = GetIndexBufferRegionOffset(binding.format, &draw_call, binding.offset);
 					region_length = GetIndexBufferRegionSize(binding.format, &draw_call);
@@ -849,7 +859,7 @@ void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, boo
 				// The Hunting caches may refer to an earlier version. Verify the
 				// selected region's bytes before attributing the draw to this hash.
 				std::vector<unsigned char> observed;
-				if (FAILED(ReadBuffer(native, binding.buffer.Get(), region_offset, region_length, observed)) ||
+				if (FAILED(ReadBuffer(context, binding.buffer.Get(), region_offset, region_length, observed)) ||
 					crc32c_hw(0, observed.data(), observed.size()) != region_hash)
 					continue;
 			}
@@ -880,7 +890,7 @@ void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, boo
 				read_length = static_cast<UINT>(length);
 			}
 			capture.details += ",\"offset\":" + std::to_string(read_offset) + "}";
-			ReadBoundBuffer(native, binding, desc.ByteWidth, read_offset, read_length);
+			ReadBoundBuffer(context, binding, desc.ByteWidth, read_offset, read_length);
 			return;
 		}
 		if (capture.kind == CaptureKind::Draw && (buffers.size() > 1 || (capture.hash == Any && capture.resource == Any))) {
@@ -892,16 +902,6 @@ void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, boo
 		capture.bytes.clear();
 		Complete("readback_failed");
 	}
-}
-
-void TrackBufferMap(ID3D11Resource* resource, bool mapped)
-{
-	if (!resource) return;
-	D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
-	resource->GetType(&dimension);
-	if (dimension != D3D11_RESOURCE_DIMENSION_BUFFER) return;
-	const unsigned char flag = 1;
-	resource->SetPrivateData(BufferMappedGuid, mapped ? sizeof(flag) : 0, mapped ? &flag : nullptr);
 }
 
 void RememberShader(ID3D11DeviceChild* shader, uint64_t hash, const wchar_t* stage,

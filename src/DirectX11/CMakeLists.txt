@@ -468,5 +468,9 @@ if(BUILD_TESTING)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
                 --monitor "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
         set_tests_properties(dx11_mcp_monitor_regression PROPERTIES TIMEOUT 55)
+        add_test(NAME dx11_mcp_map_reload_regression
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
+                --map-reload "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
+        set_tests_properties(dx11_mcp_map_reload_regression PROPERTIES TIMEOUT 55)
     endif()
 endif()

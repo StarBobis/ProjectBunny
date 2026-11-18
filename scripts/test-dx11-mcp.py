@@ -154,6 +154,31 @@ def verify(mcp, pid, folder):
     assert any(row["id"].lower() == "keymcpreloaded.key" for row in bindings), bindings
 
 
+def verify_device_switch(mcp, pid, folder):
+    deadline = time.monotonic() + 8
+    while pid not in mcp.tool("discover")["pids"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    assert mcp.tool("status")["pid"] == pid
+    pending = mcp.tool("capture", kind="ib", hash="12345678", hash_mode="resource", frames=120)
+    assert pending["state"] == "pending"
+    (folder / "switch-device").touch()
+    wait_file(folder / "replacement-presenting")
+    assert mcp.tool("status")["pid"] == pid
+    retired = mcp.tool("capture_status", capture_id=pending["id"])
+    assert retired["state"] == "device_changed", retired
+    replacement = mcp.tool("capture", kind="ib", indexed_range=True)
+    mcp.wait_capture(replacement["id"])
+    assert struct.unpack("<III", mcp.bytes(replacement["id"])) == (1, 2, 3)
+
+
+def wait_file(path, timeout=8):
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        assert time.monotonic() < deadline, path.name
+        time.sleep(0.05)
+
+
 def main(harness, dll):
     assert "build" in harness.parent.parts, "keep WARP fixture inside the build directory"
     with tempfile.TemporaryDirectory(prefix="mcp-warp-", dir=harness.parent) as directory:
@@ -203,12 +228,37 @@ def main(harness, dll):
                         print("\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-30:]),
                               file=sys.stderr)
             assert game.returncode == 0, game.returncode
-    print("PASS: DX11 MCP stdio, hotkeys, Hunting hashes, dynamic IB, custom resources/shaders, profiling, F8")
+    with tempfile.TemporaryDirectory(prefix="mcp-device-switch-", dir=harness.parent) as directory:
+        folder = Path(directory)
+        copy = folder / "d3d11.dll"
+        shutil.copyfile(dll, copy)
+        (folder / "d3dx.ini").write_text(
+            "[Logging]\ncalls=1\n[System]\nmcp_enabled=1\nallow_platform_update=1\n"
+            "[Hunting]\nhunting=2\n", encoding="ascii")
+        with subprocess.Popen([str(harness), "--mcp-live", str(copy)], cwd=folder) as game:
+            try:
+                with subprocess.Popen([sys.executable, str(BRIDGE), "--pid", str(game.pid)],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding="utf-8") as server:
+                    try:
+                        verify_device_switch(Mcp(server), game.pid, folder)
+                    finally:
+                        server.stdin.close()
+                        server.wait(timeout=5)
+            finally:
+                (folder / "stop").touch()
+                try:
+                    game.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    game.kill()
+                    game.wait()
+            assert game.returncode == 0
+    print("PASS: DX11 MCP stdio, hotkeys, Hunting, readback, profiling, F8, and replacement device handoff")
 
 
 def verify_monitor(mcp, harness, dll, folder):
     start = mcp.tool("monitor_start", target_exe=harness.name, stall_ms=450)
     assert start["state"] == "monitoring", start
+    assert start["stall_ms"] == 450 and start["present_stall_ms"] == 2000, start
     assert mcp.tool("monitor_poll")["waiting_for_dll"]
     copied = folder / "d3d11.dll"
     shutil.copyfile(dll, copied)
@@ -278,6 +328,18 @@ def verify_monitor(mcp, harness, dll, folder):
                 for entry in reader.sessions.values():
                     if entry["handle"]:
                         reader.transport.api.CloseHandle(entry["handle"])
+            deadline = time.monotonic() + 2.3
+            frames = set()
+            while time.monotonic() < deadline:
+                snapshot = mcp.tool("monitor_poll", pid=game.pid, after_seq=cursor, wait_ms=100)
+                cursor = snapshot["next_seq"]
+                current, = snapshot["sessions"]
+                assert current["state"] == "presenting" and current["stall_threshold_ms"] == 2000, current
+                frames.add(current["last_frame"])
+            assert len(frames) >= 2, frames
+            (folder / "pause-present").touch()
+            until(game.pid, lambda reply, _: any(s["state"] == "no_progress" and
+                  s["stall_threshold_ms"] == 2000 for s in reply["sessions"]))
         finally:
             (folder / "stop").touch()
             try:
@@ -305,6 +367,87 @@ def monitor_main(harness, dll):
     print("PASS: monitored startup without Present or a log file, loading stall, process crash, retained attach logs")
 
 
+def verify_map_reload(harness, dll, initial_enabled):
+    with tempfile.TemporaryDirectory(prefix="mcp-map-reload-", dir=harness.parent) as directory:
+        folder = Path(directory)
+        copy = folder / "d3d11.dll"
+        shutil.copyfile(dll, copy)
+        ini = folder / "d3dx.ini"
+
+        def configure(enabled):
+            ini.write_text(
+                "[Logging]\nlog_level=disabled\n[System]\nallow_platform_update=1\n"
+                f"mcp_enabled={int(enabled)}\nconfig_initialization_delay=6\n"
+                "[Hunting]\nhunting=2\nreload_config=F10\n"
+                "[ResourceMcpMapped]\n[Present]\nResourceMcpMapped = ref ib\n", encoding="ascii")
+
+        configure(initial_enabled)
+        hold = folder / "hold-map"
+        hold.touch()
+        (folder / "present-only").touch()
+        with subprocess.Popen([str(harness), "--mcp-live", str(copy)], cwd=folder) as game:
+            try:
+                with subprocess.Popen([sys.executable, str(BRIDGE), "--pid", str(game.pid)],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding="utf-8") as server:
+                    try:
+                        mcp = Mcp(server)
+
+                        def wait_endpoint(available):
+                            deadline = time.monotonic() + 10
+                            while (game.pid in mcp.tool("discover")["pids"]) != available:
+                                assert game.poll() is None and time.monotonic() < deadline, available
+                                time.sleep(0.1)
+
+                        def read_buffer():
+                            deadline = time.monotonic() + 3
+                            while True:
+                                try:
+                                    return mcp.tool("custom_buffer", name="ResourceMcpMapped")
+                                except AssertionError:
+                                    # The bridge can be holding the connection from before the reload.
+                                    assert game.poll() is None and time.monotonic() < deadline
+                                    time.sleep(0.1)
+
+                        wait_file(folder / "map-held")
+                        if initial_enabled:
+                            wait_endpoint(True)
+                            assert read_buffer()["state"] == "mapped"
+                            configure(False)
+                            assert mcp.tool("hotkey", action="Hunting.reload_config")["dispatched"]
+                            wait_endpoint(False)
+                            hold.unlink()
+                            wait_file(folder / "map-released")
+                        configure(True)
+                        wait_endpoint(True)
+                        if not initial_enabled:
+                            assert read_buffer()["state"] == "mapped"
+                            hold.unlink()
+                            wait_file(folder / "map-released")
+                        result = read_buffer()
+                        assert result["state"] == "ready", result
+                        assert struct.unpack("<4I", mcp.bytes(result["id"])) == (100, 1, 2, 3)
+                    finally:
+                        server.stdin.close()
+                        server.wait(timeout=5)
+            finally:
+                (folder / "stop").touch()
+                try:
+                    game.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    game.kill()
+                    game.wait()
+            assert game.returncode == 0
+
+
+def map_reload_main(harness, dll):
+    assert "build" in harness.parent.parts
+    for initial_enabled in (False, True):
+        verify_map_reload(harness, dll, initial_enabled)
+    print("PASS: tracked initial and cleared mapping across MCP enable/disable reloads")
+
+
 if __name__ == "__main__":
-    runner, args = (monitor_main, sys.argv[2:]) if sys.argv[1] == "--monitor" else (main, sys.argv[1:])
+    modes = {"--monitor": monitor_main, "--map-reload": map_reload_main}
+    runner = modes.get(sys.argv[1], main)
+    args = sys.argv[2:] if sys.argv[1] in modes else sys.argv[1:]
     runner(*(Path(arg).resolve() for arg in args))

@@ -15,6 +15,9 @@ HEADER = struct.Struct("<IIIIqiiq")
 RECORD = struct.Struct("<IIqIIQQII512s")
 SIZE = HEADER.size + CAPACITY * RECORD_SIZE
 LEVELS = {"warning": 1, "info": 2, "debug": 3}
+# The native DX11 producer emits a Present event at most once per second.
+PRESENT_HEARTBEAT_MS = 1000
+MIN_PRESENT_STALL_MS = 2 * PRESENT_HEARTBEAT_MS
 KINDS = {1: "warning", 2: "info", 3: "debug", 10: "phase", 11: "present",
          12: "attach", 13: "detach", 14: "failure", 15: "identity"}
 
@@ -186,6 +189,7 @@ class Monitor:
             self.transport.enable(LEVELS[level])
             self.kick.set()
             return {"state": "monitoring", "target_exe": target_exe, "level": level, "stall_ms": stall_ms,
+                    "present_stall_ms": max(stall_ms, MIN_PRESENT_STALL_MS),
                     "next_seq": self.seq, "sessions": self.statuses()}
 
     def append(self, event):
@@ -313,17 +317,19 @@ class Monitor:
             if pid is not None and session["pid"] != pid:
                 continue
             age = max(0, now - session["progress"])
+            threshold = self.stall_ms if session["frame"] is None else max(self.stall_ms, MIN_PRESENT_STALL_MS)
             if session["exited"]:
                 state = "exited"
             elif session["detached"]:
                 state = "dll_unloaded"
-            elif age >= self.stall_ms:
+            elif age >= threshold:
                 state = "no_progress"
             else:
                 state = "presenting" if session["frame"] is not None else "loading"
             results.append({"pid": session["pid"], "process_start": session["process_start"],
                             "executable": session["executable"], "state": state, "phase": session["phase"],
                             "identity_source": session["identity_source"],
+                            "stall_threshold_ms": threshold,
                             "progress_age_ms": age, "last_frame": session["frame"], "exit_code": session["exit_code"]})
         return results
 

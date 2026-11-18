@@ -10,6 +10,8 @@
 // Hierarchy:
 //  HackerContext <- ID3D11DeviceContext1 <- ID3D11DeviceContext <- ID3D11DeviceChild <- IUnknown
 
+#include <algorithm>
+
 #include "Hunting.h"
 
 #include "HookedContext.h"
@@ -110,6 +112,7 @@ HRESULT HackerContext::ComputeDHash(ID3D11Texture2D* texture, UINT mipLevel, DXG
 
 HackerContext::~HackerContext()
 {
+	Dx11Mcp::OnContextDestroyed(this);
     textureOverrideCache.Clear();
 	ResetTrackedInputLayout();
     for (auto& resource : mMappedResources)
@@ -1465,6 +1468,17 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 	}
 
 	pResource->GetType(&dim);
+	if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+		// The mapping belongs to the context and resource, even when MCP is
+		// disabled. Retain its identity through Unmap or context destruction.
+		Microsoft::WRL::ComPtr<ID3D11Resource> mapped(pResource);
+		std::lock_guard lock(mMappedBufferLock);
+		try {
+			mMappedBuffers.push_back(std::move(mapped));
+		} catch (const std::bad_alloc&) {
+			mBufferMapTrackingIncomplete = true;
+		}
+	}
     if (write && dim == D3D11_RESOURCE_DIMENSION_BUFFER &&
         G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -1610,10 +1624,6 @@ STDMETHODIMP HackerContext::Map(THIS_
 	HRESULT hr;
 
 	hr = mOrigContext1->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
-	if (SUCCEEDED(hr) && pMappedResource && pMappedResource->pData &&
-		Dx11Mcp::enabled.load(std::memory_order_relaxed))
-		Dx11Mcp::TrackBufferMap(pResource, true);
-
 	TrackAndDivertMap(hr, pResource, Subresource, MapType, MapFlags, pMappedResource);
 
 	return hr;
@@ -1628,9 +1638,24 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
     bool discard = false;
     const bool upload = TrackAndDivertUnmap(pResource, Subresource, &discard);
 	mOrigContext1->Unmap(pResource, Subresource);
-	if (Dx11Mcp::enabled.load(std::memory_order_relaxed))
-		Dx11Mcp::TrackBufferMap(pResource, false);
+	Microsoft::WRL::ComPtr<ID3D11Resource> unmapped;
+	{
+		std::lock_guard lock(mMappedBufferLock);
+		const auto entry = std::find_if(mMappedBuffers.begin(), mMappedBuffers.end(),
+			[pResource](const auto& mapped) { return mapped.Get() == pResource; });
+		if (entry != mMappedBuffers.end()) {
+			unmapped = std::move(*entry);
+			mMappedBuffers.erase(entry);
+		}
+	}
     if (upload) mTextureUploads.Update(mOrigContext1, pResource, Subresource, nullptr, discard);
+}
+
+bool HackerContext::IsBufferMapped(const ID3D11Resource* buffer) const
+{
+	std::lock_guard lock(mMappedBufferLock);
+	return mBufferMapTrackingIncomplete || std::any_of(mMappedBuffers.begin(), mMappedBuffers.end(),
+		[buffer](const auto& mapped) { return mapped.Get() == buffer; });
 }
 
 STDMETHODIMP_(void) HackerContext::PSSetConstantBuffers(THIS_
