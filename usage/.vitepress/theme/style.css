@@ -1,0 +1,218 @@
+:root {
+  --vp-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --vp-font-family-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --vp-c-brand-1: #284dad;
+  --vp-c-brand-2: #345dc1;
+  --vp-c-brand-3: #284dad;
+  --vp-c-brand-soft: #edf2ff;
+  --vp-c-bg: #fff;
+  --vp-c-bg-alt: #f7f8fb;
+  --vp-c-bg-soft: #f3f5fa;
+  --vp-c-divider: #e3e7ef;
+  --vp-c-text-1: #191e2b;
+  --vp-c-text-2: #505b70;
+  --vp-layout-max-width: 1580px;
+  --vp-sidebar-width: 264px;
+  --vp-nav-height: 60px;
+  --pb-surface: #f6f8fc;
+  --pb-header: rgb(255 255 255 / 91%);
+}
+
+.dark {
+  --vp-c-brand-1: #a6bdff;
+  --vp-c-brand-2: #8caafd;
+  --vp-c-brand-3: #5478d8;
+  --vp-c-brand-soft: #222f50;
+  --vp-c-bg: #161a23;
+  --vp-c-bg-alt: #1a202c;
+  --vp-c-bg-soft: #202736;
+  --vp-c-divider: #323b4d;
+  --vp-c-text-1: #edf1fa;
+  --vp-c-text-2: #b4bed1;
+  --pb-surface: #202736;
+  --pb-header: rgb(22 26 35 / 92%);
+}
+
+.VPNavBar .wrapper,
+.VPNavBar:not(.has-sidebar) .content-body,
+.VPNavBar.has-sidebar .content-body {
+  background: transparent;
+}
+
+.VPNavBar {
+  background: var(--pb-header);
+  backdrop-filter: blur(18px);
+}
+
+.VPNavBarTitle a.title {
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.VPSidebarItem.is-link.is-active > .item > .link {
+  border-radius: 7px;
+  background: var(--vp-c-brand-soft);
+  box-shadow: -7px 0 var(--vp-c-brand-soft), 7px 0 var(--vp-c-brand-soft);
+}
+
+.VPDoc .vp-doc {
+  overflow-wrap: anywhere;
+  font-size: 16px;
+}
+
+.docs-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 17px;
+  color: var(--vp-c-text-2);
+  font-size: 0.875rem;
+}
+
+.docs-breadcrumb a {
+  color: var(--vp-c-brand-1);
+}
+
+.docs-breadcrumb a:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.VPDoc .vp-doc h1 {
+  margin-bottom: 24px;
+  font-size: clamp(1.95rem, 4.2vw, 3rem);
+  line-height: 1.17;
+  letter-spacing: -0.032em;
+}
+
+.VPDoc .vp-doc h2 {
+  margin-top: 48px;
+  padding-top: 23px;
+  line-height: 1.32;
+}
+
+.VPDoc .vp-doc p {
+  line-height: 1.8;
+}
+
+.VPDoc .vp-doc div[class*="language-"] {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+}
+
+.VPDoc .vp-doc table {
+  max-width: 100%;
+}
+
+.docs-home {
+  width: min(100% - 64px, 1120px);
+  margin: 0 auto;
+  padding: clamp(56px, 8vw, 108px) 0 64px;
+}
+
+.docs-home__intro {
+  padding-bottom: clamp(36px, 6vw, 68px);
+}
+
+.docs-home__intro h1 {
+  font-size: clamp(2.5rem, 6.2vw, 5.4rem);
+  font-weight: 750;
+  line-height: 1.1;
+  letter-spacing: -0.057em;
+}
+
+.docs-home__intro h1 span {
+  white-space: nowrap;
+}
+
+.docs-home__intro p {
+  max-width: 46ch;
+  margin-top: 21px;
+  color: var(--vp-c-text-2);
+  font-size: clamp(1.06rem, 2vw, 1.32rem);
+  line-height: 1.65;
+}
+
+.docs-home__options {
+  border-top: 1px solid var(--vp-c-divider);
+  padding-top: 30px;
+}
+
+.docs-home__options > h2 {
+  margin-bottom: 20px;
+  font-size: clamp(1.18rem, 2.3vw, 1.58rem);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.docs-home__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.docs-home__card {
+  padding: clamp(20px, 3vw, 32px);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 16px;
+  background: var(--pb-surface);
+}
+
+.docs-home__card-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 18px;
+}
+
+.docs-home__card-title h3 {
+  font-size: 1.65rem;
+  font-weight: 730;
+  letter-spacing: -0.035em;
+}
+
+.docs-home__card-title code {
+  color: var(--vp-c-text-2);
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.875rem;
+}
+
+.docs-home__card li {
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.docs-home__card li a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  gap: 8px;
+  color: var(--vp-c-brand-1);
+  font-weight: 550;
+}
+
+.docs-home__card a:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.docs-home a:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+
+@media (max-width: 680px) {
+  .docs-home {
+    width: calc(100% - 40px);
+    padding-top: 44px;
+  }
+
+  .docs-home__grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}

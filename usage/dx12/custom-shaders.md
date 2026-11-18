@@ -37,11 +37,11 @@ draw = 3, 0
 | `blend` | `disable` 或 `操作 源因子 目标因子` |
 | `cull` | none/front/back |
 | `topology` | point_list、line_list/strip、triangle_list/strip 及支持的邻接/patch 形式 |
-| `oN` | 自定义元素的渲染目标设置路径 |
+| `o0`–`o7` | 自定义元素识别的渲染目标槽。值含 `bb` 时使用后备缓冲 |
 
 混合操作支持 add、subtract、rev_subtract、min、max；常用因子为 zero、one、src_alpha、inv_src_alpha、src_color、dest_color 及对应逆值。
 
-内部模型还含 alpha、fill、front、sample_mask 等状态描述，但当前命令分类器不会把所有同名 DX11 字段送入状态路径；不能仅按内部结构名配置它们。
+当前 INI 配置会忽略 `alpha`、`fill`、`front` 和 `sample_mask`。光栅化使用实心填充，正面按顺时针判断。
 
 深度、模板、采样器和逐目标混合的完整 DX11 状态集合不视为兼容。需要这些状态时，先核对当前执行路径，避免得到默认状态却误以为配置生效。
 

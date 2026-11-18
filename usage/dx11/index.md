@@ -24,7 +24,7 @@ d3dx_user.ini       ← 运行后保存的设置
 d3d11_log.txt       ← 日志
 ```
 
-仓库中的 `Dependencies/d3dx.ini` 是 DX11 配置模板。模板默认 `hunting = 0`，没有定位面板不代表 DLL 未加载。
+仓库中的 `Dependencies/d3dx.ini` 是 DX11 配置模板。模板有一个注释字符使用旧编码。手动以模板建配置时，可用 Windows-1252 打开模板，再把部署副本另存为 UTF-8。模板默认 `hunting = 0`，需要定位资源时先开启 Hunting。
 
 ## 更新与移除
 

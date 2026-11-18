@@ -151,7 +151,7 @@ t≈58698xxx  kind=swapchain,stage=create,wrapper=…            （新交换链
 `异常代码 0x00000000`，`P8: PCH_84`；WER `APPCRASH / StackHash_0000`。
 
 `flags=0x842` = `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT (0x40)`
-`| DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING (0x800)` —— **这就是帧生成要的交换链。**
+`| DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING (0x800) | DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH (0x2)`。这是该次帧生成复现中观察到的交换链。
 
 #### 已排除的假设（都有证据）
 
@@ -207,7 +207,7 @@ UnityPlayer 的 PDB 不在公共符号服务器上，所以只有导出符号 `U
    （只测量 + 可选记录，**不改变行为**）。栈上出现它**不等于**它是原因；它只是把等待暴露出来。
 3. 等待**永不满足**：`present` 停在 4449，此后没有任何 `Present`。
 4. 旧交换链在 t=58695703 被 release，新交换链以
-   `flags=0x842`（`FRAME_LATENCY_WAITABLE_OBJECT | ALLOW_TEARING`）创建成功
+   `flags=0x842`（`FRAME_LATENCY_WAITABLE_OBJECT | ALLOW_TEARING | ALLOW_MODE_SWITCH`）创建成功
    —— **这正是帧生成要的交换链**。
 
 #### ★ 第二次复现（2026-09-17 18:49 崩溃）—— 旧假设被证伪，新增决定性探针
@@ -345,7 +345,7 @@ TIMING 版在热路径上有大量插入（QPC、每帧计数、看门狗、`DX1
 ### 第 5 步：DLSS-G 侧的旁证
 
 开帧生成时游戏必然：
-- 以 `FRAME_LATENCY_WAITABLE_OBJECT + ALLOW_TEARING` 重建交换链（**已证实，flags=0x842**）
+- 以 `FRAME_LATENCY_WAITABLE_OBJECT | ALLOW_TEARING | ALLOW_MODE_SWITCH` 重建交换链（**已观察到 flags=0x842**）
 - 通过 `IDXGISwapChain2::GetFrameLatencyWaitableObject` 拿句柄并等待
 - 每个显示帧调用**两次** `Present`
 

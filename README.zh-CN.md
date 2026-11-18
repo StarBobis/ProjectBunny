@@ -19,7 +19,7 @@ Project Bunny 基于 3Dmigoto 进行重构与扩展，支持 DirectX 11 和 Dire
 
 加载器（`Run.exe`）由 [SSMT5](https://github.com/StarBobis/SSMT5) 维护和提供，本仓库不再构建或分发。
 
-详细说明见[用户手册源码](usage/)与[发布流程](docs/Release-Package.md)。
+详细说明见[用户手册源码](usage/)与[功能参考](docs/README.md)。
 
 ## 开发环境
 

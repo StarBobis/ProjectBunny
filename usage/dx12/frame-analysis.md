@@ -2,7 +2,7 @@
 
 ## 捕获流程
 
-1. 进入目标可见且动作稳定的场景。
+1. 进入目标可见且动作稳定的场景，按小键盘 0 开启 Hunting。
 2. 按 F8 一次，等待完成提示。
 3. 打开 DLL 旁的 `FrameAnalysis-日期-时间`。
 4. 按 draw/dispatch 编号对照资源、绑定和着色器信息。
@@ -27,7 +27,7 @@ F9 抓取帧内着色器，输出到 `ShaderFixes`。等待完成后结合汇编
 
 ## 性能面板
 
-F11 循环切换 Off、Compact、Summary、Top、Sections、Counters；F12 冻结/恢复显示。TIMING 版提供详细计时，数据可用性取决于构建。
+F11 循环切换 Off、Overview、Buckets、Counters。F12 冻结或恢复当前显示。TIMING 版提供详细计时，数据可用性取决于构建。
 
 定位工具与抓帧会引入额外开销。比较 Mod 性能时保持同场景、同 DLL 构建与相同面板/工具状态，不把抓取期间的停顿当作正常帧率。
 

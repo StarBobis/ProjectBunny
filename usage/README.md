@@ -1,6 +1,6 @@
 # 文档开发
 
-本站使用 VitePress 2 默认主题，以 Bun 管理依赖和运行脚本。
+本站使用 VitePress 2，以 Bun 管理依赖和运行脚本。自定义主题保留 VitePress 的文档导航和本地搜索。
 
 ## 本地开发
 
@@ -40,12 +40,15 @@ Actions 使用 Bun 锁文件安装依赖，再调用 `scripts/build-docs.ps1` �
 
 ## 维护内容
 
-- `index.md`：文档首页。
+- `index.md`：文档首页的标题和摘要。
+- `.vitepress/theme/`：首页版式、快捷入口和文档全站样式。
 - `dx11/`、`dx12/`：按图形 API 分开的用户文档。
 - `guide/index.md`：旧指南入口。
 - `.vitepress/config.ts`：站点设置、导航和侧边栏。
 
 新增页面后，在配置中添加相应导航或侧边栏链接。`README.md` 是维护说明，不作为站点页面发布。
+
+仓库的功能参考入口见 [docs/README.md](../docs/README.md)。
 
 ## 内容核对
 
