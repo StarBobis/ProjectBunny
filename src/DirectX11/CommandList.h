@@ -1431,6 +1431,7 @@ class CommandListEvaluatable {
 public:
 	virtual ~CommandListEvaluatable() {}; // Because C++
 
+	virtual bool IsSafeToSkipEvaluation() const { return false; }
 	virtual float evaluate(CommandListState *state, HackerDevice *device=NULL) = 0;
 	virtual bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) = 0;
 	virtual bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) = 0;
@@ -1498,6 +1499,7 @@ class CommandListOperator :
 	public CommandListFinalisable,
 	public CommandListOperandBase,
 	public CommandListWalkable {
+	bool safe_to_skip_evaluation = false;
 public:
 	std::shared_ptr<CommandListToken> lhs_tree;
 	std::shared_ptr<CommandListToken> rhs_tree;
@@ -1512,6 +1514,7 @@ public:
 	{}
 
 	std::shared_ptr<CommandListEvaluatable> finalise() override;
+	bool IsSafeToSkipEvaluation() const override { return safe_to_skip_evaluation; }
 	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
 	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) override;
 	bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) override;
@@ -1697,6 +1700,7 @@ public:
 	bool parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 
+	bool IsSafeToSkipEvaluation() const override;
 	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
 	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) override;
 	bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) override;

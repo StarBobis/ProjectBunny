@@ -5251,6 +5251,7 @@ void LoadConfigFile()
 
 	G->CACHE_SHADERS = GetIniBool(L"Rendering", L"cache_shaders", false, NULL);
 	G->mod_runtime_optimizations = GetIniBool(L"Rendering", L"mod_runtime_optimizations", true, NULL);
+	G->expression_short_circuit = GetIniBool(L"Rendering", L"expression_short_circuit", true, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
     DataCacheBindFlags data_cache_flags = DataCacheBindFlags::INVALID;

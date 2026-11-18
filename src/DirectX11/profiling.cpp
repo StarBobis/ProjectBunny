@@ -20,6 +20,8 @@ namespace Profiling {
 	Overhead map_overhead;
 	Overhead pipeline_invalidation_overhead;
 	Overhead readback_map_overhead;
+	Overhead expression_om_query_overhead;
+	Overhead expression_cb_query_overhead;
 	Overhead iniparams_upload_overhead;
 	Overhead hash_tracking_overhead;
 	Overhead region_tracking_overhead;
@@ -396,6 +398,14 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
     };
     append_lookup(L"TO candidates rebuild", Profiling::texture_override_fuzzy_match_overhead);
     append_lookup(L"TO candidates lookup", Profiling::texture_override_candidates_lookup_overhead);
+    const auto append_query = [&](const wchar_t* label, const Profiling::Overhead& overhead) {
+        _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"%ls: %.2fus/frame (%.2f queries/frame)\n", label,
+            static_cast<double>(overhead.cpu.QuadPart) * 1000000.0 / freq.QuadPart / frames,
+            static_cast<double>(overhead.count) / frames);
+        Profiling::text += buf;
+    };
+    append_query(L"Expression OM queries", Profiling::expression_om_query_overhead);
+    append_query(L"Expression CB queries", Profiling::expression_cb_query_overhead);
     _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"Texture update hits: %u/%u hits/frame\n",
         Profiling::hash_tracking_overhead.hits / frames, Profiling::hash_tracking_overhead.count / frames);
     Profiling::text += buf;
@@ -552,6 +562,8 @@ void Profiling::clear()
 	map_overhead.clear();
 	pipeline_invalidation_overhead.clear();
 	readback_map_overhead.clear();
+	expression_om_query_overhead.clear();
+	expression_cb_query_overhead.clear();
 	iniparams_upload_overhead.clear();
 	hash_tracking_overhead.clear();
 	region_tracking_overhead.clear();

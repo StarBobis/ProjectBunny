@@ -58,6 +58,7 @@ XXMI Launcher 不采用模板中所有传统 Loader 参数；用启动器自己�
 | `cache_shaders` | 着色器缓存 |
 | `cache_resource_data` | CPU 缓冲数据缓存类型 |
 | `mod_runtime_optimizations` | 默认 `1`。设为 `0` 后重载主配置，可切回逐槽 TextureOverride 检查、常规 ShaderOverride 查询、CustomShader 的完整 OM 保存、常规资源视图和别名解析、槽位写回前预读，以及 DrawIndexed 和 Dispatch 参数的运行时求值。已显式配置的 `auto_check_texture_slots` 仍生效 |
+| `expression_short_circuit` | 默认 `1`。仅对确认可跳过求值的 `&&`、`\|\|` 使用短路。设为 `0` 后重载主配置，可单独恢复逻辑表达式的原求值路径。关闭 `mod_runtime_optimizations` 时也沿用原求值路径 |
 | `rasterizer_disable_scissor` | 全局关闭裁剪 |
 | `track_texture_updates` | 跟踪纹理更新对 Hash 的影响 |
 | `track_implicit_index_buffers` | 隐式索引缓冲跟踪 |

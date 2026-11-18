@@ -3767,6 +3767,43 @@ static void UpdateScissorInfo(CommandListState *state)
 	state->scissor_valid = true;
 }
 
+bool CommandListOperand::IsSafeToSkipEvaluation() const
+{
+	switch (type) {
+	case ParamOverrideType::VALUE:
+	case ParamOverrideType::INI_PARAM:
+	case ParamOverrideType::VARIABLE:
+	case ParamOverrideType::DRAW_TYPE:
+	case ParamOverrideType::VERTEX_COUNT:
+	case ParamOverrideType::INDEX_COUNT:
+	case ParamOverrideType::INSTANCE_COUNT:
+	case ParamOverrideType::FIRST_VERTEX:
+	case ParamOverrideType::FIRST_INDEX:
+	case ParamOverrideType::FIRST_INSTANCE:
+	case ParamOverrideType::THREAD_GROUP_COUNT_X:
+	case ParamOverrideType::THREAD_GROUP_COUNT_Y:
+	case ParamOverrideType::THREAD_GROUP_COUNT_Z:
+		return true;
+	case ParamOverrideType::SHADER:
+		return shader_target.evaluation_mode == ShaderTargetEvaluationMode::SHADER;
+	case ParamOverrideType::TEXTURE: {
+		const auto &target = texture_filter_target;
+		// Fixed pipeline reads and the null literal do not instantiate
+		// resources, evaluate slot expressions or read back region hashes.
+		if (target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE ||
+			target.slot_expression || target.IsRange())
+			return false;
+		return target.type == ResourceCopyTargetType::EMPTY ||
+			target.type == ResourceCopyTargetType::RENDER_TARGET ||
+			target.type == ResourceCopyTargetType::DEPTH_STENCIL_TARGET ||
+			target.type == ResourceCopyTargetType::CONSTANT_BUFFER ||
+			target.type == ResourceCopyTargetType::SHADER_RESOURCE;
+	}
+	default:
+		return false;
+	}
+}
+
 float CommandListOperand::process_texture_filter(CommandListState *state)
 {
 	switch (texture_filter_target.evaluation_mode)
@@ -3779,7 +3816,24 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 			TextureOverrideMatches::reverse_iterator rit;
 			bool resource_found;
 
-			texture_filter_target.FindTextureOverrides(state, &resource_found, &matches);
+			{
+				std::optional<Profiling::Sample> sample;
+				if (Profiling::mode == Profiling::Mode::SUMMARY &&
+					!texture_filter_target.slot_expression && !texture_filter_target.IsRange()) {
+					switch (texture_filter_target.type) {
+					case ResourceCopyTargetType::RENDER_TARGET:
+					case ResourceCopyTargetType::DEPTH_STENCIL_TARGET:
+						sample.emplace(Profiling::expression_om_query_overhead);
+						break;
+					case ResourceCopyTargetType::CONSTANT_BUFFER:
+						sample.emplace(Profiling::expression_cb_query_overhead);
+						break;
+					default:
+						break;
+					}
+				}
+				texture_filter_target.FindTextureOverrides(state, &resource_found, &matches);
+			}
 
 			// If there is no resource bound we want to return a special value that
 			// is distinct from simply not finding a texture override section. For
@@ -5850,9 +5904,33 @@ DEFINE_OPERATOR(bitwise_and_operator,   "&",  ((int32_t)lhs& (int32_t)rhs));
 DEFINE_OPERATOR(bitwise_xor_operator,   "^",  ((int32_t)lhs ^ (int32_t)rhs));
 DEFINE_OPERATOR(bitwise_or_operator,    "|",  ((int32_t)lhs | (int32_t)rhs));
 
-DEFINE_OPERATOR(and_operator,           "&&", (lhs && rhs));
+template<bool IsAnd>
+class LogicalOperator : public CommandListOperator {
+public:
+	using CommandListOperator::CommandListOperator;
 
-DEFINE_OPERATOR(or_operator,            "||", (lhs || rhs));
+	static const wchar_t* pattern() { return IsAnd ? L"&&" : L"||"; }
+
+	float evaluate(float left, float right) override
+	{
+		return IsAnd ? left && right : left || right;
+	}
+
+	float evaluate(CommandListState *state, HackerDevice *device) override
+	{
+		if (!state || !IsSafeToSkipEvaluation() || !G->ModRuntimeOptimizationsEnabled() ||
+			!G->expression_short_circuit.load(std::memory_order_relaxed) || G->analyse_frame || gLogDebug)
+			return CommandListOperator::evaluate(state, device);
+
+		const bool left = lhs->evaluate(state, device) != 0.0f;
+		if (left != IsAnd)
+			return left;
+		return rhs->evaluate(state, device) != 0.0f;
+	}
+};
+
+static CommandListOperatorFactory<LogicalOperator<true>> and_operator;
+static CommandListOperatorFactory<LogicalOperator<false>> or_operator;
 
 // TODO: Ternary if operator
 
@@ -6248,6 +6326,22 @@ std::shared_ptr<CommandListEvaluatable> CommandListOperator::finalise()
 	if (!rhs)
 		throw CommandListSyntaxError(L"BUG: RHS operand invalid", token_pos);
 	rhs_tree = nullptr;
+
+	if ((!lhs || lhs->IsSafeToSkipEvaluation()) && rhs->IsSafeToSkipEvaluation()) {
+		const std::wstring_view op(token);
+		safe_to_skip_evaluation = op == L"&&" || op == L"||" || op == L"!" ||
+			op == L"==" || op == L"!=" || op == L"===" || op == L"!==" ||
+			op == L"<" || op == L"<=" || op == L">" || op == L">=";
+		if (op == L"%") {
+			// DRAW_TYPE is finite. A nonzero finite literal divisor keeps
+			// fmod away from domain errors in common draw-type filters.
+			const auto *left = dynamic_cast<const CommandListOperand *>(lhs.get());
+			const auto *right = dynamic_cast<const CommandListOperand *>(rhs.get());
+			safe_to_skip_evaluation = left && left->type == ParamOverrideType::DRAW_TYPE &&
+				right && right->type == ParamOverrideType::VALUE &&
+				std::isfinite(right->val) && right->val != 0.0f;
+		}
+	}
 
 	// Can't return "this", because that is an unmanaged version of the
 	// pointer which is already managed elsewhere - if we were to create a

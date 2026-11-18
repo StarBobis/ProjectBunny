@@ -1,5 +1,8 @@
 #include "CommandList.h"
+#include "ExpressionFunctions.h"
 #include "IniHandler.h"
+#include "Profiling.h"
+#include "slot_range_test_support.h"
 
 #include <climits>
 #include <cmath>
@@ -19,6 +22,76 @@ static void require_ini_expression(bool condition, const char* message)
         std::fprintf(stderr, "FAIL: INI expression: %s\n", message);
         std::exit(EXIT_FAILURE);
     }
+}
+
+static void test_logical_short_circuit(const std::wstring &ini_namespace, CommandListScope &scope,
+    CommandListVariable &gate)
+{
+    dx11_slot_test::BatchDevice gpu;
+    DrawCallInfo draw;
+    draw.type = DrawCall::DrawIndexed;
+    gpu.state.call_info = &draw;
+    const auto evaluate = [&](const wchar_t *ini) {
+        const std::wstring text(ini);
+        CommandListExpression expression;
+        require_ini_expression(expression.parse(&text, &ini_namespace, &scope), "parse logical probe");
+        expression.optimise(gpu.device);
+        return expression.evaluate(&gpu.state);
+    };
+
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const auto old_optimization = G->mod_runtime_optimizations.exchange(true);
+    const auto old_short_circuit = G->expression_short_circuit.exchange(true);
+    const auto old_analysis = G->analyse_frame;
+    const auto old_debug = gLogDebug;
+    G->analyse_frame = false;
+    gLogDebug = false;
+
+    gate.fval = 0.0f;
+    const auto initial_om = Profiling::expression_om_query_overhead.count;
+    const auto initial_cb = Profiling::expression_cb_query_overhead.count;
+    const wchar_t *condition = L"$ini_expression_regression_value && draw_type % 2 == 0 && "
+        L"o3 === null && o4 === null && od === null && vs-cb1 === null";
+    require_ini_expression(evaluate(condition) == 0 &&
+        Profiling::expression_om_query_overhead.count == initial_om &&
+        Profiling::expression_cb_query_overhead.count == initial_cb, "false guard skips fixed binding reads");
+
+    G->expression_short_circuit = false;
+    require_ini_expression(evaluate(condition) == 0 &&
+        Profiling::expression_om_query_overhead.count == initial_om + 3 &&
+        Profiling::expression_cb_query_overhead.count == initial_cb + 1, "per-feature opt-out keeps eager reads");
+    G->expression_short_circuit = true;
+    gate.fval = 1.0f;
+    require_ini_expression(evaluate(condition) == 1 &&
+        Profiling::expression_om_query_overhead.count == initial_om + 6 &&
+        Profiling::expression_cb_query_overhead.count == initial_cb + 2, "active guard retains null and draw-type checks");
+    require_ini_expression(evaluate(L"$ini_expression_regression_value || vs-cb1 !== null") == 1 &&
+        Profiling::expression_cb_query_overhead.count == initial_cb + 2, "true OR skips the right-hand query");
+    require_ini_expression(evaluate(L"0 || (vs-cb1 === null && 1)") == 1 &&
+        Profiling::expression_cb_query_overhead.count == initial_cb + 3, "nested OR evaluates a needed right side");
+
+    const auto before_random = GetExpressionRandomSampleCount();
+    require_ini_expression(evaluate(L"0 && random(10)") == 0 && evaluate(L"1 || random(10)") == 1 &&
+        GetExpressionRandomSampleCount() == before_random + 2, "legacy evaluation preserves random samples");
+    require_ini_expression(evaluate(L"0 && (vs-cb[random(2)] === null)") == 0 &&
+        GetExpressionRandomSampleCount() == before_random + 3, "dynamic-slot expression still evaluates its index");
+    require_ini_expression(evaluate(L"0 && draw_has_override") == 0 &&
+        draw.override_candidate != DrawOverrideCandidate::Unqueried, "eager path still populates the draw gate cache");
+
+    gate.fval = 0.0f;
+    G->analyse_frame = true;
+    require_ini_expression(evaluate(condition) == 0 &&
+        Profiling::expression_om_query_overhead.count == initial_om + 9, "frame analysis keeps eager reads");
+    G->analyse_frame = false;
+    G->mod_runtime_optimizations = false;
+    require_ini_expression(evaluate(condition) == 0 &&
+        Profiling::expression_om_query_overhead.count == initial_om + 12, "global optimization opt-out keeps eager reads");
+
+    gLogDebug = old_debug;
+    G->analyse_frame = old_analysis;
+    G->expression_short_circuit = old_short_circuit;
+    G->mod_runtime_optimizations = old_optimization;
+    Profiling::mode = old_mode;
 }
 
 void test_dx11_ini_expression_regression()
@@ -134,6 +207,7 @@ void test_dx11_ini_expression_regression()
 
     // Erase only this fixture's variables so other regression fixtures retain
     // ownership of their globals and persistent-variable pointers.
+    test_logical_short_circuit(ini_namespace, scope, namespaced->second);
     command_list_globals.erase(namespaced_name);
     command_list_globals.erase(variable);
 }

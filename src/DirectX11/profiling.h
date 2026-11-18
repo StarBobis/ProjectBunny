@@ -73,6 +73,8 @@ namespace Profiling {
 	extern Overhead map_overhead;
 	extern Overhead pipeline_invalidation_overhead;
 	extern Overhead readback_map_overhead;
+	extern Overhead expression_om_query_overhead;
+	extern Overhead expression_cb_query_overhead;
 	extern Overhead iniparams_upload_overhead;
 	extern Overhead hash_tracking_overhead;
 	extern Overhead stat_overhead;
