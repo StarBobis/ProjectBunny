@@ -19,7 +19,19 @@ DX11 DLL 可以通过本机 MCP 触发现有按键动作，并按狩猎 hash、�
 }
 ~~~
 
-`dx11_discover` 可列出游戏 PID，只有一个端点时可省略 `pid`。在 `stdio` 前加 `--pid` 可为整条连接固定实例，加 `--output-dir` 可指定抓取结果目录。技能入口默认保存到 `%LOCALAPPDATA%/ProjectBunny/mcp-captures`。同一 Windows 账户可以使用 MCP 接口。开发时也可直接运行仓库里的 `scripts/dx11-mcp.py`，将仓库作为桥来源。
+`dx11_discover` 返回 `pids` 和 `targets`。每个目标列出 PID、可执行文件名和可用的 `target_id`。在 `stdio` 前加 `--pid` 可设置默认实例，加 `--output-dir` 可指定抓取结果目录。技能入口默认保存到 `%LOCALAPPDATA%/ProjectBunny/mcp-captures`。同一 Windows 账户可以使用 MCP 接口。开发时也可直接运行仓库里的 `scripts/dx11-mcp.py`，将仓库作为桥来源。
+
+### 多进程控制
+
+只有一个 Live 端点时可以自动选择。同时运行多个进程时，用 `dx11_discover` 确认目标，然后在每次 Live 调用传 `pid` 或发现结果中的完整 `target_id`。
+
+~~~json
+{"target_id":"14320:01dc123456789abc","action":"Hunting.toggle_hunting"}
+~~~
+
+上例的 ID 是占位示例，实际调用请复制发现结果。即使三个进程的 exe 名相同，`target_id` 也会按 PID 和进程创建时间区分。游戏重启后重新发现目标。PID 和 `target_id` 同时传入时应当互相匹配。
+
+同一桥为每个进程保留独立管道。同一个目标的请求按顺序执行，多个目标可并行处理。Live 结果回传 `pid` 和 `target_id`。抓取 ID、性能快照 ID 及后续状态、读取、保存请求使用最初的目标。启动监控仍可用 `dx11_monitor_poll` 的 `pid` 按进程筛选。
 
 ## 调用快捷键
 

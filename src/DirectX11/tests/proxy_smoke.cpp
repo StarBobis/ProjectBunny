@@ -176,13 +176,16 @@ int serve_mcp_fixture(const wchar_t* library)
     };
     make_device();
     const auto deadline = GetTickCount64() + 45000;
-    bool holding_map = false, device_switched = false;
+    bool holding_map = false, device_switched = false, paused = false;
     unsigned replacement_frames = 0;
     for (UINT counter = 0; GetTickCount64() < deadline && !std::filesystem::exists(stop); ++counter) {
         if (std::filesystem::exists(fixture / L"pause-present")) {
+            if (!paused) std::ofstream(fixture / L"pause-observed").put('1');
+            paused = true;
             Sleep(10);
             continue;
         }
+        paused = false;
         if (!device_switched && std::filesystem::exists(fixture / L"switch-device")) {
             check(!holding_map, "switch fixture device only after Unmap");
             context->ClearState();

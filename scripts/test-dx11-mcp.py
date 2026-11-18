@@ -19,13 +19,20 @@ class Mcp:
         self.process = process
         self.id = 0
 
-    def request(self, method, **params):
+    def send(self, method, **params):
         self.id += 1
         message = {"jsonrpc": "2.0", "id": self.id, "method": method, "params": params}
         self.process.stdin.write(json.dumps(message) + "\n")
         self.process.stdin.flush()
-        response = json.loads(self.process.stdout.readline())
-        assert response["id"] == self.id, response
+        return self.id
+
+    def receive(self):
+        return json.loads(self.process.stdout.readline())
+
+    def request(self, method, **params):
+        request_id = self.send(method, **params)
+        response = self.receive()
+        assert response["id"] == request_id, response
         return response["result"]
 
     def tool(self, tool_name, **args):
@@ -446,8 +453,110 @@ def map_reload_main(harness, dll):
     print("PASS: tracked initial and cleared mapping across MCP enable/disable reloads")
 
 
+def verify_multi_target(mcp, games, folders, harness_name):
+    pids = {game.pid for game in games}
+    deadline = time.monotonic() + 10
+    while True:
+        discovery = mcp.tool("discover")
+        if pids <= set(discovery["pids"]):
+            break
+        assert time.monotonic() < deadline and all(game.poll() is None for game in games), discovery
+        time.sleep(0.1)
+    entries = {entry["pid"]: entry for entry in discovery["targets"] if entry["pid"] in pids}
+    assert set(entries) == pids and all(x["executable"].lower() == harness_name.lower() for x in entries.values()), entries
+    ids = [entries[game.pid]["target_id"] for game in games]
+    assert all(ids) and len(set(ids)) == 3, entries
+
+    ambiguous = mcp.request("tools/call", name="dx11_status", arguments={})
+    assert ambiguous["structuredContent"]["code"] == "TARGET_REQUIRED", ambiguous
+    conflict = mcp.request("tools/call", name="dx11_status", arguments={"pid": games[1].pid, "target_id": ids[0]})
+    assert conflict["structuredContent"]["code"] == "TARGET_CONFLICT", conflict
+    old_start = int(ids[1].split(":")[1], 16) - 1
+    stale = mcp.request("tools/call", name="dx11_status", arguments={"target_id": f"{games[1].pid}:{old_start:016x}"})
+    assert stale["structuredContent"]["code"] == "TARGET_CHANGED", stale
+    for game, target_id in zip(games, ids):
+        state = mcp.tool("status", target_id=target_id)
+        assert (state["pid"], state["target_id"]) == (game.pid, target_id), state
+
+    pause = folders[0] / "pause-present"
+    pause.touch()
+    wait_file(folders[0] / "pause-observed")
+    action = "KeyMcpTargetTest.key"
+    try:
+        blocked = mcp.send("tools/call", name="dx11_status", arguments={"target_id": ids[0]})
+        other = {mcp.send("tools/call", name="dx11_hotkey", arguments={"target_id": ids[i], "action": action}): i
+                 for i in (1, 2)}
+        for _ in range(2):
+            reply = mcp.receive()
+            assert reply["id"] in other, ("Healthy targets should finish while the first Present is paused", reply)
+            index = other.pop(reply["id"])
+            result = json.loads(reply["result"]["content"][0]["text"])
+            assert result["dispatched"] and result["pid"] == games[index].pid and result["target_id"] == ids[index], result
+    finally:
+        pause.unlink()
+    reply = mcp.receive()
+    assert reply["id"] == blocked, reply
+    assert json.loads(reply["result"]["content"][0]["text"])["pid"] == games[0].pid
+
+    def saved(index, expected, timeout=4):
+        path = folders[index] / "d3dx_user.ini"
+        deadline = time.monotonic() + timeout
+        marker = str(expected)
+        while time.monotonic() < deadline:
+            if path.exists() and any(line.partition("=")[0].strip() == "$target_test_value"
+                                    and line.partition("=")[2].strip() == marker
+                                    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines()):
+                return True
+            time.sleep(0.05)
+        return False
+
+    assert saved(1, 2) and saved(2, 3)
+    assert not saved(0, 1, timeout=0.15), "The paused process must not receive the other processes' actions"
+    legacy = mcp.tool("hotkey", pid=games[0].pid, action=action)
+    assert legacy["dispatched"] and legacy["pid"] == games[0].pid
+    assert saved(0, 1)
+
+
+def multi_target_main(harness, dll):
+    assert "build" in harness.parent.parts
+    with tempfile.TemporaryDirectory(prefix="mcp-three-processes-", dir=harness.parent) as directory:
+        root, folders, games = Path(directory), [], []
+        try:
+            for index in range(3):
+                folder = root / str(index)
+                folder.mkdir()
+                folders.append(folder)
+                copy = folder / "d3d11.dll"
+                shutil.copyfile(dll, copy)
+                (folder / "d3dx.ini").write_text(
+                    "[Logging]\nlog_level=disabled\n[System]\nallow_platform_update=1\nmcp_enabled=1\n"
+                    "config_initialization_delay=-1\nsettings_auto_save_interval=0\n[Hunting]\nhunting=2\n"
+                    "[Constants]\nglobal persist $target_test_value=0\n"
+                    "[KeyMcpTargetTest]\nkey=VK_F23\ntype=activate\n"
+                    f"$target_test_value={index+1}\n", encoding="ascii")
+                games.append(subprocess.Popen([str(harness), "--mcp-live", str(copy)], cwd=folder))
+            with subprocess.Popen([sys.executable, str(BRIDGE)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, encoding="utf-8") as server:
+                try:
+                    verify_multi_target(Mcp(server), games, folders, harness.name)
+                finally:
+                    server.stdin.close()
+                    server.wait(timeout=10)
+        finally:
+            for folder in folders:
+                (folder / "stop").touch()
+            for game in games:
+                try:
+                    game.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    game.kill()
+                    game.wait()
+        assert all(game.returncode == 0 for game in games)
+    print("PASS: 3 independent PID routes, explicit instance selection, and no blocking across processes")
+
+
 if __name__ == "__main__":
-    modes = {"--monitor": monitor_main, "--map-reload": map_reload_main}
+    modes = {"--monitor": monitor_main, "--map-reload": map_reload_main, "--multi-target": multi_target_main}
     runner = modes.get(sys.argv[1], main)
     args = sys.argv[2:] if sys.argv[1] in modes else sys.argv[1:]
     runner(*(Path(arg).resolve() for arg in args))

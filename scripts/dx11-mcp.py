@@ -2,15 +2,18 @@
 
 import argparse
 import base64
+from concurrent.futures import Future, ThreadPoolExecutor
 import ctypes
 from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import re
 import sys
+from threading import Lock
 import time
 
-from dx11_mcp_monitor import LEVELS, Monitor
+from dx11_mcp_monitor import LEVELS, Monitor, Transport
 
 
 CHUNK = 24 * 1024
@@ -44,8 +47,10 @@ class PipeError(Exception):
 
 
 class Pipe:
-    def __init__(self, pid):
+    def __init__(self, pid, describe_target):
         self.pid = pid
+        self.describe_target = describe_target
+        self.target = None
         self.handle = None
         self.api = ctypes.WinDLL("kernel32", use_last_error=True)
         ptr = ctypes.c_void_p
@@ -68,8 +73,9 @@ class Pipe:
         if self.handle is not None:
             self.api.CloseHandle(self.handle)
             self.handle = None
+        self.target = None
 
-    def connect(self):
+    def connect(self, target_id=None):
         name = "\\\\.\\pipe\\" + PIPE_PREFIX + str(self.pid)
         deadline = time.monotonic() + 2
         while True:
@@ -87,6 +93,26 @@ class Pipe:
                 or not self.api.SetNamedPipeHandleState(handle, ctypes.byref(mode), None, None)):
             self.close()
             raise PipeError("The named pipe could not be verified as a ProjectBunny endpoint for this PID.")
+        self.target = self.describe_target(self.pid)
+        if target_id and self.target["target_id"] != target_id:
+            self.close()
+            raise PipeError("The target instance changed or could not be verified. Rediscover it before retrying.",
+                            "TARGET_CHANGED")
+
+    def select(self, target_id):
+        # The DLL can retire an idle pipe while other targets are busy. Check
+        # the connection before dispatch so no mutating command is replayed.
+        available = wintypes.DWORD()
+        if self.handle is not None and not self.api.PeekNamedPipe(
+                self.handle, None, 0, None, ctypes.byref(available), None):
+            self.close()
+        if self.handle is not None and target_id and self.target["target_id"] != target_id:
+            if self.describe_target(self.pid)["target_id"] != target_id:
+                raise PipeError("The target instance changed or could not be verified. Rediscover it before retrying.",
+                                "TARGET_CHANGED")
+            self.close()
+        if self.handle is None:
+            self.connect(target_id)
 
     def request(self, *fields, timeout=10):
         parts = [str(field) for field in fields]
@@ -129,41 +155,86 @@ class Pipe:
         return result
 
 
+class TargetConnection:
+    """One FIFO queue and one pipe for each render endpoint."""
+
+    def __init__(self, pid, describe_target):
+        self.pipe = Pipe(pid, describe_target)
+        self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"dx11-{pid}")
+        self.last_request = None
+
+    def submit(self, handler, target_id, arguments):
+        self.last_request = self.worker.submit(self.invoke, handler, target_id, arguments)
+        return self.last_request
+
+    def invoke(self, handler, target_id, arguments):
+        self.pipe.select(target_id)
+        return {**handler(self.pipe, **arguments), "pid": self.pipe.pid, "target_id": self.pipe.target["target_id"]}
+
+    def close(self):
+        self.worker.shutdown()
+        self.pipe.close()
+
+
 class Bridge:
     def __init__(self, default_pid, output_dir):
         self.default_pid = default_pid
         self.output_dir = output_dir
-        self.pipe = None
+        self.connections = {}
+        self.process_query = Transport()
         self.monitor = Monitor()
+        self.monitor_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dx11-monitor-tools")
         self.tools = {}
         self._register()
 
-    def connection(self, pid):
-        pid = pid or self.default_pid
+    def select_target(self, pid, target_id):
+        if target_id:
+            match = re.fullmatch(r"([1-9][0-9]{0,9}):([0-9a-fA-F]{16})", target_id)
+            if not match or int(match[1]) > 0xFFFFFFFF or int(match[2], 16) == 0:
+                raise PipeError("Use a target_id returned by dx11_discover.", "TARGET_ID_INVALID")
+            if pid is not None and pid != int(match[1]):
+                raise PipeError("pid and target_id refer to different processes.", "TARGET_CONFLICT")
+            return int(match[1]), target_id.lower()
+        pid = pid if pid is not None else self.default_pid
         if pid is None:
-            candidates = self.discover()["pids"]
+            candidates = self.live_pids()
             if len(candidates) != 1:
-                raise PipeError(f"Specify pid when zero or multiple ProjectBunny endpoints exist: {candidates}")
+                raise PipeError(f"Select a pid or target_id from dx11_discover. Available PIDs: {candidates}",
+                                "TARGET_REQUIRED")
             pid = candidates[0]
-        if self.pipe is None or pid != self.pipe.pid:
-            if self.pipe:
-                self.pipe.close()
-            self.pipe = Pipe(pid)
-        return self.pipe
+        return pid, None
+
+    def prune_connections(self, live):
+        for pid, connection in list(self.connections.items()):
+            if pid not in live and (connection.last_request is None or connection.last_request.done()):
+                connection.close()
+                del self.connections[pid]
 
     @staticmethod
-    def discover():
+    def live_pids():
         pids = []
         for name in os.listdir("\\\\.\\pipe\\"):
             suffix = name.removeprefix(PIPE_PREFIX)
-            if suffix != name and suffix.isdecimal():
+            if suffix != name and suffix.isascii() and suffix.isdecimal():
                 pids.append(int(suffix))
-        return {"pids": sorted(pids)}
+        return sorted(pids)
+
+    def discover(self):
+        pids = self.live_pids()
+        self.prune_connections(pids)
+        return {"pids": pids, "targets": [self.process_query.target(pid) for pid in pids]}
+
+    def close(self):
+        for connection in self.connections.values():
+            connection.close()
+        self.monitor_worker.shutdown()
+        self.monitor.close()
 
     def add(self, name, description, callback, properties=None, required=(), pipe=True):
         props = dict(properties or {})
         if pipe:
             props["pid"] = integer("Game process ID. Optional when exactly one endpoint exists.", 1)
+            props["target_id"] = string("Stable process instance from dx11_discover, including PID and creation time.")
         schema = {"type": "object", "properties": props, "required": list(required), "additionalProperties": False}
         self.tools["dx11_" + name] = ({"name": "dx11_" + name, "description": description, "inputSchema": schema},
                                       callback, pipe)
@@ -191,7 +262,8 @@ class Bridge:
                                              "DrawIndexedInstanced call. Omit offset and length."},
         }
         paging = {"offset": integer("Starting index.", default=0)}
-        self.add("discover", "List locally running ProjectBunny DX11 MCP endpoints.", self.discover, pipe=False)
+        self.add("discover", "List running DX11 endpoints with their PID, executable and process instance target_id.",
+                 self.discover, pipe=False)
         self.add("monitor_start", "Arm the independent live monitor before starting the game. "
                  "Enables streaming from the DLL attach entry point and retains records after exit.",
                  self.monitor.start, {"target_exe": string("Executable file name, for example ZenlessZoneZero.exe."),
@@ -258,7 +330,7 @@ class Bridge:
                  self.analysis_read, {"name": string("File name from frame_analysis_files."), **paging,
                                       "length": integer("Bytes in one chunk.", 1, CHUNK, CHUNK)}, ("name",))
 
-    def call(self, name, arguments):
+    def submit(self, name, arguments):
         schema, handler, pipe = self.tools[name]
         if not isinstance(arguments, dict):
             raise ValueError("Tool arguments must be an object.")
@@ -276,7 +348,24 @@ class Bridge:
                                             or ("enum" in prop and value not in prop["enum"])
                                             or not prop.get("minLength", 0) <= len(value) <= prop.get("maxLength", 1024)):
                 raise ValueError(f"{key} is outside its allowed string values.")
-        return handler(self.connection(arguments.pop("pid", None)), **arguments) if pipe else handler(**arguments)
+        if not pipe:
+            if name == "dx11_discover":
+                result = Future()
+                result.set_result(handler(**arguments))
+                return result
+            return self.monitor_worker.submit(handler, **arguments)
+        pid, target_id = self.select_target(arguments.pop("pid", None), arguments.pop("target_id", None))
+        if pid not in self.connections:
+            live = self.live_pids()
+            self.prune_connections(live)
+            if pid not in live:
+                raise PipeError(f"DX11 endpoint for PID {pid} is unavailable. Rediscover running instances.",
+                                "TARGET_UNAVAILABLE")
+            self.connections[pid] = TargetConnection(pid, self.process_query.target)
+        return self.connections[pid].submit(handler, target_id, arguments)
+
+    def call(self, name, arguments):
+        return self.submit(name, arguments).result()
 
     @staticmethod
     def hotkey(pipe, action, phase="tap", confirm_wipe=False):
@@ -391,6 +480,28 @@ class Bridge:
 
 
 def serve(bridge):
+    output_lock = Lock()
+
+    def emit(reply):
+        with output_lock:
+            print(json.dumps(reply, ensure_ascii=True), flush=True)
+
+    def tool_error(error):
+        result = {"isError": True, "content": [{"type": "text", "text": str(error)}]}
+        if isinstance(error, PipeError) and error.code:
+            result["structuredContent"] = {"code": error.code, "message": str(error)}
+        return result
+
+    def complete(future, request_id):
+        try:
+            result = {"content": [{"type": "text", "text": json.dumps(future.result(), ensure_ascii=False)}]}
+        except (OSError, ValueError, PipeError, KeyError) as error:
+            result = tool_error(error)
+        except Exception as error:
+            emit({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32603, "message": str(error)}})
+            return
+        emit({"jsonrpc": "2.0", "id": request_id, "result": result})
+
     for line in sys.stdin:
         request = None
         try:
@@ -410,21 +521,21 @@ def serve(bridge):
                 result = {"tools": [tool[0] for tool in bridge.tools.values()]}
             elif method == "tools/call":
                 try:
-                    value = bridge.call(params["name"], params.get("arguments", {}))
-                    result = {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]}
+                    future = bridge.submit(params["name"], params.get("arguments", {}))
                 except (OSError, ValueError, PipeError, KeyError) as error:
-                    result = {"isError": True, "content": [{"type": "text", "text": str(error)}]}
-                    if isinstance(error, PipeError) and error.code:
-                        result["structuredContent"] = {"code": error.code, "message": str(error)}
+                    result = tool_error(error)
+                else:
+                    future.add_done_callback(lambda done, request_id=request["id"]: complete(done, request_id))
+                    continue
             else:
                 reply = {"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Method not found"}}
-                print(json.dumps(reply, ensure_ascii=True), flush=True)
+                emit(reply)
                 continue
             reply = {"jsonrpc": "2.0", "id": request["id"], "result": result}
         except (ValueError, KeyError, TypeError, AttributeError):
             reply = {"jsonrpc": "2.0", "id": request.get("id") if isinstance(request, dict) else None,
                      "error": {"code": -32600, "message": "Invalid JSON-RPC request"}}
-        print(json.dumps(reply, ensure_ascii=True), flush=True)
+        emit(reply)
 
 
 if __name__ == "__main__":
@@ -443,6 +554,4 @@ if __name__ == "__main__":
             bridge.monitor.start(args.monitor_exe, args.monitor_level)
         serve(bridge)
     finally:
-        bridge.monitor.close()
-        if bridge.pipe:
-            bridge.pipe.close()
+        bridge.close()

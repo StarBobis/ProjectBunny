@@ -122,12 +122,17 @@ class Transport:
             handle = self.api.OpenProcess(0x100000, False, pid)
         if not handle:
             return None, C.get_last_error() == 87
-        times = [W.FILETIME() for _ in range(4)]
-        if started and self.api.GetProcessTimes(handle, *(C.byref(item) for item in times)):
-            if (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime != started:
-                self.api.CloseHandle(handle)
-                return None, True  # PID was reused before the reader could open it.
+        actual = self.creation_time(handle) if started else 0
+        if actual and actual != started:
+            self.api.CloseHandle(handle)
+            return None, True  # PID was reused before the reader could open it.
         return handle, False
+
+    def creation_time(self, handle):
+        times = [W.FILETIME() for _ in range(4)]
+        if self.api.GetProcessTimes(handle, *(C.byref(item) for item in times)):
+            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        return 0
 
     def exit_code(self, handle):
         if self.api.WaitForSingleObject(handle, 0) != 0:
@@ -138,16 +143,27 @@ class Transport:
     def executable(self, handle, started):
         if not handle or not started:
             return None
-        times = [W.FILETIME() for _ in range(4)]
-        if not self.api.GetProcessTimes(handle, *(C.byref(item) for item in times)):
-            return None
-        if ((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime) != started:
+        if self.creation_time(handle) != started:
             return None
         path = C.create_unicode_buffer(32768)
         size = W.DWORD(len(path))
         if not self.api.QueryFullProcessImageNameW(handle, 0, path, C.byref(size)):
             return None
         return PureWindowsPath(path.value).name
+
+    def target(self, pid):
+        """Describe a pipe owner without waiting for its rendering thread."""
+        handle, _ = self.process(pid, 0)
+        started, executable = 0, None
+        if handle:
+            try:
+                started = self.creation_time(handle)
+                if started:
+                    executable = self.executable(handle, started)
+            finally:
+                self.api.CloseHandle(handle)
+        return {"pid": pid, "executable": executable,
+                "target_id": f"{pid}:{started:016x}" if started else None}
 
 
 class Monitor:
