@@ -164,7 +164,8 @@ public:
 
 bool RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
 		shared_ptr<InputListener> listener, int auto_repeat, int down_delay,
-		int up_delay, InputDisableScope disable_scope = InputDisableScope::ALL);
+		int up_delay, InputDisableScope disable_scope = InputDisableScope::ALL,
+		const wchar_t *action_id = nullptr);
 bool RegisterIniKeyBinding(LPCWSTR app, LPCWSTR key,
 		InputCallback down_cb, InputCallback up_cb, int auto_repeat,
 		void *private_data, InputDisableScope disable_scope = InputDisableScope::ALL);
@@ -187,5 +188,11 @@ wstring user_friendly_ini_key_binding(LPCWSTR app, LPCWSTR iniKey);
 // Clears all current key bindings in preparation for reloading the config.
 // Note - this is not safe to call from within an input callback!
 void ClearKeyBindings();
+
+struct InputBindingInfo {
+	std::wstring id, keys;
+};
+std::vector<InputBindingInfo> ListInputBindings();
+bool InvokeInputBinding(HackerDevice* device, const std::wstring& id, bool release);
 
 bool DispatchInputEvents(HackerDevice *device);

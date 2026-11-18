@@ -345,15 +345,19 @@ BOOL WINAPI DllMain(
 {
 	switch (fdwReason)
 	{
-		case DLL_PROCESS_ATTACH:
+		case DLL_PROCESS_ATTACH: {
+			Dx11Diagnostics::OnDllAttach();
 			migoto_handle = hinstDLL;
 			cHookMgr.SetEnableDebugOutput(bLog);
 
 			// If we are loaded via injection we will end up in
 			// every newly task in the system. We don't want that,
 			// so bail early if this is not the intended target
-			if (!verify_intended_target(hinstDLL))
+			if (!verify_intended_target(hinstDLL)) {
+				Dx11Diagnostics::Failure("target_rejected", 0);
 				return false;
+			}
+			Dx11Diagnostics::Phase("target_verified");
 
 			// Hook d3d11.dll if we are loaded via injection either
 			// under a different name, or just not as the primary
@@ -362,18 +366,28 @@ BOOL WINAPI DllMain(
 			if (hinstDLL != GetModuleHandleA("d3d11.dll"))
 				HookD3D11(hinstDLL);
 
-			if (FAILED(HookLoadLibraryExW()))
+			Dx11Diagnostics::Phase("installing_loader_hooks");
+			if (const auto result = HookLoadLibraryExW(); FAILED(result)) {
+				Dx11Diagnostics::Failure("loader_hooks_failed", result);
 				return false;
-			if (FAILED(HookDXGIFactories()))
+			}
+			if (const auto result = HookDXGIFactories(); FAILED(result)) {
+				Dx11Diagnostics::Failure("dxgi_hooks_failed", result);
 				return false;
+			}
 
 			tls_idx = TlsAlloc();
-			if (tls_idx == TLS_OUT_OF_INDEXES)
+			if (tls_idx == TLS_OUT_OF_INDEXES) {
+				Dx11Diagnostics::Failure("tls_allocation_failed", GetLastError());
 				return false;
+			}
 
+			Dx11Diagnostics::Phase("dll_attached");
 			break;
+		}
 
 		case DLL_PROCESS_DETACH:
+			Dx11Diagnostics::Phase("dll_detaching");
 			RemoveHooks();
 			if (tls_idx != TLS_OUT_OF_INDEXES) {
 				// FIXME: If we are being dynamically unloaded
@@ -389,6 +403,7 @@ BOOL WINAPI DllMain(
 				TlsFree(tls_idx);
 			}
 			DestroyDLL();
+			Dx11Diagnostics::OnDllDetach(lpvReserved != nullptr);
 			break;
 
 		case DLL_THREAD_ATTACH:

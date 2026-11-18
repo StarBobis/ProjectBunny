@@ -1,4 +1,5 @@
 #include "IniHandler.h"
+#include "McpAgent.h"
 
 #include <algorithm>
 #include <climits>
@@ -1965,7 +1966,8 @@ static void RegisterPresetKeyBindings()
 			shared_ptr<KeyOverrideCycleBack> cycle_back = make_shared<KeyOverrideCycleBack>(cycle_preset);
 			preset = cycle_preset;
 			for (wstring key : back)
-				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay, input_scope);
+				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay, input_scope,
+					(wstring(id) + L".back").c_str());
 		} else {
 			preset = make_shared<KeyOverride>(type);
 		}
@@ -1973,7 +1975,8 @@ static void RegisterPresetKeyBindings()
 		preset->ParseIniSection(id);
 
 		for (wstring key : keys)
-			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay, input_scope);
+			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay, input_scope,
+				(wstring(id) + L".key").c_str());
 	}
 }
 
@@ -5024,6 +5027,7 @@ static void LoadDrawOverrideSlots()
 
 void LoadConfigFile()
 {
+	Dx11Diagnostics::ConfigLoad monitor_config;
     EarlyConfigRegistries previous_registries;
 	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
 	wchar_t setting[MAX_PATH];
@@ -5034,6 +5038,7 @@ void LoadConfigFile()
 	DWORD moduleLength = GetModuleFileName(migoto_handle, iniFile, MAX_PATH);
 	wchar_t *moduleBase = moduleLength && moduleLength < static_cast<DWORD>(MAX_PATH) ? wcsrchr(iniFile, L'\\') : NULL;
 	if (!moduleBase) {
+		Dx11Diagnostics::Failure("configuration_module_path_unavailable", GetLastError());
 		OutputDebugStringW(L"[Bunny] LoadConfigFile rejected: module path missing or too long\n");
 		DoubleBeepExit();
 	}
@@ -5041,6 +5046,7 @@ void LoadConfigFile()
 	if (!CopyPathBounded(logFilename, _countof(logFilename), iniFile) ||
 		!AppendPathBounded(iniFile, _countof(iniFile), INI_FILENAME) ||
 		!AppendPathBounded(logFilename, _countof(logFilename), L"d3d11_log.txt")) {
+		Dx11Diagnostics::Failure("configuration_path_too_long", ERROR_FILENAME_EXCED_RANGE);
 		OutputDebugStringW(L"[Bunny] LoadConfigFile rejected: config/log path too long\n");
 		DoubleBeepExit();
 	}
@@ -5124,6 +5130,7 @@ void LoadConfigFile()
 	}
 
 	if (G->gConfigInitialized || !G->gSkipEarlyIncludesLoad) {
+		Dx11Diagnostics::Phase("loading_mod_includes");
 		ParseIncludedIniFiles();
 		// User settings override root and included files.
 		ParsePersistentSettings();
@@ -5131,6 +5138,7 @@ void LoadConfigFile()
 
 	// [System]
 	LogInfo("[System]\n");
+	Dx11Mcp::enabled.store(GetIniBool(L"System", L"mcp_enabled", false, NULL), std::memory_order_release);
 	GetIniStringAndLog(L"System", L"proxy_d3d11", 0, G->CHAIN_DLL_PATH, MAX_PATH);	
 	G->load_library_redirect = GetIniInt(L"System", L"load_library_redirect", 2, NULL);
 
@@ -5423,6 +5431,7 @@ void LoadConfigFile()
 
 	// Used to have to do CustomShaders before other command lists in case
 	// any failed and had their sections erased, but no longer matters.
+	Dx11Diagnostics::Phase("loading_custom_shaders");
 	ParseCustomShaderSections();
 	ParseExplicitCommandListSections();
 

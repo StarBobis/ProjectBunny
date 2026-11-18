@@ -924,7 +924,7 @@ std::vector<std::wstring> GetOverlayNoticeMessages(LogLevel level)
 void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 {
     const bool show_overlay_message = level == LOG_INFO || G->gShowWarnings;
-    if (!show_overlay_message && (!LogFile || gLogVerbosity < LogVerbosity::WARNING))
+    if (!show_overlay_message && !Dx11LogEnabled(LogVerbosity::WARNING))
         return;
 
 	std::wstring msg;
@@ -958,7 +958,7 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 void LogOverlay(LogLevel level, char *fmt, ...)
 {
     const bool show_overlay_message = level == LOG_INFO || G->gShowWarnings;
-    if (!show_overlay_message && (!LogFile || gLogVerbosity < LogVerbosity::WARNING))
+    if (!show_overlay_message && !Dx11LogEnabled(LogVerbosity::WARNING))
         return;
 
 	std::wstring wmsg;

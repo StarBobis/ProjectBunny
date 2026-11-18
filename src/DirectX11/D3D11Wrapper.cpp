@@ -382,6 +382,7 @@ static ProxyConfigurationState proxy_configuration_state = ProxyConfigurationSta
 
 static bool InitializeD3D11Proxy()
 {
+    Dx11Diagnostics::Phase("initializing_proxy");
     UINT ret;
     HMODULE candidate = nullptr;
     if (!InitOnceExecuteOnce(&proxy_locks_once, InitializeProxyLocks, nullptr, nullptr))
@@ -404,6 +405,7 @@ static bool InitializeD3D11Proxy()
     }
 	
 
+	Dx11Diagnostics::Phase("loading_native_d3d11");
 	// Chain through to the either the original DLL in the system, or to a proxy
 	// DLL with the same interface, specified in the d3dx.ini file.
 	// In the proxy load case, the load_library_redirect flag must be set to
@@ -521,6 +523,7 @@ bool InitD311()
     try {
         return gate.Run(InitializeD3D11Proxy);
     } catch (...) {
+        Dx11Diagnostics::Failure("proxy_initialization_exception", E_UNEXPECTED);
         // Never propagate C++ exceptions through a DirectX entry point or
         // publish partial state. A failed config load stays failed; completed
         // configuration is retained across native export resolution retries.
@@ -908,12 +911,14 @@ HRESULT WINAPI D3D11CreateDevice(
 #endif
 
 	get_tls()->hooking_quirk_protection = true;
+	Dx11Diagnostics::Phase("creating_d3d11_device");
 	HRESULT ret = (*_D3D11CreateDevice)(pAdapter, DriverType, Software, Flags, pFeatureLevels,
 		FeatureLevels, SDKVersion, ppDevice, pFeatureLevel, ppImmediateContext);
 	get_tls()->hooking_quirk_protection = false;
 
 	if (FAILED(ret))
 	{
+		Dx11Diagnostics::Failure("d3d11_device_failed", ret);
 		LogInfo("->failed with HRESULT=%x\n", ret);
 		return ret;
 	}
@@ -932,6 +937,7 @@ HRESULT WINAPI D3D11CreateDevice(
 #endif
 
 	wrap_d3d11_device_and_context(ppDevice, ppImmediateContext);
+	Dx11Diagnostics::Phase("d3d11_device_ready");
 
 	LogInfo("->D3D11CreateDevice result = %x\n", ret);
 
@@ -1034,12 +1040,14 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
 	override_swap_chain(pSwapChainDesc, &origSwapChainDesc);
 
 	get_tls()->hooking_quirk_protection = true;
+	Dx11Diagnostics::Phase("creating_d3d11_swap_chain");
 	HRESULT ret = (*_D3D11CreateDeviceAndSwapChain)(pAdapter, DriverType, Software, Flags, pFeatureLevels,
 		FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 	get_tls()->hooking_quirk_protection = false;
 
 	if (FAILED(ret))
 	{
+		Dx11Diagnostics::Failure("d3d11_swap_chain_failed", ret);
 		LogInfo("->failed with HRESULT=%x\n", ret);
 		return ret;
 	}
@@ -1061,6 +1069,7 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
 
 	HackerDevice *deviceWrap = wrap_d3d11_device_and_context(ppDevice, ppImmediateContext);
 	wrap_swap_chain(deviceWrap, ppSwapChain, pSwapChainDesc, &origSwapChainDesc);
+	Dx11Diagnostics::Phase("d3d11_swap_chain_ready");
 
 	LogInfo("->D3D11CreateDeviceAndSwapChain result = %x\n", ret);
 

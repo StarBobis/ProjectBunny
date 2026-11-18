@@ -431,6 +431,39 @@ bool InputButtonList::CheckState()
 
 static std::vector<class InputAction *> actions;
 
+struct NamedInputBinding {
+	InputBindingInfo info;
+	shared_ptr<InputListener> listener;
+	InputDisableScope scope;
+};
+static std::vector<NamedInputBinding> named_bindings;
+
+std::vector<InputBindingInfo> ListInputBindings()
+{
+	std::vector<InputBindingInfo> result;
+	for (const auto& binding : named_bindings)
+		result.push_back(binding.info);
+	return result;
+}
+
+bool InvokeInputBinding(HackerDevice* device, const std::wstring& id, bool release)
+{
+	for (const auto& binding : named_bindings) {
+		if (_wcsicmp(id.c_str(), binding.info.id.c_str()) != 0)
+			continue;
+		if (G->disable_input && binding.scope >= InputDisableScope::MODS &&
+			G->input_disable_scope >= binding.scope)
+			return false;
+		auto listener = binding.listener;
+		if (release)
+			listener->UpEvent(device);
+		else
+			listener->DownEvent(device);
+		return true;
+	}
+	return false;
+}
+
 void RegisterInputAction(std::unique_ptr<InputAction> action, InputDisableScope disable_scope)
 {
 	if (!action)
@@ -442,7 +475,7 @@ void RegisterInputAction(std::unique_ptr<InputAction> action, InputDisableScope 
 
 bool RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
 		shared_ptr<InputListener> listener, int auto_repeat, int down_delay,
-		int up_delay, InputDisableScope disable_scope)
+		int up_delay, InputDisableScope disable_scope, const wchar_t *action_id)
 {
 	std::unique_ptr<InputAction> action;
 	std::unique_ptr<InputButton> button;
@@ -477,6 +510,8 @@ bool RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
 
 	LogInfoW(L"  %s=%s\n", iniKey, keyName);
 	RegisterInputAction(std::move(action), disable_scope);
+	if (action_id)
+		named_bindings.push_back({{action_id, keyName}, std::move(listener), disable_scope});
 	return true;
 }
 
@@ -487,10 +522,13 @@ bool RegisterIniKeyBinding(LPCWSTR app, LPCWSTR iniKey,
 	shared_ptr<InputCallbacks> callbacks = make_shared<InputCallbacks>(down_cb, up_cb, private_data);
 	wchar_t keyName[MAX_PATH];
 
-	if (!GetIniString(app, iniKey, 0, keyName, MAX_PATH))
+	const std::wstring action_id = std::wstring(app) + L"." + iniKey;
+	if (!GetIniString(app, iniKey, 0, keyName, MAX_PATH)) {
+		named_bindings.push_back({{action_id, L""}, std::move(callbacks), disable_scope});
 		return false;
+	}
 
-	return RegisterKeyBinding(iniKey, keyName, callbacks, auto_repeat, 0, 0, disable_scope);
+	return RegisterKeyBinding(iniKey, keyName, callbacks, auto_repeat, 0, 0, disable_scope, action_id.c_str());
 }
 
 // Format a key binding from the ini file into a user friendly manner, intended
@@ -538,6 +576,7 @@ void ClearKeyBindings()
 		delete *i;
 
 	actions.clear();
+	named_bindings.clear();
 }
 
 static bool IsAdditionalForegroundWindow(HWND hwnd)

@@ -18,6 +18,7 @@
 #include "Globals.h"
 
 #include "HackerDevice.h"
+#include "McpAgent.h"
 #include "D3D11Wrapper.h"
 //#include "ResourceHash.h"
 //#include "Override.h"
@@ -1609,6 +1610,9 @@ STDMETHODIMP HackerContext::Map(THIS_
 	HRESULT hr;
 
 	hr = mOrigContext1->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
+	if (SUCCEEDED(hr) && pMappedResource && pMappedResource->pData &&
+		Dx11Mcp::enabled.load(std::memory_order_relaxed))
+		Dx11Mcp::TrackBufferMap(pResource, true);
 
 	TrackAndDivertMap(hr, pResource, Subresource, MapType, MapFlags, pMappedResource);
 
@@ -1624,6 +1628,8 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
     bool discard = false;
     const bool upload = TrackAndDivertUnmap(pResource, Subresource, &discard);
 	mOrigContext1->Unmap(pResource, Subresource);
+	if (Dx11Mcp::enabled.load(std::memory_order_relaxed))
+		Dx11Mcp::TrackBufferMap(pResource, false);
     if (upload) mTextureUploads.Update(mOrigContext1, pResource, Subresource, nullptr, discard);
 }
 
@@ -1908,8 +1914,12 @@ STDMETHODIMP_(void) HackerContext::Dispatch(THIS_
 	DispatchContext context{ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ};
 
 	if (BeforeDispatch(&context)) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, context.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, true);
 		mOrigContext1->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, context.call_info, false, true);
     }
 	else
 		Profiling::skipped_draw_calls++;
@@ -1926,8 +1936,12 @@ STDMETHODIMP_(void) HackerContext::DispatchIndirect(THIS_
 	DispatchContext context{&pBufferForArgs, AlignedByteOffsetForArgs};
 
 	if (BeforeDispatch(&context)) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, context.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, true);
 		mOrigContext1->DispatchIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, context.call_info, false, true);
     }
 	else
 		Profiling::skipped_draw_calls++;
@@ -3257,8 +3271,12 @@ STDMETHODIMP_(void) HackerContext::DrawIndexed(THIS_
 	BeforeDraw(c);
 
 	if (!c.call_info.skip) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		 mOrigContext1->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info, false, true);
     }
 	AfterDraw(c);
 }
@@ -3273,8 +3291,12 @@ STDMETHODIMP_(void) HackerContext::Draw(THIS_
 	BeforeDraw(c);
 
 	if (!c.call_info.skip) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		 mOrigContext1->Draw(VertexCount, StartVertexLocation);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info, false, true);
     }
 	AfterDraw(c);
 }
@@ -3327,9 +3349,13 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstanced(THIS_
 	BeforeDraw(c);
 
 	if (!c.call_info.skip) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation,
 		BaseVertexLocation, StartInstanceLocation);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info, false, true);
     }
 	AfterDraw(c);
 }
@@ -3348,8 +3374,12 @@ STDMETHODIMP_(void) HackerContext::DrawInstanced(THIS_
 	BeforeDraw(c);
 
 	if (!c.call_info.skip) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info, false, true);
     }
 	AfterDraw(c);
 }
@@ -3464,8 +3494,12 @@ STDMETHODIMP_(void) HackerContext::DrawAuto(THIS)
 	BeforeDraw(c);
 
 	if (!c.call_info.skip) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawAuto();
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info, false, true);
     }
 	AfterDraw(c);
 }
@@ -3480,8 +3514,12 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstancedIndirect(THIS_
 	BeforeDraw(c);
 
 	if (!c.call_info.skip) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawIndexedInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info, false, true);
     }
 	AfterDraw(c);
 }
@@ -3496,8 +3534,12 @@ STDMETHODIMP_(void) HackerContext::DrawInstancedIndirect(THIS_
 	BeforeDraw(c);
 
 	if (!c.call_info.skip) {
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
+		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
+			Dx11Mcp::OnDraw(this, c.call_info, false, true);
     }
 	AfterDraw(c);
 }

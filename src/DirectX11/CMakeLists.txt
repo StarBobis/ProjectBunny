@@ -56,6 +56,10 @@ add_library(DirectX11 SHARED
     lock.cpp
     Logging.cpp
     Logging.h
+    McpAgent.cpp
+    McpAgent.h
+    McpDiagnostics.cpp
+    McpDiagnostics.h
     Overlay.cpp
     OverlayText.cpp
     OverlayText.h
@@ -106,6 +110,7 @@ target_link_libraries(DirectX11 PRIVATE
     DXGI.lib
     Shlwapi.lib
     Dbghelp.lib
+    Advapi32.lib
 )
 
 target_compile_features(DirectX11 PRIVATE cxx_std_17)
@@ -454,4 +459,14 @@ if(BUILD_TESTING)
     add_test(NAME dx11_proxy_smoke COMMAND dx11_proxy_smoke
         "$<TARGET_FILE:DirectX11>" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(dx11_proxy_smoke PROPERTIES TIMEOUT 30)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME dx11_mcp_regression
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
+                "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
+        set_tests_properties(dx11_mcp_regression PROPERTIES TIMEOUT 55)
+        add_test(NAME dx11_mcp_monitor_regression
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
+                --monitor "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
+        set_tests_properties(dx11_mcp_monitor_regression PROPERTIES TIMEOUT 55)
+    endif()
 endif()

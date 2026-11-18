@@ -137,6 +137,76 @@ void exercise_overlay(HMODULE proxy)
     check(!GetModuleHandleW(L"DWrite.dll") && !GetModuleHandleW(L"d2d1.dll"), "proxy: overlay rendering adds no DirectWrite/Direct2D modules");
 }
 
+int serve_mcp_fixture(const wchar_t* library)
+{
+    HMODULE proxy = LoadLibraryW(library);
+    check(proxy != nullptr, "load DX11 proxy for MCP");
+    ProxyOverlayWindow window;
+    const auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>(
+        GetProcAddress(proxy, "D3D11CreateDeviceAndSwapChain"));
+    check(create != nullptr, "resolve DX11 swapchain entry point");
+    DXGI_SWAP_CHAIN_DESC desc{};
+    desc.BufferDesc.Width = 64;
+    desc.BufferDesc.Height = 64;
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferCount = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.OutputWindow = window.handle;
+    desc.Windowed = TRUE;
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGISwapChain> chain;
+    check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+        D3D11_SDK_VERSION, &desc, &chain, &device, nullptr, &context)), "create MCP WARP swapchain");
+    D3D11_BUFFER_DESC index_desc{};
+    index_desc.ByteWidth = 16;
+    index_desc.Usage = D3D11_USAGE_DYNAMIC;
+    index_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    index_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    const UINT initial[] = {100, 1, 2, 3};
+    D3D11_SUBRESOURCE_DATA data{initial, 0, 0};
+    ComPtr<ID3D11Buffer> index;
+    check(SUCCEEDED(device->CreateBuffer(&index_desc, &data, &index)), "create MCP dynamic IB");
+    const auto stop = std::filesystem::path(library).parent_path() / L"stop";
+    const auto deadline = GetTickCount64() + 45000;
+    for (UINT counter = 0; GetTickCount64() < deadline && !std::filesystem::exists(stop); ++counter) {
+        D3D11_MAPPED_SUBRESOURCE mapping{};
+        check(SUCCEEDED(context->Map(index.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapping)), "update MCP dynamic IB");
+        const UINT bytes[] = {counter, 1, 2, 3};
+        memcpy(mapping.pData, bytes, sizeof(bytes));
+        context->Unmap(index.Get(), 0);
+        context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, sizeof(UINT));
+        context->Draw(3, 0);
+        context->DrawIndexed(3, 0, 0);
+        context->DrawIndexedInstanced(2, 1, 1, 0, 0);
+        check(SUCCEEDED(chain->Present(0, 0)), "pump DX11 MCP on Present");
+        Sleep(10);
+    }
+    return std::filesystem::exists(stop) ? 0 : 1;
+}
+
+int serve_mcp_loading_fixture(const wchar_t* library, bool instant_exit)
+{
+    const auto proxy = LoadLibraryW(library);
+    check(proxy != nullptr, "load monitored DX11 proxy");
+    if (!instant_exit) {
+        const auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(GetProcAddress(proxy, "D3D11CreateDevice"));
+        check(create != nullptr, "locate monitored D3D11CreateDevice");
+        ComPtr<ID3D11Device> device;
+        ComPtr<ID3D11DeviceContext> context;
+        check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+            &device, nullptr, &context)), "initialize DX11 without creating a Present loop");
+        const auto trigger = std::filesystem::path(library).parent_path() / L"crash";
+        const auto deadline = GetTickCount64() + 15000;
+        while (GetTickCount64() < deadline && !std::filesystem::exists(trigger)) Sleep(10);
+        check(std::filesystem::exists(trigger), "receive simulated crash trigger");
+    }
+    // Force termination so the transport cannot rely on a DLL detach callback.
+    TerminateProcess(GetCurrentProcess(), 0xc0000005u);
+    return 1;
+}
+
 int run_child(const wchar_t* library, bool native_control, bool denied_interfaces, bool native_routing)
 {
     if (native_control) {
@@ -364,6 +434,9 @@ int wmain(int argc, wchar_t** argv)
     try {
         check(argc == 3, "expected proxy DLL path and fixture parent, or --child and DLL path");
         const std::wstring mode(argv[1]);
+        if (mode == L"--mcp-live") return serve_mcp_fixture(argv[2]);
+        if (mode == L"--mcp-pre-present-crash" || mode == L"--mcp-instant-crash")
+            return serve_mcp_loading_fixture(argv[2], mode == L"--mcp-instant-crash");
         if (mode == L"--child" || mode == L"--child-native-control" || mode == L"--child-hook-all" || mode == L"--child-denied-qi")
             return run_child(argv[2], mode == L"--child-native-control", mode == L"--child-denied-qi", mode == L"--child-hook-all");
         return run_parent(argv[1], argv[2]);
