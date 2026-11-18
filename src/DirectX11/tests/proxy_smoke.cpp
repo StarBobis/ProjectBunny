@@ -237,6 +237,80 @@ int serve_mcp_fixture(const wchar_t* library)
     return std::filesystem::exists(stop) ? 0 : 1;
 }
 
+class AlternatingMcpDevice {
+    ProxyOverlayWindow window;
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGISwapChain> chain;
+    ComPtr<ID3D11Buffer> index;
+public:
+    AlternatingMcpDevice(PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN create, const UINT (&indices)[3])
+    {
+        DXGI_SWAP_CHAIN_DESC desc{};
+        desc.BufferDesc.Width = 64;
+        desc.BufferDesc.Height = 64;
+        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.BufferCount = 1;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.OutputWindow = window.handle;
+        desc.Windowed = TRUE;
+        check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+            D3D11_SDK_VERSION, &desc, &chain, &device, nullptr, &context)), "create alternating WARP swap chain");
+        D3D11_BUFFER_DESC ib{};
+        ib.ByteWidth = sizeof(indices);
+        ib.Usage = D3D11_USAGE_IMMUTABLE;
+        ib.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA data{indices, 0, 0};
+        check(SUCCEEDED(device->CreateBuffer(&ib, &data, &index)), "create tagged WARP index buffer");
+    }
+
+    void Draw()
+    {
+        context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, 0);
+        context->DrawIndexed(3, 0, 0);
+    }
+
+    void Present()
+    {
+        check(SUCCEEDED(chain->Present(0, 0)), "present alternating WARP swap chain");
+    }
+};
+
+int serve_mcp_alternating_fixture(const wchar_t* library)
+{
+    const auto proxy = LoadLibraryW(library);
+    check(proxy != nullptr, "load proxy for alternating-device test");
+    const auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>(
+        GetProcAddress(proxy, "D3D11CreateDeviceAndSwapChain"));
+    check(create != nullptr, "locate D3D11CreateDeviceAndSwapChain");
+    AlternatingMcpDevice first(create, {11, 22, 33});
+    AlternatingMcpDevice second(create, {44, 55, 66});
+    const auto fixture = std::filesystem::path(library).parent_path();
+    const auto deadline = GetTickCount64() + 20000;
+    unsigned alternations = 0;
+    unsigned second_only = 0;
+    while (!std::filesystem::exists(fixture / L"stop") && GetTickCount64() < deadline) {
+        const bool alternate = std::filesystem::exists(fixture / L"alternate");
+        const bool pause_first = std::filesystem::exists(fixture / L"pause-first");
+        if (alternate) {
+            second.Draw();
+            second.Present();
+            if (pause_first && ++second_only == 70)
+                std::ofstream(fixture / L"second-only").put('1');
+        }
+        if (!pause_first) {
+            if (std::filesystem::exists(fixture / L"first-draw"))
+                first.Draw();
+            first.Present();
+            if (alternate && ++alternations == 5)
+                std::ofstream(fixture / L"alternated").put('1');
+        }
+        Sleep(10);
+    }
+    return std::filesystem::exists(fixture / L"stop") ? 0 : 1;
+}
+
 int serve_mcp_loading_fixture(const wchar_t* library, bool instant_exit)
 {
     const auto proxy = LoadLibraryW(library);
@@ -486,6 +560,7 @@ int wmain(int argc, wchar_t** argv)
         check(argc == 3, "expected proxy DLL path and fixture parent, or --child and DLL path");
         const std::wstring mode(argv[1]);
         if (mode == L"--mcp-live") return serve_mcp_fixture(argv[2]);
+        if (mode == L"--mcp-alternating") return serve_mcp_alternating_fixture(argv[2]);
         if (mode == L"--mcp-pre-present-crash" || mode == L"--mcp-instant-crash")
             return serve_mcp_loading_fixture(argv[2], mode == L"--mcp-instant-crash");
         if (mode == L"--child" || mode == L"--child-native-control" || mode == L"--child-hook-all" || mode == L"--child-denied-qi")

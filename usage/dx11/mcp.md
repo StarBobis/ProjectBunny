@@ -67,7 +67,7 @@ DX11 DLL 可以通过本机 MCP 触发现有按键动作，并按狩猎 hash、�
 2. 调用 `dx11_capture`，例如 `{"kind":"ib","hash":"1234abcd","frames":30}`，等待指定 hash 在接下来的帧中出现。已知 shader stage、slot、draw 序号或 `resource_id` 时可以继续缩小范围。
 3. 用 `dx11_capture_status` 查询捕获 ID。状态为 `ready` 后，用 `dx11_capture_bytes` 分块读取，或用 `dx11_capture_save` 保存整份数据。新任务会替换上一个已结束的结果，需先保存想保留的内容。
 
-设备或上下文切换会移交 Live 控制。旧上下文仍在等待匹配的抓取会结束为 `device_changed`，可在新上下文重新定位后发起抓取。缓冲区在有效 Map 期间返回 `mapped`，即使期间热重载切换了 MCP 开关。Unmap 完成后可重新读取。
+Live 控制可由不同交换链的 Present 响应。待处理抓取绑定于接收请求的 context，`frames` 只统计该 context 的后续 Present。其他设备交替呈现时，原抓取继续等待原 context 的绘制。原 context 销毁时，抓取结束为 `device_changed`，可在新 context 重新定位后再抓取。缓冲区在有效 Map 期间返回 `mapped`，即使期间热重载切换了 MCP 开关。Unmap 完成后可重新读取。
 
 `hash_mode` 可指定 `resource` 或 `region`。资源 hash 沿用狩猎系统的资源标识，动态缓冲区每帧的字节仍会变化。区域 hash 沿用 Hunting 的范围算法，捕获结果记录命中时的区域和格式。相同 hash 的实例可用 draw、slot 或 `resource_id` 区分。未登记在 Hunting 的资源使用绑定位置或资源 ID 定位。
 

@@ -251,7 +251,7 @@ class Bridge:
             "draw": integer("Draw, dispatch, or injected draw ordinal in each searched frame.", 1),
             "resource_id": integer("Opaque resource ID returned by an earlier draw inspection.", 1, ANY - 1),
             "source": choice("Select game draws, mod draws or both.", "any", "game", "mod", default="any"),
-            "frames": integer("Maximum new frames to search for the selector.", 1, 120, 30),
+            "frames": integer("Maximum Present frames of the context that accepted the capture.", 1, 120, 30),
             "phase": choice("Before the call or after it. Auto reads UAV and stream output after the call.",
                             "auto", "before", "after", default="auto"),
             "offset": integer("Byte offset within the underlying buffer.", default=0),

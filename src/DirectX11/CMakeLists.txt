@@ -476,5 +476,9 @@ if(BUILD_TESTING)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
                 --multi-target "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
         set_tests_properties(dx11_mcp_multi_target_regression PROPERTIES TIMEOUT 55)
+        add_test(NAME dx11_mcp_alternating_devices_regression
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
+                --alternating "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
+        set_tests_properties(dx11_mcp_alternating_devices_regression PROPERTIES TIMEOUT 35)
     endif()
 endif()

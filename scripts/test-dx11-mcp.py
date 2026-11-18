@@ -555,8 +555,61 @@ def multi_target_main(harness, dll):
     print("PASS: 3 independent PID routes, explicit instance selection, and no blocking across processes")
 
 
+def verify_alternating(mcp, pid, folder):
+    deadline = time.monotonic() + 8
+    while pid not in mcp.tool("discover")["pids"]:
+        assert time.monotonic() < deadline, "Primary WARP swap chain did not publish its endpoint"
+        time.sleep(0.1)
+    assert mcp.tool("status")["pid"] == pid
+    job = mcp.tool("capture", kind="ib", indexed_range=True, frames=60)
+    assert job["state"] == "pending"
+    (folder / "alternate").touch()
+    wait_file(folder / "alternated")
+    pending = mcp.tool("capture_status", capture_id=job["id"])
+    assert pending["state"] == "pending", pending
+    pause = folder / "pause-first"
+    pause.touch()
+    wait_file(folder / "second-only")
+    pending = mcp.tool("capture_status", capture_id=job["id"])
+    assert pending["state"] == "pending", pending
+    (folder / "first-draw").touch()
+    pause.unlink()
+    result = mcp.wait_capture(job["id"])
+    assert result["bytes"] == 12 and struct.unpack("<3I", mcp.bytes(job["id"])) == (11, 22, 33), result
+
+
+def alternating_main(harness, dll):
+    assert "build" in harness.parent.parts
+    with tempfile.TemporaryDirectory(prefix="mcp-alternating-", dir=harness.parent) as directory:
+        folder = Path(directory)
+        copy = folder / "d3d11.dll"
+        shutil.copyfile(dll, copy)
+        (folder / "d3dx.ini").write_text(
+            "[Logging]\nlog_level=disabled\n[System]\nallow_platform_update=1\n"
+            "mcp_enabled=1\nconfig_initialization_delay=-1\n", encoding="ascii")
+        with subprocess.Popen([str(harness), "--mcp-alternating", str(copy)], cwd=folder) as game:
+            try:
+                with subprocess.Popen([sys.executable, str(BRIDGE), "--pid", str(game.pid)],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding="utf-8") as server:
+                    try:
+                        verify_alternating(Mcp(server), game.pid, folder)
+                    finally:
+                        server.stdin.close()
+                        server.wait(timeout=5)
+            finally:
+                (folder / "stop").touch()
+                try:
+                    game.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    game.kill()
+                    game.wait()
+            assert game.returncode == 0
+    print("PASS: capture stays on its originating context while two live WARP devices alternate Present")
+
+
 if __name__ == "__main__":
-    modes = {"--monitor": monitor_main, "--map-reload": map_reload_main, "--multi-target": multi_target_main}
+    modes = {"--monitor": monitor_main, "--map-reload": map_reload_main,
+             "--multi-target": multi_target_main, "--alternating": alternating_main}
     runner = modes.get(sys.argv[1], main)
     args = sys.argv[2:] if sys.argv[1] in modes else sys.argv[1:]
     runner(*(Path(arg).resolve() for arg in args))

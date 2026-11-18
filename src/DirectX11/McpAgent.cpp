@@ -154,7 +154,8 @@ constexpr std::string_view Stages[] = {"vs", "hs", "ds", "gs", "ps", "cs"};
 
 struct Capture {
 	uint64_t id = 0, hash = Any, slot = Any, draw = Any, resource = Any;
-	UINT offset = 0, length = 0, until = 0;
+	UINT offset = 0, length = 0, frames_left = 0, injected_ordinal = 0;
+	DWORD thread = 0;
 	CaptureKind kind = CaptureKind::Draw;
 	std::string stage, source, hash_mode, status, details;
 	std::vector<unsigned char> bytes;
@@ -178,14 +179,14 @@ ProfileSnapshot profile;
 // GPU readback and input callbacks can reenter OnDraw on the presenting
 // thread. Other rendering threads must not wait for that work to finish.
 std::recursive_mutex render_lock;
-std::atomic<DWORD> render_thread{0};
-std::atomic<HackerContext*> render_context{nullptr};
-UINT injected_ordinal = 0;
+std::atomic<bool> service_active{false};
+std::atomic<HackerContext*> capture_context{nullptr};
 ULONGLONG retry_open = 0;
 
 void Complete(std::string status)
 {
 	capture.status = std::move(status);
+	capture_context.store(nullptr, std::memory_order_release);
 	capture_armed.store(false, std::memory_order_release);
 }
 
@@ -721,9 +722,11 @@ std::string Process(HackerDevice* device, HackerContext* wrapper, std::string_vi
 		next.after = fields[12] == "after" ||
 			(fields[12] == "auto" && (next.kind == CaptureKind::Uav || next.kind == CaptureKind::Stream));
 		next.id = next_id.fetch_add(1, std::memory_order_relaxed);
-		next.until = G->frame_no + static_cast<UINT>(frames);
+		next.frames_left = static_cast<UINT>(frames);
+		next.thread = GetCurrentThreadId();
 		next.status = "pending";
 		capture = std::move(next);
+		capture_context.store(wrapper, std::memory_order_release);
 		capture_armed.store(true, std::memory_order_release);
 		return DescribeCapture();
 	}
@@ -733,26 +736,31 @@ std::string Process(HackerDevice* device, HackerContext* wrapper, std::string_vi
 
 void OnPresent(HackerDevice* device, HackerContext* context)
 {
-	if (!enabled.load(std::memory_order_acquire) && !render_thread.load(std::memory_order_relaxed)) return;
+	if (!enabled.load(std::memory_order_acquire) && !service_active.load(std::memory_order_relaxed)) return;
 	std::unique_lock lock(render_lock, std::try_to_lock);
 	if (!lock.owns_lock()) return;
 	if (!enabled.load(std::memory_order_acquire)) {
 		pipe.Close();
+		capture_context.store(nullptr, std::memory_order_release);
 		capture_armed.store(false, std::memory_order_release);
 		capture = {};
 		profile = {};
-		render_context.store(nullptr, std::memory_order_release);
-		render_thread.store(0, std::memory_order_release);
+		service_active.store(false, std::memory_order_release);
 		return;
 	}
 	if (!context) return;
-	const auto previous = render_context.exchange(context, std::memory_order_acq_rel);
-	if (previous != context && capture_armed.load(std::memory_order_relaxed))
-		Complete("device_changed");
-	render_thread.store(GetCurrentThreadId(), std::memory_order_release);
-	injected_ordinal = 0;
-	if (capture_armed.load(std::memory_order_relaxed) &&
-		static_cast<int32_t>(G->frame_no - capture.until) >= 0) Complete("no_matching_draw");
+	service_active.store(true, std::memory_order_relaxed);
+	if (capture_armed.load(std::memory_order_relaxed)) {
+		const auto owner = capture_context.load(std::memory_order_acquire);
+		if (!owner) {
+			Complete("device_changed");
+		} else if (owner == context) {
+			capture.thread = GetCurrentThreadId();
+			capture.injected_ordinal = 0;
+			if (--capture.frames_left == 0)
+				Complete("no_matching_draw");
+		}
+	}
 	const auto now = GetTickCount64();
 	try {
 		if (pipe.handle == INVALID_HANDLE_VALUE) {
@@ -800,23 +808,23 @@ void OnContextDestroyed(HackerContext* context) noexcept
 {
 	// Retire the borrowed pointer without waiting on a rendering thread.
 	// The next Present cancels any pending capture before serving the pipe.
-	render_context.compare_exchange_strong(context, nullptr, std::memory_order_acq_rel);
+	capture_context.compare_exchange_strong(context, nullptr, std::memory_order_acq_rel);
 }
 
 void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, bool after)
 {
-	const auto thread = GetCurrentThreadId();
-	if (render_thread.load(std::memory_order_relaxed) != thread)
+	if (context != capture_context.load(std::memory_order_acquire))
 		return;
 	std::unique_lock lock(render_lock, std::try_to_lock);
 	if (!lock.owns_lock() || !capture_armed.load(std::memory_order_relaxed) ||
-		render_thread.load(std::memory_order_relaxed) != thread ||
-		context != render_context.load(std::memory_order_acquire))
+		context != capture_context.load(std::memory_order_acquire) ||
+		capture.thread != GetCurrentThreadId())
 		return;
 	const bool compute = call.type == DrawCall::Dispatch || call.type == DrawCall::DispatchIndirect;
-	if (injected && !after) ++injected_ordinal;
+	if (injected && !after) ++capture.injected_ordinal;
 	if (after != capture.after) return;
-	const UINT index = injected ? injected_ordinal : (compute ? context->GetDispatchNumber() : context->GetDrawNumber());
+	const UINT index = injected ? capture.injected_ordinal :
+		(compute ? context->GetDispatchNumber() : context->GetDrawNumber());
 	if ((capture.draw != Any && capture.draw != index) || (capture.source == "game" && injected) ||
 		(capture.source == "mod" && !injected)) return;
 	if (capture.indexed_range && !UsesDirectIndices(call)) return;
