@@ -2,10 +2,11 @@
 #include "Hunting.h"
 #include "ShaderHeader.h"
 
+#include <algorithm>
+#include <climits>
 #include <string>
 #include <sstream>
 #include <D3Dcompiler.h>
-#include <codecvt>
 
 #include "ScreenGrab.h"
 #include "wincodec.h"
@@ -358,6 +359,21 @@ static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// Custom #include handler used to track which shaders need to be reloaded after an included file is modified
+class MigotoIncludeHandler : public ID3DInclude
+{
+	std::vector<std::wstring> dir_stack;
+	bool recursive;
+	bool legacy;
+
+	void push_dir(const std::wstring& path);
+public:
+	MigotoIncludeHandler(const wchar_t *path, bool forceLegacy);
+
+	STDMETHOD(Open)(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID *ppData, UINT *pBytes);
+	STDMETHOD(Close)(LPCVOID pData);
+};
+
 // Custom #include handler used to track which shaders need to be reloaded
 // after an included file is modified. Doco for the ID3DInclude interface:
 //
@@ -365,9 +381,10 @@ static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 //   https://docs.microsoft.com/en-us/windows/desktop/direct3d11/d3d11-graphics-programming-guide-effects-compile#searching-for-include-files
 //   https://docs.microsoft.com/en-us/windows/desktop/api/d3dcompiler/nf-d3dcompiler-d3dcompile
 
-MigotoIncludeHandler::MigotoIncludeHandler(const char *path)
+MigotoIncludeHandler::MigotoIncludeHandler(const wchar_t *path, bool forceLegacy)
+    : recursive(!forceLegacy && G->recursive_include > 0),
+      legacy(forceLegacy || G->recursive_include == -1)
 {
-	LogDebug("      MigotoIncludeHandler %p for \"%s\"\n", this, path);
 	push_dir(path);
 }
 
@@ -383,25 +400,29 @@ MigotoIncludeHandler::MigotoIncludeHandler(const char *path)
 // them we can ensure that we are including the correct file. We never see an
 // Open or Close call for a - we have to pass the path for a into the handler
 // separately from the D3DCompile call, which we do via the above constructor.
-void MigotoIncludeHandler::push_dir(const char *path)
+void MigotoIncludeHandler::push_dir(const std::wstring& path)
 {
-	// D3DCompile accepts both forward and backslashes as path separators:
-	const char *dir_sep = max(strrchr(path, '\\'), strrchr(path, '/'));
+    const auto separator = path.find_last_of(L"\\/");
+    dir_stack.push_back(separator == std::wstring::npos ? L"" : path.substr(0, separator + 1));
+}
 
-	// May not have a path separator if including from the current working
-	// directory instead of ShaderFixes:
-	if (dir_sep)
-		dir_stack.push_back(string(path, dir_sep - path + 1));
-	else
-		dir_stack.push_back("");
+namespace {
+std::wstring DecodeIncludeName(const char* name, UINT encoding)
+{
+    const int length = MultiByteToWideChar(encoding, MB_ERR_INVALID_CHARS, name, -1, nullptr, 0);
+    if (length <= 1) return {};
+    std::wstring result(length, L'\0');
+    if (!MultiByteToWideChar(encoding, MB_ERR_INVALID_CHARS, name, -1, result.data(), length))
+        return {};
+    result.pop_back();
+    return result;
+}
 }
 
 STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID *ppData, UINT *pBytes)
 {
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> codec;
 	char *buf = NULL;
 	DWORD size, read;
-	string apath;
 	wstring wpath;
 	HANDLE f;
 
@@ -422,14 +443,15 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 	// handler would include "d" from the root instead. This might be
 	// contrived enough to ignore it and drop the option, but its safer to
 	// include the option.
-	if (G->recursive_include)
-		apath = dir_stack.back() + pFileName;
-	else
-		apath = dir_stack.front() + pFileName;
-	wpath = codec.from_bytes(apath);
+	auto filename = DecodeIncludeName(pFileName, CP_UTF8);
+	if (filename.empty() && legacy)
+		filename = DecodeIncludeName(pFileName, CP_ACP);
+	if (filename.empty())
+		return E_INVALIDARG;
+	wpath = (recursive ? dir_stack.back() : dir_stack.front()) + filename;
 
 	f = CreateFile(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (f == INVALID_HANDLE_VALUE && !G->recursive_include) {
+	if (f == INVALID_HANDLE_VALUE && !recursive) {
 		// If the included file is not found relative to the includer
 		// D3D_COMPILE_STANDARD_FILE_INCLUDE falls back to trying to
 		// open the file from the current working directory, so we do
@@ -440,12 +462,11 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 		// directories on different editions (e.g. FC4 / FCPrimal Steam
 		// vs UPlay), so we disallow this if recursive_include is
 		// enabled as that already disables backwards compatibility.
-		apath = pFileName;
-		wpath = codec.from_bytes(apath);
+		wpath = filename;
 		f = CreateFile(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	}
 	if (f == INVALID_HANDLE_VALUE) {
-		LogInfo("      Error opening included file: %s\n", apath.c_str());
+		LogInfo("      Error opening included file: %s\n", pFileName);
 		return E_FAIL;
 	}
 
@@ -455,11 +476,11 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 	// #include <3dmigoto.h>
 	switch (IncludeType) {
 		case D3D_INCLUDE_LOCAL:
-			LogInfo("      #include \"%s\"\n", apath.c_str());
+			LogInfo("      #include \"%s\"\n", pFileName);
 			break;
 		case D3D_INCLUDE_SYSTEM:
 		default:
-			LogInfo("      #include <%s>\n", apath.c_str());
+			LogInfo("      #include <%s>\n", pFileName);
 			break;
 	}
 
@@ -474,7 +495,7 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 
 	*pBytes = size;
 	*ppData = buf;
-	push_dir(apath.c_str());
+	push_dir(wpath);
 	LogDebug("       -> %p\n", buf);
 
 	return S_OK;
@@ -493,6 +514,80 @@ STDMETHODIMP MigotoIncludeHandler::Close(LPCVOID pData)
 	return S_OK;
 }
 
+namespace {
+std::string ShaderPathUtf8(const wchar_t* path)
+{
+    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, -1, nullptr, 0, nullptr, nullptr);
+    if (!length) return {};
+    std::string text(length, '\0');
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, -1, text.data(), length, nullptr, nullptr))
+        return {};
+    text.pop_back();
+    return text;
+}
+
+HRESULT NormalizeShaderDiagnostics(ID3DBlob** errors, const char* compilerPath, const std::string& path)
+{
+    const auto* bytes = static_cast<const char*>((*errors)->GetBufferPointer());
+    const size_t size = (*errors)->GetBufferSize();
+    const size_t length = size && bytes[size - 1] == '\0' ? size - 1 : size;
+    if (!length) return S_OK;
+    if (length > INT_MAX) return E_INVALIDARG;
+
+    // FXC accepts UTF-8 input but returns diagnostics in the system ANSI code page.
+    const int units = MultiByteToWideChar(CP_ACP, 0, bytes, static_cast<int>(length), nullptr, 0);
+    if (!units) return HRESULT_FROM_WIN32(GetLastError());
+    std::wstring wide(units, L'\0');
+    if (!MultiByteToWideChar(CP_ACP, 0, bytes, static_cast<int>(length), wide.data(), units))
+        return HRESULT_FROM_WIN32(GetLastError());
+    auto message = ShaderPathUtf8(wide.c_str());
+    if (message.empty()) return E_FAIL;
+
+    if (compilerPath) {
+        // Restore only source-location prefixes, leaving diagnostic message text intact.
+        const size_t nameLength = strlen(compilerPath);
+        for (size_t line = 0; line < message.size();) {
+            if (message.compare(line, nameLength, compilerPath) == 0 && line + nameLength < message.size() &&
+                message[line + nameLength] == '(') {
+                message.replace(line, nameLength, path);
+                line += path.size();
+            }
+            line = message.find('\n', line);
+            if (line == std::string::npos) break;
+            ++line;
+        }
+    }
+
+    Microsoft::WRL::ComPtr<ID3DBlob> utf8;
+    const HRESULT hr = D3DCreateBlob(message.size() + 1, utf8.GetAddressOf());
+    if (FAILED(hr)) return hr;
+    memcpy(utf8->GetBufferPointer(), message.c_str(), message.size() + 1);
+    (*errors)->Release();
+    *errors = utf8.Detach();
+    return S_OK;
+}
+}
+
+HRESULT CompileShaderWithUnicodePath(const void* source, SIZE_T size, const wchar_t* path,
+    const D3D_SHADER_MACRO* defines, const char* entry, const char* target,
+    UINT flags, UINT effectFlags, ID3DBlob** code, ID3DBlob** errors, bool forceLegacy)
+{
+    if (!path) return E_INVALIDARG;
+    const auto utf8 = ShaderPathUtf8(path);
+    if (utf8.empty()) return E_INVALIDARG;
+
+    MigotoIncludeHandler includes(path, forceLegacy);
+    const bool ascii = std::all_of(utf8.begin(), utf8.end(), [](unsigned char c) { return c < 128; });
+    // An ASCII source name prevents FXC from dropping characters outside the ANSI code page.
+    // The include handler uses the real path independently of this diagnostic name.
+    constexpr char diagnosticName[] = "C:\\__ProjectBunnyShader__.hlsl";
+    const HRESULT hr = D3DCompile(source, size, ascii ? utf8.c_str() : diagnosticName, defines, &includes,
+        entry, target, flags, effectFlags, code, errors);
+    if (errors && *errors && FAILED(NormalizeShaderDiagnostics(errors, ascii ? nullptr : diagnosticName, utf8)))
+        LogWarning("%s", "    Unable to normalize shader diagnostics to UTF-8\n");
+    return hr;
+}
+
 // Compile a new shader from  HLSL text input, and report on errors if any.
 // Return the binary blob of pCode to be activated with CreateVertexShader or CreatePixelShader.
 // If the timeStamp has not changed from when it was loaded, skip the recompile, and return false as not an 
@@ -506,7 +601,6 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 {
 	*pCode = nullptr;
 	wchar_t fullName[MAX_PATH];
-	char apath[MAX_PATH];
 	swprintf_s(fullName, MAX_PATH, L"%s\\%s", shaderFixPath, fileName);
 
 	WarnIfConflictingShaderExists(fullName);
@@ -556,14 +650,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 		// TODO: Add #defines for IniParams
 
 		ID3DBlob* pErrorMsgs = nullptr;
-		// Pass the real filename and use the standard include handler so that
-		// #include will work with a relative path from the shader itself.
-		// Later we could add a custom include handler to track dependencies so
-		// that we can make reloading work better when using includes:
-		wcstombs(apath, fullName, MAX_PATH);
-		MigotoIncludeHandler include_handler(apath);
-		HRESULT ret = D3DCompile(srcData.data(), srcDataSize, apath, 0,
-				G->recursive_include == -1 ? D3D_COMPILE_STANDARD_FILE_INCLUDE : &include_handler,
+		HRESULT ret = CompileShaderWithUnicodePath(srcData.data(), srcDataSize, fullName, 0,
 			"main", shaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pByteCode, &pErrorMsgs);
 
 		LogInfo("    compile result for replacement HLSL shader: %x\n", ret);
@@ -577,7 +664,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 			if (FAILED(ret))
 			{
 				// If there are errors they go to the overlay
-				LogOverlay(LOG_NOTICE, "%*s\n", errSize, errMsg);
+				LogOverlay(LOG_NOTICE, "%s\n", static_cast<const char*>(errMsg));
 			}
 			else if (LogFile)
 			{

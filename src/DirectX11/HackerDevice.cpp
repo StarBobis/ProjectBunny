@@ -740,7 +740,6 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 			// temporary variable to not modify anything already here and reduce
 			// the risk of breaking it in some subtle way:
 			const char *tmpShaderModel;
-			char apath[MAX_PATH];
 
 			if (pOverrideShaderModel)
 				tmpShaderModel = pOverrideShaderModel;
@@ -754,14 +753,7 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 
 			Microsoft::WRL::ComPtr<ID3DBlob> errorMsgs;
 			ID3DBlob *compiledOutput = 0;
-			// Pass the real filename and use the standard include handler so that
-			// #include will work with a relative path from the shader itself.
-			// Later we could add a custom include handler to track dependencies so
-			// that we can make reloading work better when using includes:
-			wcstombs(apath, path, MAX_PATH);
-			MigotoIncludeHandler include_handler(apath);
-			HRESULT ret = D3DCompile(srcData, srcDataSize, apath, 0,
-				G->recursive_include == -1 ? D3D_COMPILE_STANDARD_FILE_INCLUDE : &include_handler,
+			HRESULT ret = CompileShaderWithUnicodePath(srcData, srcDataSize, path, 0,
 				"main", tmpShaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &compiledOutput, errorMsgs.GetAddressOf());
 			delete[] srcData; srcData = 0;
 			if (compiledOutput)
@@ -1024,7 +1016,6 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 	// temporary variable to not modify anything already here and reduce
 	// the risk of breaking it in some subtle way:
 	const char *tmpShaderModel;
-	char apath[MAX_PATH];
 
 	if (overrideShaderModel)
 		tmpShaderModel = overrideShaderModel;
@@ -1041,9 +1032,8 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 	// but for consistency pass the path here as well so that the standard
 	// include handler can correctly handle includes with paths relative to the
 	// shader itself:
-	wcstombs(apath, val, MAX_PATH);
-	hr = D3DCompile(decompiledCode.c_str(), decompiledCode.size(), apath, 0, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-		"main", tmpShaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pCompiledOutput, pErrorMsgs.GetAddressOf());
+	hr = CompileShaderWithUnicodePath(decompiledCode.c_str(), decompiledCode.size(), val, 0,
+		"main", tmpShaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pCompiledOutput, pErrorMsgs.GetAddressOf(), true);
 	LogInfo("    compile result of fixed HLSL shader: %x\n", hr);
 
 	if (LogFile && pErrorMsgs)

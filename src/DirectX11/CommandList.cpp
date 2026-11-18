@@ -2948,7 +2948,6 @@ static const D3D_SHADER_MACRO cs_macros[] = { "COMPUTE_SHADER", "", NULL, NULL }
 bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, const wstring *namespace_path)
 {
 	wchar_t wpath[MAX_PATH], cache_path[MAX_PATH];
-	char apath[MAX_PATH];
 	HANDLE f;
 	DWORD srcDataSize, readSize;
 	vector<char> srcData;
@@ -3076,23 +3075,13 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 	// for the type of shader, and maybe allow more defines to be specified
 	// in the ini
 
-	// Pass the real filename and use the standard include handler so that
-	// #include will work with a relative path from the shader itself.
-	// Later we could add a custom include handler to track dependencies so
-	// that we can make reloading work better when using includes:
-	wcstombs(apath, wpath, MAX_PATH);
-	{
-		MigotoIncludeHandler include_handler(apath);
-		hr = D3DCompile(srcData.data(), srcDataSize, apath, macros,
-			G->recursive_include == -1 ? D3D_COMPILE_STANDARD_FILE_INCLUDE : &include_handler,
-			"main", shaderModel, (UINT)compile_flags, 0, ppBytecode, &pErrorMsgs);
-	}
+	hr = CompileShaderWithUnicodePath(srcData.data(), srcDataSize, wpath, macros,
+		"main", shaderModel, (UINT)compile_flags, 0, ppBytecode, &pErrorMsgs);
 
 	if (pErrorMsgs) {
 		LPVOID errMsg = pErrorMsgs->GetBufferPointer();
-		SIZE_T errSize = pErrorMsgs->GetBufferSize();
 		LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
-		LogOverlay(LOG_NOTICE, "%*s\n", errSize, errMsg);
+		LogOverlay(LOG_NOTICE, "%s\n", static_cast<const char*>(errMsg));
 		LogInfo("---------------------------------------------- END ----------------------------------------------\n");
 		pErrorMsgs->Release();
 	}

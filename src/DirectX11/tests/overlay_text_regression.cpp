@@ -1,6 +1,9 @@
 #include "slot_range_test_support.h"
 #include "Overlay.h"
 #include "OverlayText.h"
+#include "Hunting.h"
+#include <fstream>
+#include <clocale>
 #include "profiling.h"
 #include "ComScope.h"
 #include <ScreenGrab.h>
@@ -24,6 +27,56 @@ std::wstring FormatWide(const wchar_t* format, ...)
     va_list args; va_start(args, format);
     auto result = FormatOverlayText(format, args);
     va_end(args); return result;
+}
+std::string TestCompilerUnicodeDiagnostics()
+{
+    const auto directory = std::filesystem::absolute(L"compiler-中文-😀");
+    std::filesystem::create_directories(directory / L"子目录");
+    std::ofstream(directory / L"头文件.hlsl") << "#define HEADER_VALUE 1\n";
+    std::ofstream(directory / L"子目录" / L"nested.hlsl") << u8"#include \"头文件.hlsl\"\n";
+    std::ofstream(directory / L"子目录" / L"头文件.hlsl") << "#define HEADER_VALUE 2\n";
+    const auto path = (directory / L"中文警告.hlsl").wstring();
+    const int previousMode = G->recursive_include;
+    const std::string previousLocale = std::setlocale(LC_CTYPE, nullptr);
+    std::string warning;
+    for (const char* locale : { "C", ".UTF8", ".936" }) {
+        require_batch(std::setlocale(LC_CTYPE, locale) != nullptr, "compiler: select test locale");
+        for (int mode : { -1, 0, 1 }) {
+            G->recursive_include = mode;
+            const std::string source = u8"#include \"子目录/nested.hlsl\"\n#if HEADER_VALUE != EXPECTED_VALUE\n#error Wrong include directory\n#endif\n"
+                "float4 main() : SV_Target { float4 o; o.x = HEADER_VALUE; return o; }";
+            const D3D_SHADER_MACRO defines[] = { {"EXPECTED_VALUE", mode > 0 ? "2" : "1"}, {nullptr, nullptr} };
+            ComPtr<ID3DBlob> code, errors;
+            const auto hr = CompileShaderWithUnicodePath(source.data(), source.size(), path.c_str(), defines,
+                "main", "ps_5_0", 0, 0, &code, &errors);
+            require_batch(SUCCEEDED(hr) && code && errors, "compiler: Chinese include produces real warning");
+            warning = static_cast<const char*>(errors->GetBufferPointer());
+            const auto message = DecodeOverlayUtf8(warning);
+            require_batch(message.find(path) != std::wstring::npos && message.find(L"X3578") != std::wstring::npos,
+                "compiler: actual warning preserves full Chinese and supplementary source path");
+            LogOverlay(LOG_NOTICE, "%s", warning.c_str());
+            require_batch(GetOverlayNoticeMessages(LOG_NOTICE).back().find(path) != std::wstring::npos,
+                "compiler: yellow notice preserves compiler diagnostic");
+            const std::string invalid = "float4 main() : SV_Target { invalid syntax; }";
+            code.Reset(); errors.Reset();
+            require_batch(FAILED(CompileShaderWithUnicodePath(invalid.data(), invalid.size(), path.c_str(), nullptr,
+                "main", "ps_5_0", 0, 0, &code, &errors)) && errors && !code,
+                "compiler: syntax error remains a failure");
+            require_batch(DecodeOverlayUtf8(static_cast<const char*>(errors->GetBufferPointer())).find(path) != std::wstring::npos,
+                "compiler: error path is Unicode");
+            const std::string missing = "#include \"missing.hlsl\"\n";
+            code.Reset(); errors.Reset();
+            require_batch(FAILED(CompileShaderWithUnicodePath(missing.data(), missing.size(), path.c_str(), nullptr,
+                "main", "ps_5_0", 0, 0, &code, &errors)) && !code, "compiler: missing include fails");
+        }
+    }
+    G->recursive_include = previousMode;
+    std::setlocale(LC_CTYPE, previousLocale.c_str());
+    ComPtr<ID3DBlob> code, errors;
+    const wchar_t invalidPath[] = { 0xd800, 0 };
+    require_batch(FAILED(CompileShaderWithUnicodePath("", 0, invalidPath, nullptr, "main", "ps_5_0", 0, 0, &code, &errors)),
+        "compiler: invalid UTF-16 rejected");
+    return warning;
 }
 class OverlayTestWindow {
 public:
@@ -209,6 +262,8 @@ void test_dx11_overlay_text_regression()
     catch (const std::invalid_argument&) { rejectedSize = true; }
     require_batch(rejectedSize, "overlay: nonfinite size rejected before device access or conversion");
     OverlayGlobals globals;
+    const auto compilerWarning = TestCompilerUnicodeDiagnostics();
+    ++G->frame_no; ClearNotices();
     BatchDevice device; // WARP, deliberately created WITHOUT BGRA_SUPPORT.
     OverlayTestWindow window;
     OverlayTextFont font(device.native.Get(), L"Consolas", 20);
@@ -258,6 +313,7 @@ void test_dx11_overlay_text_regression()
         ++G->frame_no; ClearNotices();
         LogOverlayW(LOG_DIRE, L"红色错误：中文路径 Mods\\迦南夜吻\\十个按键ctrl.ini\nHash parse error：hash5");
         LogOverlay(LOG_INFO, u8"绿色通知：UTF-8 中文显示正常，English 123，😀");
+        LogOverlay(LOG_NOTICE, "%s", compilerWarning.c_str());
         LogOverlayW(LOG_WARNING_MONOSPACE, L"橙色警告：等宽统计 VS 5927c81f6515eb11");
         require_batch(GetOverlayNoticeMessages(LOG_DIRE).at(0).find(L"迦南夜吻") != std::wstring::npos,
             "overlay: production wide notice preserves Chinese");
@@ -285,14 +341,16 @@ void test_dx11_overlay_text_regression()
             topology == D3D11_PRIMITIVE_TOPOLOGY_LINELIST, "overlay: SRV, viewport and topology restored");
         unsigned width, height;
         const auto pixels = ReadPixels(device, chain.Get(), width, height);
-        size_t red = 0, green = 0;
+        size_t red = 0, green = 0, yellow = 0;
         for (size_t i = 0; i < pixels.size(); i += 4) {
             const auto r = pixels[i + (format == DXGI_FORMAT_R8G8B8A8_UNORM ? 0 : 2)];
             const auto g = pixels[i + 1];
             if (r > 80 && r > g * 2) ++red;
             if (g > 80 && g > r * 2) ++green;
+            const auto b = pixels[i + (format == DXGI_FORMAT_R8G8B8A8_UNORM ? 2 : 0)];
+            if (r > 160 && g > 105 && b < 40) ++yellow;
         }
-        require_batch(red > 100 && green > 100, "overlay: actual red and green glyph pixels rendered");
+        require_batch(red > 100 && green > 100 && yellow > 100, "overlay: actual red, green and yellow glyph pixels rendered");
         if (format == DXGI_FORMAT_R8G8B8A8_UNORM) {
             ComScope pngCom;
             require_batch(static_cast<bool>(pngCom), "overlay: PNG encoder COM scope, separate from renderer");
