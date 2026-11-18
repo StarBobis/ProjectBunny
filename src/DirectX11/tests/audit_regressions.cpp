@@ -121,6 +121,7 @@ void test_dx11_texture_override_cache_regression();
 void test_dx11_loader_file_bounds_regression();
 void test_dx11_legacy_profiling_regression();
 void test_dx11_auto_texture_check_regression();
+void test_dx11_draw_dispatch_regression();
 void test_f200();
 
 #ifdef DX11_AUDIT_ASAN_LOCKS
@@ -426,6 +427,7 @@ class AuditConfigScope {
     std::wstring old_user = G->user_config;
     int old_dirty = G->user_config_dirty;
     bool old_automatic = G->clear_unknown_settings, old_clear = G->clear_saved_persist_vars;
+    bool old_mod_runtime_optimizations = G->ModRuntimeOptimizationsEnabled();
     int old_hunting = G->hunting;
     std::wstring old_shader_path = G->SHADER_PATH, old_shader_cache = G->SHADER_CACHE_PATH;
 public:
@@ -454,15 +456,18 @@ public:
         G->gShowWarnings = old_warnings; G->gConfigInitialized = old_initialized;
         G->user_config = old_user; G->user_config_dirty = old_dirty;
         G->clear_unknown_settings = old_automatic; G->clear_saved_persist_vars = old_clear;
+        G->mod_runtime_optimizations = old_mod_runtime_optimizations;
         G->hunting = old_hunting;
         wcscpy_s(G->SHADER_PATH, MAX_PATH, old_shader_path.c_str()); wcscpy_s(G->SHADER_CACHE_PATH, MAX_PATH, old_shader_cache.c_str());
         DeleteFileW(config.c_str()); DeleteFileW(settings.c_str());
     }
-    void load(const char* constants, int hunting = 0, bool eager = false, const char* include_lines = "")
+    void load(const char* constants, int hunting = 0, bool eager = false, const char* include_lines = "",
+        const char* rendering_lines = "")
     {
         std::ofstream output(config, std::ios::binary | std::ios::trunc);
         output << "[Logging]\ncalls=0\nshow_warnings=0\n[System]\nskip_early_includes_load=0\n";
         if (eager) output << "config_initialization_delay=-1\n";
+        if (*rendering_lines) output << "[Rendering]\n" << rendering_lines;
         output << "[Hunting]\nhunting=" << hunting << "\n[Include]\nuser_config=" << settings.filename().string() << "\n" << include_lines << "[Constants]\n" << constants;
         output.close(); require_batch(output.good(), "audit config: write complete production INI");
         WritePrivateProfileStringW(nullptr, nullptr, nullptr, config.c_str());
@@ -475,11 +480,13 @@ void test_f114()
     AuditConfigScope config;
     std::fputs("F114: load all-flag Constants declarations without a variable name\n", stderr); std::fflush(stderr);
     config.load("global=1\nglobal persist=2\nGLOBAL LOCKED=3\nglobal persist\n"
-        "global $audit_valid=7\nglobal persist $audit_persist=9\n");
+        "global $audit_valid=7\nglobal persist $audit_persist=9\n", 0, false, "", "mod_runtime_optimizations=0\n");
+    require_batch(!G->ModRuntimeOptimizationsEnabled(), "runtime optimizations: main INI can select the original paths");
     require_batch(command_list_globals.size() == 2 && command_list_globals.at(L"$audit_valid").fval == 7 &&
         command_list_globals.at(L"$audit_persist").fval == 9 && persistent_variables.size() == 1,
         "F114: reject missing names and continue parsing valid ordinary/persistent declarations");
     config.load("global $audit_valid=11\n");
+    require_batch(G->ModRuntimeOptimizationsEnabled(), "runtime optimizations: removing the setting restores the default on reload");
     require_batch(command_list_globals.size() == 1 && command_list_globals.at(L"$audit_valid").fval == 11 &&
         persistent_variables.empty(), "F114: corrected config reload replaces declarations normally");
 }
@@ -1508,10 +1515,284 @@ private:
     ID3D11ShaderResourceView* view;
 };
 
+class CheckViewportWidthCommand : public CommandListCommand {
+    float width;
+public:
+    explicit CheckViewportWidthCommand(float width) : width(width) {}
+    void run(CommandListState* state) override
+    {
+        D3D11_VIEWPORT viewport{};
+        UINT count = 1;
+        state->mOrigContext1->RSGetViewports(&count, &viewport);
+        dx11_slot_test::require_batch(count == 1 && viewport.Width == width,
+            "custom shader: expected viewport width is visible in its calling scope");
+    }
+};
+
+class CheckRenderTargetCommand final : public CommandListCommand {
+    ID3D11RenderTargetView* expected;
+public:
+    explicit CheckRenderTargetCommand(ID3D11RenderTargetView* expected) : expected(expected) {}
+    void run(CommandListState* state) override
+    {
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> bound;
+        state->mOrigContext1->OMGetRenderTargets(1, bound.GetAddressOf(), nullptr);
+        dx11_slot_test::require_batch(bound.Get() == expected,
+            "custom shader: render target matches the active calling scope");
+    }
+};
+
+class BindComputeOutputCommand final : public CommandListCommand {
+    ID3D11Resource* resource;
+    ID3D11UnorderedAccessView* view;
+public:
+    BindComputeOutputCommand(ID3D11Resource* resource, ID3D11UnorderedAccessView* view) : resource(resource), view(view) {}
+    void run(CommandListState* state) override
+    {
+        ResourceCopyTarget target;
+        target.type = ResourceCopyTargetType::UNORDERED_ACCESS_VIEW;
+        target.shader_type = L'c';
+        target.SetResource(state, resource, view, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+    }
+};
+
+static dx11_slot_test::ComPtr<ID3D11Buffer> CreateComputeTestBuffer(dx11_slot_test::BatchDevice& device,
+    UINT flags, const std::array<UINT, 4>& data, bool structured = false)
+{
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = sizeof(data);
+    desc.BindFlags = flags;
+    if (structured) {
+        desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        desc.StructureByteStride = sizeof(UINT);
+    }
+    D3D11_SUBRESOURCE_DATA initial{};
+    initial.pSysMem = data.data();
+    dx11_slot_test::ComPtr<ID3D11Buffer> buffer;
+    dx11_slot_test::require_batch(SUCCEEDED(device.native->CreateBuffer(&desc, &initial, &buffer)),
+        "compute ref: create native buffer");
+    return buffer;
+}
+
+static std::array<UINT, 4> ReadComputeTestBuffer(dx11_slot_test::BatchDevice& device, ID3D11Buffer* source)
+{
+    std::array<UINT, 4> result{};
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = sizeof(result);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    dx11_slot_test::ComPtr<ID3D11Buffer> staging;
+    dx11_slot_test::require_batch(SUCCEEDED(device.native->CreateBuffer(&desc, nullptr, &staging)),
+        "compute ref: allocate native readback buffer");
+    device.context->CopyResource(staging.Get(), source);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    dx11_slot_test::require_batch(SUCCEEDED(device.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)),
+        "compute ref: read GPU dispatch results");
+    std::memcpy(result.data(), mapped.pData, sizeof(result));
+    device.context->Unmap(staging.Get(), 0);
+    return result;
+}
+
+static void test_compute_references()
+{
+    using namespace dx11_slot_test;
+    BatchDevice device;
+    auto input_buffer = CreateComputeTestBuffer(device, D3D11_BIND_SHADER_RESOURCE, {5, 8, 11, 13});
+    auto first_output = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {});
+    auto second_output = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {});
+    D3D11_TEXTURE2D_DESC color_desc{};
+    color_desc.Width = color_desc.Height = 4;
+    color_desc.MipLevels = color_desc.ArraySize = color_desc.SampleDesc.Count = 1;
+    color_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    color_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    D3D11_TEXTURE2D_DESC depth_desc = color_desc;
+    depth_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ComPtr<ID3D11Texture2D> color, depth;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    ComPtr<ID3D11DepthStencilView> dsv;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&color_desc, nullptr, &color)) &&
+        SUCCEEDED(device.native->CreateTexture2D(&depth_desc, nullptr, &depth)) &&
+        SUCCEEDED(device.native->CreateRenderTargetView(color.Get(), nullptr, &rtv)) &&
+        SUCCEEDED(device.native->CreateDepthStencilView(depth.Get(), nullptr, &dsv)),
+        "compute ref: create the caller's color and depth targets");
+    auto* color_target = rtv.Get();
+    device.context->OMSetRenderTargets(1, &color_target, dsv.Get());
+    const auto check_om_targets = [&]() {
+        ComPtr<ID3D11RenderTargetView> color_view;
+        ComPtr<ID3D11DepthStencilView> depth_view;
+        device.context->OMGetRenderTargets(1, color_view.GetAddressOf(), depth_view.GetAddressOf());
+        require_batch(color_view.Get() == rtv.Get() && depth_view.Get() == dsv.Get(),
+            "compute ref: caller's RTV and DSV are preserved");
+    };
+    CustomResource input, output;
+    const auto set_resource = [&](CustomResource& target, ID3D11Buffer* buffer, DXGI_FORMAT format) {
+        if (target.resource) target.resource->Release();
+        target.resource = buffer;
+        buffer->AddRef();
+        target.device = device.native.Get();
+        target.is_null = false;
+        target.format = format;
+        target.buf_size = 4 * sizeof(UINT);
+        target.stride = sizeof(UINT);
+    };
+    set_resource(input, input_buffer.Get(), DXGI_FORMAT_R32_UINT);
+    set_resource(output, first_output.Get(), DXGI_FORMAT_R32_UINT);
+
+    const auto bind = [](ResourceCopyTargetType type, unsigned slot, CustomResource* source) {
+        auto operation = std::make_shared<ResourceCopyOperation>();
+        operation->dst.type = type;
+        operation->dst.shader_type = L'c';
+        operation->dst.slot = slot;
+        operation->options = ResourceCopyOptions::REFERENCE;
+        operation->src.type = source ? ResourceCopyTargetType::CUSTOM_RESOURCE : ResourceCopyTargetType::EMPTY;
+        if (source) operation->src.SetCustomResource(source);
+        return operation;
+    };
+    auto input_ref = bind(ResourceCopyTargetType::SHADER_RESOURCE, 0, &input);
+    auto output_ref = bind(ResourceCopyTargetType::UNORDERED_ACCESS_VIEW, 0, &output);
+    auto unbind_output = bind(ResourceCopyTargetType::UNORDERED_ACCESS_VIEW, 0, nullptr);
+
+    auto dispatch = std::make_shared<DrawCommand>();
+    dispatch->type = DrawCommandType::DISPATCH;
+    const std::wstring two = L"2", one = L"1", runtime_count = L"draw_number + 1", ini_namespace;
+    CommandListScope scope;
+    require_batch(dispatch->args[0].parse(&two, &ini_namespace, &scope) &&
+        dispatch->args[1].parse(&one, &ini_namespace, &scope) && dispatch->args[2].parse(&one, &ini_namespace, &scope) &&
+        dispatch->optimise(device.device), "compute ref: specialise a literal dispatch");
+
+    const char source[] = "Buffer<uint> src : register(t0); RWBuffer<uint> dst : register(u0);"
+        "[numthreads(1,1,1)] void main(uint3 id : SV_DispatchThreadID) { dst[id.x] += src[id.x]; }";
+    ComPtr<ID3DBlob> bytecode;
+    CustomShader shader;
+    require_batch(SUCCEEDED(D3DCompile(source, sizeof(source), nullptr, nullptr, nullptr,
+        "main", "cs_5_0", 0, 0, &bytecode, nullptr)) && SUCCEEDED(device.native->CreateComputeShader(
+            bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &shader.cs)),
+        "compute ref: create actual compute shader");
+    shader.cs_override = true;
+    shader.substantiated = true;
+    shader.command_list.commands = {input_ref, bind(ResourceCopyTargetType::SHADER_RESOURCE, 1, nullptr),
+        output_ref, dispatch, unbind_output};
+    merge_shader_resource_batches(&shader.command_list);
+    RunCustomShaderCommand run;
+    run.custom_shader = &shader;
+    ShaderResourceBatchStats stats;
+    device.state.slot_batch_stats = &stats;
+
+    run.run(&device.state);
+    require_batch(stats.compute_ref_hits == 0 && stats.literal_dispatches == 1 && stats.set_calls == 1,
+        "compute ref: cold path builds the views and batches the SRV slots");
+    run.run(&device.state);
+    require_batch(stats.compute_ref_hits == 2 && stats.literal_dispatches == 2 && stats.om_uav_probes == 2 &&
+        stats.om_saves == 0 && stats.om_restores == 0 &&
+        ReadComputeTestBuffer(device, first_output.Get()) == std::array<UINT, 4>{10, 16, 0, 0},
+        "compute ref: both dispatches run while disjoint outputs need only one OM query each");
+    check_om_targets();
+
+    set_resource(output, second_output.Get(), DXGI_FORMAT_R32_UINT);
+    require_batch(dispatch->args[0].parse(&runtime_count, &ini_namespace, &scope) && !dispatch->optimise(device.device),
+        "compute ref: runtime dispatch expressions stay dynamic");
+    run.run(&device.state);
+    require_batch(stats.compute_ref_hits == 3 && stats.literal_dispatches == 2 &&
+        ReadComputeTestBuffer(device, first_output.Get()) == std::array<UINT, 4>{10, 16, 0, 0} &&
+        ReadComputeTestBuffer(device, second_output.Get()) == std::array<UINT, 4>{5, 0, 0, 0},
+        "compute ref: replacement UAV bypasses the cache and dynamic dispatch uses its runtime count");
+
+    D3D11_UNORDERED_ACCESS_VIEW_DESC om_view_desc{};
+    om_view_desc.Format = DXGI_FORMAT_R32_UINT;
+    om_view_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+    om_view_desc.Buffer.NumElements = 4;
+    ComPtr<ID3D11UnorderedAccessView> disjoint_uav, aliased_uav;
+    require_batch(SUCCEEDED(device.native->CreateUnorderedAccessView(first_output.Get(), &om_view_desc, &disjoint_uav)) &&
+        SUCCEEDED(device.native->CreateUnorderedAccessView(second_output.Get(), &om_view_desc, &aliased_uav)),
+        "compute ref: create disjoint and aliased OM UAVs");
+    const auto set_om_uav = [&](UINT slot, ID3D11UnorderedAccessView* view) {
+        std::array<ID3D11UnorderedAccessView*, D3D11_1_UAV_SLOT_COUNT> views{};
+        views[slot - 1] = view;
+        device.context->OMSetRenderTargetsAndUnorderedAccessViews(1, &color_target, dsv.Get(), 1, slot, views.data(), nullptr);
+    };
+    const auto check_om_uav = [&](UINT slot, ID3D11UnorderedAccessView* expected) {
+        ComPtr<ID3D11UnorderedAccessView> actual;
+        device.context->OMGetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, slot, 1, actual.GetAddressOf());
+        require_batch(actual.Get() == expected, "compute ref: OM UAV has the expected native binding");
+    };
+
+    set_om_uav(1, disjoint_uav.Get());
+    run.run(&device.state);
+    require_batch(stats.om_uav_probes == 4 && stats.om_saves == 0 && stats.om_restores == 0,
+        "compute ref: a disjoint OM UAV avoids save and restore");
+    check_om_uav(1, disjoint_uav.Get());
+    check_om_targets();
+
+    set_om_uav(1, aliased_uav.Get());
+    run.run(&device.state);
+    require_batch(stats.om_uav_probes == 5 && stats.om_saves == 1 && stats.om_restores == 1,
+        "compute ref: an overlapping OM UAV takes the snapshot and restore path");
+    check_om_uav(1, aliased_uav.Get());
+    check_om_targets();
+
+    if (device.native->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1) {
+        constexpr UINT extended_slot = 12;
+        set_om_uav(extended_slot, disjoint_uav.Get());
+        check_om_uav(extended_slot, disjoint_uav.Get());
+        run.run(&device.state);
+        require_batch(stats.om_uav_probes == 6 && stats.om_saves == 2 && stats.om_restores == 2,
+            "compute ref: an extended OM UAV slot keeps the legacy restore behavior");
+    }
+    set_om_uav(1, nullptr);
+
+    const unsigned hits_before_null = stats.compute_ref_hits;
+    output.is_null = true;
+    output_ref->run(&device.state);
+    ComPtr<ID3D11UnorderedAccessView> bound;
+    device.context->CSGetUnorderedAccessViews(0, 1, bound.GetAddressOf());
+    require_batch(!bound && stats.compute_ref_hits == hits_before_null, "compute ref: a null source unbinds the slot");
+
+    auto dual_bind_buffer = CreateComputeTestBuffer(device, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, {});
+    set_resource(output, dual_bind_buffer.Get(), DXGI_FORMAT_R32_UINT);
+    output_ref->run(&device.state);
+    output_ref->run(&device.state);
+    const unsigned hits_before_target_switch = stats.compute_ref_hits;
+    unbind_output->run(&device.state);
+    output_ref->dst.type = ResourceCopyTargetType::SHADER_RESOURCE;
+    output_ref->run(&device.state);
+    ComPtr<ID3D11ShaderResourceView> switched_view;
+    device.context->CSGetShaderResources(0, 1, switched_view.GetAddressOf());
+    require_batch(switched_view && stats.compute_ref_hits == hits_before_target_switch,
+        "compute ref: changing the destination kind does not reuse a UAV as an SRV");
+    output_ref->dst.type = ResourceCopyTargetType::UNORDERED_ACCESS_VIEW;
+
+    auto counter_buffer = CreateComputeTestBuffer(device, D3D11_BIND_UNORDERED_ACCESS, {}, true);
+    auto count_buffer = CreateComputeTestBuffer(device, 0, {});
+    set_resource(output, counter_buffer.Get(), DXGI_FORMAT_UNKNOWN);
+    D3D11_UNORDERED_ACCESS_VIEW_DESC counter_desc{};
+    counter_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+    counter_desc.Buffer.NumElements = 4;
+    counter_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_COUNTER;
+    ComPtr<ID3D11UnorderedAccessView> counter_view;
+    require_batch(SUCCEEDED(device.native->CreateUnorderedAccessView(counter_buffer.Get(), &counter_desc, &counter_view)),
+        "compute ref: create a counter UAV");
+    output.view = counter_view.Get();
+    output.view->AddRef();
+    auto* raw_counter = counter_view.Get();
+    UINT initial_count = 7;
+    device.context->CSSetUnorderedAccessViews(0, 1, &raw_counter, &initial_count);
+    unbind_output->run(&device.state);
+    output_ref->run(&device.state);
+    output_ref->run(&device.state);
+    device.context->CopyStructureCount(count_buffer.Get(), 0, counter_view.Get());
+    require_batch(ReadComputeTestBuffer(device, count_buffer.Get())[0] == 7 &&
+        stats.compute_ref_hits == hits_before_target_switch,
+        "compute ref: an explicit counter view keeps its identity and hidden count across binds");
+    device.state.slot_batch_stats = nullptr;
+}
+
 class AutoTextureTestScope {
 public:
     std::vector<AutoCheckTextureSlot> saved_slots = G->auto_check_texture_slots;
     std::vector<uint8_t> saved_has_check = G->auto_check_texture_slot_has_check;
+    decltype(G->auto_check_graphics_targets) saved_graphics_targets;
+    decltype(G->auto_check_compute_targets) saved_compute_targets;
     uint64_t saved_slots_generation = G->auto_check_texture_slots_generation;
     uint64_t saved_coverage_generation = G->auto_check_texture_coverage_generation;
     uint64_t saved_full_pass_count = G->auto_check_texture_full_pass_count;
@@ -1530,6 +1811,8 @@ public:
         saved_vertex_map.swap(G->mTextureOverrideDrawVertexMap);
         G->auto_check_texture_slots.clear();
         G->auto_check_texture_slot_has_check.clear();
+        saved_graphics_targets.swap(G->auto_check_graphics_targets);
+        saved_compute_targets.swap(G->auto_check_compute_targets);
         Profiling::mode = Profiling::Mode::NONE;
         InvalidateTextureOverrideCandidates();
     }
@@ -1537,6 +1820,8 @@ public:
     {
         G->auto_check_texture_slots = saved_slots;
         G->auto_check_texture_slot_has_check = saved_has_check;
+        saved_graphics_targets.swap(G->auto_check_graphics_targets);
+        saved_compute_targets.swap(G->auto_check_compute_targets);
         G->auto_check_texture_slots_generation = saved_slots_generation;
         G->auto_check_texture_coverage_generation = saved_coverage_generation;
         G->auto_check_texture_full_pass_count = saved_full_pass_count;
@@ -1553,6 +1838,8 @@ public:
 void test_dx11_auto_texture_check_regression()
 {
     using namespace dx11_slot_test;
+
+    test_compute_references();
 
     // Configuration parsing, inclusive range expansion, aliases and rejection.
     std::vector<AutoCheckTextureSlot> slots;
@@ -1747,6 +2034,14 @@ void test_dx11_auto_texture_check_regression()
     require_batch(order == std::vector<int>({10, 20, 11, 21}) &&
         this_slots == std::vector<unsigned>({0}),
         "auto-tex: independent pass triggers pre/post TOs and this with zero check commands");
+    order.clear();
+    this_slots.clear();
+    G->mod_runtime_optimizations = false;
+    AutoCheckTextureOverridesIndependent(&fallback_state, false);
+    G->mod_runtime_optimizations = true;
+    require_batch(order == std::vector<int>({10, 20, 11, 21}) &&
+        this_slots == std::vector<unsigned>({0}),
+        "runtime optimizations: legacy target selection preserves auto-check order and this");
 
     // Old check + auto both present: the independent pass must skip slots that
     // already have a merged check; the merged command then runs each TO once.
@@ -1791,6 +2086,154 @@ void test_dx11_auto_texture_check_regression()
     AutoCheckTextureOverrides(&state, batch->targets);
     require_batch(order == std::vector<int>({10, 20, 11, 21}),
         "auto-tex: batch executes post lists only in the post phase, in target order");
+
+    // Exercise config-time batching with AutoCheck disabled and the real direct
+    // execution path. Matching the first slot can change the second binding.
+    {
+        auto saved_slots = std::move(G->auto_check_texture_slots);
+        auto saved_coverage = std::move(G->auto_check_texture_slot_has_check);
+        auto saved_graphics = std::move(G->auto_check_graphics_targets);
+        auto saved_compute = std::move(G->auto_check_compute_targets);
+        auto saved_registered = std::move(registered_command_lists);
+        CommandList direct;
+        direct.commands = {check0, check1};
+        registered_command_lists.push_back(&direct);
+        optimise_command_lists(device.device);
+        registered_command_lists = std::move(saved_registered);
+        G->auto_check_texture_slots = std::move(saved_slots);
+        G->auto_check_texture_slot_has_check = std::move(saved_coverage);
+        G->auto_check_graphics_targets = std::move(saved_graphics);
+        G->auto_check_compute_targets = std::move(saved_compute);
+        require_batch(direct.commands.size() == 1, "direct checks: adjacent static PS slots are merged");
+
+        order.clear();
+        this_slots.clear();
+        state.post = false;
+        direct.commands.front()->run(&state);
+        state.post = true;
+        direct.commands.front()->run(&state);
+        require_batch(order == std::vector<int>({10, 20, 11, 21}) && this_slots == std::vector<unsigned>({0}),
+            "direct checks: preserve pre/post order and this");
+
+        auto& pre = G->mTextureOverrideMap[hash0].front().command_list.commands;
+        pre.push_back(std::make_shared<AutoTextureBindCommand>(1, nullptr));
+        order.clear();
+        this_slots.clear();
+        state.post = false;
+        direct.commands.front()->run(&state);
+        require_batch(order == std::vector<int>({10}), "direct checks: do not use a prefetched view after a TO rebinds it");
+        pre.pop_back();
+        device.context->PSSetShaderResources(1, 1, &bound1);
+
+        ID3D11ShaderResourceView* empty[] = {nullptr, nullptr};
+        device.context->PSSetShaderResources(0, 2, empty);
+        ShaderResourceBatchStats stats;
+        state.slot_batch_stats = &stats;
+        order.clear();
+        direct.commands.front()->run(&state);
+        require_batch(order.empty() && stats.get_calls == 1, "direct checks: two empty slots use one binding query");
+        G->mod_runtime_optimizations = false;
+        direct.commands.front()->run(&state);
+        G->mod_runtime_optimizations = true;
+        require_batch(order.empty() && stats.get_calls == 1,
+            "runtime optimizations: disabling the batch runs the original checks individually");
+        state.slot_batch_stats = nullptr;
+        device.context->PSSetShaderResources(0, 1, &bound0);
+        device.context->PSSetShaderResources(1, 1, &bound1);
+    }
+
+    {
+        // Execute the real set_viewport copy through a nested CustomShader.
+        // The child must restore its parent's viewport and the caller's must
+        // also survive the outer call, which does not change it directly.
+        CustomShader outer, inner;
+        D3D11_VIEWPORT original{3.0f, 7.0f, 96.0f, 48.0f, 0.1f, 0.8f};
+        device.context->RSSetViewports(1, &original);
+        auto copy = std::make_shared<ResourceCopyOperation>();
+        copy->src = check0->target;
+        copy->dst = check0->target;
+        copy->dst.slot = 2;
+        copy->options = ResourceCopyOptions::REFERENCE;
+        copy->options |= ResourceCopyOptions::SET_VIEWPORT;
+        inner.command_list.commands = {copy, std::make_shared<CheckViewportWidthCommand>(8.0f)};
+        auto run_inner = std::make_shared<RunCustomShaderCommand>();
+        run_inner->custom_shader = &inner;
+        outer.command_list.commands = {run_inner, std::make_shared<CheckViewportWidthCommand>(96.0f)};
+        RunCustomShaderCommand run_outer;
+        run_outer.custom_shader = &outer;
+        run_outer.run(&state);
+        D3D11_VIEWPORT after{};
+        UINT count = 1;
+        device.context->RSGetViewports(&count, &after);
+        require_batch(count == 1 && !std::memcmp(&original, &after, sizeof(after)),
+            "custom shader: caller's full viewport is restored");
+
+        // The immutable merge source can be unchanged while associated dynamic
+        // blend parameters are different for each draw.
+        inner.blend_override = 2;
+        std::memset(&inner.blend_mask, 0xff, sizeof(inner.blend_mask));
+        FLOAT first[] = {0.0f, 0.25f, 0.5f, 0.75f};
+        FLOAT second[] = {1.0f, 0.75f, 0.5f, 0.25f};
+        inner.merge_blend_states(nullptr, first, 0x55, device.native.Get());
+        auto* blend_state = inner.blend_state;
+        inner.merge_blend_states(nullptr, second, 0xaa, device.native.Get());
+        require_batch(blend_state && inner.blend_state == blend_state && inner.blend_sample_mask == 0xaa &&
+            !std::memcmp(inner.blend_factor, second, sizeof(second)),
+            "custom shader: a repeated merge refreshes dynamic blend parameters");
+    }
+
+    {
+        auto output_desc = desc;
+        output_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
+        ComPtr<ID3D11Texture2D> output;
+        ComPtr<ID3D11RenderTargetView> rtv;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+        require_batch(SUCCEEDED(device.native->CreateTexture2D(&output_desc, nullptr, &output)) &&
+            SUCCEEDED(device.native->CreateRenderTargetView(output.Get(), nullptr, &rtv)) &&
+            SUCCEEDED(device.native->CreateUnorderedAccessView(output.Get(), nullptr, &uav)),
+            "custom shader: create real aliased OM/CS output views");
+        auto* raw = rtv.Get();
+        device.context->OMSetRenderTargets(1, &raw, nullptr);
+        const auto original_target = std::make_shared<CheckRenderTargetCommand>(raw);
+
+        CustomShader outer, inner;
+        RunCustomShaderCommand run_outer;
+        run_outer.custom_shader = &outer;
+        ShaderResourceBatchStats stats;
+        state.slot_batch_stats = &stats;
+        outer.command_list.commands = {std::make_shared<BindComputeOutputCommand>(nullptr, nullptr), original_target};
+        run_outer.run(&state);
+        require_batch(stats.om_saves == 0 && stats.om_restores == 0,
+            "custom shader: a null compute UAV bind needs no OM snapshot");
+        G->mod_runtime_optimizations = false;
+        run_outer.run(&state);
+        G->mod_runtime_optimizations = true;
+        require_batch(stats.om_saves == 1 && stats.om_restores == 1 && stats.om_uav_probes == 0,
+            "runtime optimizations: disabling lazy OM uses the original save and restore");
+        stats = {};
+
+        auto clear_output = std::make_shared<ResourceCopyOperation>();
+        clear_output->src.type = ResourceCopyTargetType::EMPTY;
+        clear_output->dst.type = ResourceCopyTargetType::RENDER_TARGET;
+        clear_output->dst.slot = 0;
+        inner.command_list.commands = {clear_output, std::make_shared<CheckRenderTargetCommand>(nullptr)};
+        auto run_inner = std::make_shared<RunCustomShaderCommand>();
+        run_inner->custom_shader = &inner;
+        outer.command_list.commands = {run_inner, original_target};
+        run_outer.run(&state);
+        require_batch(stats.om_saves == 1 && stats.om_restores == 1,
+            "custom shader: only the nested output writer saves and restores OM");
+
+        outer.command_list.commands = {std::make_shared<BindComputeOutputCommand>(output.Get(), uav.Get())};
+        run_outer.run(&state);
+        original_target->run(&state);
+        require_batch(stats.om_saves == 2 && stats.om_restores == 2,
+            "custom shader: retain OM restoration for a compute UAV alias");
+        state.slot_batch_stats = nullptr;
+        device.context->OMSetRenderTargets(0, nullptr, nullptr);
+        ID3D11UnorderedAccessView* empty = nullptr;
+        device.context->CSSetUnorderedAccessViews(0, 1, &empty, nullptr);
+    }
 
     // A.4: 2000 draws, 20 candidate resources, 1980 no-candidate resources.
     // The whole batch must be skipped for the no-candidate draws; the
@@ -2661,6 +3104,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-293", test_dx11_hunting_shader_selection_regression},
     {"P-01", test_dx11_ini_lookup_performance},
     {"P-AUTO-TEX", test_dx11_auto_texture_check_regression},
+    {"P-SHADER-STAGE", test_dx11_draw_dispatch_regression},
     {"P-TO-CANDIDATE", test_dx11_to_candidate_regression},
     {"P-TO-DRAW-GATE", test_dx11_draw_override_gate},
     {"P-TO-CANDIDATE-PERF", test_dx11_to_candidate_performance},

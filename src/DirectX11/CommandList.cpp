@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string_view>
 #include <typeinfo>
+#include <utility>
 #include <cmath>
 #include <wrl/client.h>
 #include "HackerDevice.h"
@@ -132,11 +133,10 @@ public:
     ~CommandListDepthScope() { --depth; }
 };
 
-static void _RunCommandList(CommandList *command_list, CommandListState *state, bool recursive=true)
+static void _RunResolvedCommandList(CommandList *command_list, CommandListState *state, bool recursive)
 {
 	CommandList::Commands::iterator i;
 	command_list_profiling_state profiling_state;
-	command_list = command_list->ResolveCommandList();
 
 	if (state->command_list_depth >= MAX_COMMAND_LIST_RECURSION) {
 		LogOverlayW(LOG_WARNING, L"Command list recursion limit exceeded! Circular reference?\n - [%ls]\n", command_list->ini_section.c_str());
@@ -167,6 +167,11 @@ static void _RunCommandList(CommandList *command_list, CommandListState *state, 
 		state->recursion--;
 		COMMAND_LIST_LOG(state, "}\n");
 	}
+}
+
+static void _RunCommandList(CommandList *command_list, CommandListState *state, bool recursive=true)
+{
+	_RunResolvedCommandList(command_list->ResolveCommandList(), state, recursive);
 }
 
 static bool MatchesInputLayoutOverride(const D3D11_INPUT_ELEMENT_DESC& element,
@@ -265,6 +270,7 @@ static void CommandListFlushState(CommandListState *state)
 	HRESULT hr;
 
 	if (state->update_params && state->mHackerDevice->mIniTexture) {
+		Profiling::Sample sample(Profiling::iniparams_upload_overhead, false);
 		hr = state->mOrigContext1->Map(state->mHackerDevice->mIniTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
 		if (FAILED(hr)) {
 			LogInfo("CommandListFlushState: Map failed\n");
@@ -285,6 +291,10 @@ static void RunCommandListComplete(HackerDevice *mHackerDevice,
 		ID3D11View *view,
 		bool post)
 {
+	CommandList* resolved = command_list->ResolveCommandList();
+	if (resolved->commands.empty() && G->ModRuntimeOptimizationsEnabled())
+		return;
+
 	CommandListState state;
 	state.mHackerDevice = mHackerDevice;
 	state.mHackerContext = mHackerContext;
@@ -296,7 +306,7 @@ static void RunCommandListComplete(HackerDevice *mHackerDevice,
 	state.view = view;
 	state.post = post;
 
-	_RunCommandList(command_list, &state);
+	_RunResolvedCommandList(resolved, &state, true);
 	// Commands collect changes during execution. BeforeDraw applies the deferred
 	// result after all native-draw pre command lists have completed.
 	if (!post && !state.input_layout_overrides.empty())
@@ -346,6 +356,10 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 		res->Release();
 }
 
+
+static void MergeDirectTextureChecks(CommandList* command_list);
+static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
+		ID3D11ShaderResourceView** views);
 
 void optimise_command_lists(HackerDevice *device)
 {
@@ -415,8 +429,14 @@ void optimise_command_lists(HackerDevice *device)
 		// nice if this sort of thing worked more generally.
 	} while (making_progress);
 
-	for (CommandList* command_list : registered_command_lists)
-		MergeAutoCheckTextureOverrides(command_list);
+	for (CommandList* command_list : registered_command_lists) {
+		if (G->auto_check_texture_slots.empty()) {
+			if (G->ModRuntimeOptimizationsEnabled())
+				MergeDirectTextureChecks(command_list);
+		} else {
+			MergeAutoCheckTextureOverrides(command_list);
+		}
+	}
 
 	BuildAutoCheckSlotCoverage();
 
@@ -1210,19 +1230,23 @@ static uint64_t AutoCheckTextureSlotKey(const ResourceCopyTarget& target)
 namespace {
 
 template<typename T, size_t Capacity>
-class DrawOverrideBindings {
-	const unsigned count;
+class RetainedBindings {
+	unsigned count;
 public:
 	T* values[Capacity];
-	explicit DrawOverrideBindings(unsigned count) : count(count)
+	explicit RetainedBindings(unsigned count) : count(count)
 	{
 		std::fill_n(values, count, nullptr);
 	}
-	~DrawOverrideBindings()
+	void clear()
 	{
 		for (unsigned i = 0; i < count; ++i)
 			if (values[i]) values[i]->Release();
+		count = 0;
 	}
+	~RetainedBindings() { clear(); }
+	RetainedBindings(const RetainedBindings&) = delete;
+	RetainedBindings& operator=(const RetainedBindings&) = delete;
 };
 
 // Caller holds G for the slot configuration and TextureOverride candidates.
@@ -1236,14 +1260,14 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 		return HasTextureOverrideCandidate(buffer.Get(), info, G->track_region_hashes);
 	}
 	if (first.type == ResourceCopyTargetType::VERTEX_BUFFER) {
-		DrawOverrideBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+		RetainedBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 		context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
 		for (unsigned i = 0; i < range.count; ++i)
 			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
 				return true;
 		return false;
 	}
-	DrawOverrideBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+	RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 	switch (first.shader_type) {
 	case L'p': context->PSGetShaderResources(first.slot, range.count, bindings.values); break;
 	case L'v': context->VSGetShaderResources(first.slot, range.count, bindings.values); break;
@@ -1480,6 +1504,107 @@ void FetchCurrentAutoCheckBinding(CommandListState* state, const ResourceCopyTar
 
 } // namespace
 
+namespace {
+
+class DirectTextureCheckBatch final : public CommandListCommand {
+public:
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> checks;
+
+	void run(CommandListState* state) override
+	{
+		if (!state || state->aborted)
+			return;
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+		if (G->analyse_frame || Profiling::mode == Profiling::Mode::TOP_COMMANDS || !G->ModRuntimeOptimizationsEnabled()) {
+			RunChecks(state, 0);
+			return;
+		}
+		if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+			return;
+
+		const auto count = static_cast<unsigned>(checks.size());
+		RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(count);
+		const auto& first = checks.front()->target;
+		GetShaderResourcesBatch(state, first.shader_type, first.slot, count, bindings.values);
+		for (unsigned i = 0; i < count; ++i) {
+			if (!bindings.values[i])
+				continue;
+			Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+			bindings.values[i]->GetResource(resource.GetAddressOf());
+			TextureOverrideMatches matches;
+			FindTextureOverridesForBoundResource(first.type, resource.Get(), state->mHackerContext,
+				0, 0, DXGI_FORMAT_UNKNOWN, state->call_info, &matches);
+			if (matches.empty())
+				continue;
+
+			// Release all prefetched bindings before executing commands that can change them.
+			resource.Reset();
+			bindings.clear();
+			{
+				CheckTextureStateScope restore(*state);
+				ResourceCopyTarget current = checks[i]->target;
+				state->this_target = &current;
+				for (auto* match : matches)
+					_RunCommandList(state->post ? &match->post_command_list : &match->command_list, state);
+			}
+			RunChecks(state, i + 1);
+			return;
+		}
+	}
+
+private:
+	void RunChecks(CommandListState* state, size_t first)
+	{
+		for (size_t i = first; i < checks.size() && !state->aborted; ++i) {
+			command_list_profiling_state sample;
+			profile_command_list_cmd_start(checks[i].get(), &sample);
+			checks[i]->run(state);
+			profile_command_list_cmd_end(checks[i].get(), state, &sample);
+		}
+	}
+};
+
+} // namespace
+
+static CheckTextureOverrideCommand* GetStaticTextureCheck(const std::shared_ptr<CommandListCommand>& command)
+{
+	auto* check = dynamic_cast<CheckTextureOverrideCommand*>(command.get());
+	if (!check || check->run_pre_and_post_together)
+		return nullptr;
+	const auto& target = check->target;
+	if (target.type != ResourceCopyTargetType::SHADER_RESOURCE ||
+		target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE ||
+		target.slot_expression || target.slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT)
+		return nullptr;
+	return check;
+}
+
+static void MergeDirectTextureChecks(CommandList* command_list)
+{
+	auto& commands = command_list->commands;
+	for (size_t index = 0; index + 1 < commands.size(); ++index) {
+		const auto* first = GetStaticTextureCheck(commands[index]);
+		if (!first)
+			continue;
+		size_t end = index + 1;
+		for (; end < commands.size(); ++end) {
+			const auto* next = GetStaticTextureCheck(commands[end]);
+			if (!next || next->target.shader_type != first->target.shader_type ||
+				next->target.slot != first->target.slot + end - index)
+				break;
+		}
+		if (end == index + 1)
+			continue;
+		auto batch = std::make_shared<DirectTextureCheckBatch>();
+		batch->ini_line = first->ini_line + L" (adjacent texture checks)";
+		batch->checks.reserve(end - index);
+		for (size_t i = index; i < end; ++i)
+			batch->checks.push_back(std::static_pointer_cast<CheckTextureOverrideCommand>(commands[i]));
+		commands[index] = std::move(batch);
+		commands.erase(commands.begin() + index + 1, commands.begin() + end);
+	}
+}
+
 bool AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::shared_ptr<CheckTextureOverrideCommand>>& targets)
 {
 	if (!state || targets.empty() || state->aborted)
@@ -1573,12 +1698,11 @@ bool AutoCheckTextureOverrides(CommandListState* state, const std::vector<std::s
 			for (auto* match : matches) {
 				if (state->aborted)
 					break;
-				_RunCommandList(state->post ? &match->post_command_list : &match->command_list, state);
+				auto* list = (state->post ? match->post_command_list : match->command_list).ResolveCommandList();
+				dirty |= !list->commands.empty();
+				_RunResolvedCommandList(list, state, true);
 			}
 			executed = true;
-			// The TO lists may have changed any later slot; re-query those
-			// immediately before their own check instead of using the snapshot.
-			dirty = true;
 		}
 	}
 	return executed;
@@ -1600,10 +1724,28 @@ void FinishAutoCheckCommandListState(CommandListState* state, const wchar_t* ini
 	CommandListFlushState(state);
 }
 
+static AutoCheckTextureDrawScope* GetAutoCheckDrawScope(CommandListState* state)
+{
+	if (!state->mHackerContext || state->mHackerContext->auto_check_texture_scopes.empty())
+		return nullptr;
+	auto& top = state->mHackerContext->auto_check_texture_scopes.back();
+	return top.call_info == state->call_info ? &top : nullptr;
+}
+
+static std::shared_ptr<CheckTextureOverrideCommand> MakeAutoCheckTarget(const AutoCheckTextureSlot& slot)
+{
+	auto check = std::make_shared<CheckTextureOverrideCommand>();
+	check->target.type = slot.type;
+	check->target.shader_type = slot.shader_type;
+	check->target.slot = slot.slot;
+	return check;
+}
+
 void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch)
 {
-	if (!state || G->auto_check_texture_slots.empty())
+	if (!state)
 		return;
+	CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	// Coverage is computed together with the config-time merge. If it is not
 	// available (e.g. command lists were not optimised), do not run: letting
 	// this pass run on slots that also have checks would double-run them.
@@ -1612,42 +1754,35 @@ void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch
 	if (G->auto_check_texture_coverage_generation != G->auto_check_texture_slots_generation)
 		return;
 
-	AutoCheckTextureDrawScope* scope = nullptr;
-	if (state->mHackerContext && !state->mHackerContext->auto_check_texture_scopes.empty()) {
-		AutoCheckTextureDrawScope& top = state->mHackerContext->auto_check_texture_scopes.back();
-		if (top.call_info == state->call_info)
-			scope = &top;
+	const auto& plan = dispatch ? G->auto_check_compute_targets : G->auto_check_graphics_targets;
+	auto* scope = GetAutoCheckDrawScope(state);
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> remaining;
+	const bool use_plan = G->ModRuntimeOptimizationsEnabled();
+	const bool exclude_checked = scope && !scope->checked_slots.empty();
+	if (!use_plan) {
+		for (size_t i = 0; i < G->auto_check_texture_slots.size(); ++i) {
+			const auto& slot = G->auto_check_texture_slots[i];
+			if (G->auto_check_texture_slot_has_check[i] ||
+				(dispatch && (slot.type != ResourceCopyTargetType::SHADER_RESOURCE || slot.shader_type != L'c')))
+				continue;
+			auto target = MakeAutoCheckTarget(slot);
+			if (!exclude_checked || !scope->checked_slots.count(AutoCheckTextureSlotKey(target->target)))
+				remaining.push_back(std::move(target));
+		}
+	} else if (exclude_checked) {
+		for (const auto& target : plan)
+			if (!scope->checked_slots.count(AutoCheckTextureSlotKey(target->target)))
+				remaining.push_back(target);
 	}
-
-	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> targets;
-	std::vector<uint64_t> processed_keys;
-	for (size_t i = 0; i < G->auto_check_texture_slots.size(); ++i) {
-		if (G->auto_check_texture_slot_has_check[i])
-			continue;
-		const AutoCheckTextureSlot& slot = G->auto_check_texture_slots[i];
-		if (dispatch && (slot.type != ResourceCopyTargetType::SHADER_RESOURCE || slot.shader_type != L'c'))
-			continue;
-		auto check = std::make_shared<CheckTextureOverrideCommand>();
-		check->target.type = slot.type;
-		check->target.shader_type = slot.shader_type;
-		check->target.slot = slot.slot;
-		const uint64_t key = AutoCheckTextureSlotKey(check->target);
-		// A dynamic/unregistered checktextureoverride may already have run for
-		// this draw before the pass. In that case let the original path own the
-		// slot instead of running it twice.
-		if (scope && scope->checked_slots.count(key))
-			continue;
-		targets.push_back(check);
-		processed_keys.push_back(key);
-	}
+	const auto& targets = !use_plan || exclude_checked ? remaining : plan;
 	if (targets.empty())
 		return;
 
 	// Claim these slots before executing any TO list. A nested
 	// checktextureoverride inside a TO list must not run them again.
 	if (scope)
-		for (uint64_t key : processed_keys)
-			scope->auto_pass_slots.insert(key);
+		for (const auto& target : targets)
+			scope->auto_pass_slots.insert(AutoCheckTextureSlotKey(target->target));
 
 	// Replacement semantics: no original check command exists for these slots,
 	// so run both phases at this call site (pre list first, then post list).
@@ -1658,9 +1793,12 @@ void AutoCheckTextureOverridesIndependent(CommandListState* state, bool dispatch
 	state->post = false;
 	// If A.4 skipped the whole batch (no candidate at all), release the claims
 	// so a later dynamic/unregistered check for the same slot still runs.
-	if (scope && !ran_pre && !ran_post)
-		for (uint64_t key : processed_keys)
-			scope->auto_pass_slots.erase(key);
+	if (!ran_pre && !ran_post) {
+		// Nested draws can grow the scope vector while the lists are running.
+		if (auto* active_scope = GetAutoCheckDrawScope(state))
+			for (const auto& target : targets)
+				active_scope->auto_pass_slots.erase(AutoCheckTextureSlotKey(target->target));
+	}
 	FinishAutoCheckCommandListState(state, L"auto_check_texture_slots");
 }
 
@@ -1716,6 +1854,8 @@ static bool AutoCheckTargetMatchesSlot(const ResourceCopyTarget& target, const A
 
 void BuildAutoCheckSlotCoverage()
 {
+	G->auto_check_graphics_targets.clear();
+	G->auto_check_compute_targets.clear();
 	G->auto_check_texture_slot_has_check.assign(G->auto_check_texture_slots.size(), 0);
 	G->auto_check_texture_coverage_generation = G->auto_check_texture_slots_generation;
 	if (G->auto_check_texture_slots.empty())
@@ -1742,6 +1882,12 @@ void BuildAutoCheckSlotCoverage()
 				break;
 		}
 		G->auto_check_texture_slot_has_check[i] = found ? 1 : 0;
+		if (!found) {
+			auto check = MakeAutoCheckTarget(slot);
+			G->auto_check_graphics_targets.push_back(check);
+			if (slot.type == ResourceCopyTargetType::SHADER_RESOURCE && slot.shader_type == L'c')
+				G->auto_check_compute_targets.push_back(std::move(check));
+		}
 	}
 }
 
@@ -2012,6 +2158,48 @@ void DrawCommand::eval_args(int nargs, INT result[5], CommandListState *state)
 		result[i] = (INT)args[i].evaluate(state);
 }
 
+bool DrawCommand::optimise(HackerDevice*)
+{
+	has_literal_args = false;
+	if (type != DrawCommandType::DISPATCH && type != DrawCommandType::DRAW_INDEXED)
+		return false;
+	for (size_t i = 0; i < literal_args.size(); ++i) {
+		const auto* operand = dynamic_cast<CommandListOperand*>(args[i].evaluatable.get());
+		bool negate = false;
+		if (!operand && type == DrawCommandType::DRAW_INDEXED) {
+			// The parser represents a leading sign as a unary operator.
+			const auto* sign = dynamic_cast<CommandListOperator*>(args[i].evaluatable.get());
+			if (sign && !sign->lhs && (sign->token == L"-" || sign->token == L"+")) {
+				operand = dynamic_cast<CommandListOperand*>(sign->rhs.get());
+				negate = sign->token == L"-";
+			}
+		}
+		if (!operand || operand->type != ParamOverrideType::VALUE)
+			return false;
+		const double value = negate ? -operand->val : operand->val;
+		if (!std::isfinite(value) || value < INT_MIN || value > INT_MAX)
+			return false;
+		literal_args[i] = static_cast<INT>(value);
+	}
+	has_literal_args = true;
+	return true;
+}
+
+void DrawCommand::eval_three_args(INT result[5], CommandListState* state)
+{
+	if (!has_literal_args || !G->ModRuntimeOptimizationsEnabled()) {
+		eval_args(3, result, state);
+		return;
+	}
+	std::copy(literal_args.begin(), literal_args.end(), result);
+	if (auto* stats = state->slot_batch_stats) {
+		if (type == DrawCommandType::DISPATCH)
+			++stats->literal_dispatches;
+		else
+			++stats->literal_indexed_draws;
+	}
+}
+
 void DrawCommand::run(CommandListState *state)
 {
 	HackerContext *mHackerContext = state->mHackerContext;
@@ -2056,7 +2244,7 @@ void DrawCommand::run(CommandListState *state)
 			}
 			break;
 		case DrawCommandType::DRAW_INDEXED:
-			eval_args(3, eargs, state);
+			eval_three_args(eargs, state);
 			COMMAND_LIST_LOG(state, "[%S] DrawIndexed(%u, %u, %i)\n", ini_section.c_str(), eargs[0], eargs[1], (INT)eargs[2]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, false);
@@ -2080,7 +2268,7 @@ void DrawCommand::run(CommandListState *state)
 			}
 			break;
 		case DrawCommandType::DISPATCH:
-			eval_args(3, eargs, state);
+			eval_three_args(eargs, state);
 			COMMAND_LIST_LOG(state, "[%S] Dispatch(%u, %u, %u)\n", ini_section.c_str(), eargs[0], eargs[1], eargs[2]);
 			{
 			    InvalidatePipelineResourceDataCaches(mOrigContext1, true);
@@ -2309,7 +2497,10 @@ void StoreCommand::run(CommandListState* state)
 	box.bottom = box.back = 1;
 	state->mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, resource.Get(), 0, &box);
 	D3D11_MAPPED_SUBRESOURCE mapped = {};
-	if (FAILED(state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+	Profiling::Sample sample(Profiling::readback_map_overhead, false);
+	const HRESULT result = state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+	sample.Finish(false);
+	if (FAILED(result)) {
         SetOutputValue(state, 0.0f);
         return;
     }
@@ -2491,7 +2682,7 @@ static DXGI_FORMAT GetTextureFormat(ID3D11Resource* resource, D3D11_RESOURCE_DIM
 }
 
 static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource* resource, ID3D11View* view,
-    UINT* stride, UINT* offset, UINT* buf_size, DXGI_FORMAT* format)
+    UINT* stride, UINT* offset, UINT* buf_size, DXGI_FORMAT* format, bool* buffer_cannot_bind_om_target = nullptr)
 {
     D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     resource->GetType(&dimension);
@@ -2499,6 +2690,12 @@ static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource* resou
     if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
         D3D11_BUFFER_DESC desc = {};
         static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+        if (buffer_cannot_bind_om_target) {
+            constexpr UINT aliasable_flags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
+                D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_TILED;
+            *buffer_cannot_bind_om_target = !(desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
+                !(desc.MiscFlags & aliasable_flags);
+        }
         physical_bytes = desc.ByteWidth;
         // Preserve explicit caller metadata (including CB bound length) while
         // retaining the existing whole-buffer fallback when no size was supplied.
@@ -2597,12 +2794,15 @@ void UpscalingFlipBBCommand::run(CommandListState *state)
 	G->bb_is_upscaling_bb = false;
 }
 
+static void BeforeCustomShaderOutputWrite(CommandListState* state);
+
 void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 {
 	COMMAND_LIST_LOG(state, "[%S] special = draw_3dmigoto_overlay\n", ini_section.c_str());
 
 	HackerSwapChain *mHackerSwapChain = state->mHackerDevice->GetHackerSwapChain();
 	if (mHackerSwapChain && mHackerSwapChain->mOverlay) {
+		BeforeCustomShaderOutputWrite(state);
 		mHackerSwapChain->mOverlay->DrawOverlay();
 		G->suppress_overlay = true;
 	}
@@ -2995,16 +3195,23 @@ static void memcpy_masked_merge(void *dest, void *src, void *mask, size_t n)
 
 void CustomShader::merge_blend_states(ID3D11BlendState *src_state, FLOAT src_blend_factor[4], UINT src_sample_mask, ID3D11Device *mOrigDevice1)
 {
-	D3D11_BLEND_DESC src_desc;
-	int i;
-
 	if (blend_override != 2)
+		return;
+
+	for (int i = 0; i < 4; i++) {
+		if (blend_factor_merge_mask[i])
+			blend_factor[i] = src_blend_factor[i];
+	}
+	blend_sample_mask = blend_sample_mask & ~blend_sample_mask_merge_mask | src_sample_mask & blend_sample_mask_merge_mask;
+	const bool reuse_state = G->ModRuntimeOptimizationsEnabled();
+	if (reuse_state && blend_state && merged_blend_source.matches(mOrigDevice1, src_state))
 		return;
 
 	if (blend_state)
 		blend_state->Release();
 	blend_state = NULL;
 
+	D3D11_BLEND_DESC src_desc{};
 	if (src_state) {
 		src_state->GetDesc(&src_desc);
 	} else {
@@ -3013,7 +3220,7 @@ void CustomShader::merge_blend_states(ID3D11BlendState *src_state, FLOAT src_ble
 		// work as expected:
 		src_desc.AlphaToCoverageEnable = FALSE;
 		src_desc.IndependentBlendEnable = FALSE;
-		for (i = 0; i < 8; i++) {
+		for (int i = 0; i < 8; i++) {
 			src_desc.RenderTarget[i].BlendEnable = FALSE;
 			src_desc.RenderTarget[i].SrcBlend = D3D11_BLEND_ONE;
 			src_desc.RenderTarget[i].DestBlend = D3D11_BLEND_ZERO;
@@ -3026,27 +3233,25 @@ void CustomShader::merge_blend_states(ID3D11BlendState *src_state, FLOAT src_ble
 	}
 
 	memcpy_masked_merge(&blend_desc, &src_desc, &blend_mask, sizeof(D3D11_BLEND_DESC));
-
-	for (i = 0; i < 4; i++) {
-		if (blend_factor_merge_mask[i])
-			blend_factor[i] = src_blend_factor[i];
-	}
-	blend_sample_mask = blend_sample_mask & ~blend_sample_mask_merge_mask | src_sample_mask & blend_sample_mask_merge_mask;
-
 	mOrigDevice1->CreateBlendState(&blend_desc, &blend_state);
+	merged_blend_source.remember(mOrigDevice1, src_state, reuse_state ? blend_state : nullptr);
 }
 
 void CustomShader::merge_depth_stencil_states(ID3D11DepthStencilState *src_state, UINT src_stencil_ref, ID3D11Device *mOrigDevice1)
 {
-	D3D11_DEPTH_STENCIL_DESC src_desc;
-
 	if (depth_stencil_override != 2)
+		return;
+
+	stencil_ref = stencil_ref & ~stencil_ref_mask | src_stencil_ref & stencil_ref_mask;
+	const bool reuse_state = G->ModRuntimeOptimizationsEnabled();
+	if (reuse_state && depth_stencil_state && merged_depth_source.matches(mOrigDevice1, src_state))
 		return;
 
 	if (depth_stencil_state)
 		depth_stencil_state->Release();
 	depth_stencil_state = NULL;
 
+	D3D11_DEPTH_STENCIL_DESC src_desc{};
 	if (src_state) {
 		src_state->GetDesc(&src_desc);
 	} else {
@@ -3070,22 +3275,24 @@ void CustomShader::merge_depth_stencil_states(ID3D11DepthStencilState *src_state
 	}
 
 	memcpy_masked_merge(&depth_stencil_desc, &src_desc, &depth_stencil_mask, sizeof(D3D11_DEPTH_STENCIL_DESC));
-	stencil_ref = stencil_ref & ~stencil_ref_mask | src_stencil_ref & stencil_ref_mask;
-
 	mOrigDevice1->CreateDepthStencilState(&depth_stencil_desc, &depth_stencil_state);
+	merged_depth_source.remember(mOrigDevice1, src_state, reuse_state ? depth_stencil_state : nullptr);
 }
 
 void CustomShader::merge_rasterizer_states(ID3D11RasterizerState *src_state, ID3D11Device *mOrigDevice1)
 {
-	D3D11_RASTERIZER_DESC src_desc;
-
 	if (rs_override != 2)
+		return;
+
+	const bool reuse_state = G->ModRuntimeOptimizationsEnabled();
+	if (reuse_state && rs_state && merged_rs_source.matches(mOrigDevice1, src_state))
 		return;
 
 	if (rs_state)
 		rs_state->Release();
 	rs_state = NULL;
 
+	D3D11_RASTERIZER_DESC src_desc{};
 	if (src_state) {
 		src_state->GetDesc(&src_desc);
 	} else {
@@ -3107,6 +3314,7 @@ void CustomShader::merge_rasterizer_states(ID3D11RasterizerState *src_state, ID3
 	memcpy_masked_merge(&rs_desc, &src_desc, &rs_mask, sizeof(D3D11_RASTERIZER_DESC));
 
 	mOrigDevice1->CreateRasterizerState(&rs_desc, &rs_state);
+	merged_rs_source.remember(mOrigDevice1, src_state, reuse_state ? rs_state : nullptr);
 }
 
 struct saved_shader_inst
@@ -3129,6 +3337,118 @@ struct saved_shader_inst
 	}
 };
 
+class CustomShaderStateScope {
+	CommandListState* state;
+	CustomShaderStateScope* previous;
+	UINT viewport_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+	D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+	struct OMState outputs;
+	bool viewport_saved = false;
+	bool outputs_saved = false;
+
+	static bool MayOverlapOmUav(ID3D11UnorderedAccessView* compute_view, ID3D11UnorderedAccessView* const* views, UINT count)
+	{
+		// The legacy restore only covers the first eight slots. Preserve its
+		// behavior whenever the runtime reports an extended OM binding.
+		for (UINT slot = D3D11_PS_CS_UAV_REGISTER_COUNT; slot < count; ++slot)
+			if (views[slot])
+				return true;
+		Microsoft::WRL::ComPtr<ID3D11Resource> compute_resource;
+		Microsoft::WRL::ComPtr<IUnknown> source_identity;
+		for (UINT slot = 0; slot < D3D11_PS_CS_UAV_REGISTER_COUNT; ++slot) {
+			if (!views[slot])
+				continue;
+			if (!compute_resource) {
+				compute_view->GetResource(compute_resource.GetAddressOf());
+				if (!compute_resource)
+					return true;
+			}
+			Microsoft::WRL::ComPtr<ID3D11Resource> bound_resource;
+			views[slot]->GetResource(bound_resource.GetAddressOf());
+			if (!bound_resource || bound_resource.Get() == compute_resource.Get())
+				return true;
+			if (!source_identity && (FAILED(compute_resource.As(&source_identity)) || !source_identity))
+				return true;
+			Microsoft::WRL::ComPtr<IUnknown> bound_identity;
+			if (FAILED(bound_resource.As(&bound_identity)) || !bound_identity || bound_identity.Get() == source_identity.Get())
+				return true;
+		}
+		return false;
+	}
+
+public:
+	explicit CustomShaderStateScope(CommandListState* state)
+		: state(state), previous(state->custom_shader_scope)
+	{
+		state->custom_shader_scope = this;
+	}
+
+	void SaveViewports()
+	{
+		if (viewport_saved)
+			return;
+		state->mOrigContext1->RSGetViewports(&viewport_count, viewports);
+		viewport_saved = true;
+	}
+
+	void SaveOutputs(ID3D11UnorderedAccessView** captured_uavs = nullptr)
+	{
+		if (outputs_saved)
+			return;
+		save_om_state(state->mOrigContext1, &outputs, captured_uavs);
+		outputs_saved = true;
+		if (state->slot_batch_stats)
+			++state->slot_batch_stats->om_saves;
+	}
+
+	void SaveOutputsBeforeComputeUav(ID3D11UnorderedAccessView* view, UINT om_uav_slots)
+	{
+		if (outputs_saved)
+			return;
+		if (!om_uav_slots || !state->mHackerContext ||
+			state->mHackerContext->GetPassThroughOrigContext1() != state->mOrigContext1 ||
+			state->mOrigContext1->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) {
+			SaveOutputs();
+			return;
+		}
+		// The UAV's backing buffer cannot be bound as an RTV or DSV.
+		// Only the OM UAV bindings can alias it. Read them live; nothing
+		// about the context's bindings is cached between commands.
+		RetainedBindings<ID3D11UnorderedAccessView, D3D11_1_UAV_SLOT_COUNT> views(om_uav_slots);
+		state->mOrigContext1->OMGetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, om_uav_slots, views.values);
+		if (state->slot_batch_stats)
+			++state->slot_batch_stats->om_uav_probes;
+		if (MayOverlapOmUav(view, views.values, om_uav_slots))
+			SaveOutputs(views.values);
+	}
+
+	void Restore()
+	{
+		if (viewport_saved) {
+			state->mOrigContext1->RSSetViewports(viewport_count, viewports);
+			viewport_saved = false;
+		}
+		if (outputs_saved) {
+			restore_om_state(state->mOrigContext1, &outputs);
+			outputs_saved = false;
+			if (state->slot_batch_stats)
+				++state->slot_batch_stats->om_restores;
+		}
+	}
+
+	~CustomShaderStateScope()
+	{
+		Restore();
+		state->custom_shader_scope = previous;
+	}
+};
+
+static void BeforeCustomShaderOutputWrite(CommandListState* state)
+{
+	if (state->custom_shader_scope)
+		state->custom_shader_scope->SaveOutputs();
+}
+
 void RunCustomShaderCommand::run(CommandListState *state)
 {
 	ID3D11Device *mOrigDevice1 = state->mOrigDevice1;
@@ -3142,13 +3462,10 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	ID3D11BlendState *saved_blend = NULL;
 	ID3D11DepthStencilState *saved_depth_stencil = NULL;
 	ID3D11RasterizerState *saved_rs = NULL;
-	UINT num_viewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-	D3D11_VIEWPORT saved_viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
 	FLOAT saved_blend_factor[4];
 	UINT saved_sample_mask;
 	UINT saved_stencil_ref;
 	bool saved_post;
-	struct OMState om_state;
 	UINT i;
 	D3D11_PRIMITIVE_TOPOLOGY saved_topology;
 	UINT num_sampler = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
@@ -3230,12 +3547,9 @@ void RunCustomShaderCommand::run(CommandListState *state)
 		mOrigContext1->PSGetSamplers(0, num_sampler, saved_sampler_states);
 		mOrigContext1->PSSetSamplers(0, 1, &custom_shader->sampler_state); //just one slot for the moment TODO: allow more via *.ini file
 	}
-	// We save off the viewports unconditionally for now. We could
-	// potentially skip this by flagging if a command list may alter them,
-	// but that probably wouldn't buy us anything:
-	mOrigContext1->RSGetViewports(&num_viewports, saved_viewports);
-	// Likewise, save off all RTVs, UAVs and DSVs unconditionally:
-	save_om_state(state->mOrigContext1, &om_state);
+	CustomShaderStateScope shader_scope(state);
+	if (G->analyse_frame || !G->ModRuntimeOptimizationsEnabled())
+		shader_scope.SaveOutputs();
 
 	// Run the command lists. This should generally include a draw or
 	// dispatch call, or call out to another command list which does.
@@ -3272,8 +3586,7 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	if (custom_shader->sampler_override)
 		mOrigContext1->PSSetSamplers(0, num_sampler, saved_sampler_states);
 
-	mOrigContext1->RSSetViewports(num_viewports, saved_viewports);
-	restore_om_state(mOrigContext1, &om_state);
+	shader_scope.Restore();
 
 	if (saved_vs)
 		saved_vs->Release();
@@ -6596,6 +6909,7 @@ void CustomResource::Substantiate(ID3D11Device *mOrigDevice1,
 	// won't overwrite it:
 	if (resource || view)
 		return;
+	InvalidateAliasMetadata();
 
 	Profiling::resources_created++;
 
@@ -7018,6 +7332,7 @@ void CustomResource::OverrideOutOfBandInfo(DXGI_FORMAT *format, UINT *stride)
 
 void CustomResource::ResetRuntimeState()
 {
+	InvalidateAliasMetadata();
 	handle_info.reset();
 	stride = offset = buf_size = source_stride = 0;
     buf_size_is_length = false;
@@ -10026,10 +10341,11 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 			}
 			custom_resource->expire(mOrigDevice1, mOrigContext1);
 
-			if (dst)
-				bind_flags = dst->BindFlags(state, &misc_flags);
-
-			custom_resource->Substantiate(mOrigDevice1, bind_flags, misc_flags);
+			if (!custom_resource->substantiated) {
+				if (dst)
+					bind_flags = dst->BindFlags(state, &misc_flags);
+				custom_resource->Substantiate(mOrigDevice1, bind_flags, misc_flags);
+			}
 
 			if (stride)
 				*stride = custom_resource->stride;
@@ -10153,7 +10469,7 @@ void ResourceCopyTarget::SetResource(
 		UINT stride,
 		UINT offset,
 		DXGI_FORMAT format,
-		UINT buf_size, bool size_is_length, const ResourceOriginalMetadata* original_metadata)
+		UINT buf_size, bool size_is_length, const ResourceOriginalMetadata* original_metadata, UINT compute_om_uav_slots)
 {
 	ID3D11DeviceContext1 *mOrigContext1 = state->mOrigContext1;
 	ID3D11Buffer *buf = NULL;
@@ -10287,6 +10603,7 @@ void ResourceCopyTarget::SetResource(
         UINT so_offsets[D3D11_SO_STREAM_COUNT];
         std::fill_n(so_offsets, D3D11_SO_STREAM_COUNT, UINT(-1));
         so_offsets[slot] = offset;
+		BeforeCustomShaderOutputWrite(state);
         mOrigContext1->SOSetTargets(D3D11_SO_STREAM_COUNT, so_bufs, so_offsets);
 
 		release_slots(so_bufs, D3D11_SO_STREAM_COUNT, slot);
@@ -10294,6 +10611,7 @@ void ResourceCopyTarget::SetResource(
 		break;
 
 	case ResourceCopyTargetType::RENDER_TARGET:
+		BeforeCustomShaderOutputWrite(state);
 		mOrigContext1->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, &depth_view);
 
 		if (render_view[slot])
@@ -10309,6 +10627,7 @@ void ResourceCopyTarget::SetResource(
 		break;
 
 	case ResourceCopyTargetType::DEPTH_STENCIL_TARGET:
+		BeforeCustomShaderOutputWrite(state);
 		mOrigContext1->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, &depth_view);
 
 		if (depth_view)
@@ -10327,11 +10646,14 @@ void ResourceCopyTarget::SetResource(
 		case L'p':
 			// XXX: Not clear if this will unbind other UAVs or not?
 			// TODO: Allow pUAVInitialCounts to optionally be set
+			BeforeCustomShaderOutputWrite(state);
 			mOrigContext1->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL,
 				NULL, NULL, slot, 1, &unordered_view, &uav_counter);
 			return;
 		case L'c':
 			// TODO: Allow pUAVInitialCounts to optionally be set
+			if (unordered_view && state->custom_shader_scope)
+				state->custom_shader_scope->SaveOutputsBeforeComputeUav(unordered_view, compute_om_uav_slots);
 			mOrigContext1->CSSetUnorderedAccessViews(slot, 1, &unordered_view, &uav_counter);
 			return;
 		default:
@@ -10374,6 +10696,7 @@ void ResourceCopyTarget::SetResource(
 		// AddRef() and Release(), and definitely don't Release()
 		// before AddRef()
 		if (custom_resource->view != view) {
+			custom_resource->InvalidateAliasMetadata();
 			if (custom_resource->view)
 				custom_resource->view->Release();
 			custom_resource->view = view;
@@ -10382,6 +10705,7 @@ void ResourceCopyTarget::SetResource(
 		}
 
 		if (custom_resource->resource != res) {
+			custom_resource->InvalidateAliasMetadata();
 			if (custom_resource->resource)
 				custom_resource->resource->Release();
 			custom_resource->resource = res;
@@ -12256,22 +12580,31 @@ static void SetViewportFromResource(CommandListState *state, ID3D11Resource *res
 			viewport.Height = (float)tex3d_desc.Height;
 	}
 
+	if (state->custom_shader_scope)
+		state->custom_shader_scope->SaveViewports();
 	state->mOrigContext1->RSSetViewports(1, &viewport);
 }
 
 ResourceCopyOperation::ResourceCopyOperation() :
 	options(ResourceCopyOptions::INVALID),
-	cached_resource(NULL),
-	cached_view(NULL)
+	cached_resource(NULL)
 {}
 
 ResourceCopyOperation::~ResourceCopyOperation()
 {
 	if (cached_resource)
 		cached_resource->Release();
+	ClearCachedView();
+}
 
+void ResourceCopyOperation::ClearCachedView()
+{
 	if (cached_view)
 		cached_view->Release();
+	cached_view = nullptr;
+	shader_ref_resource = nullptr;
+	shader_ref_device = nullptr;
+	compute_ref_om_uav_slots = 0;
 }
 
 ResourceStagingOperation::ResourceStagingOperation()
@@ -12611,25 +12944,65 @@ static ResourceCopyTargetType EquivTarget(ResourceCopyTargetType type)
 	return type;
 }
 
+bool CustomResource::ResolveAliasMetadata(ID3D11Resource* source, ID3D11View* source_view, UINT* stride, UINT* offset,
+    UINT* size, DXGI_FORMAT* format, bool* view_matches, ShaderResourceBatchStats* stats)
+{
+    if (resource != source || view != source_view || alias_metadata_in_use.test_and_set(std::memory_order_acquire))
+        return false;
+    const auto release_cache = [](std::atomic_flag* in_use) { in_use->clear(std::memory_order_release); };
+    const std::unique_ptr<std::atomic_flag, decltype(release_cache)> guard(&alias_metadata_in_use, release_cache);
+    if (alias_metadata_invalidated.load(std::memory_order_acquire) &&
+        alias_metadata_invalidated.exchange(false, std::memory_order_acquire))
+        alias_metadata.resource = nullptr;
+
+    const auto input = std::make_tuple(*stride, *offset, *size, *format);
+    const bool same_binding = alias_metadata.resource == source && alias_metadata.view == source_view;
+    if (same_binding && alias_metadata.input == input) {
+        std::tie(*stride, *offset, *size, *format) = alias_metadata.normalized;
+        if (stats)
+            ++stats->alias_metadata_hits;
+    } else {
+        FillInMissingInfo(ResourceCopyTargetType::CUSTOM_RESOURCE, source, source_view, stride, offset, size, format);
+        alias_metadata.input = input;
+        alias_metadata.normalized = std::make_tuple(*stride, *offset, *size, *format);
+        alias_metadata.resource = source;
+        alias_metadata.view = source_view;
+        if (!same_binding)
+            alias_metadata.view_checked = false;
+    }
+
+    if (view_matches) {
+        if (!alias_metadata.view_checked) {
+            alias_metadata.view_matches = source_view && ViewMatchesResource(source_view, source);
+            alias_metadata.view_checked = true;
+        }
+        *view_matches = alias_metadata.view_matches;
+    }
+    return true;
+}
+
 static void PublishResourceBinding(ResourceCopyTarget& destination, CommandListState* state,
     ID3D11Resource* resource, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT size,
-    DeferredBinding* deferred, bool size_is_length = false, ResourceOriginalMetadata original_metadata = {})
+    DeferredBinding* deferred, bool size_is_length = false, ResourceOriginalMetadata original_metadata = {},
+    UINT compute_om_uav_slots = 0)
 {
     if (!deferred) {
-        destination.SetResource(state, resource, view, stride, offset, format, size, size_is_length, &original_metadata);
+        destination.SetResource(state, resource, view, stride, offset, format, size, size_is_length, &original_metadata,
+            compute_om_uav_slots);
         return;
     }
-    // The sink belongs to this invocation, never to a shared operation. ComPtr
-    // assignments take ownership of extra references, including no-view-cache.
-    deferred->resource = resource;
+    // A native SRV batch consumes only the view, which retains its resource.
     deferred->view = view;
+    deferred->assigned = true;
+    if (deferred->view_only)
+        return;
+    deferred->resource = resource;
     deferred->stride = stride;
     deferred->offset = offset;
     deferred->format = format;
     deferred->size = size;
     deferred->size_is_length = size_is_length;
     deferred->original_metadata = original_metadata;
-    deferred->assigned = true;
 }
 
 // A source view is borrowed only when its resource and concrete destination
@@ -12661,6 +13034,32 @@ void ResourceCopyOperation::CopyResourceToResource(
 	CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination, DeferredBinding* deferred, bool preserve_source_view, bool source_size_is_length, UINT source_original_stride, ResourceOriginalMetadata original_metadata
 )
 {
+	const bool plain_shader_ref = (dst.type == ResourceCopyTargetType::SHADER_RESOURCE ||
+		(dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && dst.shader_type == L'c')) &&
+		!destination && (!deferred || deferred->view_only) &&
+		options == ResourceCopyOptions::REFERENCE && src.type == ResourceCopyTargetType::CUSTOM_RESOURCE &&
+		src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE && !src.custom_resource_pool &&
+		!src.forbid_view_cache && dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE &&
+		!dst.slot_expression && !src_view && !preserve_source_view && !source_size_is_length && !G->analyse_frame &&
+		G->ModRuntimeOptimizationsEnabled();
+	const auto shader_ref_fields = std::make_tuple(stride, offset, format, buf_src_size);
+	// The shader slot consumes the validated view directly. The native bind
+	// still runs so other commands or the game can change the slot in between.
+	if (plain_shader_ref && src_resource && cached_view && shader_ref_resource == src_resource &&
+		shader_ref_device == state->mOrigDevice1 && shader_ref_type == dst.type && shader_ref_input == shader_ref_fields) {
+		++Profiling::resource_reference_copies;
+		if (auto* stats = state->slot_batch_stats) {
+			if (dst.shader_type == L'c')
+				++stats->compute_ref_hits;
+			else
+				++stats->graphics_ref_hits;
+		}
+		PublishResourceBinding(dst, state, src_resource, cached_view, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred,
+			false, {}, compute_ref_om_uav_slots);
+		return;
+	}
+	shader_ref_resource = nullptr;
+
 	ResourceCopyTarget* effective_destination = destination ? destination : &this->dst;
     if (effective_destination->type == ResourceCopyTargetType::THIS_RESOURCE && state->this_target) {
         if (state->this_target == effective_destination ||
@@ -12680,14 +13079,17 @@ void ResourceCopyOperation::CopyResourceToResource(
     // Cache selection, descriptor recreation and publication must address the
     // same element. Freeze only this invocation, after source preflight.
     ResourceCopyTarget resolved_destination;
+    CustomResource* dst_custom_resource = nullptr;
     if (effective_destination->type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
-        CustomResource* selected = effective_destination->GetCustomResource(state, true);
-        if (!selected) return;
-        resolved_destination = *effective_destination;
-        resolved_destination.SetCustomResource(selected);
-        resolved_destination.custom_resource_pool = nullptr;
-        resolved_destination.pool_dynamic_index_expression.reset();
-        effective_destination = &resolved_destination;
+        dst_custom_resource = effective_destination->GetCustomResource(state, true);
+        if (!dst_custom_resource) return;
+        if (effective_destination->custom_resource_pool) {
+            resolved_destination = *effective_destination;
+            resolved_destination.SetCustomResource(dst_custom_resource);
+            resolved_destination.custom_resource_pool = nullptr;
+            resolved_destination.pool_dynamic_index_expression.reset();
+            effective_destination = &resolved_destination;
+        }
     }
     ResourceCopyTarget& dst = *effective_destination;
     if (!src_resource) {
@@ -12695,21 +13097,17 @@ void ResourceCopyOperation::CopyResourceToResource(
         PublishResourceBinding(dst, state, nullptr, nullptr, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred);
         return;
     }
-	CustomResource* dst_custom_resource = nullptr;
-
 	ID3D11Resource** pp_cached_resource = &cached_resource;
 	ID3D11Device** pp_cached_device = NULL;
 	ResourcePool* p_resource_pool = &resource_pool;
 	ID3D11View** pp_cached_view = &cached_view;
 
-	if (dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+	if (dst_custom_resource) {
 		// If we're copying to a custom resource, use the resource &
 		// view in the CustomResource directly as the cache instead of
 		// the cache in the ResourceCopyOperation. This will reduce the
 		// number of extra resources we have floating around if copying
 		// something to a single custom resource from multiple shaders.
-		dst_custom_resource = dst.GetCustomResource(state, true);
-
 		pp_cached_resource = &dst_custom_resource->resource;
 		pp_cached_device = &dst_custom_resource->device;
 		p_resource_pool = &dst_custom_resource->resource_pool;
@@ -12738,7 +13136,25 @@ void ResourceCopyOperation::CopyResourceToResource(
         cached_source_size_is_length != source_size_is_length ||
         (dst_custom_resource && (preserve_source_view || (!(options & ResourceCopyOptions::COPY_MASK) && src_view)) &&
             (dst_custom_resource->override_format != static_cast<DXGI_FORMAT>(-1) || dst_custom_resource->override_stride != -1));
-	FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format);
+	bool buffer_cannot_bind_om_target = false;
+    bool alias_metadata_resolved = false;
+    bool alias_view_matches = false;
+    if (dst_custom_resource && options == ResourceCopyOptions::REFERENCE && !selected_window &&
+        src.type == ResourceCopyTargetType::CUSTOM_RESOURCE && !src.custom_resource_pool && !preserve_source_view &&
+        src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE && !G->analyse_frame &&
+        G->ModRuntimeOptimizationsEnabled()) {
+        if (auto* source = src.GetCustomResource(nullptr)) {
+            const bool check_view = src_view && dst_custom_resource->override_format == static_cast<DXGI_FORMAT>(-1) &&
+                dst_custom_resource->override_stride == -1;
+            alias_metadata_resolved = source->ResolveAliasMetadata(src_resource, src_view, &stride, &offset,
+                &buf_src_size, &format, check_view ? &alias_view_matches : nullptr, state->slot_batch_stats);
+        }
+    }
+    if (!alias_metadata_resolved) {
+        FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format,
+            plain_shader_ref && dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && !deferred ?
+            &buffer_cannot_bind_om_target : nullptr);
+    }
 	if (selected_window) {
 		offset = selected_offset;
 		buf_src_size = selected_size;
@@ -12763,6 +13179,8 @@ void ResourceCopyOperation::CopyResourceToResource(
 
 
     if (options & ResourceCopyOptions::COPY_MASK) {
+        if (dst_custom_resource)
+            dst_custom_resource->InvalidateAliasMetadata();
         ResourceCopyTarget copy_source = src;
         if (source_size_is_length) copy_source.evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE_REGION;
         if (!RecreateCompatibleResource(&ini_line, &copy_source, &dst, src_resource, pp_cached_resource,
@@ -12773,6 +13191,8 @@ void ResourceCopyOperation::CopyResourceToResource(
     }
     // Commit metadata and cached-view changes only after acquisition succeeds.
     if (discard_cached_view && *pp_cached_view) {
+        if (dst_custom_resource)
+            dst_custom_resource->InvalidateAliasMetadata();
         (*pp_cached_view)->Release();
         *pp_cached_view = nullptr;
     }
@@ -12818,11 +13238,17 @@ void ResourceCopyOperation::CopyResourceToResource(
         const bool accepts_source_view = !dst_custom_resource ||
             (dst_custom_resource->override_format == static_cast<DXGI_FORMAT>(-1) &&
              dst_custom_resource->override_stride == -1);
-        if (!selected_window && accepts_source_view)
-            dst_view = UsableRefView(&dst, state, src_view, dst_resource);
+        if (!selected_window && accepts_source_view) {
+            if (alias_metadata_resolved)
+                dst_view = alias_view_matches ? src_view : nullptr;
+            else
+                dst_view = UsableRefView(&dst, state, src_view, dst_resource);
+        }
         if (!dst_view && *pp_cached_view) {
             dst_view = UsableRefView(&dst, state, *pp_cached_view, dst_resource);
             if (!dst_view) {
+                if (dst_custom_resource)
+                    dst_custom_resource->InvalidateAliasMetadata();
                 (*pp_cached_view)->Release(); *pp_cached_view = nullptr;
             }
         }
@@ -12859,7 +13285,21 @@ void ResourceCopyOperation::CopyResourceToResource(
 		buf_dst_size = 0;
 	}
 
-	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred, selected_window, original_metadata);
+	UINT compute_om_uav_slots = 0;
+	if (plain_shader_ref && dst_view && dst_view == cached_view) {
+		if (buffer_cannot_bind_om_target) {
+			const auto level = state->mOrigDevice1->GetFeatureLevel();
+			if (level >= D3D_FEATURE_LEVEL_11_0)
+				compute_om_uav_slots = level >= D3D_FEATURE_LEVEL_11_1 ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
+		}
+		shader_ref_resource = dst_resource;
+		shader_ref_device = state->mOrigDevice1;
+		shader_ref_type = dst.type;
+		shader_ref_input = shader_ref_fields;
+		compute_ref_om_uav_slots = compute_om_uav_slots;
+	}
+	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred,
+		selected_window, original_metadata, compute_om_uav_slots);
 
 	if (options & ResourceCopyOptions::SET_VIEWPORT)
 		SetViewportFromResource(state, dst_resource);
@@ -12868,6 +13308,8 @@ out_release:
 
 	if ((options & ResourceCopyOptions::NO_VIEW_CACHE || src.forbid_view_cache) && *pp_cached_view)
 	{
+		if (dst_custom_resource)
+			dst_custom_resource->InvalidateAliasMetadata();
 		(*pp_cached_view)->Release();
 		*pp_cached_view = NULL;
 	}
@@ -12998,7 +13440,10 @@ static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT
     case L'c': state->mOrigContext1->CSGetShaderResources(first, count, views); break;
     default: return;
     }
-    if (state->slot_batch_stats) ++state->slot_batch_stats->get_calls;
+    if (auto* stats = state->slot_batch_stats) {
+        ++stats->get_calls;
+        stats->srv_slots_read += count;
+    }
 }
 
 static void SetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
@@ -13031,37 +13476,35 @@ void ShaderResourceBindBatch::run(CommandListState* state)
         return;
     }
     using View = Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>;
-    std::array<View, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views;
-    std::array<bool, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> assigned = {};
-    ID3D11ShaderResourceView* raw[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+    RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views(count);
+    bool assigned[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+    std::fill_n(assigned, count, false);
     bool published = false;
     auto flush = [&]() {
         if (!published) return;
         // Eligible operations cannot observe intermediate SRV bindings. Fetch
         // original views only if a gap/failed/conditional write needs them.
-        const auto span_end = assigned.begin() + count;
-        const bool prefetch_current_bindings = std::find(assigned.begin(), span_end, false) != span_end;
-        if (prefetch_current_bindings) {
-            GetShaderResourcesBatch(state, shader_type, first_slot, count, raw);
-            for (UINT i = 0; i < count; ++i) {
-                View original;
-                original.Attach(raw[i]);
-                if (!assigned[i]) views[i] = std::move(original);
-            }
+        if (std::find(assigned, assigned + count, false) != assigned + count) {
+            RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> original(count);
+            GetShaderResourcesBatch(state, shader_type, first_slot, count, original.values);
+            for (UINT i = 0; i < count; ++i)
+                if (!assigned[i])
+                    views.values[i] = std::exchange(original.values[i], nullptr);
         }
-        for (UINT i = 0; i < count; ++i) raw[i] = views[i].Get();
-        SetShaderResourcesBatch(state, shader_type, first_slot, count, raw);
+        SetShaderResourcesBatch(state, shader_type, first_slot, count, views.values);
     };
     try {
         for (const auto& operation : operations) {
             DeferredBinding binding;
+            binding.view_only = G->ModRuntimeOptimizationsEnabled();
             operation->RunWithBinding(state, &binding);
             if (!binding.assigned) continue;
             const UINT index = operation->BatchTarget(BatchDirection::Bind).slot - first_slot;
             if (index >= count) continue;
             View view;
             if (binding.view && FAILED(binding.view.As(&view))) continue;
-            views[index] = std::move(view);
+            if (views.values[index]) views.values[index]->Release();
+            views.values[index] = view.Detach();
             assigned[index] = true;
             published = true;
         }
@@ -13081,16 +13524,15 @@ void ShaderResourceFetchBatch::run(CommandListState* state)
         for (const auto& operation : operations) operation->run(state);
         return;
     }
-    std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views;
-    ID3D11ShaderResourceView* raw[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
-    GetShaderResourcesBatch(state, shader_type, first_slot, count, raw);
-    for (UINT i = 0; i < count; ++i) views[i].Attach(raw[i]);
+    RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> views(count);
+    GetShaderResourcesBatch(state, shader_type, first_slot, count, views.values);
     for (const auto& operation : operations) {
         const UINT index = operation->BatchTarget(BatchDirection::Fetch).slot - first_slot;
         if (index >= count) continue;
         Microsoft::WRL::ComPtr<ID3D11Resource> resource;
-        if (views[index]) views[index]->GetResource(resource.GetAddressOf());
-        operation->RunWithSource(state, resource.Get(), views[index].Get());
+        auto* view = views.values[index];
+        if (view) view->GetResource(resource.GetAddressOf());
+        operation->RunWithSource(state, resource.Get(), view);
     }
 }
 
@@ -13420,7 +13862,6 @@ static void SetSlotRange(CommandListState *state, ResourceCopyTarget &target, un
 	UINT cb_first[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
 	UINT cb_counts[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
 	bool cb_regions = false;
-	std::fill_n(uav_counters, D3D11_1_UAV_SLOT_COUNT, (UINT)-1);
 
 	if (target.type == ResourceCopyTargetType::CONSTANT_BUFFER) {
 		// Same split as SetResource(): a region of a buffer needs
@@ -13449,11 +13890,16 @@ static void SetSlotRange(CommandListState *state, ResourceCopyTarget &target, un
 		break;
 	case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
         if (state->slot_batch_stats) ++state->slot_batch_stats->uav_set_calls;
-		if (target.shader_type == L'c')
+		std::fill_n(uav_counters, count, UINT(-1));
+		if (target.shader_type == L'c') {
+			if (state->custom_shader_scope && std::any_of(views, views + count, [](auto* view) { return view != nullptr; }))
+				BeforeCustomShaderOutputWrite(state);
 			context->CSSetUnorderedAccessViews(first, count, (ID3D11UnorderedAccessView *const *)views, uav_counters);
-		else
+		} else {
+			BeforeCustomShaderOutputWrite(state);
 			context->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL,
 				first, count, (ID3D11UnorderedAccessView *const *)views, uav_counters);
+		}
 		break;
 	case ResourceCopyTargetType::CONSTANT_BUFFER:
 		if (cb_regions) {
@@ -13555,6 +14001,15 @@ struct SlotRangeBindings {
             buffers[i].Attach(raw_buffers[i]);
         }
     }
+    void FetchSrvTail(CommandListState* state, wchar_t shader_type, unsigned first, unsigned offset, unsigned count)
+    {
+        const unsigned remaining = count - offset;
+        ID3D11ShaderResourceView* original[capacity];
+        std::fill_n(original, remaining, nullptr);
+        GetShaderResourcesBatch(state, shader_type, first + offset, remaining, original);
+        for (unsigned i = 0; i < remaining; ++i)
+            views[offset + i].Attach(original[i]);
+    }
     void Publish(CommandListState* state, ResourceCopyTarget& target, unsigned first, unsigned count)
     {
         ID3D11View* raw_views[capacity] = {};
@@ -13643,9 +14098,8 @@ bool SlotRangeCopyOperation::BindElement(CommandListState* state, SlotRangeBindi
     operation.src = source; operation.dst = target;
     const auto key = SlotRangeCopyCacheEntry::ViewKey(resource.Get(), stride, offset, format, size,
         static_cast<unsigned>(options), source.forbid_view_cache, size_is_length);
-    if (key != entry.view_key && operation.cached_view) {
-        operation.cached_view->Release(); operation.cached_view = nullptr;
-    }
+    if (key != entry.view_key)
+        operation.ClearCachedView();
     entry.view_key = key;
     DeferredBinding result;
     // A captured matching source view preserves its exact mip/array/buffer window.
@@ -13746,26 +14200,45 @@ void SlotRangeCopyOperation::run(CommandListState* state)
     SlotRangeCacheLease cache(cache_mutex, available_cache);
     cache.entries.resize((std::max)(cache.entries.size(), static_cast<size_t>(count)));
     SlotRangeBindings bindings;
-    bindings.Fetch(state, slots, first, count);
-    CustomResource* single = bind && other.type == ResourceCopyTargetType::CUSTOM_RESOURCE ? other.GetCustomResource(state) : nullptr;
     const int plain_ref = static_cast<int>(ResourceCopyOptions::REFERENCE) |
         static_cast<int>(ResourceCopyOptions::UNLESS_NULL) | static_cast<int>(ResourceCopyOptions::NO_VIEW_CACHE);
     const bool fast_ref = !(static_cast<int>(options) & ~plain_ref);
+    // Plain SRV references do not change pipeline bindings until Publish.
+    bool needs_previous_srvs = bind && slots.type == ResourceCopyTargetType::SHADER_RESOURCE &&
+        fast_ref && (options & ResourceCopyOptions::REFERENCE) && !other.pool_dynamic_index_expression &&
+        G->ModRuntimeOptimizationsEnabled();
+    if (!needs_previous_srvs)
+        bindings.Fetch(state, slots, first, count);
+    const auto preserve_tail = [&](unsigned offset) {
+        if (needs_previous_srvs) {
+            bindings.FetchSrvTail(state, slots.shader_type, first, offset, count);
+            needs_previous_srvs = false;
+        }
+    };
+    CustomResource* single = bind && other.type == ResourceCopyTargetType::CUSTOM_RESOURCE ? other.GetCustomResource(state) : nullptr;
     bool published = false;
+    unsigned i = 0;
     try {
-        for (unsigned i = 0; i < count; ++i) {
+        for (; i < count; ++i) {
             auto target = RangeSlotTarget(slots, first + i);
             auto& entry = cache.entries[i];
             const unsigned physical = pool ? static_cast<unsigned>((static_cast<uint64_t>(pool_first) + i) % pool_size) : 0;
             if (bind) {
                 auto* source = pool ? PoolRangeElement(other.custom_resource_pool, pool_first, i, false) : single;
-                published = BindElement(state, bindings, entry, i, std::move(target), source, fast_ref) || published;
+                if (BindElement(state, bindings, entry, i, std::move(target), source, fast_ref))
+                    published = true;
+                else
+                    preserve_tail(i);
             } else {
                 FetchElement(state, bindings, entry, i, std::move(target), physical, fast_ref);
             }
         }
     } catch (...) {
-        if (bind && published) bindings.Publish(state, slots, first, count);
+        if (bind && published) {
+            // The unprocessed suffix is needed when publishing a successful prefix.
+            preserve_tail(i);
+            bindings.Publish(state, slots, first, count);
+        }
         throw;
     }
     if (bind) bindings.Publish(state, slots, first, count);

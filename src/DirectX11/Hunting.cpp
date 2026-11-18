@@ -1305,6 +1305,7 @@ static void AnalyseFrameStop(HackerDevice *device, void *private_data)
 
 static void AnalysePerf(HackerDevice *device, void *private_data)
 {
+	CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	Profiling::mode = (Profiling::Mode)(static_cast<int>(Profiling::mode.load(std::memory_order_relaxed)) + 1);
 
 	if (Profiling::mode == Profiling::Mode::CTO_WARNING && (!G->implicit_post_checktextureoverride_used || Profiling::cto_warning.empty()))
@@ -1319,13 +1320,18 @@ static void AnalysePerf(HackerDevice *device, void *private_data)
 
 static void FreezePerf(HackerDevice *device, void *private_data)
 {
-	if (Profiling::mode == Profiling::Mode::NONE)
-		return;
+	std::wstring report;
+	{
+		CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+		if (Profiling::mode == Profiling::Mode::NONE)
+			return;
 
-	Profiling::freeze = !Profiling::freeze;
-
-	if (Profiling::freeze)
-		LogInfoW(L"%s", Profiling::text.c_str());
+		Profiling::freeze = !Profiling::freeze;
+		if (Profiling::freeze)
+			report = Profiling::text;
+	}
+	if (!report.empty())
+		LogInfoW(L"%s", report.c_str());
 }
 
 static void DisableDeferred(HackerDevice *device, void *private_data)

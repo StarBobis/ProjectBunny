@@ -103,7 +103,7 @@ private:
 	void DrawShaderInfoLine(char *type, UINT64 selectedShader, float *y, bool shader);
 	void DrawShaderInfoLines(float *y);
 	void DrawNotices(float *y);
-	void DrawProfiling(float *y);
+	void DrawProfiling(float y, std::wstring& visible, bool wrap);
 	void DrawRectangle(float x, float y, float w, float h, float r, float g, float b, float opacity);
 	void DrawOutlinedString(OverlayTextFont *font, wchar_t const *text, DirectX::XMFLOAT2 const &position, DirectX::FXMVECTOR color);
 

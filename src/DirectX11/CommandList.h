@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <tuple>
 #include <unordered_map>
@@ -52,10 +53,19 @@ struct InputLayoutElementOverride {
 
 struct ShaderResourceBatchStats {
 	unsigned get_calls = 0;
+	unsigned srv_slots_read = 0;
 	unsigned set_calls = 0;
 	unsigned cb_get_calls = 0, cb_set_calls = 0, cb1_set_calls = 0;
 	unsigned uav_get_calls = 0, uav_set_calls = 0;
+	unsigned om_saves = 0, om_restores = 0;
+	unsigned om_uav_probes = 0;
+	unsigned compute_ref_hits = 0, literal_dispatches = 0;
+	unsigned literal_indexed_draws = 0;
+	unsigned graphics_ref_hits = 0;
+	unsigned alias_metadata_hits = 0;
 };
+
+class CustomShaderStateScope;
 
 class CommandListState {
 public:
@@ -103,6 +113,7 @@ public:
 	LARGE_INTEGER profiling_time_recursive;
 	// Optional per-invocation diagnostics, updated next to actual API calls.
 	ShaderResourceBatchStats* slot_batch_stats = nullptr;
+	CustomShaderStateScope* custom_shader_scope = nullptr;
 
 	// Anything that needs to be updated at the end of the command list:
 	bool update_params;
@@ -337,6 +348,26 @@ static EnumName_t<const wchar_t *, D3DCompileFlags> D3DCompileFlagNames[] = {
 
 class CustomShader
 {
+	template<class State>
+	struct MergedStateSource {
+		Microsoft::WRL::ComPtr<ID3D11Device> device;
+		Microsoft::WRL::ComPtr<State> source;
+
+		bool matches(ID3D11Device* candidate_device, State* candidate_source) const
+		{
+			return device.Get() == candidate_device && source.Get() == candidate_source;
+		}
+
+		void remember(ID3D11Device* used_device, State* used_source, State* result)
+		{
+			device = result ? used_device : nullptr;
+			source = result ? used_source : nullptr;
+		}
+	};
+	MergedStateSource<ID3D11BlendState> merged_blend_source;
+	MergedStateSource<ID3D11DepthStencilState> merged_depth_source;
+	MergedStateSource<ID3D11RasterizerState> merged_rs_source;
+
 public:
 	bool vs_override, hs_override, ds_override, gs_override, ps_override, cs_override;
 	D3DCompileFlags compile_flags;
@@ -570,6 +601,17 @@ struct ResourceOriginalMetadata {
 
 class CustomResource
 {
+    struct AliasMetadata {
+        using Fields = std::tuple<UINT, UINT, UINT, DXGI_FORMAT>;
+        // The owning CustomResource keeps both objects alive.
+        ID3D11Resource* resource = nullptr;
+        ID3D11View* view = nullptr;
+        Fields input, normalized;
+        bool view_checked = false;
+        bool view_matches = false;
+    } alias_metadata;
+    std::atomic_flag alias_metadata_in_use = ATOMIC_FLAG_INIT;
+    std::atomic<bool> alias_metadata_invalidated{false};
 public:
 	wstring name;
 
@@ -644,6 +686,9 @@ public:
 	void OverrideTexDesc(D3D11_TEXTURE2D_DESC *desc);
 	void OverrideTexDesc(D3D11_TEXTURE3D_DESC *desc);
 	void OverrideOutOfBandInfo(DXGI_FORMAT *format, UINT *stride);
+	void InvalidateAliasMetadata() { alias_metadata_invalidated.store(true, std::memory_order_release); }
+	bool ResolveAliasMetadata(ID3D11Resource* source, ID3D11View* source_view, UINT* stride, UINT* offset,
+		UINT* size, DXGI_FORMAT* format, bool* view_matches, ShaderResourceBatchStats* stats);
 	void ResetRuntimeState();
 	void CopyMetadataFrom(const CustomResource& src);
 	void expire(ID3D11Device *mOrigDevice1, ID3D11DeviceContext *mOrigContext1);
@@ -1098,7 +1143,8 @@ public:
 			UINT stride,
 			UINT offset,
 			DXGI_FORMAT format,
-			UINT buf_size, bool size_is_length=false, const ResourceOriginalMetadata* original_metadata=nullptr);
+			UINT buf_size, bool size_is_length=false, const ResourceOriginalMetadata* original_metadata=nullptr,
+			UINT compute_om_uav_slots=0);
 
 	// Caller holds G across lookup and consumption of the matches.
 	void FindTextureOverrides(
@@ -1220,6 +1266,7 @@ struct DeferredBinding {
 	UINT stride = 0, offset = 0, size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	bool assigned = false;
+	bool view_only = false;
     bool size_is_length = false;
     ResourceOriginalMetadata original_metadata;
 };
@@ -1227,6 +1274,13 @@ struct DeferredBinding {
 enum class BatchDirection { Bind, Fetch };
 
 class ResourceCopyOperation : public CommandListCommand {
+	// The operation's owned cached_view keeps the referenced resource alive.
+	ID3D11Resource* shader_ref_resource = nullptr;
+	ID3D11Device1* shader_ref_device = nullptr;
+	ResourceCopyTargetType shader_ref_type = ResourceCopyTargetType::EMPTY;
+	std::tuple<UINT, UINT, DXGI_FORMAT, UINT> shader_ref_input{};
+	UINT compute_ref_om_uav_slots = 0;
+	ID3D11View* cached_view = nullptr;
 public:
 	ResourceCopyTarget src;
 	ResourceCopyTarget dst;
@@ -1234,11 +1288,11 @@ public:
 
 	ID3D11Resource *cached_resource;
 	ResourcePool resource_pool;
-	ID3D11View *cached_view;
     bool cached_source_size_is_length = false;
 
 	ResourceCopyOperation();
 	~ResourceCopyOperation();
+	void ClearCachedView();
 
 	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr, bool preserve_source_view = false, bool source_size_is_length = false, UINT source_original_stride = 0, ResourceOriginalMetadata original_metadata = {});
 	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool source_size_is_length = false, UINT source_original_stride = 0, ResourceOriginalMetadata original_metadata = {});
@@ -1810,6 +1864,9 @@ enum class DrawCommandType {
 };
 
 class DrawCommand : public CommandListCommand {
+	std::array<INT, 3> literal_args{};
+	bool has_literal_args = false;
+	void eval_three_args(INT result[5], CommandListState* state);
 public:
 	wstring ini_section;
 	DrawCommandType type;
@@ -1826,6 +1883,7 @@ public:
 		ID3D11Buffer *pBufferForArgs,
 		UINT AlignedByteOffsetForArgs));
 	inline void eval_args(int nargs, INT result[5], CommandListState *state);
+	bool optimise(HackerDevice* device) override;
 	void run(CommandListState*) override;
 };
 

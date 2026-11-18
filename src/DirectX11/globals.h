@@ -613,6 +613,10 @@ struct Globals
 	int mSelectedHullShaderPos;
 
 	ShaderOverrideMap mShaderOverrideMap;
+	std::atomic<bool> mod_runtime_optimizations{true};
+	bool ModRuntimeOptimizationsEnabled() const { return mod_runtime_optimizations.load(std::memory_order_relaxed); }
+	std::atomic<uint64_t> shader_override_generation{1};
+	std::atomic<uint64_t> shader_regex_generation{1};
 	TextureOverrideMap mTextureOverrideMap;
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
 
@@ -620,6 +624,8 @@ struct Globals
 	// per-draw texture override check and keeps the legacy checktextureoverride
 	// path byte-for-byte unchanged.
 	std::vector<AutoCheckTextureSlot> auto_check_texture_slots;
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> auto_check_graphics_targets;
+	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> auto_check_compute_targets;
 	// Read only when the draw predicate is first evaluated. G protects reload.
 	std::vector<DrawOverrideSlotRange> draw_override_slot_ranges;
 

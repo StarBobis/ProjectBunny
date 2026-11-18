@@ -102,6 +102,89 @@ void ClearBackbuffer(BatchDevice& device, IDXGISwapChain* chain)
     const float clear[] = { 0.025f, 0.035f, 0.06f, 1 };
     device.context->ClearRenderTargetView(view.Get(), clear);
 }
+
+void TestHuntingTextSize(BatchDevice& device, HWND window, const std::filesystem::path& directory)
+{
+    constexpr unsigned previewWidth = 2560;
+    constexpr unsigned previewHeight = 1440;
+    auto chain = CreateTestChain(device, window, DXGI_FORMAT_R8G8B8A8_UNORM);
+    require_batch(SUCCEEDED(chain->ResizeBuffers(1, previewWidth, previewHeight, DXGI_FORMAT_R8G8B8A8_UNORM, 0)),
+        "overlay: create a 1440p hunting backbuffer");
+    Overlay overlay(device.device, device.wrapper.get(), chain.Get());
+    const auto oldHunting = G->hunting;
+    const auto oldMarking = G->marking_mode;
+    const auto oldPosition = G->mSelectedVertexShaderPos;
+    const auto shader = G->mVisitedVertexShaders.insert(0xabcd1234);
+    G->mSelectedVertexShaderPos = 0;
+    G->hunting = HUNTING_MODE_ENABLED;
+    G->marking_mode = MarkingMode::SKIP;
+    ClearBackbuffer(device, chain.Get());
+    overlay.DrawOverlay();
+    G->hunting = oldHunting;
+    G->marking_mode = oldMarking;
+    G->mSelectedVertexShaderPos = oldPosition;
+    if (shader.second) G->mVisitedVertexShaders.erase(shader.first);
+
+    OverlayTextFont expected(device.native.Get(), L"Consolas", 40.0f, true);
+    expected.SetViewport(previewWidth, previewHeight);
+    require_batch(DirectX::XMVectorGetY(overlay.mFont->MeasureString(L"VS:1/1")) ==
+        DirectX::XMVectorGetY(expected.MeasureString(L"VS:1/1")), "overlay: hunting uses a 40 pixel font");
+
+    unsigned width, height;
+    const auto pixels = ReadPixels(device, chain.Get(), width, height);
+    unsigned topRows = 0, bottomRows = 0;
+    for (unsigned y = 0; y < height; ++y) {
+        const auto* pixel = pixels.data() + static_cast<size_t>(y) * width * 4;
+        for (unsigned x = 0; x < width; ++x, pixel += 4) {
+            if (pixel[1] <= 90 || pixel[1] <= 2 * pixel[0]) continue;
+            if (y < 120) ++topRows;
+            if (y >= height / 2) ++bottomRows;
+            break;
+        }
+    }
+    require_batch(topRows >= 25 && bottomRows >= 25, "overlay: enlarged green heading and footer are visible at 1440p");
+    std::printf("Hunting overlay WARP at 1440p: %u green rows near the top, %u in the lower half\n", topRows, bottomRows);
+    ComScope pngCom;
+    ComPtr<ID3D11Texture2D> backbuffer;
+    require_batch(static_cast<bool>(pngCom) && SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) &&
+        SUCCEEDED(DirectX::SaveWICTextureToFile(device.context.Get(), backbuffer.Get(), GUID_ContainerFormatPng,
+            (directory / L"overlay-hunting-40px-2560x1440.png").c_str())), "overlay: save actual enlarged hunting text");
+}
+
+void TestLongProfilingReport(BatchDevice& device, HWND window)
+{
+    auto chain = CreateTestChain(device, window, DXGI_FORMAT_R8G8B8A8_UNORM);
+    Overlay overlay(device.device, device.wrapper.get(), chain.Get());
+    ClearNotices();
+    const auto mode = Profiling::mode.load();
+    const auto freeze = Profiling::freeze;
+    auto previous = std::move(Profiling::text);
+    std::wstring report = L"Performance Monitor (Top Commands):\n";
+    for (unsigned i = 0; i < 512; ++i) {
+        report += L"2265 6856.00us 0.067851 | 75 639.00us 0.006319 [ShaderOverride\\Mods\\新建文件夹\\";
+        report += std::to_wstring(i);
+        report += L"\\角色替换与纹理覆盖测试\\角色替换与纹理覆盖测试.ini\\DragViewportLayoutProbe] run = commandlist\n";
+    }
+    Profiling::text = report;
+    Profiling::mode = Profiling::Mode::TOP_COMMANDS;
+    Profiling::freeze = true;
+    ClearBackbuffer(device, chain.Get());
+    const auto start = std::chrono::steady_clock::now();
+    overlay.DrawOverlay();
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("Top Commands WARP, 512 UTF-16 rows: first DrawOverlay %.3f ms\n", elapsed);
+    require_batch(Profiling::text == report, "overlay: full frozen report remains available for logging");
+    const auto rendered = overlay.mFontProfiling->Rasterizations();
+    require_batch(rendered == 1, "overlay: profiling text was rasterized");
+    overlay.DrawOverlay();
+    require_batch(overlay.mFontProfiling->Rasterizations() == rendered, "overlay: stable profiling text reuses the raster");
+    overlay.mFontProfiling->MeasureString(report.c_str(), false);
+    require_batch(overlay.mFontProfiling->Rasterizations() == rendered + 1,
+        "overlay: a long ranking must not be sent in full to the font renderer");
+    Profiling::mode = mode;
+    Profiling::freeze = freeze;
+    Profiling::text = std::move(previous);
+}
 }
 
 void test_dx11_overlay_text_regression()
@@ -231,6 +314,9 @@ void test_dx11_overlay_text_regression()
         ++G->frame_no; ClearNotices();
         overlay.DrawOverlay();
     }
+    TestHuntingTextSize(device, window.window, directory);
+    TestLongProfilingReport(device, window.window);
+
     // Separate renderer lifetime and device recreation.
     {
         BatchDevice replacement;

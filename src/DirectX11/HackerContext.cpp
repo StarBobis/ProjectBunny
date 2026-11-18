@@ -593,8 +593,12 @@ template <class ID3D11Shader,
 	void (__stdcall ID3D11DeviceContext::*SetShaderVS2013BUGWORKAROUND)(ID3D11Shader*, ID3D11ClassInstance*const*, UINT),
 	HRESULT (__stdcall ID3D11Device::*CreateShader)(const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11Shader**)
 >
-void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 hash, wchar_t *shader_type)
+void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 hash, wchar_t *shader_type,
+		ShaderRegexCheck& check, uint64_t generation)
 {
+	if (check.processed_shader == shader && check.generation == generation && G->ModRuntimeOptimizationsEnabled())
+		return;
+
 	ID3D11Shader *orig_shader = NULL, *patched_shader = NULL;
 	ID3D11ClassInstance *class_instances[256];
 	ShaderReloadMap::iterator orig_info_i;
@@ -616,7 +620,10 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		goto out_drop;
 	orig_info = &orig_info_i->second;
 
-	if (!orig_info->deferred_replacement_candidate || orig_info->deferred_replacement_processed)
+	if (!orig_info->deferred_replacement_candidate)
+		goto out_drop;
+	check = {shader, generation};
+	if (orig_info->deferred_replacement_processed)
 		goto out_drop;
 
 	// Remember that we have analysed this one so we don't check it again
@@ -672,13 +679,6 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 			G->patch_cb_offsets,
 			G->disassemble_undecipherable_custom_data);
 
-		if (asm_text.empty())
-			goto out_drop;
-
-		asm_text = BinaryToAsmText(orig_info->byteCode->GetBufferPointer(),
-				orig_info->byteCode->GetBufferSize(),
-				G->patch_cb_offsets,
-				G->disassemble_undecipherable_custom_data);
 		if (asm_text.empty())
 			goto out_drop;
 
@@ -772,6 +772,7 @@ void HackerContext::DeferredShaderReplacementBeforeDraw()
 
 	if (shader_regex_groups.empty())
 		return;
+	const auto generation = G->shader_regex_generation.load(std::memory_order_acquire);
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::start(&profiling_state);
@@ -781,35 +782,35 @@ void HackerContext::DeferredShaderReplacementBeforeDraw()
 			&ID3D11DeviceContext::VSGetShader,
 			&ID3D11DeviceContext::VSSetShader,
 			&ID3D11Device::CreateVertexShader>
-			(mCurrentVertexShaderHandle, mCurrentVertexShader, L"vs");
+			(mCurrentVertexShaderHandle, mCurrentVertexShader, L"vs", vertex_regex, generation);
 	}
 	if (mCurrentHullShaderHandle) {
 		DeferredShaderReplacement<ID3D11HullShader,
 			&ID3D11DeviceContext::HSGetShader,
 			&ID3D11DeviceContext::HSSetShader,
 			&ID3D11Device::CreateHullShader>
-			(mCurrentHullShaderHandle, mCurrentHullShader, L"hs");
+			(mCurrentHullShaderHandle, mCurrentHullShader, L"hs", hull_regex, generation);
 	}
 	if (mCurrentDomainShaderHandle) {
 		DeferredShaderReplacement<ID3D11DomainShader,
 			&ID3D11DeviceContext::DSGetShader,
 			&ID3D11DeviceContext::DSSetShader,
 			&ID3D11Device::CreateDomainShader>
-			(mCurrentDomainShaderHandle, mCurrentDomainShader, L"ds");
+			(mCurrentDomainShaderHandle, mCurrentDomainShader, L"ds", domain_regex, generation);
 	}
 	if (mCurrentGeometryShaderHandle) {
 		DeferredShaderReplacement<ID3D11GeometryShader,
 			&ID3D11DeviceContext::GSGetShader,
 			&ID3D11DeviceContext::GSSetShader,
 			&ID3D11Device::CreateGeometryShader>
-			(mCurrentGeometryShaderHandle, mCurrentGeometryShader, L"gs");
+			(mCurrentGeometryShaderHandle, mCurrentGeometryShader, L"gs", geometry_regex, generation);
 	}
 	if (mCurrentPixelShaderHandle) {
 		DeferredShaderReplacement<ID3D11PixelShader,
 			&ID3D11DeviceContext::PSGetShader,
 			&ID3D11DeviceContext::PSSetShader,
 			&ID3D11Device::CreatePixelShader>
-			(mCurrentPixelShaderHandle, mCurrentPixelShader, L"ps");
+			(mCurrentPixelShaderHandle, mCurrentPixelShader, L"ps", pixel_regex, generation);
 	}
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
@@ -823,12 +824,13 @@ void HackerContext::DeferredShaderReplacementBeforeDispatch()
 
 	if (!mCurrentComputeShaderHandle)
 		return;
+	const auto generation = G->shader_regex_generation.load(std::memory_order_acquire);
 
 	DeferredShaderReplacement<ID3D11ComputeShader,
 		&ID3D11DeviceContext::CSGetShader,
 		&ID3D11DeviceContext::CSSetShader,
 		&ID3D11Device::CreateComputeShader>
-		(mCurrentComputeShaderHandle, mCurrentComputeShader, L"cs");
+		(mCurrentComputeShaderHandle, mCurrentComputeShader, L"cs", compute_regex, generation);
 }
 
 
@@ -864,6 +866,20 @@ void HackerContext::RestoreInputLayout()
 	if (mOverrideInputLayout)
 		mOverrideInputLayout->Release();
 	mOverrideInputLayout = nullptr;
+}
+
+ShaderOverride* HackerContext::FindDrawShaderOverride(uint64_t hash, ShaderOverrideMiss& miss)
+{
+	const bool cache_enabled = G->ModRuntimeOptimizationsEnabled();
+	const auto generation = cache_enabled ? G->shader_override_generation.load(std::memory_order_acquire) : 0;
+	if (cache_enabled && miss.hash == hash && miss.generation == generation)
+		return nullptr;
+	auto override = lookup_shaderoverride(hash);
+	if (override != G->mShaderOverrideMap.end())
+		return &override->second;
+	if (cache_enabled)
+		miss = {hash, generation};
+	return nullptr;
 }
 
 void HackerContext::BeforeDraw(DrawContext &data)
@@ -1045,43 +1061,20 @@ void HackerContext::BeforeDraw(DrawContext &data)
 
 	// Override settings?
 	if (!G->mShaderOverrideMap.empty()) {
-		ShaderOverrideMap::iterator i;
-
-		i = lookup_shaderoverride(mCurrentVertexShader);
-		if (i != G->mShaderOverrideMap.end()) {
-			data.post_commands[0] = &i->second.post_command_list;
-			ProcessShaderOverride(&i->second, false, &data);
-		}
-
-		if (mCurrentHullShader) {
-			i = lookup_shaderoverride(mCurrentHullShader);
-			if (i != G->mShaderOverrideMap.end()) {
-				data.post_commands[1] = &i->second.post_command_list;
-				ProcessShaderOverride(&i->second, false, &data);
+		const auto process = [&](unsigned stage, uint64_t hash, ShaderOverrideMiss& miss) {
+			if (auto* rule = FindDrawShaderOverride(hash, miss)) {
+				data.post_commands[stage] = &rule->post_command_list;
+				ProcessShaderOverride(rule, stage == 4, &data);
 			}
-		}
-
-		if (mCurrentDomainShader) {
-			i = lookup_shaderoverride(mCurrentDomainShader);
-			if (i != G->mShaderOverrideMap.end()) {
-				data.post_commands[2] = &i->second.post_command_list;
-				ProcessShaderOverride(&i->second, false, &data);
-			}
-		}
-
-		if (mCurrentGeometryShader) {
-			i = lookup_shaderoverride(mCurrentGeometryShader);
-			if (i != G->mShaderOverrideMap.end()) {
-				data.post_commands[3] = &i->second.post_command_list;
-				ProcessShaderOverride(&i->second, false, &data);
-			}
-		}
-
-		i = lookup_shaderoverride(mCurrentPixelShader);
-		if (i != G->mShaderOverrideMap.end()) {
-			data.post_commands[4] = &i->second.post_command_list;
-			ProcessShaderOverride(&i->second, true, &data);
-		}
+		};
+		process(0, mCurrentVertexShader, vertex_override_miss);
+		if (mCurrentHullShader)
+			process(1, mCurrentHullShader, hull_override_miss);
+		if (mCurrentDomainShader)
+			process(2, mCurrentDomainShader, domain_override_miss);
+		if (mCurrentGeometryShader)
+			process(3, mCurrentGeometryShader, geometry_override_miss);
+		process(4, mCurrentPixelShader, pixel_override_miss);
 	}
 
 	// Replacement-mode pass for configured slots that have no
@@ -1876,16 +1869,13 @@ bool HackerContext::BeforeDispatch(DispatchContext *context)
 
 	// Override settings?
 	if (!G->mShaderOverrideMap.empty()) {
-		ShaderOverrideMap::iterator i;
-
-		i = lookup_shaderoverride(mCurrentComputeShader);
-		if (i != G->mShaderOverrideMap.end()) {
-			context->post_commands = &i->second.post_command_list;
+		if (auto* rule = FindDrawShaderOverride(mCurrentComputeShader, compute_override_miss)) {
+			context->post_commands = &rule->post_command_list;
 			// XXX: Not using ProcessShaderOverride() as a
 			// lot of it's logic doesn't really apply to
 			// compute shaders. The main thing we care
 			// about is the command list, so just run that:
-			RunCommandList(mHackerDevice, this, &i->second.command_list, &context->call_info, false);
+			RunCommandList(mHackerDevice, this, &rule->command_list, &context->call_info, false);
 		}
 	}
 

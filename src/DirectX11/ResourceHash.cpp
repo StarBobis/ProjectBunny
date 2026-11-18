@@ -2398,6 +2398,7 @@ void InvalidatePipelineResourceDataCaches(ID3D11DeviceContext* context, bool com
     const auto policy = static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed));
     if (!(policy & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) ||
         !context || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return;
+    Profiling::Sample sample(Profiling::pipeline_invalidation_overhead, false);
     Microsoft::WRL::ComPtr<ID3D11Device> device;
     context->GetDevice(device.GetAddressOf());
     if (!device) return;
@@ -2493,7 +2494,9 @@ static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, Resour
 	box.back = 1;
 	original->CopySubresourceRegion(staging, 0, 0, 0, 0, buffer, 0, &box);
 	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	Profiling::Sample sample(Profiling::readback_map_overhead, false);
 	const HRESULT result = original->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+	sample.Finish(false);
 	if (FAILED(result)) {
 		free(snapshot);
 		return false;

@@ -1420,6 +1420,7 @@ void CleanupShaderMaps(ID3D11DeviceChild *handle)
 			if (i->second.linkage)
 				i->second.linkage->Release();
 			G->mReloadedShaders.erase(i);
+			G->shader_regex_generation.fetch_add(1, std::memory_order_release);
 		}
 	}
 

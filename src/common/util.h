@@ -1076,7 +1076,8 @@ struct OMState {
 void save_om_state(IDirect3DDevice9 *device, struct OMState *state);
 void restore_om_state(IDirect3DDevice9 *device, struct OMState *state);
 #elif MIGOTO_DX == 11
-void save_om_state(ID3D11DeviceContext *context, struct OMState *state);
+// Transfers ownership of the selected slots when UAVs have already been read from slot zero.
+void save_om_state(ID3D11DeviceContext *context, struct OMState *state, ID3D11UnorderedAccessView** captured_uavs = nullptr);
 void restore_om_state(ID3D11DeviceContext *context, struct OMState *state);
 #endif // MIGOTO_DX
 

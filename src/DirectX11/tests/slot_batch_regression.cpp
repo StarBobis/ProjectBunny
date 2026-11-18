@@ -484,6 +484,81 @@ void dynamic_pool_barrier(BatchDevice& device, BatchAliases& aliases, ID3D11Reso
     require_batch(calls.get_calls == 0 && calls.set_calls == 1 && bound_resource(device, L'p', 6).Get() == a,
         "batch: static-index pool template binds correctly");
 }
+
+void graphics_reference_reuse(BatchDevice& device, BatchAliases& aliases, ID3D11Resource* a, ID3D11Resource* b)
+{
+    device.context->ClearState();
+    auto& source = aliases.add(L"resourceslotbatch_graphics", device, a);
+    ResourceCopyTarget alias;
+    alias.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+    alias.SetCustomResource(&source);
+    const auto set_source = [&](ID3D11Resource* resource, ID3D11View* view = nullptr) {
+        alias.SetResource(&device.state, resource, view, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+    };
+
+    CommandList pixel;
+    append(pixel, L"ps-t5", L"resourceslotbatch_graphics");
+    require_batch(execute(pixel, device).graphics_ref_hits == 0 && bound_resource(device, L'p', 5).Get() == a,
+        "graphics ref: implicit ref creates the first native PS view");
+    const auto original = get_slot(device, L'p', 5);
+    const auto foreign = srv(device, b);
+    set_slot(device, L'p', 5, foreign.Get());
+    require_batch(execute(pixel, device).graphics_ref_hits == 1 && get_slot(device, L'p', 5).Get() == original.Get(),
+        "graphics ref: a warm hit still restores the binding overwritten between calls");
+    G->mod_runtime_optimizations = false;
+    const auto legacy = execute(pixel, device);
+    G->mod_runtime_optimizations = true;
+    require_batch(legacy.graphics_ref_hits == 0 && get_slot(device, L'p', 5).Get() == original.Get(),
+        "runtime optimizations: legacy SRV validation publishes the same native view");
+
+    set_source(b);
+    require_batch(execute(pixel, device).graphics_ref_hits == 0 && bound_resource(device, L'p', 5).Get() == b,
+        "graphics ref: changing the source resource invalidates the existing view");
+    set_source(nullptr);
+    require_batch(execute(pixel, device).graphics_ref_hits == 0 && !get_slot(device, L'p', 5),
+        "graphics ref: a null source still clears the slot");
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = desc.Height = 4;
+    desc.MipLevels = 2;
+    desc.ArraySize = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> mip_texture;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&desc, nullptr, &mip_texture)),
+        "graphics ref: create actual texture with two mip levels");
+    set_source(mip_texture.Get());
+    execute(pixel, device);
+    require_batch(execute(pixel, device).graphics_ref_hits == 1, "graphics ref: the new texture's whole view is warm");
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC mip_desc = {};
+    mip_desc.Format = desc.Format;
+    mip_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    mip_desc.Texture2D.MostDetailedMip = mip_desc.Texture2D.MipLevels = 1;
+    ComPtr<ID3D11ShaderResourceView> second_mip;
+    require_batch(SUCCEEDED(device.native->CreateShaderResourceView(mip_texture.Get(), &mip_desc, &second_mip)),
+        "graphics ref: create actual view of the second mip");
+    set_source(mip_texture.Get(), second_mip.Get());
+    require_batch(execute(pixel, device).graphics_ref_hits == 0 && get_slot(device, L'p', 5).Get() == second_mip.Get(),
+        "graphics ref: an explicit source view wins over the cached whole-resource view");
+
+    for (wchar_t stage : std::wstring(L"pv")) {
+        const auto prefix = std::wstring(1, stage) + L"s-t";
+        CommandList batch;
+        append(batch, prefix + L"4", L"resourceslotbatch_a");
+        append(batch, prefix + L"5", L"ref resourceslotbatch_b");
+        merge_shader_resource_batches(&batch);
+        require_batch(batch.commands.size() == 1 && execute(batch, device).graphics_ref_hits == 0,
+            "graphics ref: warm a real PS/VS batch with implicit and explicit refs");
+        set_slot(device, stage, 4, nullptr);
+        set_slot(device, stage, 5, nullptr);
+        const auto warm = execute(batch, device);
+        require_batch(warm.graphics_ref_hits == 2 && warm.get_calls == 0 && warm.set_calls == 1 &&
+            bound_resource(device, stage, 4).Get() == a && bound_resource(device, stage, 5).Get() == b,
+            "graphics ref: warm PS/VS views still publish one actual batch");
+    }
+    device.context->ClearState();
+}
 } // namespace
 
 void test_dx11_slot_batch_regression()
@@ -503,5 +578,6 @@ void test_dx11_slot_batch_regression()
     options_and_barriers(device, a.Get(), old.Get());
     raw_and_resolve(device, aliases);
     dynamic_pool_barrier(device, aliases, a.Get());
+    graphics_reference_reuse(device, aliases, a.Get(), b.Get());
     std::fputs("PASS: real six-stage SRV batching, ordered side effects and lazy API publication\n", stderr);
 }

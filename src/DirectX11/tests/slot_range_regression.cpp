@@ -311,6 +311,141 @@ void fetch_metadata(BatchDevice& device, Registry& registry)
     require_batch(element->resource == b.Get(), "range: reference fetch still enforces destination max_copies_per_frame");
     element->max_copies_per_frame = 0;
 }
+
+void pool_srv_writeback(BatchDevice& device, Registry& registry)
+{
+    device.context->ClearState();
+    auto a = texture(device, 0x77442211u), b = texture(device, 0x99886633u);
+    auto a_view = srv(device, a.Get()), b_view = srv(device, b.Get());
+    registry.pool(L"poolslot_range_writeback", device, PoolIndexType::STATIC, 19);
+    constexpr UINT null_slot = 4;
+    ID3D11ShaderResourceView* original[19];
+    for (UINT i = 0; i < 19; ++i) {
+        original[i] = i == null_slot ? nullptr : i % 2 ? b_view.Get() : a_view.Get();
+        set_slot(device, L'p', i, original[i]);
+    }
+    set_slot(device, L'p', 19, b_view.Get());
+
+    CommandList save;
+    append(save, L"poolslot_range_writeback[0:9]", L"ref ps-t[0:9]");
+    append(save, L"poolslot_range_writeback[10:18]", L"ref ps-t[10:18]");
+    const auto captured = execute(save, device);
+    require_batch(captured.get_calls == 2 && captured.srv_slots_read == 19 && captured.set_calls == 0,
+        "range writeback: capture both native SRV ranges into the pool");
+
+    for (UINT i = 0; i < 19; ++i)
+        set_slot(device, L'p', i, b_view.Get());
+    CommandList restore;
+    append(restore, L"ps-t[0:9]", L"ref poolslot_range_writeback[0:9]");
+    append(restore, L"ps-t[10:18]", L"ref poolslot_range_writeback[10:18]");
+    const auto restored = execute(restore, device);
+    require_batch(restored.get_calls == 0 && restored.set_calls == 2,
+        "range writeback: both complete ranges set once each without reading the old bindings");
+    for (UINT i = 0; i < 19; ++i)
+        require_batch(get_slot(device, L'p', i).Get() == original[i],
+            "range writeback: preserve the exact saved view or explicitly clear a null slot");
+    require_batch(get_slot(device, L'p', 19).Get() == b_view.Get(), "range writeback: slots outside the range stay bound");
+    for (UINT i = 0; i < 19; ++i)
+        set_slot(device, L'p', i, b_view.Get());
+    G->mod_runtime_optimizations = false;
+    const auto legacy = execute(restore, device);
+    G->mod_runtime_optimizations = true;
+    require_batch(legacy.get_calls == 2 && legacy.srv_slots_read == 19 && legacy.set_calls == 2,
+        "runtime optimizations: legacy range path reads the complete original bindings");
+    for (UINT i = 0; i < 19; ++i)
+        require_batch(get_slot(device, L'p', i).Get() == original[i],
+            "runtime optimizations: legacy and optimized range writeback bind the same views");
+
+    for (UINT i = 0; i < 10; ++i)
+        set_slot(device, L'p', i, b_view.Get());
+    CommandList partial;
+    append(partial, L"ps-t[0:9]", L"ref unless_null poolslot_range_writeback[0:9]");
+    const auto preserved = execute(partial, device);
+    require_batch(preserved.get_calls == 1 && preserved.srv_slots_read == 10 - null_slot && preserved.set_calls == 1,
+        "range writeback: the first unless_null hole fetches only the remaining suffix");
+    for (UINT i = 0; i < 10; ++i)
+        require_batch(get_slot(device, L'p', i).Get() == (i == null_slot ? b_view.Get() : original[i]),
+            "range writeback: preserve the hole and publish successful writes on both sides");
+    device.context->ClearState();
+}
+
+void material_alias_metadata(BatchDevice& device, Registry& registry)
+{
+    auto ordinary = texture(device, 0x31527394u);
+    auto& source = registry.resource(L"resourcealias_source", device, ordinary.Get());
+    auto& diffuse = registry.resource(L"resourcealias_diffuse", device);
+    auto& fx = registry.resource(L"resourcealias_fx", device);
+    CommandList first, second;
+    append(first, L"resourcealias_diffuse", L"ref resourcealias_source");
+    append(second, L"resourcealias_fx", L"ref resourcealias_source");
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.resource == ordinary.Get() &&
+        diffuse.format == DXGI_FORMAT_R8G8B8A8_UNORM && !diffuse.view,
+        "material alias: cold metadata resolves the native texture format without an explicit view");
+    source.match_dhash = 0x123456789abcdef0ull;
+    source.match_dhash_set = true;
+    require_batch(execute(second, device).alias_metadata_hits == 1 && fx.resource == ordinary.Get() &&
+        fx.format == diffuse.format && fx.match_dhash == source.match_dhash && fx.match_dhash_set,
+        "material alias: another alias reuses descriptors and receives the live match metadata");
+
+    D3D11_TEXTURE2D_DESC desc{};
+    ordinary->GetDesc(&desc);
+    desc.MipLevels = 2;
+    ComPtr<ID3D11Texture2D> mipped;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&desc, nullptr, &mipped)),
+        "material alias: create native texture with two mips");
+    auto whole_view = srv(device, mipped.Get());
+    D3D11_SHADER_RESOURCE_VIEW_DESC mip_desc{};
+    mip_desc.Format = desc.Format;
+    mip_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    mip_desc.Texture2D.MipLevels = mip_desc.Texture2D.MostDetailedMip = 1;
+    ComPtr<ID3D11ShaderResourceView> second_mip;
+    require_batch(SUCCEEDED(device.native->CreateShaderResourceView(mipped.Get(), &mip_desc, &second_mip)),
+        "material alias: create a distinct mip view");
+    assign(device, &source, mipped.Get(), whole_view.Get());
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.view == whole_view.Get(),
+        "material alias: source resource change invalidates the metadata");
+    require_batch(execute(second, device).alias_metadata_hits == 1 && fx.view == whole_view.Get(),
+        "material alias: validated source view is reused across aliases");
+    assign(device, &source, mipped.Get(), second_mip.Get());
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.view == second_mip.Get(),
+        "material alias: changing the view on the same resource preserves the new mip");
+    assign(device, &source, nullptr);
+    require_batch(execute(first, device).alias_metadata_hits == 0 && diffuse.is_null,
+        "material alias: null source still clears the alias's visible value");
+
+    auto buffer = tracked_buffer(device, 392);
+    assign(device, &source, buffer.Get(), nullptr, 16, 64, DXGI_FORMAT_R32_UINT);
+    execute(first, device);
+    const auto prior_hash = GetRegionHash(device.wrapper.get(), buffer.Get(), 0, 16, &diffuse);
+    require_batch(prior_hash != 0, "material alias: the tracked buffer alias captures a real snapshot");
+
+    UINT changed[16];
+    std::fill_n(changed, 16, 777u);
+    device.wrapper->UpdateSubresource(buffer.Get(), 0, nullptr, changed, 0, 0);
+    const auto new_hash = GetRegionHash(device.wrapper.get(), buffer.Get(), 16, 16);
+    require_batch(new_hash && new_hash != prior_hash && execute(first, device).alias_metadata_hits == 1 &&
+        GetRegionHash(device.wrapper.get(), buffer.Get(), 0, 16, &diffuse) == new_hash,
+        "material alias: a descriptor hit still refreshes the tracked buffer snapshot after a GPU write");
+    G->mod_runtime_optimizations = false;
+    const auto legacy = execute(first, device);
+    G->mod_runtime_optimizations = true;
+    require_batch(legacy.alias_metadata_hits == 0 && diffuse.resource == buffer.Get() &&
+        GetRegionHash(device.wrapper.get(), buffer.Get(), 0, 16, &diffuse) == new_hash,
+        "runtime optimizations: legacy alias resolution preserves the current regional hash");
+
+    source.offset = 32;
+    fx.override_format = DXGI_FORMAT_R32_FLOAT;
+    fx.override_stride = 8;
+    require_batch(execute(second, device).alias_metadata_hits == 0 && fx.offset == 32 &&
+        fx.format == DXGI_FORMAT_R32_FLOAT && fx.stride == 8,
+        "material alias: offset and destination overrides take precedence over the previous metadata");
+    fx.max_copies_per_frame = 1;
+    fx.frame_no = G->frame_no;
+    fx.copies_this_frame = 1;
+    source.offset = 0;
+    require_batch(execute(second, device).alias_metadata_hits == 0 && fx.offset == 32,
+        "material alias: quota still rejects the assignment before metadata resolution");
+}
 } // namespace
 
 void test_dx11_slot_range_regression()
@@ -327,7 +462,7 @@ void test_dx11_slot_range_regression()
         CommandList bind;
         append(bind, prefix + L"[0:127]", L"ref poolslot_range_full[0:127]");
         auto stats = execute(bind, device);
-        require_batch(stats.get_calls == 1 && stats.set_calls == 1, "range: full 128-SRV bind has one real Get/Set without CB-array overflow");
+        require_batch(stats.get_calls == 0 && stats.set_calls == 1, "range: full 128-SRV bind has one real Set and no Get");
         for (UINT i = 0; i < 128; ++i)
             require_batch(bound_resource(device, stage, i).Get() == (i % 2 ? b.Get() : a.Get()), "range: every real SRV slot retains physical FIFO element identity");
         CommandList fetch;
@@ -349,5 +484,7 @@ void test_dx11_slot_range_regression()
     full_uav_ranges(device, registry);
     all_copy_options(device, registry);
     fetch_metadata(device, registry);
+    pool_srv_writeback(device, registry);
+    material_alias_metadata(device, registry);
 
 }

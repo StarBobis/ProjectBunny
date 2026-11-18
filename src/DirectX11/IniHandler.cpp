@@ -2978,6 +2978,7 @@ static void ParseShaderOverrideSections()
 
 		warn_deprecated_shaderoverride_options(id, override);
 	}
+	G->shader_override_generation.fetch_add(1, std::memory_order_release);
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 
@@ -5241,6 +5242,7 @@ void LoadConfigFile()
 	}
 
 	G->CACHE_SHADERS = GetIniBool(L"Rendering", L"cache_shaders", false, NULL);
+	G->mod_runtime_optimizations = GetIniBool(L"Rendering", L"mod_runtime_optimizations", true, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
     DataCacheBindFlags data_cache_flags = DataCacheBindFlags::INVALID;
@@ -5259,6 +5261,8 @@ void LoadConfigFile()
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	// Rebuild on every load; empty/absent keeps the native batch check disabled.
 	G->auto_check_texture_slots.clear();
+	G->auto_check_graphics_targets.clear();
+	G->auto_check_compute_targets.clear();
 	LoadDrawOverrideSlots();
 	G->auto_check_texture_slot_has_check.clear();
 	++G->auto_check_texture_slots_generation;
@@ -5684,6 +5688,7 @@ static void MarkAllShadersDeferredUnprocessed()
 		// any that are loaded from disk:
 		i->second.deferred_replacement_processed = false;
 	}
+	G->shader_regex_generation.fetch_add(1, std::memory_order_release);
 
 	// TODO: If ShaderRegex hash is unchanged leave these shaders in place
 	// and just update the ShaderOverrides & filter_index
