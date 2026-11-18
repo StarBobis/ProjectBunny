@@ -502,13 +502,23 @@ def verify_multi_target(mcp, games, folders, harness_name):
         path = folders[index] / "d3dx_user.ini"
         deadline = time.monotonic() + timeout
         marker = str(expected)
-        while time.monotonic() < deadline:
-            if path.exists() and any(line.partition("=")[0].strip() == "$target_test_value"
-                                    and line.partition("=")[2].strip() == marker
-                                    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines()):
+        while True:
+            try:
+                lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+            except FileNotFoundError:
+                lines = []
+            except PermissionError:
+                # Windows can briefly deny reads during atomic replacement.
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+                continue
+            if any(line.partition("=")[0].strip() == "$target_test_value"
+                   and line.partition("=")[2].strip() == marker for line in lines):
                 return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(0.05)
-        return False
 
     assert saved(1, 2) and saved(2, 3)
     assert not saved(0, 1, timeout=0.15), "The paused process must not receive the other processes' actions"
