@@ -6,20 +6,20 @@ DX11 DLL 可以通过本机 MCP 触发现有按键动作，并按狩猎 hash、�
 
 在游戏现有的 `d3dx.ini` 中添加 `[System]` 下的 `mcp_enabled = 1`。需要 Hunting 和原生 F8 时，将 `[Hunting]` 下的 `hunting` 设置为 `1`，然后启动游戏。更新 DLL 后需要重启游戏。
 
-将仓库中的 `scripts/dx11-mcp.py` 作为 stdio MCP 服务启动，需要 Windows 和 Python 3.9 或更新版本。客户端配置示例使用绝对路径。
+解压仓库根目录的 `projectbunny-dx11-mcp.zip` 后，可用技能附带的桥连接游戏。需要 Windows 和 64 位 Python 3.9 或更新版本。客户端配置使用实际解压路径。
 
 ~~~json
 {
   "mcpServers": {
     "projectbunny-dx11": {
       "command": "python",
-      "args": ["E:/代码/ProjectBunny-main/scripts/dx11-mcp.py"]
+      "args": ["C:/path/to/projectbunny-dx11-mcp/scripts/dx11.py", "stdio"]
     }
   }
 }
 ~~~
 
-`dx11_discover` 可列出游戏 PID，只有一个端点时可省略 `pid`。指定 `--pid` 可为整条连接固定游戏实例。生成的内容默认保存在仓库的 `build/mcp-captures`，可通过 `--output-dir` 修改。同一 Windows 账户可以使用 MCP 接口。
+`dx11_discover` 可列出游戏 PID，只有一个端点时可省略 `pid`。在 `stdio` 前加 `--pid` 可为整条连接固定实例，加 `--output-dir` 可指定抓取结果目录。技能入口默认保存到 `%LOCALAPPDATA%/ProjectBunny/mcp-captures`。同一 Windows 账户可以使用 MCP 接口。开发时也可直接运行仓库里的 `scripts/dx11-mcp.py`，将仓库作为桥来源。
 
 ## 调用快捷键
 
