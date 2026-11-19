@@ -57,8 +57,10 @@ XXMI Launcher 不采用模板中所有传统 Loader 参数；用启动器自己�
 | `override_directory/cache_directory/storage_directory` | 补丁、缓存、原始着色器目录 |
 | `cache_shaders` | 着色器缓存 |
 | `cache_resource_data` | CPU 缓冲数据缓存类型 |
-| `mod_runtime_optimizations` | 默认 `1`。设为 `0` 后重载主配置，可切回逐槽 TextureOverride 检查、常规 ShaderOverride 查询、CustomShader 的完整 OM 保存、常规资源视图和别名解析、槽位写回前预读，以及 DrawIndexed 和 Dispatch 参数的运行时求值。已显式配置的 `auto_check_texture_slots` 仍生效 |
-| `expression_short_circuit` | 默认 `1`。仅对确认可跳过求值的 `&&`、`\|\|` 使用短路。设为 `0` 后重载主配置，可单独恢复逻辑表达式的原求值路径。关闭 `mod_runtime_optimizations` 时也沿用原求值路径 |
+| `mod_runtime_optimizations` | 默认 `1`。设为 `0` 后，跨绘制的 TextureOverride 空候选复用、资源和槽位写入去重、SlotFix 空清理跳过、标量条件预解析和字面量赋值批处理均切回原路径。此开关也控制 ShaderOverride 查询、OM 保存、资源别名解析及绘制和计算参数预解析等优化。显式配置的 `draw_has_override_slots` 和 `auto_check_texture_slots` 继续生效 |
+| `expression_short_circuit` | 默认 `1`。仅对确认可跳过求值的 `&&`、`\|\|` 使用短路。设为 `0` 可单独恢复逻辑表达式和标量条件的原求值路径。关闭 `mod_runtime_optimizations` 时也沿用原求值路径 |
+| `draw_has_override_slots` | `DRAW_HAS_OVERRIDE` 使用的槽位列表。按游戏和模组填写，例如 `ib vb[0:2] ps-t0`。缺省时走直接检查 |
+| `auto_check_texture_slots` | 自动批量检查 TextureOverride 的槽位列表，例如 `ps-t[0:9]`。缺省时关闭自动批量检查 |
 | `rasterizer_disable_scissor` | 全局关闭裁剪 |
 | `track_texture_updates` | 跟踪纹理更新对 Hash 的影响 |
 | `track_implicit_index_buffers` | 隐式索引缓冲跟踪 |
@@ -71,6 +73,8 @@ XXMI Launcher 不采用模板中所有传统 Loader 参数；用启动器自己�
 | `patch_assembly_cb_offsets` | 汇编 CB 偏移修补 |
 | `export_fixed/export_shaders/export_hlsl/dump_usage` | 输出调试数据 |
 | `dhash_mip_size/dhash_allow_rehash` | 感知 Hash 策略 |
+
+DX11 配置模板在 `[Rendering]` 段显式开启运行期优化。遇到兼容问题时，在当前游戏加载器的 `d3dx.ini` 中把 `mod_runtime_optimizations` 改成 `0`，然后按 F10 重载。若游戏卡住或无法进入场景，退出游戏后修改该设置，再重新启动。排查结束后设回 `1`。
 
 模板还保留 `fix_sv_position`、`fix_ZRepair_*`、`fix_InvTransform`、`fix_BackProjectionTransform*`、`fix_ObjectPosition*`、`fix_MatrixOperand*`、`recompile_all_vs` 等旧立体修复/反编译选项。它们针对具体 shader 算式，沿用适配包给出的完整组合；普通贴图/模型 Mod 无需打开。
 

@@ -519,7 +519,8 @@ if (gConfigInitialized || !skip_early_includes_load) {
 | `override_directory` | 空 | 未设置时 `override_directory` 或 `cache_directory` 为空，着色器文件替换路径整体被跳过，`ShaderFixes` 不会生效（`src/DirectX11/HackerDevice.cpp:1155-1156`） |
 | `cache_directory` | 空 | 未设置时着色器缓存不可用 |
 | `ini_params` | `120` | IniParams 寄存器；不小于 `D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT` 时报警并置 `-1`（`src/DirectX11/IniHandler.cpp:5285-5290`） |
-| `mod_runtime_optimizations` | `true` | 运行期优化总开关；设为 `0` 可退回逐槽检查等旧路径 |
+| `mod_runtime_optimizations` | `1` | 运行期优化总开关。设为 `0` 可退回原路径 |
+| `expression_short_circuit` | `1` | 逻辑短路和标量条件优化开关。设为 `0` 可恢复原求值路径 |
 | `cache_resource_data` | 未设置 | `none` / `all` / `vertex_buffer index_buffer constant_buffer` 组合 |
 | `track_region_hashes` | `false` | 开启后同时启用三类缓冲数据缓存 |
 | `allow_buffer_resize` | `true` | 允许按 `override_vertex_count` 扩容缓冲 |
@@ -608,7 +609,8 @@ DX11 DLL 自身只读取两个键：
 | `dhash_allow_rehash` | `false` |
 | `override_directory` / `cache_directory` | 空 |
 | `cache_shaders` | `false` |
-| `mod_runtime_optimizations` | `true` |
+| `mod_runtime_optimizations` | `1` |
+| `expression_short_circuit` | `1` |
 | `rasterizer_disable_scissor` | `false` |
 | `track_texture_updates` | `0` |
 | `cache_resource_data` | 未设置（`none` 语义） |
