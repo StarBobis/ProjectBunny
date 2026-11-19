@@ -28,7 +28,9 @@ d3d11_log.txt       ← 日志
 
 ## 更新与移除
 
-更新 DLL 后重启游戏；F10 不会加载新版 DLL。保留游戏适配配置和 Mod。
+从 [GitHub Releases](https://github.com/StarBobis/ProjectBunny/releases/latest) 下载 x64 包，关闭游戏后替换适配包中的 `d3d11.dll`，再重启游戏。保留现有的游戏配置、持久设置和 Mod。发布包里的 `d3dx.ini` 是 DX12 配置，DX11 手动建配置时请使用上面的 DX11 模板。F10 仅重载 INI。
+
+从 v1.3.22 起，可用 [Filter 与 PS 槽位匹配](./resources#按-dhash-匹配像素着色器贴图槽位)。已有贴图匹配配置可继续使用。更新后若遇到绘制异常，可按[运行期优化排错](./troubleshooting#更新后排查-dx11-运行期优化)对照。
 
 移除时先在加载器中禁用对应组件。手动部署的文件按备份恢复，避免删除其他工具共用的 DLL。
 

@@ -69,13 +69,13 @@ color_space = srgb
 
 ## 贴图匹配元数据命名兼容
 
-推荐使用 `match_format`、`match_dhash` 和资源成员 `->getmatchformat`。旧 INI 的 `original_format`、`original_dhash` 及 `->originalformat` 仍可使用；同一资源同时声明新旧键时，新键优先。dHash 按完整 64 位十六进制解析，不经浮点数转换。
+旧的 `[Resource...]` 仍接受 `match_format`、`match_dhash` 和资源成员 `->getmatchformat`。更早的 `original_format`、`original_dhash` 及 `->originalformat` 也可使用。同一资源同时声明新旧键时，新键优先。新配置可将匹配参数放在独立的 `[Filter...]` 内。
 
 ## 按 dHash 匹配像素着色器贴图槽位
 
 ```ini
-[TextureOverrideExample]
-hash = 01234567
+[ShaderOverrideExample]
+hash = 0123456789abcdef
 run = SnapshotInitialTextures
 ps-t[FilterMatch] = ref ResourceReplacement
 run = RestoreInitialTextures
@@ -89,9 +89,9 @@ match_confidence = 0.75
 filename = replacement.dds
 ```
 
-`ps-t[FilterMatch]` 使用过滤器声明的 `match_dhash` 与当前 PS 声明且绑定的原始贴图比较，将右侧资源绑定到全局最接近的槽位。多个槽位距离相同则一起替换。现有的 `ps->MatchTextures(ResourceMatchFilter)` 及其 Resource 元数据仍可使用。
+将 `hash` 换成目标像素着色器的 Hash，将 `match_dhash` 换成要匹配的原始贴图 dHash。`ps-t[FilterMatch]` 在当前 PS 声明且绑定的原始贴图中查找最接近的槽位。多个槽位距离相同则一起替换。现有的 `ps->MatchTextures(ResourceMatchFilter)` 及其 Resource 元数据仍可使用。
 
-`FilterAlias = ref FilterMatch` 让已声明的 `[FilterAlias]` 引用另一个过滤器，`FilterAlias = null` 恢复它自身的配置。表达式可用 `@FilterMatch` 读取有效过滤器的标识，用 `FilterMatch->format` 和 `FilterMatch->confidence` 读取匹配参数，或用 `ps-t0->HammingDistance(FilterMatch)` 计算指定槽位的距离。
+在命令列表中，`FilterAlias = ref FilterMatch` 让已声明的 `[FilterAlias]` 引用另一个过滤器，`FilterAlias = null` 恢复它自身的配置。表达式可用 `@FilterMatch` 读取有效过滤器的标识，用 `FilterMatch->format` 和 `FilterMatch->confidence` 读取匹配参数。要查看单个槽位的距离，可使用 [HammingDistance](./perceptual-hash)。
 
 - `match_dhash` 必须声明，完整 64 位十六进制；显式的全零 Hash 有效，未声明或解析失败不参与匹配。
 - `match_format` 可省略；声明后按原始 **SRV 格式**过滤。格式名无效时不匹配。

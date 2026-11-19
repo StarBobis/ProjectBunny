@@ -31,6 +31,7 @@ user_config = d3dx_user.ini
 | `[ShaderOverride名称]` | 匹配着色器 |
 | `[ShaderRegex名称]` | 按汇编模式匹配、修改着色器 |
 | `[Resource名称]`、`[Pool名称]` | 声明资源与池 |
+| `[Filter名称]` | 声明 [PS 贴图匹配参数](./resources#按-dhash-匹配像素着色器贴图槽位) |
 | `[CustomShader名称]` | 自定义着色器、状态与绘制 |
 | `[CommandList名称]` | 可复用命令 |
 | `[ClearRenderTargetView]` | 渲染目标清理前后命令 |
