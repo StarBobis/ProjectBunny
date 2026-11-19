@@ -32,10 +32,12 @@ namespace Profiling {
 	};
 
     void start(State *state);
-    void end(State *state, Overhead *overhead);
+    void end(State *state, Overhead *overhead, bool count = false, bool hit = false);
 
     CollectionToken GetCollectionToken();
     bool IsCurrentCollection(const CollectionToken& token);
+	void RecordShaderRegexLink(bool empty, bool skipped);
+	void RecordPostDrawLink(bool empty, bool skipped);
 
     // Completed samples belong to the window and mode observed at entry.
     class Sample {
@@ -73,6 +75,16 @@ namespace Profiling {
 	extern Overhead map_overhead;
 	extern Overhead pipeline_invalidation_overhead;
 	extern Overhead readback_map_overhead;
+	extern Overhead expression_om_query_overhead;
+	extern Overhead expression_cb_query_overhead;
+	extern Overhead draw_gate_uncached;
+	extern Overhead draw_gate_memo;
+	extern Overhead draw_gate_ib;
+	extern Overhead draw_gate_vb;
+	extern Overhead draw_gate_srv;
+	extern Overhead draw_gate_candidates;
+	extern Overhead draw_gate_pre_entry_miss;
+	extern Overhead draw_gate_post_entry_miss;
 	extern Overhead iniparams_upload_overhead;
 	extern Overhead hash_tracking_overhead;
 	extern Overhead stat_overhead;

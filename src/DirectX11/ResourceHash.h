@@ -981,6 +981,10 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
 // resource hash cannot prove absence of a region-hash candidate, so the caller
 // is conservatively told to run the full path.
 bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_info, bool region_hash_possible);
+// Caller holds G and the bound buffer references with region matching disabled.
+// Only current and empty candidate caches can bypass the usual checks.
+bool VertexBufferRangeHasNoCachedOverrideCandidates(ID3D11Buffer* const* buffers, unsigned count);
+bool BoundResourcesHaveNoCachedOverrideCandidates(ID3D11Resource* const* resources, size_t count);
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 // Takes G->mCriticalSection before mResourcesLock; call before old maps die.
 void InvalidateTextureOverrideCandidates();

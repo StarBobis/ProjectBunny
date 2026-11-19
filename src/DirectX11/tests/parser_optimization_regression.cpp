@@ -5,6 +5,8 @@
 #include "ExpressionFunctions.h"
 #include "globals.h"
 #include "Input.h"
+#include "profiling.h"
+#include "slot_range_test_support.h"
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
@@ -175,9 +177,327 @@ void expression_tests()
     check(!branch.is_static && GetExpressionRandomSampleCount() == samples_before,
         "If cache probes leave random dynamic and do not consume samples");
 }
+void executor_tests()
+{
+    ParserFiles files;
+    files.load("global $compile_gate=0\nglobal $compile_other=0\nglobal $compile_result=0\n"
+        "[CommandListCompiledExecutor]\n$compile_gate=1\n$compile_other=2\n"
+        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+1\nendif\n"
+        "$compile_gate=0\n$compile_other=2\n"
+        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+100\nendif\n"
+        "$compile_gate=1\n"
+        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+1\nendif\n"
+        "[CommandListGuardedEmpty]\nif $compile_gate\n$compile_result=100\nendif\n");
+    optimise_command_lists(nullptr);
+    auto& list = explicitCommandListSections.at(L"commandlistcompiledexecutor").command_list;
+    std::shared_ptr<const ScalarIfGuard> shared;
+    unsigned guards = 0;
+    for (const auto& command : list.commands) {
+        if (auto* branch = dynamic_cast<IfCommand*>(command.get())) {
+            if (!guards) shared = branch->scalar_guard;
+            check(shared && shared == branch->scalar_guard, "identical comparisons share one typed guard");
+            ++guards;
+        }
+    }
+    check(guards == 3 && !list.literal_optimized_commands.empty() &&
+        list.literal_optimized_commands.size() < list.commands.size(),
+        "typed executor batches consecutive literal writes and retains the original sequence");
+    HackerContext context(nullptr, nullptr);
+    CommandListState state;
+    state.mHackerContext = &context;
+    RunLinkedCommandList run(&list);
+    const bool old = G->mod_runtime_optimizations.exchange(true);
+    run.run(&state);
+    auto& result = command_list_globals.at(L"$compile_result").fval;
+    check(result == 2, "shared condition rechecks input values after a literal assignment batch changes them");
+    result = 0;
+    G->mod_runtime_optimizations = false;
+    run.run(&state);
+    check(result == 2, "typed executor matches the original path with optimizations disabled");
+
+    auto& guarded = explicitCommandListSections.at(L"commandlistguardedempty").command_list;
+    check(guarded.empty_if_false && guarded.commands.size() == 1, "empty-list profiling: compile the fast path");
+    command_list_globals.at(L"$compile_gate").fval = 0;
+    RunLinkedCommandList run_guarded(&guarded);
+    G->mod_runtime_optimizations = true;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    Profiling::clear();
+    run_guarded.run(&state);
+    check(guarded.executions == 0, "empty-list profiling: summary still skips the empty list");
+
+    Profiling::mode = Profiling::Mode::TOP_COMMAND_LISTS;
+    Profiling::clear();
+    run_guarded.run(&state);
+    check(guarded.executions == 1, "empty-list profiling: Top Lists counts the guarded list");
+
+    Profiling::mode = Profiling::Mode::TOP_COMMANDS;
+    Profiling::clear();
+    run_guarded.run(&state);
+    check(guarded.commands.front()->pre_executions == 1 && result == 2,
+        "empty-list profiling: Top Commands counts the false condition without executing its body");
+    Profiling::clear();
+    Profiling::mode = old_mode;
+    G->mod_runtime_optimizations = old;
+}
+
+void early_draw_gate_tests()
+{
+    const auto saved_params = G->iniParams;
+    const int saved_reserved = G->iniParamsReserved;
+    ParserFiles files;
+    files.load("global $gate=1\nglobal $result=0\nglobal $after=0\n"
+        "[Rendering]\ndraw_has_override_slots=ib vb[0:2] ps-t0\n"
+        "[TextureOverrideEarlyDrawGateOtherResource]\nhash=ee9afd38\nfilter_index=1\n"
+        "[CommandListEarlyDrawGate]\nif $gate\nlocal $kind=draw_type\n"
+        "if draw_has_override\n$result=$result+100\npost $result=$result+1000\nendif\n"
+        "x1=$kind\n$result=$result*10+1\npost ps-t7=null\npost $after=$after+1\nendif\n"
+        "[CommandListUnsafeEarlyDrawGate]\nif $gate\n$result=$result+1\n"
+        "if draw_has_override\n$result=$result+100\nendif\nendif\n");
+    optimise_command_lists(nullptr);
+    auto& section = explicitCommandListSections.at(L"commandlistearlydrawgate");
+    check(section.command_list.early_draw_gate && section.post_command_list.early_draw_gate,
+        "draw gate: compile pre and post from the production parser");
+    check(!explicitCommandListSections.at(L"commandlistunsafeearlydrawgate").command_list.early_draw_gate,
+        "draw gate: do not move across writes to ordinary variables");
+    check(G->draw_gate_early_reject && !G->profile_draw_gate,
+        "draw gate: default on, opt-in detailed profiling");
+
+    dx11_slot_test::BatchDevice gpu;
+    check(SUCCEEDED(gpu.device->CreateIniParamResources()) && G->iniParams.size() > 1,
+        "draw gate: allocate IniParams through the normal device path");
+    auto texture = dx11_slot_test::texture(gpu, 0xff33cc99);
+    auto view = dx11_slot_test::srv(gpu, texture.Get());
+    auto& state = gpu.state;
+    auto& result = command_list_globals.at(L"$result").fval;
+    auto& after = command_list_globals.at(L"$after").fval;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const bool old_master = G->mod_runtime_optimizations.exchange(true);
+    G->profile_draw_gate = true;
+    RunLinkedCommandList run_pre(&section.command_list), run_post(&section.post_command_list);
+    const auto initial_reads = Profiling::draw_gate_ib.count;
+    const auto initial_fast_misses = Profiling::draw_gate_pre_entry_miss.hits;
+    const auto initial_post_fast_misses = Profiling::draw_gate_post_entry_miss.hits;
+    const auto run = [&](bool fast, bool hit) {
+        G->draw_gate_early_reject = fast;
+        result = after = 0;
+        DrawCallInfo draw;
+        draw.type = DrawCall::DrawIndexed;
+        if (hit)
+            draw.override_candidate = DrawOverrideCandidate::Possible;
+        state.call_info = &draw;
+        dx11_slot_test::set_slot(gpu, L'p', 7, view.Get());
+        state.post = false;
+        run_pre.run(&state);
+        check(result == (hit ? 1001.0f : 1.0f) && G->iniParams[1].x == 2.0f && state.extra_indent == 0,
+            "draw gate: preserve local DRAW_TYPE, hit commands and IniParams writes in order");
+        state.post = true;
+        run_post.run(&state);
+        check(result == (hit ? 2001.0f : 1.0f) && after == 1.0f && !dx11_slot_test::get_slot(gpu, L'p', 7) &&
+            state.extra_indent == 0 && state.command_list_depth == 0,
+            "draw gate: preserve post order, slot writes and branch depth");
+        state.call_info = nullptr;
+    };
+    run(true, false);
+    check(Profiling::draw_gate_pre_entry_miss.hits == initial_fast_misses + 1 &&
+        Profiling::draw_gate_post_entry_miss.hits == initial_post_fast_misses + 1 &&
+        Profiling::draw_gate_ib.count == initial_reads + 1, "draw gate: native read once and fast route in both phases");
+    run(false, false);
+    check(Profiling::draw_gate_pre_entry_miss.hits == initial_fast_misses + 1 &&
+        Profiling::draw_gate_post_entry_miss.hits == initial_post_fast_misses + 1 &&
+        Profiling::draw_gate_ib.count == initial_reads + 2, "draw gate: independent opt-out uses legacy route");
+    run(true, true);
+    run(false, true);
+    G->mod_runtime_optimizations = false;
+    run(true, false);
+    check(Profiling::draw_gate_pre_entry_miss.hits == initial_fast_misses + 1 &&
+        Profiling::draw_gate_post_entry_miss.hits == initial_post_fast_misses + 1 &&
+        Profiling::draw_gate_ib.count == initial_reads + 3, "draw gate: master switch still uses legacy route");
+    G->mod_runtime_optimizations = old_master;
+    G->draw_gate_early_reject = true;
+    G->profile_draw_gate = false;
+    Profiling::mode = old_mode;
+    Profiling::clear();
+    G->iniParams = saved_params;
+    G->iniParamsReserved = saved_reserved;
+}
+
+void shader_regex_empty_link_tests()
+{
+    ParserFiles files;
+    files.load("global $dirty=0\nglobal $safe=1\nglobal $present=0\nglobal $sim=0\nglobal $runs=0\n"
+        "[CommandListGuardedRegexFixture]\n"
+        "if $dirty || !$safe\n$runs=$runs+1\nendif\n"
+        "if $present && $sim && draw_type % 2 == 0 && vs-cb1 === null\n$runs=$runs+10\nendif\n"
+        "[CommandListUnsafeRegexFixture]\nif $present && random(10)\n$runs=$runs+100\nendif\n"
+        "[CommandListElseRegexFixture]\nif $present\n$runs=$runs+100\nelse\n$runs=$runs+1000\nendif\n"
+        "[CommandListWritesRegexFixture]\n$runs=$runs+10000\n"
+        "if $present\n$runs=$runs+100\nendif\n");
+    optimise_command_lists(nullptr);
+    CommandList caller;
+    const std::wstring synthetic_line = L"run = linked command list";
+    const auto link_fixture = [&](const wchar_t* name) {
+        auto& target = explicitCommandListSections.at(name).command_list;
+        return LinkCommandLists(&caller, &target, &synthetic_line);
+    };
+    const auto guarded = link_fixture(L"commandlistguardedregexfixture");
+    const auto unsafe = link_fixture(L"commandlistunsaferegexfixture");
+    const auto has_else = link_fixture(L"commandlistelseregexfixture");
+    const auto has_write = link_fixture(L"commandlistwritesregexfixture");
+    check(guarded->link->shader_regex_empty_guard != nullptr && !unsafe->link->shader_regex_empty_guard &&
+        !has_else->link->shader_regex_empty_guard && !has_write->link->shader_regex_empty_guard,
+        "shader regex link: every false branch must be empty and every tested condition safe");
+    check(G->shader_regex_skip_empty_links && !G->profile_shader_regex_links,
+        "shader regex link: enabled by default with diagnostics off");
+
+    dx11_slot_test::BatchDevice gpu;
+    DrawCallInfo draw;
+    draw.type = DrawCall::DrawIndexed;
+    gpu.state.call_info = &draw;
+    auto& runs = command_list_globals.at(L"$runs").fval;
+    auto& dirty = command_list_globals.at(L"$dirty").fval;
+    auto& present = command_list_globals.at(L"$present").fval;
+    auto& sim = command_list_globals.at(L"$sim").fval;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const auto master = G->mod_runtime_optimizations.exchange(true);
+    const auto short_circuit = G->expression_short_circuit.exchange(true);
+    Profiling::clear();
+
+    auto* target = guarded->link;
+    const auto before = target->executions;
+    const auto cb_queries = Profiling::expression_cb_query_overhead.count;
+    guarded->run(&gpu.state);
+    check(target->executions == before && runs == 0 && Profiling::expression_cb_query_overhead.count == cb_queries,
+        "shader regex link: both inactive conditions bypass list and native queries");
+
+    G->shader_regex_skip_empty_links = false;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 1 && runs == 0 && Profiling::expression_cb_query_overhead.count == cb_queries,
+        "shader regex link: independent switch restores dispatch with the same result");
+    G->shader_regex_skip_empty_links = true;
+    dirty = 1;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 2 && runs == 1,
+        "shader regex link: possible first branch is executed at its original entry");
+    dirty = 0;
+    present = sim = 1;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 3 && runs == 11 && Profiling::expression_cb_query_overhead.count == cb_queries + 1,
+        "shader regex link: possible second branch retains the native query and body");
+
+    present = 0;
+    const auto random_count = GetExpressionRandomSampleCount();
+    unsafe->run(&gpu.state);
+    has_else->run(&gpu.state);
+    has_write->run(&gpu.state);
+    check(runs == 11011 && GetExpressionRandomSampleCount() == random_count + 1,
+        "shader regex link: eager side effects, else and top-level writes are preserved");
+    G->mod_runtime_optimizations = false;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 4 && runs == 11011,
+        "shader regex link: master switch also restores the original dispatch");
+    G->mod_runtime_optimizations = true;
+    target->DiscardExecutionPlans();
+    guarded->run(&gpu.state);
+    check(target->executions == before + 5 && !target->shader_regex_empty_guard && runs == 11011,
+        "shader regex link: invalidated plan cannot suppress an existing link");
+    G->mod_runtime_optimizations = master;
+    G->expression_short_circuit = short_circuit;
+    Profiling::mode = old_mode;
+    Profiling::clear();
+}
+
+void empty_post_draw_link_tests()
+{
+    ParserFiles files;
+    files.load("global $post_fixture_enabled=1\nglobal $post_fixture_type=2\n"
+        "global $post_fixture_saved=0\nglobal $post_fixture_matches=0\nglobal $post_fixture_effect=0\n"
+        "[Rendering]\ndraw_has_override_slots=ib vb[0:2] ps-t0\n"
+        "[ResourcePostFixtureOriginal]\n"
+        "[CommandListPostFixtureSave]\nResourcePostFixtureOriginal=ref ps-t7\n"
+        "[CommandListPostFixtureCleanup]\nif $post_fixture_saved\n"
+        "ps-t7=ref ResourcePostFixtureOriginal\n$post_fixture_saved=0\nendif\n"
+        "[CommandListPostFixtureSkin]\nif $post_fixture_enabled\n"
+        "if draw_has_override\npost $post_fixture_matches=$post_fixture_matches+1\nendif\n"
+        "if $post_fixture_type == 2 || $post_fixture_type == 4\npost run=CommandListPostFixtureCleanup\nendif\nendif\n"
+        "[CommandListPostFixtureWrapper]\nrun=CommandListPostFixtureSkin\n"
+        "[CommandListPostFixtureOther]\nrun=CommandListPostFixtureSkin\npost $post_fixture_effect=$post_fixture_effect+1\n"
+        "[CommandListPostFixtureReplacement]\n$post_fixture_effect=$post_fixture_effect+10\n");
+    optimise_command_lists(nullptr);
+    const auto section = [](const wchar_t* name) -> ExplicitCommandListSection& {
+        return explicitCommandListSections.at(name);
+    };
+    auto& target = section(L"commandlistpostfixturewrapper").post_command_list;
+    auto& other = section(L"commandlistpostfixtureother").post_command_list;
+    auto& cleanup = section(L"commandlistpostfixturecleanup").command_list;
+    CommandList linked;
+    const std::wstring line = L"run = linked command list";
+    auto post = LinkCommandLists(&linked, &target, &line);
+    auto post_with_effect = LinkCommandLists(&linked, &other, &line);
+    check(target.post_draw_miss_guard && cleanup.empty_if_false && !other.post_draw_miss_guard,
+        "post draw: prove the phase-aware wrapper and reject an unrelated post effect");
+    check(G->draw_gate_skip_empty_post && !G->profile_post_draw_entry, "post draw: enabled by default, diagnostics off");
+
+    dx11_slot_test::BatchDevice gpu;
+    auto original = dx11_slot_test::texture(gpu, 0xff112233);
+    auto changed = dx11_slot_test::texture(gpu, 0xffaabbcc);
+    auto original_view = dx11_slot_test::srv(gpu, original.Get());
+    auto changed_view = dx11_slot_test::srv(gpu, changed.Get());
+    auto& saved = command_list_globals.at(L"$post_fixture_saved").fval;
+    auto& matched = command_list_globals.at(L"$post_fixture_matches").fval;
+    auto& effect = command_list_globals.at(L"$post_fixture_effect").fval;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const bool old_master = G->mod_runtime_optimizations.exchange(true);
+    const bool old_gate = G->draw_gate_early_reject.exchange(true);
+    Profiling::clear();
+    DrawCallInfo draw;
+    draw.type = DrawCall::DrawIndexed;
+    draw.override_candidate = DrawOverrideCandidate::Miss;
+    gpu.state.call_info = &draw;
+    gpu.state.post = true;
+
+    post->run(&gpu.state);
+    check(target.executions == 0 && matched == 0, "post draw: cached miss with no saved binding skips wrapper");
+    G->draw_gate_skip_empty_post = false;
+    post->run(&gpu.state);
+    check(target.executions == 1 && matched == 0, "post draw: independent switch retains original dispatch");
+    G->draw_gate_skip_empty_post = true;
+
+    RunLinkedCommandList save(&section(L"commandlistpostfixturesave").command_list);
+    dx11_slot_test::set_slot(gpu, L'p', 7, original_view.Get());
+    gpu.state.post = false;
+    save.run(&gpu.state);
+    dx11_slot_test::set_slot(gpu, L'p', 7, changed_view.Get());
+    saved = 1;
+    gpu.state.post = true;
+    post->run(&gpu.state);
+    check(target.executions == 2 && saved == 0 && dx11_slot_test::get_slot(gpu, L'p', 7).Get() == original_view.Get(),
+        "post draw: cached miss still restores a saved native slot through explicit post run");
+    draw.override_candidate = DrawOverrideCandidate::Possible;
+    post->run(&gpu.state);
+    check(target.executions == 3 && matched == 1, "post draw: a possible match runs its post commands");
+    draw.override_candidate = DrawOverrideCandidate::Unqueried;
+    post->run(&gpu.state);
+    check(target.executions == 4 && draw.override_candidate == DrawOverrideCandidate::Miss && matched == 1,
+        "post draw: only use an existing miss, without moving the original query");
+    post_with_effect->run(&gpu.state);
+    check(other.executions == 1 && effect == 1, "post draw: unrelated post commands still run");
+    G->draw_gate_early_reject = false;
+    post->run(&gpu.state);
+    check(target.executions == 5, "post draw: parent draw gate switch also restores original dispatch");
+    G->draw_gate_early_reject = true;
+    check(cleanup.SetSourceCommandList(&section(L"commandlistpostfixturereplacement").command_list),
+        "post draw: configure a live alias to a different cleanup source");
+    post->run(&gpu.state);
+    check(target.executions == 6 && effect == 11 && gpu.state.post && gpu.state.command_list_depth == 0,
+        "post draw: altered targets invalidate the proof and keep phase ordering");
+    G->mod_runtime_optimizations = old_master;
+    G->draw_gate_early_reject = old_gate;
+    Profiling::mode = old_mode;
+    Profiling::clear();
+}
 }
 void test_dx11_parser_optimization_regression()
 {
-    try { constants_tests(); expression_tests(); std::fputs("PASS: Constants compaction, masked/direct expression passes and If/lookup cache boundaries\n", stderr); }
+    try { constants_tests(); expression_tests(); executor_tests(); early_draw_gate_tests(); shader_regex_empty_link_tests(); empty_post_draw_link_tests(); std::fputs("PASS: Constants compaction, typed command execution and empty ShaderRegex links in both phases\n", stderr); }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL parser optimization: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }

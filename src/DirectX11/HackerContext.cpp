@@ -217,6 +217,35 @@ void HackerContext::HookContext()
 	mOrigContext1 = hook_context(mOrigContext1, this);
 }
 
+void HackerContext::InvalidateDrawOverrideBindings()
+{
+	if (mOrigContext1 == mRealOrigContext1)
+		return;
+	const DWORD thread = GetCurrentThreadId();
+	DWORD owner = draw_override_binding_thread.load(std::memory_order_relaxed);
+	if (!owner && draw_override_binding_thread.compare_exchange_strong(owner, thread))
+		owner = thread;
+	if (owner != thread)
+		draw_override_tracking_lost.store(true, std::memory_order_release);
+	draw_override_binding_version.fetch_add(1, std::memory_order_release);
+}
+
+uint64_t HackerContext::DrawOverrideBindingVersion()
+{
+	// Only a detoured context observes application calls through the
+	// original interface as well as explicit writes made by the loader.
+	if (mOrigContext1 == mRealOrigContext1 || draw_override_tracking_lost.load(std::memory_order_acquire) ||
+		mOrigContext1->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
+		return 0;
+	const DWORD thread = GetCurrentThreadId();
+	DWORD owner = draw_override_binding_thread.load(std::memory_order_relaxed);
+	if (!owner && draw_override_binding_thread.compare_exchange_strong(owner, thread))
+		owner = thread;
+	if (owner != thread)
+		return 0;
+	return draw_override_binding_version.load(std::memory_order_acquire);
+}
+
 // -----------------------------------------------------------------------------
 
 
@@ -908,6 +937,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	{
 		IndexBufferBinding& b = mCurrentIndexBufferBinding;
 		if (!b.is_explicit && b.buffer && data.call_info.IndexCount) {
+			InvalidateDrawOverrideBindings();
 			mOrigContext1->IASetIndexBuffer(b.buffer, b.format, b.offset);
 		}
 		b.is_explicit = false;
@@ -1264,6 +1294,8 @@ HRESULT STDMETHODCALLTYPE HackerContext::QueryInterface(
 		*ppvObject = this;
 		LogDebug("  return HackerContext(%s@%p) wrapper of %p\n", type_name(this), this, ppvObject);
 	}
+	else
+		draw_override_tracking_lost.store(true, std::memory_order_release);
 
 	LogDebug("  returns result = %x for %p\n", hr, ppvObject);
 	return hr;
@@ -1696,6 +1728,7 @@ STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
 	/* [annotation] */
 	__in_ecount(NumBuffers)  const UINT *pOffsets)
 {
+	 InvalidateDrawOverrideBindings();
 	 mOrigContext1->IASetVertexBuffers(StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
 
 	 // Register hashes of vertex buffers for browsing in Shader Hunting Mode.
@@ -2329,6 +2362,7 @@ STDMETHODIMP_(void) HackerContext::ExecuteCommandList(THIS_
 	__in  ID3D11CommandList *pCommandList,
 	BOOL RestoreContextState)
 {
+	InvalidateDrawOverrideBindings();
 	if (G->deferred_contexts_enabled) {
         // Deferred Get methods cannot reveal the command list write set.
         // Invalidate conservatively at actual submission, not while recording.
@@ -3033,6 +3067,7 @@ STDMETHODIMP_(void) HackerContext::CSGetConstantBuffers(THIS_
 
 STDMETHODIMP_(void) HackerContext::ClearState(THIS)
 {
+	InvalidateDrawOverrideBindings();
     AdvanceTextureMatchCall();
 	ResetTrackedInputLayout();
 	 mOrigContext1->ClearState();
@@ -3100,6 +3135,7 @@ void HackerContext::BindResources()
 
 void HackerContext::Bind3DMigotoResources()
 {
+	InvalidateDrawOverrideBindings();
 	// Third generation of binding the stereo resources. We used to do this
 	// in the SetShader calls, but that was problematic in certain games
 	// like Akiba's Trip that would unbind all resources between then and
@@ -3204,6 +3240,7 @@ template <void (__stdcall ID3D11DeviceContext::*OrigSetShaderResources)(THIS_
 void HackerContext::SetShaderResources(UINT StartSlot, UINT NumViews,
 		ID3D11ShaderResourceView *const *ppShaderResourceViews)
 {
+	InvalidateDrawOverrideBindings();
 	ID3D11ShaderResourceView **override_srvs = NULL;
 
 	if (!mHackerDevice)
@@ -3279,6 +3316,7 @@ STDMETHODIMP_(void) HackerContext::PSSetShader(THIS_
 		{
 			LogDebug("  adding Z buffer to shader resources in slot 126.\n");
 
+			InvalidateDrawOverrideBindings();
 			mOrigContext1->PSSetShaderResources(126, 1, &mHackerDevice->mZBufferResourceView);
 		}
 	}
@@ -3334,6 +3372,7 @@ STDMETHODIMP_(void) HackerContext::IASetIndexBuffer(THIS_
 	/* [annotation] */
 	__in  UINT Offset)
 {
+	InvalidateDrawOverrideBindings();
 	mOrigContext1->IASetIndexBuffer(pIndexBuffer, Format, Offset);
 
 	// Register hash of index buffer for browsing in Shader Hunting Mode.
@@ -3871,6 +3910,7 @@ void STDMETHODCALLTYPE HackerContext::SwapDeviceContextState(
 	/* [annotation] */
 	_Out_opt_  ID3DDeviceContextState **ppPreviousState)
 {
+	InvalidateDrawOverrideBindings();
 	mOrigContext1->SwapDeviceContextState(pState, ppPreviousState);
 
 	// If a game or overlay creates separate context state objects we won't

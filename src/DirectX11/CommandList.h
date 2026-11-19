@@ -31,6 +31,10 @@ class HackerDevice;
 class HackerContext;
 class CommandListExpression;
 class CommandList;
+struct ScalarIfGuard;
+struct EarlyDrawGate;
+struct ShaderRegexEmptyGuard;
+struct PostDrawMissGuard;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
 
@@ -63,12 +67,29 @@ struct ShaderResourceBatchStats {
 	unsigned literal_indexed_draws = 0;
 	unsigned graphics_ref_hits = 0;
 	unsigned alias_metadata_hits = 0;
+	unsigned draw_gate_reuses = 0;
 };
 
 class CustomShaderStateScope;
+class ResourceCopyOperation;
+class CustomResource;
 
 class CommandListState {
 public:
+	struct ScalarIfMemo {
+		const ScalarIfGuard* guard = nullptr;
+		float first = 0, second = 0;
+		bool result = false;
+	};
+	std::array<ScalarIfMemo, 4> scalar_if_memo{};
+	struct DepthCopySnapshot {
+		const ResourceCopyOperation* operation = nullptr;
+		const CustomResource* target = nullptr;
+		Microsoft::WRL::ComPtr<ID3D11Resource> source, destination;
+		Microsoft::WRL::ComPtr<ID3D11View> depth_view;
+	};
+	DepthCopySnapshot depth_snapshot;
+
 	HackerDevice *mHackerDevice;
 	HackerContext *mHackerContext;
 	ID3D11Device1 *mOrigDevice1;
@@ -195,6 +216,12 @@ public:
 	// destruction of each object:
 	typedef std::vector<std::shared_ptr<CommandListCommand>> Commands;
 	Commands commands;
+	Commands literal_optimized_commands;
+	const Commands::value_type* literal_source_data = nullptr;
+	size_t literal_source_size = 0;
+	std::shared_ptr<const EarlyDrawGate> early_draw_gate;
+	std::shared_ptr<const ShaderRegexEmptyGuard> shader_regex_empty_guard;
+	std::shared_ptr<const PostDrawMissGuard> post_draw_miss_guard;
 
 	// For local/static variables. These are only used in the main pre
 	// command list as the post command list and any sub command lists (if
@@ -215,8 +242,11 @@ public:
     std::weak_ptr<const void> profiling_generation;
 
 	bool runtime_populated = false;
+	// Set after optimisation when a single variable gates all work in this phase.
+	const float* empty_if_false = nullptr;
 
 	void clear();
+	void DiscardExecutionPlans();
 
 	bool SetSourceCommandList(CommandList* source);
 	CommandList* ResolveCommandList();
@@ -1218,6 +1248,7 @@ enum class ResourceCopyOptions {
 	SET_VIEWPORT    = 0x00000100,
 	NO_VIEW_CACHE   = 0x00000200,
 	RAW_VIEW        = 0x00000400,
+	REUSE_UNCHANGED = 0x00000800,
 
 	UNKNOWN         = 0x00008000,
 	COPY_MASK       = 0x000000c9, // Anything that implies a copy
@@ -1235,6 +1266,7 @@ static EnumName_t<const wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[
 	{L"set_viewport", ResourceCopyOptions::SET_VIEWPORT},
 	{L"no_view_cache", ResourceCopyOptions::NO_VIEW_CACHE},
 	{L"raw", ResourceCopyOptions::RAW_VIEW},
+	{L"reuse_unchanged", ResourceCopyOptions::REUSE_UNCHANGED},
 
 	// This one currently depends on device support for resolving the
 	// given texture format (D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE), and
@@ -1431,6 +1463,7 @@ class CommandListEvaluatable {
 public:
 	virtual ~CommandListEvaluatable() {}; // Because C++
 
+	virtual bool IsSafeToSkipEvaluation() const { return false; }
 	virtual float evaluate(CommandListState *state, HackerDevice *device=NULL) = 0;
 	virtual bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) = 0;
 	virtual bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) = 0;
@@ -1498,6 +1531,7 @@ class CommandListOperator :
 	public CommandListFinalisable,
 	public CommandListOperandBase,
 	public CommandListWalkable {
+	bool safe_to_skip_evaluation = false;
 public:
 	std::shared_ptr<CommandListToken> lhs_tree;
 	std::shared_ptr<CommandListToken> rhs_tree;
@@ -1512,6 +1546,7 @@ public:
 	{}
 
 	std::shared_ptr<CommandListEvaluatable> finalise() override;
+	bool IsSafeToSkipEvaluation() const override { return safe_to_skip_evaluation; }
 	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
 	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) override;
 	bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) override;
@@ -1697,6 +1732,7 @@ public:
 	bool parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 
+	bool IsSafeToSkipEvaluation() const override;
 	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
 	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) override;
 	bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) override;
@@ -1757,6 +1793,7 @@ public:
 class IfCommand : public CommandListCommand {
 public:
 	CommandListExpression expression;
+	std::shared_ptr<const ScalarIfGuard> scalar_guard;
 	bool pre_finalised, post_finalised;
 	bool has_nested_else_if;
 	wstring section;

@@ -20,6 +20,16 @@ namespace Profiling {
 	Overhead map_overhead;
 	Overhead pipeline_invalidation_overhead;
 	Overhead readback_map_overhead;
+	Overhead expression_om_query_overhead;
+	Overhead expression_cb_query_overhead;
+	Overhead draw_gate_uncached;
+	Overhead draw_gate_memo;
+	Overhead draw_gate_ib;
+	Overhead draw_gate_vb;
+	Overhead draw_gate_srv;
+	Overhead draw_gate_candidates;
+	Overhead draw_gate_pre_entry_miss;
+	Overhead draw_gate_post_entry_miss;
 	Overhead iniparams_upload_overhead;
 	Overhead hash_tracking_overhead;
 	Overhead region_tracking_overhead;
@@ -59,6 +69,12 @@ namespace Profiling {
 namespace {
 std::mutex profiling_samples_mutex;
 Profiling::CollectionToken collection_token = std::make_shared<unsigned char>(0);
+unsigned shader_regex_guarded_links = 0;
+unsigned shader_regex_empty_links = 0;
+unsigned shader_regex_skipped_links = 0;
+unsigned post_draw_guarded_links = 0;
+unsigned post_draw_empty_links = 0;
+unsigned post_draw_skipped_links = 0;
 }
 
 Profiling::CollectionToken Profiling::GetCollectionToken()
@@ -73,6 +89,26 @@ bool Profiling::IsCurrentCollection(const CollectionToken& token)
     return token == collection_token;
 }
 
+void Profiling::RecordShaderRegexLink(bool empty, bool skipped)
+{
+	std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+	if (mode.load(std::memory_order_relaxed) != Mode::SUMMARY)
+		return;
+	++shader_regex_guarded_links;
+	shader_regex_empty_links += empty;
+	shader_regex_skipped_links += skipped;
+}
+
+void Profiling::RecordPostDrawLink(bool empty, bool skipped)
+{
+	std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+	if (mode.load(std::memory_order_relaxed) != Mode::SUMMARY)
+		return;
+	++post_draw_guarded_links;
+	post_draw_empty_links += empty;
+	post_draw_skipped_links += skipped;
+}
+
 void Profiling::start(State* state)
 {
     state->collection = GetCollectionToken();
@@ -80,7 +116,7 @@ void Profiling::start(State* state)
     state->started = true;
 }
 
-void Profiling::end(State* state, Overhead* overhead)
+void Profiling::end(State* state, Overhead* overhead, bool count, bool hit)
 {
     if (!state->started) return;
     state->started = false;
@@ -90,6 +126,10 @@ void Profiling::end(State* state, Overhead* overhead)
     std::lock_guard<std::mutex> lock(profiling_samples_mutex);
     if (token != collection_token) return;
     overhead->cpu.QuadPart += now.QuadPart - state->start_time.QuadPart;
+    if (count) {
+        ++overhead->count;
+        if (hit) ++overhead->hits;
+    }
 }
 
 Profiling::Sample::Sample(Overhead& overhead, bool count) : overhead_(&overhead), count_(count)
@@ -396,6 +436,55 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
     };
     append_lookup(L"TO candidates rebuild", Profiling::texture_override_fuzzy_match_overhead);
     append_lookup(L"TO candidates lookup", Profiling::texture_override_candidates_lookup_overhead);
+    const auto append_query = [&](const wchar_t* label, const Profiling::Overhead& overhead) {
+        _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"%ls: %.2fus/frame (%.2f queries/frame)\n", label,
+            static_cast<double>(overhead.cpu.QuadPart) * 1000000.0 / freq.QuadPart / frames,
+            static_cast<double>(overhead.count) / frames);
+        Profiling::text += buf;
+    };
+    append_query(L"Expression OM queries", Profiling::expression_om_query_overhead);
+    append_query(L"Expression CB queries", Profiling::expression_cb_query_overhead);
+    if (G->profile_draw_gate.load(std::memory_order_relaxed)) {
+        const auto append_gate = [&](const wchar_t* label, const Profiling::Overhead& overhead) {
+            _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
+                L"%ls: %.2fus/frame (%.2f calls/frame, %.2f hits/frame)\n", label,
+                static_cast<double>(overhead.cpu.QuadPart) * 1000000.0 / freq.QuadPart / frames,
+                static_cast<double>(overhead.count) / frames, static_cast<double>(overhead.hits) / frames);
+            Profiling::text += buf;
+        };
+        append_gate(L"Draw gate first checks", Profiling::draw_gate_uncached);
+        append_gate(L"Draw gate same-draw cache", Profiling::draw_gate_memo);
+        append_query(L"Draw gate IB Get", Profiling::draw_gate_ib);
+        append_query(L"Draw gate VB Get", Profiling::draw_gate_vb);
+        append_query(L"Draw gate SRV Get", Profiling::draw_gate_srv);
+        append_gate(L"Draw gate candidate checks", Profiling::draw_gate_candidates);
+        append_gate(L"Draw gate pre miss entry (hits use fast path)", Profiling::draw_gate_pre_entry_miss);
+        append_gate(L"Draw gate post miss entry (hits use fast path)", Profiling::draw_gate_post_entry_miss);
+    }
+	if (G->profile_shader_regex_links.load(std::memory_order_relaxed)) {
+		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
+			L"ShaderRegex guarded links: %.2f/frame\n"
+			L"ShaderRegex empty links: %.2f/frame\n"
+			L"ShaderRegex skipped empty links: %.2f/frame\n"
+			L"ShaderRegex dispatched empty links: %.2f/frame\n",
+			static_cast<double>(shader_regex_guarded_links) / frames,
+			static_cast<double>(shader_regex_empty_links) / frames,
+			static_cast<double>(shader_regex_skipped_links) / frames,
+			static_cast<double>(shader_regex_empty_links - shader_regex_skipped_links) / frames);
+		Profiling::text += buf;
+	}
+	if (G->profile_post_draw_entry.load(std::memory_order_relaxed)) {
+		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
+			L"Post draw guarded miss links: %.2f/frame\n"
+			L"Post draw empty miss links: %.2f/frame\n"
+			L"Post draw skipped empty miss links: %.2f/frame\n"
+			L"Post draw dispatched empty miss links: %.2f/frame\n",
+			static_cast<double>(post_draw_guarded_links) / frames,
+			static_cast<double>(post_draw_empty_links) / frames,
+			static_cast<double>(post_draw_skipped_links) / frames,
+			static_cast<double>(post_draw_empty_links - post_draw_skipped_links) / frames);
+		Profiling::text += buf;
+	}
     _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"Texture update hits: %u/%u hits/frame\n",
         Profiling::hash_tracking_overhead.hits / frames, Profiling::hash_tracking_overhead.count / frames);
     Profiling::text += buf;
@@ -546,12 +635,28 @@ void Profiling::clear()
     CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
     clear_command_list_profiling();
     std::lock_guard<std::mutex> sample_lock(profiling_samples_mutex);
+	shader_regex_guarded_links = 0;
+	shader_regex_empty_links = 0;
+	shader_regex_skipped_links = 0;
+	post_draw_guarded_links = 0;
+	post_draw_empty_links = 0;
+	post_draw_skipped_links = 0;
 	present_overhead.clear();
 	overlay_overhead.clear();
 	draw_overhead.clear();
 	map_overhead.clear();
 	pipeline_invalidation_overhead.clear();
 	readback_map_overhead.clear();
+	expression_om_query_overhead.clear();
+	expression_cb_query_overhead.clear();
+	draw_gate_uncached.clear();
+	draw_gate_memo.clear();
+	draw_gate_ib.clear();
+	draw_gate_vb.clear();
+	draw_gate_srv.clear();
+	draw_gate_candidates.clear();
+	draw_gate_pre_entry_miss.clear();
+	draw_gate_post_entry_miss.clear();
 	iniparams_upload_overhead.clear();
 	hash_tracking_overhead.clear();
 	region_tracking_overhead.clear();

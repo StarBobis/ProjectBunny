@@ -615,6 +615,13 @@ struct Globals
 	ShaderOverrideMap mShaderOverrideMap;
 	std::atomic<bool> mod_runtime_optimizations{true};
 	bool ModRuntimeOptimizationsEnabled() const { return mod_runtime_optimizations.load(std::memory_order_relaxed); }
+	std::atomic<bool> expression_short_circuit{true};
+	std::atomic<bool> draw_gate_early_reject{true};
+	std::atomic<bool> profile_draw_gate{false};
+	std::atomic<bool> shader_regex_skip_empty_links{true};
+	std::atomic<bool> profile_shader_regex_links{false};
+	std::atomic<bool> draw_gate_skip_empty_post{true};
+	std::atomic<bool> profile_post_draw_entry{false};
 	std::atomic<uint64_t> shader_override_generation{1};
 	std::atomic<uint64_t> shader_regex_generation{1};
 	TextureOverrideMap mTextureOverrideMap;
@@ -628,6 +635,7 @@ struct Globals
 	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> auto_check_compute_targets;
 	// Read only when the draw predicate is first evaluated. G protects reload.
 	std::vector<DrawOverrideSlotRange> draw_override_slot_ranges;
+	uint64_t draw_override_slot_generation = 0;
 
 	// Parallel to auto_check_texture_slots: 1 when at least one
 	// checktextureoverride for that slot exists in the loaded command lists.

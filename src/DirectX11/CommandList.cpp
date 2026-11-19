@@ -12,7 +12,10 @@
 #include <WICTextureLoader.h>
 #include <algorithm>
 #include <iterator>
+#include <map>
+#include <cstring>
 #include <optional>
+#include <type_traits>
 #include <sstream>
 #include <string_view>
 #include <typeinfo>
@@ -135,9 +138,90 @@ public:
     ~CommandListDepthScope() { --depth; }
 };
 
+struct EarlyDrawGate {
+	const IfCommand* outer = nullptr;
+	const float* condition = nullptr;
+	const CommandList* body = nullptr;
+	const CommandList::Commands::value_type* body_data = nullptr;
+	size_t body_size = 0;
+	CommandList::Commands on_miss;
+};
+
+namespace {
+bool DrawHasConfiguredOverride(CommandListState* state);
+void RunCommand(CommandListCommand* command, CommandListState* state);
+}
+
+static bool DrawGateDiagnosticsEnabled()
+{
+	return G->profile_draw_gate.load(std::memory_order_relaxed) &&
+		Profiling::mode.load(std::memory_order_relaxed) == Profiling::Mode::SUMMARY;
+}
+
+static bool RunEarlyDrawGate(const EarlyDrawGate* gate, CommandList* list, CommandListState* state)
+{
+	if (!gate || state->aborted || !state->call_info || !*gate->condition ||
+		state->post != list->post || state->command_list_depth >= MAX_COMMAND_LIST_RECURSION - 1 ||
+		!G->draw_gate_early_reject.load(std::memory_order_relaxed) || !G->ModRuntimeOptimizationsEnabled() ||
+		G->analyse_frame || gLogDebug)
+		return false;
+	const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+	if (mode == Profiling::Mode::TOP_COMMANDS || mode == Profiling::Mode::TOP_COMMAND_LISTS ||
+		list->commands.size() != 1 || list->commands.front().get() != gate->outer)
+		return false;
+	const auto& body = state->post ? gate->outer->true_commands_post : gate->outer->true_commands_pre;
+	if (body.get() != gate->body || body->commands.data() != gate->body_data || body->commands.size() != gate->body_size ||
+		DrawHasConfiguredOverride(state))
+		return false;
+
+	// The false child is empty. Keep the enclosing branch depth and execute
+	// the remaining body commands at their original phase and in source order.
+	CommandListDepthScope depth(state->command_list_depth);
+	++state->extra_indent;
+	for (const auto& command : gate->on_miss) {
+		if (state->aborted) break;
+		RunCommand(command.get(), state);
+	}
+	--state->extra_indent;
+	return true;
+}
+
+static inline void RunListCommands(CommandList* list, CommandListState* state, command_list_profiling_state* sample)
+{
+	auto& commands = list->commands;
+	auto& optimized = list->literal_optimized_commands;
+	auto& executable = !optimized.empty() && list->literal_source_data == commands.data() &&
+		list->literal_source_size == commands.size() && G->ModRuntimeOptimizationsEnabled() &&
+		!G->analyse_frame && !gLogDebug && Profiling::mode != Profiling::Mode::TOP_COMMANDS ? optimized : commands;
+	for (auto& command : executable) {
+		if (state->aborted) break;
+		profile_command_list_cmd_start(command.get(), sample);
+		RunCommand(command.get(), state);
+		profile_command_list_cmd_end(command.get(), state, sample);
+	}
+}
+
+static void RunListWithEarlyDrawGate(CommandList* list, CommandListState* state, command_list_profiling_state* sample)
+{
+	const auto* gate = list->early_draw_gate.get();
+	if (!DrawGateDiagnosticsEnabled()) {
+		if (!RunEarlyDrawGate(gate, list, state))
+			RunListCommands(list, state, sample);
+		return;
+	}
+	Profiling::State entry;
+	if (!state->aborted && state->call_info && *gate->condition && state->post == list->post)
+		Profiling::start(&entry);
+	const bool early_miss = RunEarlyDrawGate(gate, list, state);
+	if (!early_miss)
+		RunListCommands(list, state, sample);
+	if (entry.started && state->call_info && state->call_info->override_candidate == DrawOverrideCandidate::Miss)
+		Profiling::end(&entry, list->post ? &Profiling::draw_gate_post_entry_miss : &Profiling::draw_gate_pre_entry_miss,
+			true, early_miss);
+}
+
 static void _RunResolvedCommandList(CommandList *command_list, CommandListState *state, bool recursive)
 {
-	CommandList::Commands::iterator i;
 	command_list_profiling_state profiling_state;
 
 	if (state->command_list_depth >= MAX_COMMAND_LIST_RECURSION) {
@@ -148,6 +232,16 @@ static void _RunResolvedCommandList(CommandList *command_list, CommandListState 
 	if (command_list->commands.empty())
 		return;
 
+	// The legacy false branch still enters an empty sub-list. Keep the
+	// dispatcher near the depth limit and when collecting detailed counts.
+	if (command_list->empty_if_false && *command_list->empty_if_false == 0.0f &&
+		state->command_list_depth < MAX_COMMAND_LIST_RECURSION - 1 &&
+		G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug) {
+		const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+		if (mode != Profiling::Mode::TOP_COMMAND_LISTS && mode != Profiling::Mode::TOP_COMMANDS)
+			return;
+	}
+
 	CommandListDepthScope call_depth(state->command_list_depth);
 
 	if (recursive) {
@@ -157,11 +251,10 @@ static void _RunResolvedCommandList(CommandList *command_list, CommandListState 
 
 	profile_command_list_start(command_list, state, &profiling_state);
 
-	for (i = command_list->commands.begin(); i < command_list->commands.end() && !state->aborted; i++) {
-		profile_command_list_cmd_start(i->get(), &profiling_state);
-		(*i)->run(state);
-		profile_command_list_cmd_end(i->get(), state, &profiling_state);
-	}
+	if (command_list->early_draw_gate)
+		RunListWithEarlyDrawGate(command_list, state, &profiling_state);
+	else
+		RunListCommands(command_list, state, &profiling_state);
 
 	profile_command_list_end(command_list, state, &profiling_state);
 
@@ -360,6 +453,20 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 
 
 static void MergeDirectTextureChecks(CommandList* command_list);
+static void PrepareScalarGuardsAndLiteralBatches();
+
+static const float* FindEmptyListGuard(const CommandList &list)
+{
+	if (list.runtime_populated || list.commands.size() != 1)
+		return nullptr;
+
+	const auto* branch = dynamic_cast<const IfCommand*>(list.commands.front().get());
+	if (!branch || !branch->false_commands_pre->noop() || !branch->false_commands_post->noop())
+		return nullptr;
+
+	const auto* guard = dynamic_cast<const CommandListOperand*>(branch->expression.evaluatable.get());
+	return guard && guard->type == ParamOverrideType::VARIABLE ? guard->var_ftarget : nullptr;
+}
 static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
 		ID3D11ShaderResourceView** views);
 
@@ -444,6 +551,14 @@ void optimise_command_lists(HackerDevice *device)
 
 	for (CommandList* command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
+
+	PrepareScalarGuardsAndLiteralBatches();
+
+	for (auto &entry : explicitCommandListSections) {
+		auto &section = entry.second;
+		section.command_list.empty_if_false = FindEmptyListGuard(section.command_list);
+		section.post_command_list.empty_if_false = FindEmptyListGuard(section.post_command_list);
+	}
 
 	Profiling::update_cto_warning(!ignore_cto_post);
 
@@ -1251,36 +1366,79 @@ public:
 	RetainedBindings& operator=(const RetainedBindings&) = delete;
 };
 
+template<class Operation>
+static auto MeasureDrawGate(Profiling::Overhead& overhead, bool enabled, Operation operation)
+{
+	if (!enabled)
+		return operation();
+	Profiling::Sample sample(overhead);
+	if constexpr (std::is_same_v<decltype(operation()), bool>) {
+		const bool matched = operation();
+		sample.Finish(matched);
+		return matched;
+	} else {
+		operation();
+	}
+}
+
 // Caller holds G for the slot configuration and TextureOverride candidates.
 bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info,
-		const DrawOverrideSlotRange& range)
+		const DrawOverrideSlotRange& range, std::vector<ID3D11Resource*>* checked, bool profile)
 {
+	const auto has_candidate = [&](ID3D11Resource* resource, bool region_possible) {
+		return MeasureDrawGate(Profiling::draw_gate_candidates, profile, [&] {
+			return HasTextureOverrideCandidate(resource, info, region_possible);
+		});
+	};
 	const auto& first = range.first;
 	if (first.type == ResourceCopyTargetType::INDEX_BUFFER) {
 		Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
-		context->IAGetIndexBuffer(buffer.GetAddressOf(), nullptr, nullptr);
-		return HasTextureOverrideCandidate(buffer.Get(), info, G->track_region_hashes);
+		MeasureDrawGate(Profiling::draw_gate_ib, profile, [&] {
+			context->IAGetIndexBuffer(buffer.GetAddressOf(), nullptr, nullptr);
+		});
+		if (checked && buffer)
+			checked->push_back(buffer.Get());
+		return has_candidate(buffer.Get(), G->track_region_hashes);
 	}
 	if (first.type == ResourceCopyTargetType::VERTEX_BUFFER) {
 		RetainedBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
-		context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
+		MeasureDrawGate(Profiling::draw_gate_vb, profile, [&] {
+			context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
+		});
+		if (checked) {
+			for (unsigned i = 0; i < range.count; ++i)
+				if (bindings.values[i])
+					checked->push_back(bindings.values[i]);
+		}
+		if (range.count > 1 && !G->track_region_hashes && G->ModRuntimeOptimizationsEnabled() &&
+			!MeasureDrawGate(Profiling::draw_gate_candidates, profile, [&] {
+				return !VertexBufferRangeHasNoCachedOverrideCandidates(bindings.values, range.count);
+			}))
+			return false;
 		for (unsigned i = 0; i < range.count; ++i)
-			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
+			if (has_candidate(bindings.values[i], G->track_region_hashes))
 				return true;
 		return false;
 	}
 	RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+	const auto get = [&](auto getter) {
+		MeasureDrawGate(Profiling::draw_gate_srv, profile, [&] {
+			(context->*getter)(first.slot, range.count, bindings.values);
+		});
+	};
 	switch (first.shader_type) {
-	case L'p': context->PSGetShaderResources(first.slot, range.count, bindings.values); break;
-	case L'v': context->VSGetShaderResources(first.slot, range.count, bindings.values); break;
-	case L'c': context->CSGetShaderResources(first.slot, range.count, bindings.values); break;
+	case L'p': get(&ID3D11DeviceContext1::PSGetShaderResources); break;
+	case L'v': get(&ID3D11DeviceContext1::VSGetShaderResources); break;
+	case L'c': get(&ID3D11DeviceContext1::CSGetShaderResources); break;
 	default: return true;
 	}
 	for (unsigned i = 0; i < range.count; ++i) {
 		if (!bindings.values[i]) continue;
 		Microsoft::WRL::ComPtr<ID3D11Resource> resource;
 		bindings.values[i]->GetResource(resource.GetAddressOf());
-		if (HasTextureOverrideCandidate(resource.Get(), info, false))
+		if (checked && resource)
+			checked->push_back(resource.Get());
+		if (has_candidate(resource.Get(), false))
 			return true;
 	}
 	return false;
@@ -1292,18 +1450,51 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 	if (!info || !state->mOrigContext1 || info->type == DrawCall::Invalid ||
 		info->type == DrawCall::Dispatch || info->type == DrawCall::DispatchIndirect)
 		return true;
+	const bool profile = DrawGateDiagnosticsEnabled();
 	if (info->override_candidate != DrawOverrideCandidate::Unqueried)
-		return info->override_candidate == DrawOverrideCandidate::Possible;
+		return MeasureDrawGate(Profiling::draw_gate_memo, profile, [&] {
+			return info->override_candidate == DrawOverrideCandidate::Possible;
+		});
+	std::optional<Profiling::Sample> first_check;
+	if (profile)
+		first_check.emplace(Profiling::draw_gate_uncached);
 
 	CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	const auto& ranges = G->draw_override_slot_ranges;
+	auto* context = state->mHackerContext;
+	const auto binding_version = context && !ranges.empty() && !G->track_region_hashes &&
+		G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug &&
+		state->mOrigContext1 == context->GetPassThroughOrigContext1()
+		? context->DrawOverrideBindingVersion() : 0;
+	auto* proof = binding_version ? &context->draw_override_miss : nullptr;
+	const auto config_generation = G->draw_override_slot_generation;
+	if (proof) {
+		if (proof->binding_version == binding_version &&
+			proof->config_generation == config_generation && proof->frame == G->frame_no &&
+			BoundResourcesHaveNoCachedOverrideCandidates(proof->resources.data(), proof->resources.size())) {
+			if (auto* stats = state->slot_batch_stats)
+				++stats->draw_gate_reuses;
+			info->override_candidate = DrawOverrideCandidate::Miss;
+			return false;
+		}
+		proof->binding_version = 0;
+		proof->resources.clear();
+	}
 	// An absent or invalid setting preserves the direct-check route.
 	const bool possible = ranges.empty() ||
 		((!G->mTextureOverrideMap.empty() || !G->mFuzzyTextureOverrides.empty()) &&
 		 std::any_of(ranges.begin(), ranges.end(), [&](const DrawOverrideSlotRange& range) {
-			return DrawOverrideRangeMayMatch(state->mOrigContext1, info, range);
+			return DrawOverrideRangeMayMatch(state->mOrigContext1, info, range, proof ? &proof->resources : nullptr, profile);
 		}));
+	if (proof && !possible && context->DrawOverrideBindingVersion() == binding_version &&
+		BoundResourcesHaveNoCachedOverrideCandidates(proof->resources.data(), proof->resources.size())) {
+		proof->binding_version = binding_version;
+		proof->config_generation = config_generation;
+		proof->frame = G->frame_no;
+	}
 	info->override_candidate = possible ? DrawOverrideCandidate::Possible : DrawOverrideCandidate::Miss;
+	if (first_check)
+		first_check->Finish(possible);
 	return possible;
 }
 
@@ -3699,9 +3890,18 @@ bool RunExplicitCommandList::noop(bool post, bool ignore_cto_pre, bool ignore_ct
 	return command_list_section->command_list.noop();
 }
 
+static void PrepareShaderRegexEmptyGuard(CommandList& list);
+static bool SkipEmptyShaderRegexLink(CommandList& list, CommandListState* state);
+static void PreparePostDrawMissGuard(CommandList& list);
+static bool SkipEmptyPostDrawLink(CommandList& list, CommandListState* state);
+
 std::shared_ptr<RunLinkedCommandList>
 LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 {
+	PrepareShaderRegexEmptyGuard(*link);
+	if (link->post)
+		PreparePostDrawMissGuard(*link);
+	dst->DiscardExecutionPlans();
 	RunLinkedCommandList *operation = new RunLinkedCommandList(link);
 	operation->ini_line = *ini_line;
 	std::shared_ptr<RunLinkedCommandList> p(operation);
@@ -3711,6 +3911,10 @@ LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 
 void RunLinkedCommandList::run(CommandListState *state)
 {
+	if (link->post_draw_miss_guard && SkipEmptyPostDrawLink(*link, state))
+		return;
+	if (link->shader_regex_empty_guard && SkipEmptyShaderRegexLink(*link, state))
+		return;
 	_RunCommandList(link, state, false);
 }
 
@@ -3767,6 +3971,43 @@ static void UpdateScissorInfo(CommandListState *state)
 	state->scissor_valid = true;
 }
 
+bool CommandListOperand::IsSafeToSkipEvaluation() const
+{
+	switch (type) {
+	case ParamOverrideType::VALUE:
+	case ParamOverrideType::INI_PARAM:
+	case ParamOverrideType::VARIABLE:
+	case ParamOverrideType::DRAW_TYPE:
+	case ParamOverrideType::VERTEX_COUNT:
+	case ParamOverrideType::INDEX_COUNT:
+	case ParamOverrideType::INSTANCE_COUNT:
+	case ParamOverrideType::FIRST_VERTEX:
+	case ParamOverrideType::FIRST_INDEX:
+	case ParamOverrideType::FIRST_INSTANCE:
+	case ParamOverrideType::THREAD_GROUP_COUNT_X:
+	case ParamOverrideType::THREAD_GROUP_COUNT_Y:
+	case ParamOverrideType::THREAD_GROUP_COUNT_Z:
+		return true;
+	case ParamOverrideType::SHADER:
+		return shader_target.evaluation_mode == ShaderTargetEvaluationMode::SHADER;
+	case ParamOverrideType::TEXTURE: {
+		const auto &target = texture_filter_target;
+		// Fixed pipeline reads and the null literal do not instantiate
+		// resources, evaluate slot expressions or read back region hashes.
+		if (target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE ||
+			target.slot_expression || target.IsRange())
+			return false;
+		return target.type == ResourceCopyTargetType::EMPTY ||
+			target.type == ResourceCopyTargetType::RENDER_TARGET ||
+			target.type == ResourceCopyTargetType::DEPTH_STENCIL_TARGET ||
+			target.type == ResourceCopyTargetType::CONSTANT_BUFFER ||
+			target.type == ResourceCopyTargetType::SHADER_RESOURCE;
+	}
+	default:
+		return false;
+	}
+}
+
 float CommandListOperand::process_texture_filter(CommandListState *state)
 {
 	switch (texture_filter_target.evaluation_mode)
@@ -3779,7 +4020,24 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 			TextureOverrideMatches::reverse_iterator rit;
 			bool resource_found;
 
-			texture_filter_target.FindTextureOverrides(state, &resource_found, &matches);
+			{
+				std::optional<Profiling::Sample> sample;
+				if (Profiling::mode == Profiling::Mode::SUMMARY &&
+					!texture_filter_target.slot_expression && !texture_filter_target.IsRange()) {
+					switch (texture_filter_target.type) {
+					case ResourceCopyTargetType::RENDER_TARGET:
+					case ResourceCopyTargetType::DEPTH_STENCIL_TARGET:
+						sample.emplace(Profiling::expression_om_query_overhead);
+						break;
+					case ResourceCopyTargetType::CONSTANT_BUFFER:
+						sample.emplace(Profiling::expression_cb_query_overhead);
+						break;
+					default:
+						break;
+					}
+				}
+				texture_filter_target.FindTextureOverrides(state, &resource_found, &matches);
+			}
 
 			// If there is no resource bound we want to return a special value that
 			// is distinct from simply not finding a texture override section. For
@@ -4007,8 +4265,20 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
     }
 }
 
+void CommandList::DiscardExecutionPlans()
+{
+	early_draw_gate.reset();
+	shader_regex_empty_guard.reset();
+	post_draw_miss_guard.reset();
+	literal_optimized_commands.clear();
+	literal_source_data = nullptr;
+	literal_source_size = 0;
+}
+
 void CommandList::clear()
 {
+	DiscardExecutionPlans();
+	empty_if_false = nullptr;
 	commands.clear();
 	static_vars.clear();
 	source_command_list = nullptr;
@@ -5850,9 +6120,33 @@ DEFINE_OPERATOR(bitwise_and_operator,   "&",  ((int32_t)lhs& (int32_t)rhs));
 DEFINE_OPERATOR(bitwise_xor_operator,   "^",  ((int32_t)lhs ^ (int32_t)rhs));
 DEFINE_OPERATOR(bitwise_or_operator,    "|",  ((int32_t)lhs | (int32_t)rhs));
 
-DEFINE_OPERATOR(and_operator,           "&&", (lhs && rhs));
+template<bool IsAnd>
+class LogicalOperator : public CommandListOperator {
+public:
+	using CommandListOperator::CommandListOperator;
 
-DEFINE_OPERATOR(or_operator,            "||", (lhs || rhs));
+	static const wchar_t* pattern() { return IsAnd ? L"&&" : L"||"; }
+
+	float evaluate(float left, float right) override
+	{
+		return IsAnd ? left && right : left || right;
+	}
+
+	float evaluate(CommandListState *state, HackerDevice *device) override
+	{
+		if (!state || !IsSafeToSkipEvaluation() || !G->ModRuntimeOptimizationsEnabled() ||
+			!G->expression_short_circuit.load(std::memory_order_relaxed) || G->analyse_frame || gLogDebug)
+			return CommandListOperator::evaluate(state, device);
+
+		const bool left = lhs->evaluate(state, device) != 0.0f;
+		if (left != IsAnd)
+			return left;
+		return rhs->evaluate(state, device) != 0.0f;
+	}
+};
+
+static CommandListOperatorFactory<LogicalOperator<true>> and_operator;
+static CommandListOperatorFactory<LogicalOperator<false>> or_operator;
 
 // TODO: Ternary if operator
 
@@ -6248,6 +6542,22 @@ std::shared_ptr<CommandListEvaluatable> CommandListOperator::finalise()
 	if (!rhs)
 		throw CommandListSyntaxError(L"BUG: RHS operand invalid", token_pos);
 	rhs_tree = nullptr;
+
+	if ((!lhs || lhs->IsSafeToSkipEvaluation()) && rhs->IsSafeToSkipEvaluation()) {
+		const std::wstring_view op(token);
+		safe_to_skip_evaluation = op == L"&&" || op == L"||" || op == L"!" ||
+			op == L"==" || op == L"!=" || op == L"===" || op == L"!==" ||
+			op == L"<" || op == L"<=" || op == L">" || op == L">=";
+		if (op == L"%") {
+			// DRAW_TYPE is finite. A nonzero finite literal divisor keeps
+			// fmod away from domain errors in common draw-type filters.
+			const auto *left = dynamic_cast<const CommandListOperand *>(lhs.get());
+			const auto *right = dynamic_cast<const CommandListOperand *>(rhs.get());
+			safe_to_skip_evaluation = left && left->type == ParamOverrideType::DRAW_TYPE &&
+				right && right->type == ParamOverrideType::VALUE &&
+				std::isfinite(right->val) && right->val != 0.0f;
+		}
+	}
 
 	// Can't return "this", because that is an unmanaged version of the
 	// pointer which is already managed elsewhere - if we were to create a
@@ -9686,6 +9996,24 @@ static bool parse_resource_copy_target_source(const wchar_t* section, const wstr
     return found;
 }
 
+static bool validate_depth_snapshot_options(const wchar_t* section, const ResourceCopyTarget& dst,
+    const ResourceCopyTarget& src, ResourceCopyOptions options)
+{
+    if (!(options & ResourceCopyOptions::REUSE_UNCHANGED))
+        return true;
+
+    const auto copy = ResourceCopyOptions::COPY | ResourceCopyOptions::REUSE_UNCHANGED;
+    if ((static_cast<int>(options) & ~ResourceCopyOptions::UNLESS_NULL) == copy &&
+        src.type == ResourceCopyTargetType::DEPTH_STENCIL_TARGET &&
+        dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE && !dst.custom_resource_pool &&
+        src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE &&
+        dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE)
+        return true;
+
+    LogOverlayW(LOG_WARNING, L"reuse_unchanged requires a full oD copy to a named custom resource\n - [%ls]\n", section);
+    return false;
+}
+
 static CommandListCommand* parse_slot_range_operation(const wchar_t* section, ResourceCopyTarget& dst,
     ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* commands, const wstring* ini_namespace);
 
@@ -9694,13 +10022,15 @@ static CommandListCommand* parse_texture_override_operation(const wchar_t* secti
 {
     if (shader.shader_type != L'p' || shader.evaluation_mode != ShaderTargetEvaluationMode::MATCH_TEXTURES ||
         !shader.member_args[0].resource) return nullptr;
-    ResourceCopyTarget filter = *shader.member_args[0].resource;
-    if (filter.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
-        filter.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE || !filter.GetCustomResource(nullptr, true)) return nullptr;
     ResourceCopyTarget destination;
     destination.type = ResourceCopyTargetType::SHADER_RESOURCE;
     destination.shader_type = L'p';
     destination.max_slot = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+    if (!validate_depth_snapshot_options(section, destination, source, options))
+        return nullptr;
+    ResourceCopyTarget filter = *shader.member_args[0].resource;
+    if (filter.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
+        filter.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE || !filter.GetCustomResource(nullptr, true)) return nullptr;
     // Reuse local source flags/validation without storing any runtime pool selection.
     std::unique_ptr<CommandListCommand> base(parse_resource_copy_operation(section, destination, source, options, list, ini_namespace));
     auto* copy = dynamic_cast<ResourceCopyOperation*>(base.get());
@@ -9765,6 +10095,7 @@ bool ParseCommandListResourceCopyTargetDirective(
 		ResourceCopyTarget src;
 		ResourceCopyOptions options = ResourceCopyOptions::INVALID;
 		if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key) ||
+			!validate_depth_snapshot_options(section, dst, src, options) ||
 			src.type == ResourceCopyTargetType::VARIABLE)
 			return false;
 		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE ||
@@ -9977,9 +10308,490 @@ IfCommand::IfCommand(const wchar_t *section) :
 	registered_command_lists.push_back(false_commands_post.get());
 }
 
+struct ScalarIfGuard {
+	struct Comparison {
+		const float* variable = nullptr;
+		float constant = 0;
+		bool unequal = false;
+
+		bool Evaluate(float current) const { return (current == constant) != unequal; }
+	};
+	Comparison first, second;
+	bool either = false;
+	bool repeated = false;
+
+	bool Evaluate(CommandListState* state) const
+	{
+		const float a = *first.variable;
+		const bool left = first.Evaluate(a);
+		if (!second.variable || left == either)
+			return left;
+
+		const float b = *second.variable;
+		auto& entries = state->scalar_if_memo;
+		auto& memo = entries[(reinterpret_cast<uintptr_t>(this) >> 4) % entries.size()];
+		if (repeated && memo.guard == this && memo.first == a && memo.second == b)
+			return memo.result;
+
+		const bool value = second.Evaluate(b);
+		if (repeated)
+			memo = {this, a, b, value};
+		return value;
+	}
+};
+
+struct ShaderRegexEmptyGuard {
+	struct Condition {
+		std::vector<ScalarIfGuard::Comparison> tests;
+		bool any = false;
+
+		bool MayRun() const
+		{
+			for (const auto& test : tests) {
+				if (test.Evaluate(*test.variable) == any)
+					return any;
+			}
+			return !any;
+		}
+	};
+
+	const CommandList::Commands::value_type* source = nullptr;
+	size_t size = 0;
+	std::vector<Condition> conditions;
+};
+
+struct PostDrawMissGuard {
+	struct List {
+		CommandList* list;
+		CommandList::Commands commands;
+		const float* restore_flag;
+	};
+	std::vector<List> lists;
+	unsigned depth = 0;
+	bool uses_draw_miss = false;
+};
+
+namespace {
+bool CompileScalarComparison(const CommandListEvaluatable* expression, ScalarIfGuard::Comparison& result)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	if (!op || (op->token != L"==" && op->token != L"!="))
+		return false;
+	auto* left = dynamic_cast<const CommandListOperand*>(op->lhs.get());
+	auto* right = dynamic_cast<const CommandListOperand*>(op->rhs.get());
+	if (!left || !right)
+		return false;
+	if (left->type == ParamOverrideType::VALUE)
+		std::swap(left, right);
+	if (left->type != ParamOverrideType::VARIABLE || !left->var_ftarget || right->type != ParamOverrideType::VALUE)
+		return false;
+	result = {left->var_ftarget, right->val, op->token == L"!="};
+	return true;
+}
+
+bool ReadShaderRegexGuardTest(const CommandListEvaluatable* expression, ScalarIfGuard::Comparison& test)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	const bool inverted = op && !op->lhs && op->token == L"!";
+	const auto* variable = dynamic_cast<const CommandListOperand*>(inverted ? op->rhs.get() : expression);
+	if (variable && variable->type == ParamOverrideType::VARIABLE && variable->var_ftarget) {
+		test = {variable->var_ftarget, 0, !inverted};
+		return true;
+	}
+	return CompileScalarComparison(expression, test);
+}
+
+bool GatherShaderRegexGuardTests(const CommandListEvaluatable* expression, std::wstring_view connective,
+		std::vector<ScalarIfGuard::Comparison>& tests)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	if (op && op->token == connective)
+		return GatherShaderRegexGuardTests(op->lhs.get(), connective, tests) &&
+			GatherShaderRegexGuardTests(op->rhs.get(), connective, tests);
+	ScalarIfGuard::Comparison test;
+	if (!ReadShaderRegexGuardTest(expression, test))
+		return false;
+	tests.push_back(test);
+	return true;
+}
+
+bool CompileShaderRegexGuard(const CommandListEvaluatable* expression, ShaderRegexEmptyGuard::Condition& result)
+{
+	if (!expression || !expression->IsSafeToSkipEvaluation())
+		return false;
+	// Use a CPU-only predicate or a prefix on the left of &&. A false
+	// prefix already short-circuits the remaining reads in the old path.
+	while (expression) {
+		const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+		result.tests.clear();
+		result.any = op && op->token == L"||";
+		if (GatherShaderRegexGuardTests(expression, result.any ? L"||" : L"&&", result.tests))
+			return true;
+		if (!op || op->token != L"&&")
+			return false;
+		expression = op->lhs.get();
+	}
+	return false;
+}
+
+bool CompileScalarGuard(const CommandListEvaluatable* expression, ScalarIfGuard& guard)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	if (op && (op->token == L"&&" || op->token == L"||")) {
+		guard.either = op->token == L"||";
+		return CompileScalarComparison(op->lhs.get(), guard.first) && CompileScalarComparison(op->rhs.get(), guard.second);
+	}
+	return CompileScalarComparison(expression, guard.first);
+}
+
+auto GuardKey(const ScalarIfGuard& guard)
+{
+	const auto key = [](const ScalarIfGuard::Comparison& test) {
+		uint32_t bits;
+		std::memcpy(&bits, &test.constant, sizeof(bits));
+		return std::make_tuple(reinterpret_cast<uintptr_t>(test.variable), bits, test.unequal);
+	};
+	return std::make_tuple(key(guard.first), key(guard.second), guard.either);
+}
+
+struct LiteralAssignment {
+	CommandListVariable* variable = nullptr;
+	float DirectX::XMFLOAT4::*component = nullptr;
+	int index = 0;
+	float value = 0;
+};
+
+bool ReadLiteralAssignment(const CommandListCommand* command, LiteralAssignment& item)
+{
+	const auto* assign = dynamic_cast<const AssignmentCommand*>(command);
+	if (!assign)
+		return false;
+	const auto* literal = dynamic_cast<const CommandListOperand*>(assign->expression.evaluatable.get());
+	if (!literal || literal->type != ParamOverrideType::VALUE)
+		return false;
+	if (const auto* var = dynamic_cast<const VariableAssignment*>(assign)) {
+		item = {var->var, nullptr, 0, literal->val};
+		return item.variable != nullptr;
+	}
+	if (const auto* param = dynamic_cast<const ParamOverride*>(assign)) {
+		item = {nullptr, param->param_component, param->param_idx, literal->val};
+		return item.component && item.index >= 0;
+	}
+	return false;
+}
+
+class LiteralAssignmentBatch final : public CommandListCommand {
+public:
+	std::vector<LiteralAssignment> assignments;
+	CommandList::Commands legacy;
+
+	void run(CommandListState* state) override
+	{
+		if (!G->ModRuntimeOptimizationsEnabled() || G->analyse_frame || gLogDebug) {
+			for (const auto& command : legacy)
+				command->run(state);
+			return;
+		}
+		for (const auto& assignment : assignments) {
+			if (auto* var = assignment.variable) {
+				if (var->flags & VariableFlags::LOCKED)
+					continue;
+				const float previous = var->fval;
+				var->fval = assignment.value;
+				if (var->flags & VariableFlags::PERSIST)
+					G->user_config_dirty |= previous != assignment.value;
+			} else {
+				float& dest = G->iniParams[assignment.index].*assignment.component;
+				const float previous = dest;
+				dest = assignment.value;
+				state->update_params |= previous != assignment.value;
+			}
+		}
+	}
+};
+
+static bool PreservesDepthSnapshot(ResourceCopyOperation& copy, const CustomResource* target)
+{
+	if (copy.src.type != ResourceCopyTargetType::EMPTY &&
+		(!(copy.options & ResourceCopyOptions::REFERENCE) || (copy.options & ResourceCopyOptions::COPY_MASK)))
+		return false;
+	if (copy.dst.type == ResourceCopyTargetType::SHADER_RESOURCE)
+		return true;
+	return copy.dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE && !copy.dst.custom_resource_pool &&
+		copy.dst.GetCustomResource(nullptr) != target;
+}
+
+static bool PreservesDepthSnapshot(CommandListCommand& command, const CommandListState::DepthCopySnapshot& snapshot)
+{
+	// Nested lists use RunCommand for their commands. Unknown commands are
+	// barriers, including all draws, dispatches, clears and output changes.
+	if (&command == snapshot.operation || dynamic_cast<const RunExplicitCommandList*>(&command) ||
+		dynamic_cast<const RunLinkedCommandList*>(&command) || dynamic_cast<const IfCommand*>(&command) ||
+		dynamic_cast<const AssignmentCommand*>(&command) || dynamic_cast<const LiteralAssignmentBatch*>(&command) ||
+		dynamic_cast<const CheckTextureOverrideCommand*>(&command) || dynamic_cast<const SkipCommand*>(&command))
+		return true;
+	if (typeid(command) == typeid(ResourceCopyOperation))
+		return PreservesDepthSnapshot(static_cast<ResourceCopyOperation&>(command), snapshot.target);
+	if (const auto* batch = dynamic_cast<const ShaderResourceBatch*>(&command)) {
+		return std::all_of(batch->operations.begin(), batch->operations.end(), [&](const auto& copy) {
+			return PreservesDepthSnapshot(*copy, snapshot.target);
+		});
+	}
+	return false;
+}
+
+void RunCommand(CommandListCommand* command, CommandListState* state)
+{
+	if (state->depth_snapshot.operation && !PreservesDepthSnapshot(*command, state->depth_snapshot))
+		state->depth_snapshot = {};
+	command->run(state);
+}
+
+void BatchLiteralAssignments(CommandList& list)
+{
+	list.DiscardExecutionPlans();
+	if (list.commands.size() < 2)
+		return;
+	CommandList::Commands optimized;
+	for (auto start = list.commands.begin(); start != list.commands.end();) {
+		LiteralAssignment item;
+		auto end = start;
+		std::vector<LiteralAssignment> values;
+		for (; end != list.commands.end() && ReadLiteralAssignment(end->get(), item); ++end)
+			values.push_back(item);
+		if (values.size() < 2) {
+			optimized.push_back(*start++);
+			continue;
+		}
+		auto batch = std::make_shared<LiteralAssignmentBatch>();
+		batch->ini_line = (*start)->ini_line + L" (literal assignment batch)";
+		batch->assignments = std::move(values);
+		batch->legacy.assign(start, end);
+		optimized.push_back(std::move(batch));
+		start = end;
+	}
+	if (optimized.size() != list.commands.size()) {
+		list.literal_source_data = list.commands.data();
+		list.literal_source_size = list.commands.size();
+		list.literal_optimized_commands = std::move(optimized);
+	}
+}
+
+void PrepareEarlyDrawGate(CommandList& list)
+{
+	// Limit the plan to a single scalar guard with an empty false branch.
+	// Only a local DRAW_TYPE assignment may precede the built-in predicate.
+	if (list.runtime_populated || list.commands.size() != 1)
+		return;
+	const auto* outer = dynamic_cast<const IfCommand*>(list.commands.front().get());
+	if (!outer)
+		return;
+	const auto* condition = dynamic_cast<const CommandListOperand*>(outer->expression.evaluatable.get());
+	const auto& otherwise = list.post ? outer->false_commands_post : outer->false_commands_pre;
+	const auto& body = list.post ? outer->true_commands_post : outer->true_commands_pre;
+	if (!condition || condition->type != ParamOverrideType::VARIABLE || !condition->var_ftarget ||
+		otherwise->runtime_populated || otherwise->ResolveCommandList() != otherwise.get() || !otherwise->commands.empty() ||
+		body->runtime_populated || body->ResolveCommandList() != body.get() || body->commands.empty())
+		return;
+
+	size_t index = 0;
+	if (const auto* assignment = dynamic_cast<const VariableAssignment*>(body->commands.front().get())) {
+		const auto* value = dynamic_cast<const CommandListOperand*>(assignment->expression.evaluatable.get());
+		if (!assignment->var || assignment->var->flags != VariableFlags::NONE || !value ||
+			value->type != ParamOverrideType::DRAW_TYPE || body->commands.size() < 2)
+			return;
+		index = 1;
+	}
+	const auto* inner = dynamic_cast<const IfCommand*>(body->commands[index].get());
+	if (!inner)
+		return;
+	const auto* operand = dynamic_cast<const CommandListOperand*>(inner->expression.evaluatable.get());
+	const auto& miss = list.post ? inner->false_commands_post : inner->false_commands_pre;
+	if (!operand || operand->type != ParamOverrideType::DRAW_HAS_OVERRIDE || miss->runtime_populated ||
+		miss->ResolveCommandList() != miss.get() || !miss->commands.empty())
+		return;
+
+	auto plan = std::make_shared<EarlyDrawGate>();
+	plan->outer = outer;
+	plan->condition = condition->var_ftarget;
+	plan->body = body.get();
+	plan->body_data = body->commands.data();
+	plan->body_size = body->commands.size();
+	const auto& executable = body->literal_optimized_commands.empty() ? body->commands : body->literal_optimized_commands;
+	for (const auto& command : executable) {
+		if (command.get() != inner)
+			plan->on_miss.push_back(command);
+	}
+	list.early_draw_gate = std::move(plan);
+}
+} // namespace
+
+static void PrepareScalarGuardsAndLiteralBatches()
+{
+	std::map<decltype(GuardKey(ScalarIfGuard{})), std::shared_ptr<ScalarIfGuard>> guards;
+	for (auto* list : registered_command_lists) {
+		for (const auto& command : list->commands) {
+			auto* branch = dynamic_cast<IfCommand*>(command.get());
+			if (!branch || branch->scalar_guard)
+				continue;
+			ScalarIfGuard compiled;
+			if (!CompileScalarGuard(branch->expression.evaluatable.get(), compiled))
+				continue;
+			auto& shared = guards[GuardKey(compiled)];
+			if (!shared)
+				shared = std::make_shared<ScalarIfGuard>(compiled);
+			else
+				shared->repeated = true;
+			branch->scalar_guard = shared;
+		}
+		BatchLiteralAssignments(*list);
+	}
+	for (auto* list : registered_command_lists)
+		PrepareEarlyDrawGate(*list);
+}
+
+static void PrepareShaderRegexEmptyGuard(CommandList& list)
+{
+	list.shader_regex_empty_guard.reset();
+	if (list.runtime_populated || list.ResolveCommandList() != &list || list.commands.empty())
+		return;
+	auto guard = std::make_shared<ShaderRegexEmptyGuard>();
+	for (const auto& command : list.commands) {
+		const auto* branch = dynamic_cast<const IfCommand*>(command.get());
+		if (!branch)
+			return;
+		const auto& otherwise = list.post ? branch->false_commands_post : branch->false_commands_pre;
+		if (otherwise->runtime_populated || otherwise->ResolveCommandList() != otherwise.get() || !otherwise->commands.empty())
+			return;
+		ShaderRegexEmptyGuard::Condition condition;
+		if (!CompileShaderRegexGuard(branch->expression.evaluatable.get(), condition))
+			return;
+		guard->conditions.push_back(std::move(condition));
+	}
+	guard->source = list.commands.data();
+	guard->size = list.commands.size();
+	list.shader_regex_empty_guard = std::move(guard);
+}
+
+static bool SkipEmptyShaderRegexLink(CommandList& list, CommandListState* state)
+{
+	if (state->aborted || state->post != list.post || state->command_list_depth >= MAX_COMMAND_LIST_RECURSION - 1 ||
+		G->analyse_frame || gLogDebug || !G->ModRuntimeOptimizationsEnabled() ||
+		!G->expression_short_circuit.load(std::memory_order_relaxed))
+		return false;
+	const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+	if (mode == Profiling::Mode::TOP_COMMAND_LISTS || mode == Profiling::Mode::TOP_COMMANDS)
+		return false;
+	const bool enabled = G->shader_regex_skip_empty_links.load(std::memory_order_relaxed);
+	const bool profile = mode == Profiling::Mode::SUMMARY && G->profile_shader_regex_links.load(std::memory_order_relaxed);
+	if (!enabled && !profile)
+		return false;
+	const auto& guard = *list.shader_regex_empty_guard;
+	if (list.commands.data() != guard.source || list.commands.size() != guard.size ||
+		list.runtime_populated || list.ResolveCommandList() != &list)
+		return false;
+	const bool empty = std::none_of(guard.conditions.begin(), guard.conditions.end(),
+		[](const auto& condition) { return condition.MayRun(); });
+	if (profile)
+		Profiling::RecordShaderRegexLink(empty, enabled && empty);
+	return enabled && empty;
+}
+
+namespace {
+bool CollectPostDrawMissGuard(CommandList& list, bool post, unsigned depth, PostDrawMissGuard& guard)
+{
+	if (depth > 8 || guard.lists.size() >= 24 || list.runtime_populated || list.post != post ||
+		list.ResolveCommandList() != &list)
+		return false;
+	// An explicit post run can also execute a restore list's pre commands.
+	// Use the existing false-variable guard only for those pre lists.
+	const float* restore_flag = post ? nullptr : list.empty_if_false;
+	guard.lists.push_back({&list, list.commands, restore_flag});
+	guard.depth = (std::max)(guard.depth, depth + (restore_flag ? 1u : 0u));
+	if (restore_flag)
+		return true;
+
+	for (const auto& command : list.commands) {
+		if (const auto* branch = dynamic_cast<const IfCommand*>(command.get())) {
+			const auto* expression = branch->expression.evaluatable.get();
+			const auto* operand = dynamic_cast<const CommandListOperand*>(expression);
+			const auto& otherwise = post ? branch->false_commands_post : branch->false_commands_pre;
+			if (operand && operand->type == ParamOverrideType::DRAW_HAS_OVERRIDE) {
+				guard.uses_draw_miss = true;
+				if (!CollectPostDrawMissGuard(*otherwise, post, depth + 1, guard))
+					return false;
+				continue;
+			}
+			// A CPU-only predicate can be omitted when neither outcome can do
+			// work. Do not discard GPU queries or eager expression side effects.
+			const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+			std::vector<ScalarIfGuard::Comparison> tests;
+			const auto& body = post ? branch->true_commands_post : branch->true_commands_pre;
+			if (!expression || !expression->IsSafeToSkipEvaluation() ||
+				!GatherShaderRegexGuardTests(expression, op && op->token == L"||" ? L"||" : L"&&", tests) ||
+				!CollectPostDrawMissGuard(*body, post, depth + 1, guard) ||
+				!CollectPostDrawMissGuard(*otherwise, post, depth + 1, guard))
+				return false;
+			continue;
+		}
+		const auto* run = dynamic_cast<const RunExplicitCommandList*>(command.get());
+		if (!run || !run->command_list_section)
+			return false;
+		auto& section = *run->command_list_section;
+		if ((run->run_pre_and_post_together || !post) &&
+			!CollectPostDrawMissGuard(section.command_list, false, depth + 1, guard))
+			return false;
+		if ((run->run_pre_and_post_together || post) &&
+			!CollectPostDrawMissGuard(section.post_command_list, true, depth + 1, guard))
+			return false;
+	}
+	return true;
+}
+} // namespace
+
+static void PreparePostDrawMissGuard(CommandList& list)
+{
+	list.post_draw_miss_guard.reset();
+	auto guard = std::make_shared<PostDrawMissGuard>();
+	if (CollectPostDrawMissGuard(list, true, 0, *guard) && guard->uses_draw_miss)
+		list.post_draw_miss_guard = std::move(guard);
+}
+
+static bool SkipEmptyPostDrawLink(CommandList& list, CommandListState* state)
+{
+	const auto* draw = state->call_info;
+	if (!state->post || state->aborted || !state->mOrigContext1 || !draw ||
+		draw->type < DrawCall::Draw || draw->type > DrawCall::DrawAuto ||
+		draw->override_candidate != DrawOverrideCandidate::Miss ||
+		G->analyse_frame || gLogDebug || !G->ModRuntimeOptimizationsEnabled() ||
+		!G->draw_gate_early_reject.load(std::memory_order_relaxed))
+		return false;
+	const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+	if (mode == Profiling::Mode::TOP_COMMAND_LISTS || mode == Profiling::Mode::TOP_COMMANDS)
+		return false;
+	const bool enabled = G->draw_gate_skip_empty_post.load(std::memory_order_relaxed);
+	const bool profile = mode == Profiling::Mode::SUMMARY && G->profile_post_draw_entry.load(std::memory_order_relaxed);
+	if (!enabled && !profile)
+		return false;
+	const auto& guard = *list.post_draw_miss_guard;
+	if (state->command_list_depth >= MAX_COMMAND_LIST_RECURSION - guard.depth)
+		return false;
+	const bool empty = std::all_of(guard.lists.begin(), guard.lists.end(), [](const auto& saved) {
+		return (!saved.restore_flag || (saved.list->empty_if_false == saved.restore_flag && *saved.restore_flag == 0.0f)) &&
+			!saved.list->runtime_populated && saved.list->ResolveCommandList() == saved.list &&
+			saved.list->commands == saved.commands;
+	});
+	if (profile)
+		Profiling::RecordPostDrawLink(empty, enabled && empty);
+	return enabled && empty;
+}
+
 void IfCommand::run(CommandListState *state)
 {
-	if (expression.evaluate(state)) {
+	const bool condition = scalar_guard && G->ModRuntimeOptimizationsEnabled() &&
+		G->expression_short_circuit.load(std::memory_order_relaxed) && !G->analyse_frame && !gLogDebug
+		? scalar_guard->Evaluate(state) : expression.evaluate(state) != 0.0f;
+	if (condition) {
 		COMMAND_LIST_LOG(state, "%S: true {\n", ini_line.c_str());
 		state->extra_indent++;
 		if (state->post)
@@ -10007,6 +10819,7 @@ void IfCommand::run(CommandListState *state)
 
 bool IfCommand::optimise(HackerDevice *device)
 {
+	scalar_guard.reset();
 	const bool changed = expression.optimise(device);
     if (changed) static_evaluated = false;
     return changed;
@@ -10602,6 +11415,8 @@ void ResourceCopyTarget::SetResource(
 		break;
 
 	case ResourceCopyTargetType::SHADER_RESOURCE:
+		if (state->mHackerContext)
+			state->mHackerContext->InvalidateDrawOverrideBindings();
 		resource_view = (ID3D11ShaderResourceView*)view;
 		switch(shader_type) {
 		case L'v':
@@ -10633,11 +11448,15 @@ void ResourceCopyTarget::SetResource(
 
 	case ResourceCopyTargetType::VERTEX_BUFFER:
 		buf = (ID3D11Buffer*)res;
+		if (state->mHackerContext)
+			state->mHackerContext->InvalidateDrawOverrideBindings();
 		mOrigContext1->IASetVertexBuffers(slot, 1, &buf, &stride, &offset);
 		break;
 
 	case ResourceCopyTargetType::INDEX_BUFFER:
 		buf = (ID3D11Buffer*)res;
+		if (state->mHackerContext)
+			state->mHackerContext->InvalidateDrawOverrideBindings();
 		mOrigContext1->IASetIndexBuffer(buf, format, offset);
 		break;
 
@@ -10718,6 +11537,21 @@ void ResourceCopyTarget::SetResource(
 		CustomResource* custom_resource = GetCustomResource(state, true);
         if (!custom_resource) return;
 
+		const bool unbound = !res && !view;
+		if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug &&
+			custom_resource->is_null == unbound &&
+			(unbound || (custom_resource->resource == res && custom_resource->view == view &&
+				(!original_metadata || (
+					custom_resource->match_format == original_metadata->format &&
+					custom_resource->match_dhash == original_metadata->dhash &&
+					std::memcmp(&custom_resource->match_confidence, &original_metadata->confidence, sizeof(float)) == 0 &&
+					custom_resource->match_dhash_set == original_metadata->dhash_set &&
+					custom_resource->match_format_valid == original_metadata->format_valid)))) &&
+			custom_resource->stride == stride && custom_resource->offset == offset &&
+			custom_resource->format == format && custom_resource->buf_size == buf_size &&
+			custom_resource->buf_size_is_length == (res && size_is_length))
+			return;
+
 		custom_resource->stride = stride;
 		custom_resource->offset = offset;
 		custom_resource->format = format;
@@ -10725,7 +11559,7 @@ void ResourceCopyTarget::SetResource(
         custom_resource->buf_size_is_length = res && size_is_length;
 
 
-		if (res == NULL && view == NULL) {
+		if (unbound) {
 			// Optimisation to allow the resource to be set to null
 			// without throwing away the cache so we don't
 			// endlessly create & destroy temporary resources.
@@ -13143,6 +13977,17 @@ void ResourceCopyOperation::CopyResourceToResource(
         }
     }
     ResourceCopyTarget& dst = *effective_destination;
+	const bool reuse_depth = (options & ResourceCopyOptions::REUSE_UNCHANGED) &&
+		state->call_info && !G->analyse_frame && !gLogDebug && G->ModRuntimeOptimizationsEnabled() &&
+		dst_custom_resource && !dst_custom_resource->max_copies_per_frame && src_view;
+	if (reuse_depth) {
+		auto& snapshot = state->depth_snapshot;
+		if (snapshot.operation == this && snapshot.source.Get() == src_resource &&
+			snapshot.depth_view.Get() == src_view && !dst_custom_resource->is_null &&
+			snapshot.destination.Get() == dst_custom_resource->resource)
+			return;
+		snapshot = {};
+	}
     if (!src_resource) {
         COMMAND_LIST_LOG(state, "  Copy source was NULL\n");
         PublishResourceBinding(dst, state, nullptr, nullptr, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred);
@@ -13351,6 +14196,15 @@ void ResourceCopyOperation::CopyResourceToResource(
 	}
 	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred,
 		selected_window, original_metadata, compute_om_uav_slots);
+	if (reuse_depth && !buf_dst_size && dst_resource && dst_resource != src_resource &&
+		dst_custom_resource->resource == dst_resource && !dst_custom_resource->is_null) {
+		auto& snapshot = state->depth_snapshot;
+		snapshot.operation = this;
+		snapshot.target = dst_custom_resource;
+		snapshot.source = src_resource;
+		snapshot.destination = dst_resource;
+		snapshot.depth_view = src_view;
+	}
 
 	if (options & ResourceCopyOptions::SET_VIEWPORT)
 		SetViewportFromResource(state, dst_resource);
@@ -13500,6 +14354,8 @@ static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT
 static void SetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
     ID3D11ShaderResourceView* const* views)
 {
+    if (state->mHackerContext)
+        state->mHackerContext->InvalidateDrawOverrideBindings();
     switch (stage) {
     case L'v': state->mOrigContext1->VSSetShaderResources(first, count, views); break;
     case L'h': state->mOrigContext1->HSSetShaderResources(first, count, views); break;
@@ -13538,6 +14394,13 @@ void ShaderResourceBindBatch::run(CommandListState* state)
         if (std::find(assigned, assigned + count, false) != assigned + count) {
             RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> original(count);
             GetShaderResourcesBatch(state, shader_type, first_slot, count, original.values);
+            if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug) {
+                bool changed = false;
+                for (UINT i = 0; i < count; ++i)
+                    changed |= assigned[i] && views.values[i] != original.values[i];
+                if (!changed)
+                    return;
+            }
             for (UINT i = 0; i < count; ++i)
                 if (!assigned[i])
                     views.values[i] = std::exchange(original.values[i], nullptr);

@@ -5004,6 +5004,7 @@ bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheck
 
 static void LoadDrawOverrideSlots()
 {
+	++G->draw_override_slot_generation;
 	auto& ranges = G->draw_override_slot_ranges;
 	ranges.clear();
 	const auto* value = GetIniWstring(L"Rendering", L"draw_has_override_slots");
@@ -5251,6 +5252,13 @@ void LoadConfigFile()
 
 	G->CACHE_SHADERS = GetIniBool(L"Rendering", L"cache_shaders", false, NULL);
 	G->mod_runtime_optimizations = GetIniBool(L"Rendering", L"mod_runtime_optimizations", true, NULL);
+	G->expression_short_circuit = GetIniBool(L"Rendering", L"expression_short_circuit", true, NULL);
+	G->draw_gate_early_reject = GetIniBool(L"Rendering", L"draw_gate_early_reject", true, NULL);
+	G->profile_draw_gate = GetIniBool(L"Rendering", L"profile_draw_gate", false, NULL);
+	G->shader_regex_skip_empty_links = GetIniBool(L"Rendering", L"shader_regex_skip_empty_links", true, NULL);
+	G->profile_shader_regex_links = GetIniBool(L"Rendering", L"profile_shader_regex_links", false, NULL);
+	G->draw_gate_skip_empty_post = GetIniBool(L"Rendering", L"draw_gate_skip_empty_post", true, NULL);
+	G->profile_post_draw_entry = GetIniBool(L"Rendering", L"profile_post_draw_entry", false, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
     DataCacheBindFlags data_cache_flags = DataCacheBindFlags::INVALID;

@@ -989,8 +989,8 @@ int main(int argc, char** argv)
     else if (!(argc == 1 || (argc == 2 &&
         (!std::strcmp(argv[1], "--full") || !std::strcmp(argv[1], "--texture-match-hooked") ||
          !std::strcmp(argv[1], "--texture-match") || !std::strcmp(argv[1], "--overlay-text") ||
-         !std::strcmp(argv[1], "--shader-regex-exclusions"))))) {
-        std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN | --texture-match | --texture-match-hooked | --overlay-text | --shader-regex-exclusions]\n", stderr);
+         !std::strcmp(argv[1], "--shader-regex-exclusions") || !std::strcmp(argv[1], "--depth-copy"))))) {
+        std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN | --texture-match | --texture-match-hooked | --overlay-text | --shader-regex-exclusions | --depth-copy]\n", stderr);
         return EXIT_FAILURE;
     }
     RegressionTlsScope runtime_tls;
@@ -1028,6 +1028,11 @@ int main(int argc, char** argv)
         if (argc == 2 && std::string(argv[1]) == "--shader-regex-exclusions") {
             test_dx11_round5_config_regression();
             std::puts("PASS: ShaderRegex exclusion INI, matching, cache and reload regression");
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--depth-copy") {
+            test_dx11_round7_descriptor_regression();
+            std::puts("PASS: actual WARP depth-copy snapshots and descriptor reuse");
             return 0;
         }
         test_dx11_audit_regressions();
