@@ -2830,6 +2830,44 @@ void test_dx11_draw_override_gate()
         require_batch(spy.vb_calls == 0 && spy.ps_calls == 0 && spy.ib_calls == 0,
             "draw guard: configured but unused predicate does not read bindings");
     }
+    const std::string vertexBody = std::string(body) +
+        "[TextureOverrideDrawGateVertex]\nhash=6a0d36f2\n";
+    config.load(vertexBody.c_str(), 0, true, "[Rendering]\ndraw_has_override_slots=vb[6:8]\n");
+    D3D11_BUFFER_DESC bufferDesc{};
+    bufferDesc.ByteWidth = 256;
+    bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    ComPtr<ID3D11Buffer> vertexBuffers[3];
+    ID3D11Buffer* bound[] = {nullptr, nullptr, nullptr};
+    for (unsigned slot = 0; slot < ARRAYSIZE(bound); ++slot) {
+        require_batch(SUCCEEDED(device.device->CreateBuffer(&bufferDesc, nullptr, &vertexBuffers[slot])),
+            "draw guard: create tracked vertex buffer");
+        bound[slot] = vertexBuffers[slot].Get();
+    }
+    const UINT strides[] = {4, 4, 4}, offsets[] = {0, 0, 0};
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        for (auto* buffer : bound)
+            G->mResources.at(buffer).hash = 0xdeadc0de;
+    }
+    device.context->IASetVertexBuffers(6, ARRAYSIZE(bound), bound, strides, offsets);
+    const auto cachedMiss = [&] {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        return VertexBufferRangeHasNoCachedOverrideCandidates(bound, ARRAYSIZE(bound));
+    };
+    require_batch(!cachedMiss(), "draw guard: a cold vertex range uses the original lookup");
+    device.wrapper->DrawIndexed(6, 0, 0);
+    require_batch(cachedMiss(), "draw guard: warm negative vertex range can bypass per-buffer checks");
+    device.wrapper->DrawIndexed(6, 0, 0);
+    require_batch(value(L"$gate_pre") == 0 && value(L"$gate_post") == 0 && value(L"$gate_cleanup") == 4,
+        "draw guard: warm vertex misses preserve the original draw and cleanup decisions");
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        G->mResources.at(bound[2]).hash = 0x6a0d36f2;
+    }
+    require_batch(!cachedMiss(), "draw guard: changed hash on the same buffer invalidates the fast miss");
+    device.wrapper->DrawIndexed(6, 0, 0);
+    require_batch(value(L"$gate_pre") == 2 && value(L"$gate_post") == 2 && value(L"$gate_cleanup") == 6,
+        "draw guard: a new match in the final vertex slot reaches the original pre and post checks");
     config.load("", 0, true);
     clear_command_list_profiling();
 }

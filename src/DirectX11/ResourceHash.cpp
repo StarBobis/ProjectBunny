@@ -1994,6 +1994,13 @@ void InvalidateTextureOverrideCandidates()
     }
 }
 
+static bool TextureOverrideDescriptorCacheIsCurrent(const ResourceHandleInfo& info)
+{
+    return info.texture_override_candidates_valid &&
+        info.texture_override_resolution_width == G->mResolutionInfo.width &&
+        info.texture_override_resolution_height == G->mResolutionInfo.height;
+}
+
 // Caller holds G and a live resource reference, and consumes candidates
 // before releasing G. hash_matches belongs to the whole-resource hash only;
 // region lookups do their own exact match and reuse just fuzzy_matches.
@@ -2011,9 +2018,7 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
         hash = info->hash;
     }
     auto& candidates = info->texture_override_candidates;
-    if (!info->texture_override_candidates_valid ||
-        info->texture_override_resolution_width != G->mResolutionInfo.width ||
-        info->texture_override_resolution_height != G->mResolutionInfo.height) {
+    if (!TextureOverrideDescriptorCacheIsCurrent(*info)) {
         // Caller retains AddRef and G lock; no driver/COM calls under Resources.
         const auto descriptor = ReadResourceDescriptor(resource);
         std::vector<TextureOverrideCandidate> fuzzy;
@@ -2072,6 +2077,24 @@ bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_in
             return true;
     }
     return false;
+}
+
+bool VertexBufferRangeHasNoCachedOverrideCandidates(ID3D11Buffer* const* buffers, unsigned count)
+{
+    CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+    for (unsigned slot = 0; slot < count; ++slot) {
+        if (!buffers[slot])
+            continue;
+        const auto found = G->mResources.find(buffers[slot]);
+        if (found == G->mResources.end())
+            continue;
+        const auto& info = found->second;
+        const auto& candidates = info.texture_override_candidates;
+        if (!TextureOverrideDescriptorCacheIsCurrent(info) || !info.texture_override_hash_valid ||
+            info.texture_override_hash != info.hash || candidates.hash_matches || !candidates.fuzzy_matches.empty())
+            return false;
+    }
+    return true;
 }
 
 static void AppendFuzzyCandidates(const TextureOverrideCandidates& candidates, TextureOverrideMatches* matches, DrawCallInfo* call_info)

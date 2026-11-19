@@ -1290,6 +1290,9 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 	if (first.type == ResourceCopyTargetType::VERTEX_BUFFER) {
 		RetainedBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 		context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
+		if (range.count > 1 && !G->track_region_hashes && G->ModRuntimeOptimizationsEnabled() &&
+			VertexBufferRangeHasNoCachedOverrideCandidates(bindings.values, range.count))
+			return false;
 		for (unsigned i = 0; i < range.count; ++i)
 			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
 				return true;
