@@ -3889,11 +3889,15 @@ bool RunExplicitCommandList::noop(bool post, bool ignore_cto_pre, bool ignore_ct
 
 static void PrepareShaderRegexEmptyGuard(CommandList& list);
 static bool SkipEmptyShaderRegexLink(CommandList& list, CommandListState* state);
+static void PreparePostDrawMissGuard(CommandList& list);
+static bool SkipEmptyPostDrawLink(CommandList& list, CommandListState* state);
 
 std::shared_ptr<RunLinkedCommandList>
 LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 {
 	PrepareShaderRegexEmptyGuard(*link);
+	if (link->post)
+		PreparePostDrawMissGuard(*link);
 	dst->DiscardExecutionPlans();
 	RunLinkedCommandList *operation = new RunLinkedCommandList(link);
 	operation->ini_line = *ini_line;
@@ -3904,6 +3908,8 @@ LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 
 void RunLinkedCommandList::run(CommandListState *state)
 {
+	if (link->post_draw_miss_guard && SkipEmptyPostDrawLink(*link, state))
+		return;
 	if (link->shader_regex_empty_guard && SkipEmptyShaderRegexLink(*link, state))
 		return;
 	_RunCommandList(link, state, false);
@@ -4260,6 +4266,7 @@ void CommandList::DiscardExecutionPlans()
 {
 	early_draw_gate.reset();
 	shader_regex_empty_guard.reset();
+	post_draw_miss_guard.reset();
 	literal_optimized_commands.clear();
 	literal_source_data = nullptr;
 	literal_source_size = 0;
@@ -10341,6 +10348,17 @@ struct ShaderRegexEmptyGuard {
 	std::vector<Condition> conditions;
 };
 
+struct PostDrawMissGuard {
+	struct List {
+		CommandList* list;
+		CommandList::Commands commands;
+		const float* restore_flag;
+	};
+	std::vector<List> lists;
+	unsigned depth = 0;
+	bool uses_draw_miss = false;
+};
+
 namespace {
 bool CompileScalarComparison(const CommandListEvaluatable* expression, ScalarIfGuard::Comparison& result)
 {
@@ -10664,6 +10682,95 @@ static bool SkipEmptyShaderRegexLink(CommandList& list, CommandListState* state)
 		[](const auto& condition) { return condition.MayRun(); });
 	if (profile)
 		Profiling::RecordShaderRegexLink(empty, enabled && empty);
+	return enabled && empty;
+}
+
+namespace {
+bool CollectPostDrawMissGuard(CommandList& list, bool post, unsigned depth, PostDrawMissGuard& guard)
+{
+	if (depth > 8 || guard.lists.size() >= 24 || list.runtime_populated || list.post != post ||
+		list.ResolveCommandList() != &list)
+		return false;
+	// An explicit post run can also execute a restore list's pre commands.
+	// Use the existing false-variable guard only for those pre lists.
+	const float* restore_flag = post ? nullptr : list.empty_if_false;
+	guard.lists.push_back({&list, list.commands, restore_flag});
+	guard.depth = (std::max)(guard.depth, depth + (restore_flag ? 1u : 0u));
+	if (restore_flag)
+		return true;
+
+	for (const auto& command : list.commands) {
+		if (const auto* branch = dynamic_cast<const IfCommand*>(command.get())) {
+			const auto* expression = branch->expression.evaluatable.get();
+			const auto* operand = dynamic_cast<const CommandListOperand*>(expression);
+			const auto& otherwise = post ? branch->false_commands_post : branch->false_commands_pre;
+			if (operand && operand->type == ParamOverrideType::DRAW_HAS_OVERRIDE) {
+				guard.uses_draw_miss = true;
+				if (!CollectPostDrawMissGuard(*otherwise, post, depth + 1, guard))
+					return false;
+				continue;
+			}
+			// A CPU-only predicate can be omitted when neither outcome can do
+			// work. Do not discard GPU queries or eager expression side effects.
+			const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+			std::vector<ScalarIfGuard::Comparison> tests;
+			const auto& body = post ? branch->true_commands_post : branch->true_commands_pre;
+			if (!expression || !expression->IsSafeToSkipEvaluation() ||
+				!GatherShaderRegexGuardTests(expression, op && op->token == L"||" ? L"||" : L"&&", tests) ||
+				!CollectPostDrawMissGuard(*body, post, depth + 1, guard) ||
+				!CollectPostDrawMissGuard(*otherwise, post, depth + 1, guard))
+				return false;
+			continue;
+		}
+		const auto* run = dynamic_cast<const RunExplicitCommandList*>(command.get());
+		if (!run || !run->command_list_section)
+			return false;
+		auto& section = *run->command_list_section;
+		if ((run->run_pre_and_post_together || !post) &&
+			!CollectPostDrawMissGuard(section.command_list, false, depth + 1, guard))
+			return false;
+		if ((run->run_pre_and_post_together || post) &&
+			!CollectPostDrawMissGuard(section.post_command_list, true, depth + 1, guard))
+			return false;
+	}
+	return true;
+}
+} // namespace
+
+static void PreparePostDrawMissGuard(CommandList& list)
+{
+	list.post_draw_miss_guard.reset();
+	auto guard = std::make_shared<PostDrawMissGuard>();
+	if (CollectPostDrawMissGuard(list, true, 0, *guard) && guard->uses_draw_miss)
+		list.post_draw_miss_guard = std::move(guard);
+}
+
+static bool SkipEmptyPostDrawLink(CommandList& list, CommandListState* state)
+{
+	const auto* draw = state->call_info;
+	if (!state->post || state->aborted || !state->mOrigContext1 || !draw ||
+		draw->type < DrawCall::Draw || draw->type > DrawCall::DrawAuto ||
+		draw->override_candidate != DrawOverrideCandidate::Miss ||
+		G->analyse_frame || gLogDebug || !G->ModRuntimeOptimizationsEnabled() ||
+		!G->draw_gate_early_reject.load(std::memory_order_relaxed))
+		return false;
+	const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+	if (mode == Profiling::Mode::TOP_COMMAND_LISTS || mode == Profiling::Mode::TOP_COMMANDS)
+		return false;
+	const bool enabled = G->draw_gate_skip_empty_post.load(std::memory_order_relaxed);
+	const bool profile = mode == Profiling::Mode::SUMMARY && G->profile_post_draw_entry.load(std::memory_order_relaxed);
+	if (!enabled && !profile)
+		return false;
+	const auto& guard = *list.post_draw_miss_guard;
+	if (state->command_list_depth >= MAX_COMMAND_LIST_RECURSION - guard.depth)
+		return false;
+	const bool empty = std::all_of(guard.lists.begin(), guard.lists.end(), [](const auto& saved) {
+		return (!saved.restore_flag || (saved.list->empty_if_false == saved.restore_flag && *saved.restore_flag == 0.0f)) &&
+			!saved.list->runtime_populated && saved.list->ResolveCommandList() == saved.list &&
+			saved.list->commands == saved.commands;
+	});
+	if (profile)
+		Profiling::RecordPostDrawLink(empty, enabled && empty);
 	return enabled && empty;
 }
 

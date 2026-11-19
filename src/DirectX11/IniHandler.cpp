@@ -5257,6 +5257,8 @@ void LoadConfigFile()
 	G->profile_draw_gate = GetIniBool(L"Rendering", L"profile_draw_gate", false, NULL);
 	G->shader_regex_skip_empty_links = GetIniBool(L"Rendering", L"shader_regex_skip_empty_links", true, NULL);
 	G->profile_shader_regex_links = GetIniBool(L"Rendering", L"profile_shader_regex_links", false, NULL);
+	G->draw_gate_skip_empty_post = GetIniBool(L"Rendering", L"draw_gate_skip_empty_post", true, NULL);
+	G->profile_post_draw_entry = GetIniBool(L"Rendering", L"profile_post_draw_entry", false, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
     DataCacheBindFlags data_cache_flags = DataCacheBindFlags::INVALID;

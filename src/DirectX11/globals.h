@@ -620,6 +620,8 @@ struct Globals
 	std::atomic<bool> profile_draw_gate{false};
 	std::atomic<bool> shader_regex_skip_empty_links{true};
 	std::atomic<bool> profile_shader_regex_links{false};
+	std::atomic<bool> draw_gate_skip_empty_post{true};
+	std::atomic<bool> profile_post_draw_entry{false};
 	std::atomic<uint64_t> shader_override_generation{1};
 	std::atomic<uint64_t> shader_regex_generation{1};
 	TextureOverrideMap mTextureOverrideMap;

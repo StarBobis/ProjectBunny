@@ -381,9 +381,99 @@ void shader_regex_empty_link_tests()
     Profiling::mode = old_mode;
     Profiling::clear();
 }
+
+void empty_post_draw_link_tests()
+{
+    ParserFiles files;
+    files.load("global $post_fixture_enabled=1\nglobal $post_fixture_type=2\n"
+        "global $post_fixture_saved=0\nglobal $post_fixture_matches=0\nglobal $post_fixture_effect=0\n"
+        "[Rendering]\ndraw_has_override_slots=ib vb[0:2] ps-t0\n"
+        "[ResourcePostFixtureOriginal]\n"
+        "[CommandListPostFixtureSave]\nResourcePostFixtureOriginal=ref ps-t7\n"
+        "[CommandListPostFixtureCleanup]\nif $post_fixture_saved\n"
+        "ps-t7=ref ResourcePostFixtureOriginal\n$post_fixture_saved=0\nendif\n"
+        "[CommandListPostFixtureSkin]\nif $post_fixture_enabled\n"
+        "if draw_has_override\npost $post_fixture_matches=$post_fixture_matches+1\nendif\n"
+        "if $post_fixture_type == 2 || $post_fixture_type == 4\npost run=CommandListPostFixtureCleanup\nendif\nendif\n"
+        "[CommandListPostFixtureWrapper]\nrun=CommandListPostFixtureSkin\n"
+        "[CommandListPostFixtureOther]\nrun=CommandListPostFixtureSkin\npost $post_fixture_effect=$post_fixture_effect+1\n"
+        "[CommandListPostFixtureReplacement]\n$post_fixture_effect=$post_fixture_effect+10\n");
+    optimise_command_lists(nullptr);
+    const auto section = [](const wchar_t* name) -> ExplicitCommandListSection& {
+        return explicitCommandListSections.at(name);
+    };
+    auto& target = section(L"commandlistpostfixturewrapper").post_command_list;
+    auto& other = section(L"commandlistpostfixtureother").post_command_list;
+    auto& cleanup = section(L"commandlistpostfixturecleanup").command_list;
+    CommandList linked;
+    const std::wstring line = L"run = linked command list";
+    auto post = LinkCommandLists(&linked, &target, &line);
+    auto post_with_effect = LinkCommandLists(&linked, &other, &line);
+    check(target.post_draw_miss_guard && cleanup.empty_if_false && !other.post_draw_miss_guard,
+        "post draw: prove the phase-aware wrapper and reject an unrelated post effect");
+    check(G->draw_gate_skip_empty_post && !G->profile_post_draw_entry, "post draw: enabled by default, diagnostics off");
+
+    dx11_slot_test::BatchDevice gpu;
+    auto original = dx11_slot_test::texture(gpu, 0xff112233);
+    auto changed = dx11_slot_test::texture(gpu, 0xffaabbcc);
+    auto original_view = dx11_slot_test::srv(gpu, original.Get());
+    auto changed_view = dx11_slot_test::srv(gpu, changed.Get());
+    auto& saved = command_list_globals.at(L"$post_fixture_saved").fval;
+    auto& matched = command_list_globals.at(L"$post_fixture_matches").fval;
+    auto& effect = command_list_globals.at(L"$post_fixture_effect").fval;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const bool old_master = G->mod_runtime_optimizations.exchange(true);
+    const bool old_gate = G->draw_gate_early_reject.exchange(true);
+    Profiling::clear();
+    DrawCallInfo draw;
+    draw.type = DrawCall::DrawIndexed;
+    draw.override_candidate = DrawOverrideCandidate::Miss;
+    gpu.state.call_info = &draw;
+    gpu.state.post = true;
+
+    post->run(&gpu.state);
+    check(target.executions == 0 && matched == 0, "post draw: cached miss with no saved binding skips wrapper");
+    G->draw_gate_skip_empty_post = false;
+    post->run(&gpu.state);
+    check(target.executions == 1 && matched == 0, "post draw: independent switch retains original dispatch");
+    G->draw_gate_skip_empty_post = true;
+
+    RunLinkedCommandList save(&section(L"commandlistpostfixturesave").command_list);
+    dx11_slot_test::set_slot(gpu, L'p', 7, original_view.Get());
+    gpu.state.post = false;
+    save.run(&gpu.state);
+    dx11_slot_test::set_slot(gpu, L'p', 7, changed_view.Get());
+    saved = 1;
+    gpu.state.post = true;
+    post->run(&gpu.state);
+    check(target.executions == 2 && saved == 0 && dx11_slot_test::get_slot(gpu, L'p', 7).Get() == original_view.Get(),
+        "post draw: cached miss still restores a saved native slot through explicit post run");
+    draw.override_candidate = DrawOverrideCandidate::Possible;
+    post->run(&gpu.state);
+    check(target.executions == 3 && matched == 1, "post draw: a possible match runs its post commands");
+    draw.override_candidate = DrawOverrideCandidate::Unqueried;
+    post->run(&gpu.state);
+    check(target.executions == 4 && draw.override_candidate == DrawOverrideCandidate::Miss && matched == 1,
+        "post draw: only use an existing miss, without moving the original query");
+    post_with_effect->run(&gpu.state);
+    check(other.executions == 1 && effect == 1, "post draw: unrelated post commands still run");
+    G->draw_gate_early_reject = false;
+    post->run(&gpu.state);
+    check(target.executions == 5, "post draw: parent draw gate switch also restores original dispatch");
+    G->draw_gate_early_reject = true;
+    check(cleanup.SetSourceCommandList(&section(L"commandlistpostfixturereplacement").command_list),
+        "post draw: configure a live alias to a different cleanup source");
+    post->run(&gpu.state);
+    check(target.executions == 6 && effect == 11 && gpu.state.post && gpu.state.command_list_depth == 0,
+        "post draw: altered targets invalidate the proof and keep phase ordering");
+    G->mod_runtime_optimizations = old_master;
+    G->draw_gate_early_reject = old_gate;
+    Profiling::mode = old_mode;
+    Profiling::clear();
+}
 }
 void test_dx11_parser_optimization_regression()
 {
-    try { constants_tests(); expression_tests(); executor_tests(); early_draw_gate_tests(); shader_regex_empty_link_tests(); std::fputs("PASS: Constants compaction, typed command execution, Draw gate and ShaderRegex empty links\n", stderr); }
+    try { constants_tests(); expression_tests(); executor_tests(); early_draw_gate_tests(); shader_regex_empty_link_tests(); empty_post_draw_link_tests(); std::fputs("PASS: Constants compaction, typed command execution and empty ShaderRegex links in both phases\n", stderr); }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL parser optimization: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }

@@ -37,6 +37,7 @@ namespace Profiling {
     CollectionToken GetCollectionToken();
     bool IsCurrentCollection(const CollectionToken& token);
 	void RecordShaderRegexLink(bool empty, bool skipped);
+	void RecordPostDrawLink(bool empty, bool skipped);
 
     // Completed samples belong to the window and mode observed at entry.
     class Sample {

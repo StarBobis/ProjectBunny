@@ -72,6 +72,9 @@ Profiling::CollectionToken collection_token = std::make_shared<unsigned char>(0)
 unsigned shader_regex_guarded_links = 0;
 unsigned shader_regex_empty_links = 0;
 unsigned shader_regex_skipped_links = 0;
+unsigned post_draw_guarded_links = 0;
+unsigned post_draw_empty_links = 0;
+unsigned post_draw_skipped_links = 0;
 }
 
 Profiling::CollectionToken Profiling::GetCollectionToken()
@@ -94,6 +97,16 @@ void Profiling::RecordShaderRegexLink(bool empty, bool skipped)
 	++shader_regex_guarded_links;
 	shader_regex_empty_links += empty;
 	shader_regex_skipped_links += skipped;
+}
+
+void Profiling::RecordPostDrawLink(bool empty, bool skipped)
+{
+	std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+	if (mode.load(std::memory_order_relaxed) != Mode::SUMMARY)
+		return;
+	++post_draw_guarded_links;
+	post_draw_empty_links += empty;
+	post_draw_skipped_links += skipped;
 }
 
 void Profiling::start(State* state)
@@ -460,6 +473,18 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 			static_cast<double>(shader_regex_empty_links - shader_regex_skipped_links) / frames);
 		Profiling::text += buf;
 	}
+	if (G->profile_post_draw_entry.load(std::memory_order_relaxed)) {
+		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
+			L"Post draw guarded miss links: %.2f/frame\n"
+			L"Post draw empty miss links: %.2f/frame\n"
+			L"Post draw skipped empty miss links: %.2f/frame\n"
+			L"Post draw dispatched empty miss links: %.2f/frame\n",
+			static_cast<double>(post_draw_guarded_links) / frames,
+			static_cast<double>(post_draw_empty_links) / frames,
+			static_cast<double>(post_draw_skipped_links) / frames,
+			static_cast<double>(post_draw_empty_links - post_draw_skipped_links) / frames);
+		Profiling::text += buf;
+	}
     _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"Texture update hits: %u/%u hits/frame\n",
         Profiling::hash_tracking_overhead.hits / frames, Profiling::hash_tracking_overhead.count / frames);
     Profiling::text += buf;
@@ -613,6 +638,9 @@ void Profiling::clear()
 	shader_regex_guarded_links = 0;
 	shader_regex_empty_links = 0;
 	shader_regex_skipped_links = 0;
+	post_draw_guarded_links = 0;
+	post_draw_empty_links = 0;
+	post_draw_skipped_links = 0;
 	present_overhead.clear();
 	overlay_overhead.clear();
 	draw_overhead.clear();

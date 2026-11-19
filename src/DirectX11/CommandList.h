@@ -34,6 +34,7 @@ class CommandList;
 struct ScalarIfGuard;
 struct EarlyDrawGate;
 struct ShaderRegexEmptyGuard;
+struct PostDrawMissGuard;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
 
@@ -220,6 +221,7 @@ public:
 	size_t literal_source_size = 0;
 	std::shared_ptr<const EarlyDrawGate> early_draw_gate;
 	std::shared_ptr<const ShaderRegexEmptyGuard> shader_regex_empty_guard;
+	std::shared_ptr<const PostDrawMissGuard> post_draw_miss_guard;
 
 	// For local/static variables. These are only used in the main pre
 	// command list as the post command list and any sub command lists (if
