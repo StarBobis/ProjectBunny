@@ -5004,6 +5004,7 @@ bool ParseAutoCheckTextureSlots(const std::wstring& value, std::vector<AutoCheck
 
 static void LoadDrawOverrideSlots()
 {
+	++G->draw_override_slot_generation;
 	auto& ranges = G->draw_override_slot_ranges;
 	ranges.clear();
 	const auto* value = GetIniWstring(L"Rendering", L"draw_has_override_slots");

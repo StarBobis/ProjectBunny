@@ -1,6 +1,7 @@
 #include "slot_range_test_support.h"
 #include "ResourceHash.h"
 #include "ShaderBindings.h"
+#include "lock.h"
 #include <d3dcompiler.h>
 
 namespace {
@@ -52,6 +53,57 @@ void builtin(CommandList& pre, CommandList& post, const wchar_t* value)
         "MatchTextures: production builtin parser");
 }
 
+void draw_gate_reuse(BatchDevice& device)
+{
+    auto miss = match_texture(device, 0xff112233);
+    auto hit = match_texture(device, 0xff334455);
+    auto miss_view = srv(device, miss.Get());
+    auto hit_view = srv(device, hit.Get());
+    const auto hit_hash = GetResourceHash(hit.Get());
+    require_batch(hit_hash && hit_hash != GetResourceHash(miss.Get()) &&
+        !G->mTextureOverrideMap.count(hit_hash), "draw proof: distinct tracked resources");
+    auto old_ranges = G->draw_override_slot_ranges;
+    G->draw_override_slot_ranges = {{{ResourceCopyTargetType::SHADER_RESOURCE, 14, L'p'}, 1}};
+    ++G->draw_override_slot_generation;
+    G->mTextureOverrideMap[hit_hash].resize(1);
+    ShaderResourceBatchStats stats;
+    device.state.slot_batch_stats = &stats;
+    const std::wstring text = L"draw_has_override", ns;
+    CommandListScope scope;
+    CommandListExpression gate;
+    require_batch(gate.parse(&text, &ns, &scope), "draw proof: parse production predicate");
+    const auto evaluate = [&] {
+        DrawCallInfo info;
+        info.type = DrawCall::DrawIndexed;
+        device.state.call_info = &info;
+        const auto value = gate.evaluate(&device.state);
+        device.state.call_info = nullptr;
+        return value != 0;
+    };
+
+    set_slot(device, L'p', 14, miss_view.Get());
+    require_batch(!evaluate() && !evaluate() && stats.draw_gate_reuses == 1,
+        "draw proof: a second draw reuses a verified empty bound range");
+    set_slot(device, L'p', 14, hit_view.Get());
+    require_batch(evaluate() && stats.draw_gate_reuses == 1,
+        "draw proof: a native SRV rebind invalidates the cached miss");
+    set_slot(device, L'p', 14, miss_view.Get());
+    require_batch(!evaluate() && !evaluate() && stats.draw_gate_reuses == 2,
+        "draw proof: the cache can warm again after a rebind");
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        G->mResources.at(miss.Get()).hash = hit_hash;
+    }
+    require_batch(evaluate() && stats.draw_gate_reuses == 2,
+        "draw proof: resource metadata changes invalidate a miss without rebinding");
+    set_slot(device, L'p', 14, nullptr);
+    device.state.slot_batch_stats = nullptr;
+    InvalidateTextureOverrideCandidates();
+    G->mTextureOverrideMap.erase(hit_hash);
+    G->draw_override_slot_ranges = std::move(old_ranges);
+    ++G->draw_override_slot_generation;
+}
+
 void exercise_match(bool hooked = false)
 {
     BatchDevice device;
@@ -61,6 +113,7 @@ void exercise_match(bool hooked = false)
         device.hooked_lifetime = true;
         device.state.mOrigDevice1 = device.device->GetPassThroughOrigDevice1();
         device.state.mOrigContext1 = device.wrapper->GetPassThroughOrigContext1();
+        draw_gate_reuse(device);
     }
     Registry registry;
     const int savedMip = G->dhash_mip_size;

@@ -629,6 +629,7 @@ struct Globals
 	std::vector<std::shared_ptr<CheckTextureOverrideCommand>> auto_check_compute_targets;
 	// Read only when the draw predicate is first evaluated. G protects reload.
 	std::vector<DrawOverrideSlotRange> draw_override_slot_ranges;
+	uint64_t draw_override_slot_generation = 0;
 
 	// Parallel to auto_check_texture_slots: 1 when at least one
 	// checktextureoverride for that slot exists in the loaded command lists.

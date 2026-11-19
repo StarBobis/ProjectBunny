@@ -2079,13 +2079,14 @@ bool HasTextureOverrideCandidate(ID3D11Resource* resource, DrawCallInfo* call_in
     return false;
 }
 
-bool VertexBufferRangeHasNoCachedOverrideCandidates(ID3D11Buffer* const* buffers, unsigned count)
+template<typename Resource>
+static bool ResourcesHaveNoCachedOverrideCandidates(Resource* const* resources, size_t count)
 {
     CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
-    for (unsigned slot = 0; slot < count; ++slot) {
-        if (!buffers[slot])
+    for (size_t slot = 0; slot < count; ++slot) {
+        if (!resources[slot])
             continue;
-        const auto found = G->mResources.find(buffers[slot]);
+        const auto found = G->mResources.find(resources[slot]);
         if (found == G->mResources.end())
             continue;
         const auto& info = found->second;
@@ -2095,6 +2096,16 @@ bool VertexBufferRangeHasNoCachedOverrideCandidates(ID3D11Buffer* const* buffers
             return false;
     }
     return true;
+}
+
+bool VertexBufferRangeHasNoCachedOverrideCandidates(ID3D11Buffer* const* buffers, unsigned count)
+{
+    return ResourcesHaveNoCachedOverrideCandidates(buffers, count);
+}
+
+bool BoundResourcesHaveNoCachedOverrideCandidates(ID3D11Resource* const* resources, size_t count)
+{
+    return ResourcesHaveNoCachedOverrideCandidates(resources, count);
 }
 
 static void AppendFuzzyCandidates(const TextureOverrideCandidates& candidates, TextureOverrideMatches* matches, DrawCallInfo* call_info)

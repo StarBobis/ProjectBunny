@@ -139,6 +139,9 @@ private:
 	ID3D11DeviceContext1 *mOrigContext1;
 	ID3D11DeviceContext1 *mRealOrigContext1;
 	HackerDevice *mHackerDevice;
+	std::atomic<uint64_t> draw_override_binding_version{1};
+	std::atomic<DWORD> draw_override_binding_thread{0};
+	std::atomic<bool> draw_override_tracking_lost{false};
 
 	// These are per-context, moved from globals.h:
 	uint32_t mCurrentVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
@@ -286,6 +289,16 @@ public:
 	ID3D11DeviceContext1* GetPossiblyHookedOrigContext1();
 	ID3D11DeviceContext1* GetPassThroughOrigContext1();
 	void HookContext();
+	void InvalidateDrawOverrideBindings();
+	uint64_t DrawOverrideBindingVersion();
+
+	// Accessed under the config lock. Resource pointers are map keys only.
+	struct DrawOverrideMiss {
+		uint64_t binding_version = 0;
+		uint64_t config_generation = 0;
+		unsigned frame = 0;
+		std::vector<ID3D11Resource*> resources;
+	} draw_override_miss;
 
 	// public to allow CommandList access
 	virtual void FrameAnalysisLog(char *fmt, ...) {};

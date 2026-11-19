@@ -64,6 +64,7 @@ struct ShaderResourceBatchStats {
 	unsigned graphics_ref_hits = 0;
 	unsigned alias_metadata_hits = 0;
 };
+	unsigned draw_gate_reuses = 0;
 
 class CustomShaderStateScope;
 
