@@ -149,6 +149,7 @@ struct EarlyDrawGate {
 
 namespace {
 bool DrawHasConfiguredOverride(CommandListState* state);
+void RunCommand(CommandListCommand* command, CommandListState* state);
 }
 
 static bool DrawGateDiagnosticsEnabled()
@@ -179,7 +180,7 @@ static bool RunEarlyDrawGate(const EarlyDrawGate* gate, CommandList* list, Comma
 	++state->extra_indent;
 	for (const auto& command : gate->on_miss) {
 		if (state->aborted) break;
-		command->run(state);
+		RunCommand(command.get(), state);
 	}
 	--state->extra_indent;
 	return true;
@@ -195,7 +196,7 @@ static inline void RunListCommands(CommandList* list, CommandListState* state, c
 	for (auto& command : executable) {
 		if (state->aborted) break;
 		profile_command_list_cmd_start(command.get(), sample);
-		command->run(state);
+		RunCommand(command.get(), state);
 		profile_command_list_cmd_end(command.get(), state, sample);
 	}
 }
@@ -9740,6 +9741,18 @@ static CommandListCommand* parse_resource_copy_operation(
 	//	lookup_enum_name(ResourceCopyTargetTypeNames, dst.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, dst.evaluation_mode),
 	//	lookup_enum_name(ResourceCopyTargetTypeNames, src.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, src.evaluation_mode));
 
+	if (options & ResourceCopyOptions::REUSE_UNCHANGED) {
+		const auto copy = ResourceCopyOptions::COPY | ResourceCopyOptions::REUSE_UNCHANGED;
+		if ((static_cast<int>(options) & ~ResourceCopyOptions::UNLESS_NULL) != copy ||
+			src.type != ResourceCopyTargetType::DEPTH_STENCIL_TARGET ||
+			dst.type != ResourceCopyTargetType::CUSTOM_RESOURCE || dst.custom_resource_pool ||
+			src.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE ||
+			dst.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE) {
+			LogOverlayW(LOG_WARNING, L"reuse_unchanged requires a full oD copy to a named custom resource\n - [%ls]\n", section);
+			return nullptr;
+		}
+	}
+
 	if (!(options & ResourceCopyOptions::COPY_TYPE_MASK)) {
 		// If the copy method was not speficied make a guess.
 		// References aren't always safe (e.g. a resource can't be both
@@ -10466,6 +10479,43 @@ public:
 		}
 	}
 };
+
+static bool PreservesDepthSnapshot(ResourceCopyOperation& copy, const CustomResource* target)
+{
+	if (copy.src.type != ResourceCopyTargetType::EMPTY &&
+		(!(copy.options & ResourceCopyOptions::REFERENCE) || (copy.options & ResourceCopyOptions::COPY_MASK)))
+		return false;
+	if (copy.dst.type == ResourceCopyTargetType::SHADER_RESOURCE)
+		return true;
+	return copy.dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE && !copy.dst.custom_resource_pool &&
+		copy.dst.GetCustomResource(nullptr) != target;
+}
+
+static bool PreservesDepthSnapshot(CommandListCommand& command, const CommandListState::DepthCopySnapshot& snapshot)
+{
+	// Nested lists use RunCommand for their commands. Unknown commands are
+	// barriers, including all draws, dispatches, clears and output changes.
+	if (&command == snapshot.operation || dynamic_cast<const RunExplicitCommandList*>(&command) ||
+		dynamic_cast<const RunLinkedCommandList*>(&command) || dynamic_cast<const IfCommand*>(&command) ||
+		dynamic_cast<const AssignmentCommand*>(&command) || dynamic_cast<const LiteralAssignmentBatch*>(&command) ||
+		dynamic_cast<const CheckTextureOverrideCommand*>(&command) || dynamic_cast<const SkipCommand*>(&command))
+		return true;
+	if (typeid(command) == typeid(ResourceCopyOperation))
+		return PreservesDepthSnapshot(static_cast<ResourceCopyOperation&>(command), snapshot.target);
+	if (const auto* batch = dynamic_cast<const ShaderResourceBatch*>(&command)) {
+		return std::all_of(batch->operations.begin(), batch->operations.end(), [&](const auto& copy) {
+			return PreservesDepthSnapshot(*copy, snapshot.target);
+		});
+	}
+	return false;
+}
+
+void RunCommand(CommandListCommand* command, CommandListState* state)
+{
+	if (state->depth_snapshot.operation && !PreservesDepthSnapshot(*command, state->depth_snapshot))
+		state->depth_snapshot = {};
+	command->run(state);
+}
 
 void BatchLiteralAssignments(CommandList& list)
 {
@@ -13808,6 +13858,17 @@ void ResourceCopyOperation::CopyResourceToResource(
         }
     }
     ResourceCopyTarget& dst = *effective_destination;
+	const bool reuse_depth = (options & ResourceCopyOptions::REUSE_UNCHANGED) &&
+		state->call_info && !G->analyse_frame && !gLogDebug && G->ModRuntimeOptimizationsEnabled() &&
+		dst_custom_resource && !dst_custom_resource->max_copies_per_frame && src_view;
+	if (reuse_depth) {
+		auto& snapshot = state->depth_snapshot;
+		if (snapshot.operation == this && snapshot.source.Get() == src_resource &&
+			snapshot.depth_view.Get() == src_view && !dst_custom_resource->is_null &&
+			snapshot.destination.Get() == dst_custom_resource->resource)
+			return;
+		snapshot = {};
+	}
     if (!src_resource) {
         COMMAND_LIST_LOG(state, "  Copy source was NULL\n");
         PublishResourceBinding(dst, state, nullptr, nullptr, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred);
@@ -14016,6 +14077,15 @@ void ResourceCopyOperation::CopyResourceToResource(
 	}
 	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred,
 		selected_window, original_metadata, compute_om_uav_slots);
+	if (reuse_depth && !buf_dst_size && dst_resource && dst_resource != src_resource &&
+		dst_custom_resource->resource == dst_resource && !dst_custom_resource->is_null) {
+		auto& snapshot = state->depth_snapshot;
+		snapshot.operation = this;
+		snapshot.target = dst_custom_resource;
+		snapshot.source = src_resource;
+		snapshot.destination = dst_resource;
+		snapshot.depth_view = src_view;
+	}
 
 	if (options & ResourceCopyOptions::SET_VIEWPORT)
 		SetViewportFromResource(state, dst_resource);

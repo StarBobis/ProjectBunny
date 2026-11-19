@@ -70,6 +70,7 @@ struct ShaderResourceBatchStats {
 };
 
 class CustomShaderStateScope;
+class ResourceCopyOperation;
 class CustomResource;
 
 class CommandListState {
@@ -80,6 +81,14 @@ public:
 		bool result = false;
 	};
 	std::array<ScalarIfMemo, 4> scalar_if_memo{};
+	struct DepthCopySnapshot {
+		const ResourceCopyOperation* operation = nullptr;
+		const CustomResource* target = nullptr;
+		Microsoft::WRL::ComPtr<ID3D11Resource> source, destination;
+		Microsoft::WRL::ComPtr<ID3D11View> depth_view;
+	};
+	DepthCopySnapshot depth_snapshot;
+
 	HackerDevice *mHackerDevice;
 	HackerContext *mHackerContext;
 	ID3D11Device1 *mOrigDevice1;
@@ -1237,6 +1246,7 @@ enum class ResourceCopyOptions {
 	SET_VIEWPORT    = 0x00000100,
 	NO_VIEW_CACHE   = 0x00000200,
 	RAW_VIEW        = 0x00000400,
+	REUSE_UNCHANGED = 0x00000800,
 
 	UNKNOWN         = 0x00008000,
 	COPY_MASK       = 0x000000c9, // Anything that implies a copy
@@ -1254,6 +1264,7 @@ static EnumName_t<const wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[
 	{L"set_viewport", ResourceCopyOptions::SET_VIEWPORT},
 	{L"no_view_cache", ResourceCopyOptions::NO_VIEW_CACHE},
 	{L"raw", ResourceCopyOptions::RAW_VIEW},
+	{L"reuse_unchanged", ResourceCopyOptions::REUSE_UNCHANGED},
 
 	// This one currently depends on device support for resolving the
 	// given texture format (D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE), and

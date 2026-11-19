@@ -43,6 +43,7 @@ ps-t1 = ref ResourceSnapshot
 | 选项 | 意义 |
 | --- | --- |
 | `unless_null` | 源为空时保留目标 |
+| `reuse_unchanged` | 在单次绘制的命令列表内复用同一条深度快照命令的结果 |
 | `no_view_cache` | 不复用该操作的视图缓存 |
 | `raw` | 需要原始缓冲视图的操作 |
 | `set_viewport` | 绑定目标时同步视口 |
@@ -52,6 +53,8 @@ ps-t1 = ref ResourceSnapshot
 ResourceAlias = ref unless_null ps-t0
 ps-t0 = null
 ```
+
+`ResourceDepth = copy oD unless_null reuse_unchanged` 仍创建独立快照。它仅支持从 `oD` 完整复制到独立命名资源。遇到绘制、清空、输出绑定变更或无法确认副作用的命令后会重新复制。关闭 `mod_runtime_optimizations` 或使用 F8 抓帧时，每次执行都复制。
 
 引用要求资源原本具备目标用途的 BindFlags；已经创建的原生资源不能凭一次引用获得新用途。格式、维度、采样数不兼容时应检查日志，不要靠强制转换掩盖错误。
 
