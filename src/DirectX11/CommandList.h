@@ -31,6 +31,7 @@ class HackerDevice;
 class HackerContext;
 class CommandListExpression;
 class CommandList;
+struct ScalarIfGuard;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
 
@@ -63,13 +64,20 @@ struct ShaderResourceBatchStats {
 	unsigned literal_indexed_draws = 0;
 	unsigned graphics_ref_hits = 0;
 	unsigned alias_metadata_hits = 0;
-};
 	unsigned draw_gate_reuses = 0;
+};
 
 class CustomShaderStateScope;
 
 class CommandListState {
 public:
+	struct ScalarIfMemo {
+		const ScalarIfGuard* guard = nullptr;
+		float first = 0, second = 0;
+		bool result = false;
+	};
+	std::array<ScalarIfMemo, 4> scalar_if_memo{};
+
 	HackerDevice *mHackerDevice;
 	HackerContext *mHackerContext;
 	ID3D11Device1 *mOrigDevice1;
@@ -196,6 +204,9 @@ public:
 	// destruction of each object:
 	typedef std::vector<std::shared_ptr<CommandListCommand>> Commands;
 	Commands commands;
+	Commands literal_optimized_commands;
+	const Commands::value_type* literal_source_data = nullptr;
+	size_t literal_source_size = 0;
 
 	// For local/static variables. These are only used in the main pre
 	// command list as the post command list and any sub command lists (if
@@ -220,6 +231,7 @@ public:
 	const float* empty_if_false = nullptr;
 
 	void clear();
+	void DiscardLiteralBatch();
 
 	bool SetSourceCommandList(CommandList* source);
 	CommandList* ResolveCommandList();
@@ -1764,6 +1776,7 @@ public:
 class IfCommand : public CommandListCommand {
 public:
 	CommandListExpression expression;
+	std::shared_ptr<const ScalarIfGuard> scalar_guard;
 	bool pre_finalised, post_finalised;
 	bool has_nested_else_if;
 	wstring section;

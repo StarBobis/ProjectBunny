@@ -12,6 +12,7 @@
 #include <WICTextureLoader.h>
 #include <algorithm>
 #include <iterator>
+#include <map>
 #include <cstring>
 #include <optional>
 #include <sstream>
@@ -165,7 +166,12 @@ static void _RunResolvedCommandList(CommandList *command_list, CommandListState 
 
 	profile_command_list_start(command_list, state, &profiling_state);
 
-	for (i = command_list->commands.begin(); i < command_list->commands.end() && !state->aborted; i++) {
+	auto& commands = command_list->commands;
+	auto& optimized = command_list->literal_optimized_commands;
+	auto& executable = !optimized.empty() && command_list->literal_source_data == commands.data() &&
+		command_list->literal_source_size == commands.size() && G->ModRuntimeOptimizationsEnabled() &&
+		!G->analyse_frame && !gLogDebug && Profiling::mode != Profiling::Mode::TOP_COMMANDS ? optimized : commands;
+	for (i = executable.begin(); i < executable.end() && !state->aborted; i++) {
 		profile_command_list_cmd_start(i->get(), &profiling_state);
 		(*i)->run(state);
 		profile_command_list_cmd_end(i->get(), state, &profiling_state);
@@ -368,6 +374,7 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 
 
 static void MergeDirectTextureChecks(CommandList* command_list);
+static void PrepareScalarGuardsAndLiteralBatches();
 
 static const float* FindEmptyListGuard(const CommandList &list)
 {
@@ -465,6 +472,8 @@ void optimise_command_lists(HackerDevice *device)
 
 	for (CommandList* command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
+
+	PrepareScalarGuardsAndLiteralBatches();
 
 	for (auto &entry : explicitCommandListSections) {
 		auto &section = entry.second;
@@ -1286,27 +1295,27 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 	if (first.type == ResourceCopyTargetType::INDEX_BUFFER) {
 		Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
 		context->IAGetIndexBuffer(buffer.GetAddressOf(), nullptr, nullptr);
+		if (checked && buffer)
+			checked->push_back(buffer.Get());
 		return HasTextureOverrideCandidate(buffer.Get(), info, G->track_region_hashes);
 	}
 	if (first.type == ResourceCopyTargetType::VERTEX_BUFFER) {
 		RetainedBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 		context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
-		if (range.count > 1 && !G->track_region_hashes && G->ModRuntimeOptimizationsEnabled() &&
-			VertexBufferRangeHasNoCachedOverrideCandidates(bindings.values, range.count))
-			return false;
-		for (unsigned i = 0; i < range.count; ++i)
-		if (checked && buffer)
-			checked->push_back(buffer.Get());
-			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
-				return true;
-		return false;
-	}
-	RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 		if (checked) {
 			for (unsigned i = 0; i < range.count; ++i)
 				if (bindings.values[i])
 					checked->push_back(bindings.values[i]);
 		}
+		if (range.count > 1 && !G->track_region_hashes && G->ModRuntimeOptimizationsEnabled() &&
+			VertexBufferRangeHasNoCachedOverrideCandidates(bindings.values, range.count))
+			return false;
+		for (unsigned i = 0; i < range.count; ++i)
+			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
+				return true;
+		return false;
+	}
+	RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
 	switch (first.shader_type) {
 	case L'p': context->PSGetShaderResources(first.slot, range.count, bindings.values); break;
 	case L'v': context->VSGetShaderResources(first.slot, range.count, bindings.values); break;
@@ -1317,6 +1326,8 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 		if (!bindings.values[i]) continue;
 		Microsoft::WRL::ComPtr<ID3D11Resource> resource;
 		bindings.values[i]->GetResource(resource.GetAddressOf());
+		if (checked && resource)
+			checked->push_back(resource.Get());
 		if (HasTextureOverrideCandidate(resource.Get(), info, false))
 			return true;
 	}
@@ -1326,8 +1337,6 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 bool DrawHasConfiguredOverride(CommandListState* state)
 {
 	auto* info = state->call_info;
-		if (checked && resource)
-			checked->push_back(resource.Get());
 	if (!info || !state->mOrigContext1 || info->type == DrawCall::Invalid ||
 		info->type == DrawCall::Dispatch || info->type == DrawCall::DispatchIndirect)
 		return true;
@@ -1336,15 +1345,6 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 
 	CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	const auto& ranges = G->draw_override_slot_ranges;
-	// An absent or invalid setting preserves the direct-check route.
-	const bool possible = ranges.empty() ||
-		((!G->mTextureOverrideMap.empty() || !G->mFuzzyTextureOverrides.empty()) &&
-		 std::any_of(ranges.begin(), ranges.end(), [&](const DrawOverrideSlotRange& range) {
-			return DrawOverrideRangeMayMatch(state->mOrigContext1, info, range, proof ? &proof->resources : nullptr);
-		}));
-	info->override_candidate = possible ? DrawOverrideCandidate::Possible : DrawOverrideCandidate::Miss;
-	return possible;
-}
 	auto* context = state->mHackerContext;
 	const auto binding_version = context && !ranges.empty() && !G->track_region_hashes &&
 		G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug &&
@@ -1364,18 +1364,27 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 		proof->binding_version = 0;
 		proof->resources.clear();
 	}
-
-int AutoCheckShaderStageIndex(wchar_t shader_type)
-{
-	switch (shader_type) {
-	case L'p': return 0;
-	case L'v': return 1;
+	// An absent or invalid setting preserves the direct-check route.
+	const bool possible = ranges.empty() ||
+		((!G->mTextureOverrideMap.empty() || !G->mFuzzyTextureOverrides.empty()) &&
+		 std::any_of(ranges.begin(), ranges.end(), [&](const DrawOverrideSlotRange& range) {
+			return DrawOverrideRangeMayMatch(state->mOrigContext1, info, range, proof ? &proof->resources : nullptr);
+		}));
 	if (proof && !possible && context->DrawOverrideBindingVersion() == binding_version &&
 		BoundResourcesHaveNoCachedOverrideCandidates(proof->resources.data(), proof->resources.size())) {
 		proof->binding_version = binding_version;
 		proof->config_generation = config_generation;
 		proof->frame = G->frame_no;
 	}
+	info->override_candidate = possible ? DrawOverrideCandidate::Possible : DrawOverrideCandidate::Miss;
+	return possible;
+}
+
+int AutoCheckShaderStageIndex(wchar_t shader_type)
+{
+	switch (shader_type) {
+	case L'p': return 0;
+	case L'v': return 1;
 	case L'c': return 2;
 	default: return -1;
 	}
@@ -3766,6 +3775,7 @@ bool RunExplicitCommandList::noop(bool post, bool ignore_cto_pre, bool ignore_ct
 std::shared_ptr<RunLinkedCommandList>
 LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 {
+	dst->DiscardLiteralBatch();
 	RunLinkedCommandList *operation = new RunLinkedCommandList(link);
 	operation->ini_line = *ini_line;
 	std::shared_ptr<RunLinkedCommandList> p(operation);
@@ -4125,8 +4135,16 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
     }
 }
 
+void CommandList::DiscardLiteralBatch()
+{
+	literal_optimized_commands.clear();
+	literal_source_data = nullptr;
+	literal_source_size = 0;
+}
+
 void CommandList::clear()
 {
+	DiscardLiteralBatch();
 	empty_if_false = nullptr;
 	commands.clear();
 	static_vars.clear();
@@ -10136,9 +10154,191 @@ IfCommand::IfCommand(const wchar_t *section) :
 	registered_command_lists.push_back(false_commands_post.get());
 }
 
+struct ScalarIfGuard {
+	struct Comparison {
+		const float* variable = nullptr;
+		float constant = 0;
+		bool unequal = false;
+
+		bool Evaluate(float current) const { return (current == constant) != unequal; }
+	};
+	Comparison first, second;
+	bool either = false;
+	bool repeated = false;
+
+	bool Evaluate(CommandListState* state) const
+	{
+		const float a = *first.variable;
+		const bool left = first.Evaluate(a);
+		if (!second.variable || left == either)
+			return left;
+
+		const float b = *second.variable;
+		auto& entries = state->scalar_if_memo;
+		auto& memo = entries[(reinterpret_cast<uintptr_t>(this) >> 4) % entries.size()];
+		if (repeated && memo.guard == this && memo.first == a && memo.second == b)
+			return memo.result;
+
+		const bool value = second.Evaluate(b);
+		if (repeated)
+			memo = {this, a, b, value};
+		return value;
+	}
+};
+
+namespace {
+bool CompileScalarComparison(const CommandListEvaluatable* expression, ScalarIfGuard::Comparison& result)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	if (!op || (op->token != L"==" && op->token != L"!="))
+		return false;
+	auto* left = dynamic_cast<const CommandListOperand*>(op->lhs.get());
+	auto* right = dynamic_cast<const CommandListOperand*>(op->rhs.get());
+	if (!left || !right)
+		return false;
+	if (left->type == ParamOverrideType::VALUE)
+		std::swap(left, right);
+	if (left->type != ParamOverrideType::VARIABLE || !left->var_ftarget || right->type != ParamOverrideType::VALUE)
+		return false;
+	result = {left->var_ftarget, right->val, op->token == L"!="};
+	return true;
+}
+
+bool CompileScalarGuard(const CommandListEvaluatable* expression, ScalarIfGuard& guard)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	if (op && (op->token == L"&&" || op->token == L"||")) {
+		guard.either = op->token == L"||";
+		return CompileScalarComparison(op->lhs.get(), guard.first) && CompileScalarComparison(op->rhs.get(), guard.second);
+	}
+	return CompileScalarComparison(expression, guard.first);
+}
+
+auto GuardKey(const ScalarIfGuard& guard)
+{
+	const auto key = [](const ScalarIfGuard::Comparison& test) {
+		uint32_t bits;
+		std::memcpy(&bits, &test.constant, sizeof(bits));
+		return std::make_tuple(reinterpret_cast<uintptr_t>(test.variable), bits, test.unequal);
+	};
+	return std::make_tuple(key(guard.first), key(guard.second), guard.either);
+}
+
+struct LiteralAssignment {
+	CommandListVariable* variable = nullptr;
+	float DirectX::XMFLOAT4::*component = nullptr;
+	int index = 0;
+	float value = 0;
+};
+
+bool ReadLiteralAssignment(const CommandListCommand* command, LiteralAssignment& item)
+{
+	const auto* assign = dynamic_cast<const AssignmentCommand*>(command);
+	if (!assign)
+		return false;
+	const auto* literal = dynamic_cast<const CommandListOperand*>(assign->expression.evaluatable.get());
+	if (!literal || literal->type != ParamOverrideType::VALUE)
+		return false;
+	if (const auto* var = dynamic_cast<const VariableAssignment*>(assign)) {
+		item = {var->var, nullptr, 0, literal->val};
+		return item.variable != nullptr;
+	}
+	if (const auto* param = dynamic_cast<const ParamOverride*>(assign)) {
+		item = {nullptr, param->param_component, param->param_idx, literal->val};
+		return item.component && item.index >= 0;
+	}
+	return false;
+}
+
+class LiteralAssignmentBatch final : public CommandListCommand {
+public:
+	std::vector<LiteralAssignment> assignments;
+	CommandList::Commands legacy;
+
+	void run(CommandListState* state) override
+	{
+		if (!G->ModRuntimeOptimizationsEnabled() || G->analyse_frame || gLogDebug) {
+			for (const auto& command : legacy)
+				command->run(state);
+			return;
+		}
+		for (const auto& assignment : assignments) {
+			if (auto* var = assignment.variable) {
+				if (var->flags & VariableFlags::LOCKED)
+					continue;
+				const float previous = var->fval;
+				var->fval = assignment.value;
+				if (var->flags & VariableFlags::PERSIST)
+					G->user_config_dirty |= previous != assignment.value;
+			} else {
+				float& dest = G->iniParams[assignment.index].*assignment.component;
+				const float previous = dest;
+				dest = assignment.value;
+				state->update_params |= previous != assignment.value;
+			}
+		}
+	}
+};
+
+void BatchLiteralAssignments(CommandList& list)
+{
+	list.DiscardLiteralBatch();
+	if (list.commands.size() < 2)
+		return;
+	CommandList::Commands optimized;
+	for (auto start = list.commands.begin(); start != list.commands.end();) {
+		LiteralAssignment item;
+		auto end = start;
+		std::vector<LiteralAssignment> values;
+		for (; end != list.commands.end() && ReadLiteralAssignment(end->get(), item); ++end)
+			values.push_back(item);
+		if (values.size() < 2) {
+			optimized.push_back(*start++);
+			continue;
+		}
+		auto batch = std::make_shared<LiteralAssignmentBatch>();
+		batch->ini_line = (*start)->ini_line + L" (literal assignment batch)";
+		batch->assignments = std::move(values);
+		batch->legacy.assign(start, end);
+		optimized.push_back(std::move(batch));
+		start = end;
+	}
+	if (optimized.size() != list.commands.size()) {
+		list.literal_source_data = list.commands.data();
+		list.literal_source_size = list.commands.size();
+		list.literal_optimized_commands = std::move(optimized);
+	}
+}
+} // namespace
+
+static void PrepareScalarGuardsAndLiteralBatches()
+{
+	std::map<decltype(GuardKey(ScalarIfGuard{})), std::shared_ptr<ScalarIfGuard>> guards;
+	for (auto* list : registered_command_lists) {
+		for (const auto& command : list->commands) {
+			auto* branch = dynamic_cast<IfCommand*>(command.get());
+			if (!branch || branch->scalar_guard)
+				continue;
+			ScalarIfGuard compiled;
+			if (!CompileScalarGuard(branch->expression.evaluatable.get(), compiled))
+				continue;
+			auto& shared = guards[GuardKey(compiled)];
+			if (!shared)
+				shared = std::make_shared<ScalarIfGuard>(compiled);
+			else
+				shared->repeated = true;
+			branch->scalar_guard = shared;
+		}
+		BatchLiteralAssignments(*list);
+	}
+}
+
 void IfCommand::run(CommandListState *state)
 {
-	if (expression.evaluate(state)) {
+	const bool condition = scalar_guard && G->ModRuntimeOptimizationsEnabled() &&
+		G->expression_short_circuit.load(std::memory_order_relaxed) && !G->analyse_frame && !gLogDebug
+		? scalar_guard->Evaluate(state) : expression.evaluate(state) != 0.0f;
+	if (condition) {
 		COMMAND_LIST_LOG(state, "%S: true {\n", ini_line.c_str());
 		state->extra_indent++;
 		if (state->post)
@@ -10166,6 +10366,7 @@ void IfCommand::run(CommandListState *state)
 
 bool IfCommand::optimise(HackerDevice *device)
 {
+	scalar_guard.reset();
 	const bool changed = expression.optimise(device);
     if (changed) static_evaluated = false;
     return changed;
@@ -10761,6 +10962,8 @@ void ResourceCopyTarget::SetResource(
 		break;
 
 	case ResourceCopyTargetType::SHADER_RESOURCE:
+		if (state->mHackerContext)
+			state->mHackerContext->InvalidateDrawOverrideBindings();
 		resource_view = (ID3D11ShaderResourceView*)view;
 		switch(shader_type) {
 		case L'v':
@@ -10792,11 +10995,15 @@ void ResourceCopyTarget::SetResource(
 
 	case ResourceCopyTargetType::VERTEX_BUFFER:
 		buf = (ID3D11Buffer*)res;
+		if (state->mHackerContext)
+			state->mHackerContext->InvalidateDrawOverrideBindings();
 		mOrigContext1->IASetVertexBuffers(slot, 1, &buf, &stride, &offset);
 		break;
 
 	case ResourceCopyTargetType::INDEX_BUFFER:
 		buf = (ID3D11Buffer*)res;
+		if (state->mHackerContext)
+			state->mHackerContext->InvalidateDrawOverrideBindings();
 		mOrigContext1->IASetIndexBuffer(buf, format, offset);
 		break;
 
@@ -10876,6 +11083,21 @@ void ResourceCopyTarget::SetResource(
 	{
 		CustomResource* custom_resource = GetCustomResource(state, true);
         if (!custom_resource) return;
+
+		const bool unbound = !res && !view;
+		if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug &&
+			custom_resource->is_null == unbound &&
+			(unbound || (custom_resource->resource == res && custom_resource->view == view &&
+				(!original_metadata || (
+					custom_resource->match_format == original_metadata->format &&
+					custom_resource->match_dhash == original_metadata->dhash &&
+					std::memcmp(&custom_resource->match_confidence, &original_metadata->confidence, sizeof(float)) == 0 &&
+					custom_resource->match_dhash_set == original_metadata->dhash_set &&
+					custom_resource->match_format_valid == original_metadata->format_valid)))) &&
+			custom_resource->stride == stride && custom_resource->offset == offset &&
+			custom_resource->format == format && custom_resource->buf_size == buf_size &&
+			custom_resource->buf_size_is_length == (res && size_is_length))
+			return;
 
 		custom_resource->stride = stride;
 		custom_resource->offset = offset;
@@ -10962,8 +11184,6 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 	switch(type) {
 		case ResourceCopyTargetType::CONSTANT_BUFFER:
 			return D3D11_BIND_CONSTANT_BUFFER;
-		if (state->mHackerContext)
-			state->mHackerContext->InvalidateDrawOverrideBindings();
 		case ResourceCopyTargetType::SHADER_RESOURCE:
 			return D3D11_BIND_SHADER_RESOURCE;
 		case ResourceCopyTargetType::VERTEX_BUFFER:
@@ -10995,15 +11215,11 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 					return state->this_target->BindFlags(state);
 
 				if (state->call_info && state->call_info->indirect_buffer) {
-		if (state->mHackerContext)
-			state->mHackerContext->InvalidateDrawOverrideBindings();
 					if (misc_flags)
 						*misc_flags = D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS;
 					// No bind flags required, but a common scenario would be copying
 					// from a resource with D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS
 					// that will need to be cleared out if we have neither SRV or UAV
-		if (state->mHackerContext)
-			state->mHackerContext->InvalidateDrawOverrideBindings();
 					// set, which is handled in RecreateCompatibleBuffer()
 					return (D3D11_BIND_FLAG)0;
 				}
@@ -11084,21 +11300,6 @@ void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Res
 
 				if (Profiling::mode == Profiling::Mode::SUMMARY)
 					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
-		const bool unbound = !res && !view;
-		if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug &&
-			custom_resource->is_null == unbound &&
-			(unbound || (custom_resource->resource == res && custom_resource->view == view &&
-				(!original_metadata || (
-					custom_resource->match_format == original_metadata->format &&
-					custom_resource->match_dhash == original_metadata->dhash &&
-					std::memcmp(&custom_resource->match_confidence, &original_metadata->confidence, sizeof(float)) == 0 &&
-					custom_resource->match_dhash_set == original_metadata->dhash_set &&
-					custom_resource->match_format_valid == original_metadata->format_valid)))) &&
-			custom_resource->stride == stride && custom_resource->offset == offset &&
-			custom_resource->format == format && custom_resource->buf_size == buf_size &&
-			custom_resource->buf_size_is_length == (res && size_is_length))
-			return;
-
 
 				// Run Hash Matching.
 				if (region_hash) {
@@ -13680,6 +13881,8 @@ static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT
 static void SetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
     ID3D11ShaderResourceView* const* views)
 {
+    if (state->mHackerContext)
+        state->mHackerContext->InvalidateDrawOverrideBindings();
     switch (stage) {
     case L'v': state->mOrigContext1->VSSetShaderResources(first, count, views); break;
     case L'h': state->mOrigContext1->HSSetShaderResources(first, count, views); break;
@@ -13718,6 +13921,13 @@ void ShaderResourceBindBatch::run(CommandListState* state)
         if (std::find(assigned, assigned + count, false) != assigned + count) {
             RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> original(count);
             GetShaderResourcesBatch(state, shader_type, first_slot, count, original.values);
+            if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug) {
+                bool changed = false;
+                for (UINT i = 0; i < count; ++i)
+                    changed |= assigned[i] && views.values[i] != original.values[i];
+                if (!changed)
+                    return;
+            }
             for (UINT i = 0; i < count; ++i)
                 if (!assigned[i])
                     views.values[i] = std::exchange(original.values[i], nullptr);
@@ -13881,8 +14091,6 @@ static const CommandList::Commands& branch_commands(const std::shared_ptr<Comman
 	const std::shared_ptr<CommandList> &post, CommandListPhase phase)
 {
 	static const CommandList::Commands empty;
-    if (state->mHackerContext)
-        state->mHackerContext->InvalidateDrawOverrideBindings();
 	const auto& list = phase == CommandListPhase::Pre ? pre : post;
 	return list ? list->commands : empty;
 }
@@ -13921,13 +14129,6 @@ static bool chain_may_keep_binding(const std::vector<ConditionalSlotBranch> &bra
 
 // Appends one entry per branch of a simple if/elif/else chain.
 // Fails unless every reachable branch runs exactly one batchable operation,
-            if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug) {
-                bool changed = false;
-                for (UINT i = 0; i < count; ++i)
-                    changed |= assigned[i] && views.values[i] != original.values[i];
-                if (!changed)
-                    return;
-            }
 // on the slot the first branch fixed.
 // The final empty else is allowed, and means "leave the current binding",
 // which is the same thing unless_null already does for a batch.

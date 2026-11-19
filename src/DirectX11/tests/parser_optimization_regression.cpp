@@ -175,9 +175,47 @@ void expression_tests()
     check(!branch.is_static && GetExpressionRandomSampleCount() == samples_before,
         "If cache probes leave random dynamic and do not consume samples");
 }
+void executor_tests()
+{
+    ParserFiles files;
+    files.load("global $compile_gate=0\nglobal $compile_other=0\nglobal $compile_result=0\n"
+        "[CommandListCompiledExecutor]\n$compile_gate=1\n$compile_other=2\n"
+        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+1\nendif\n"
+        "$compile_gate=0\n$compile_other=2\n"
+        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+100\nendif\n"
+        "$compile_gate=1\n"
+        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+1\nendif\n");
+    optimise_command_lists(nullptr);
+    auto& list = explicitCommandListSections.at(L"commandlistcompiledexecutor").command_list;
+    std::shared_ptr<const ScalarIfGuard> shared;
+    unsigned guards = 0;
+    for (const auto& command : list.commands) {
+        if (auto* branch = dynamic_cast<IfCommand*>(command.get())) {
+            if (!guards) shared = branch->scalar_guard;
+            check(shared && shared == branch->scalar_guard, "identical comparisons share one typed guard");
+            ++guards;
+        }
+    }
+    check(guards == 3 && !list.literal_optimized_commands.empty() &&
+        list.literal_optimized_commands.size() < list.commands.size(),
+        "typed executor batches consecutive literal writes and retains the original sequence");
+    HackerContext context(nullptr, nullptr);
+    CommandListState state;
+    state.mHackerContext = &context;
+    RunLinkedCommandList run(&list);
+    const bool old = G->mod_runtime_optimizations.exchange(true);
+    run.run(&state);
+    auto& result = command_list_globals.at(L"$compile_result").fval;
+    check(result == 2, "shared condition rechecks input values after a literal assignment batch changes them");
+    result = 0;
+    G->mod_runtime_optimizations = false;
+    run.run(&state);
+    G->mod_runtime_optimizations = old;
+    check(result == 2, "typed executor matches the original path with optimizations disabled");
+}
 }
 void test_dx11_parser_optimization_regression()
 {
-    try { constants_tests(); expression_tests(); std::fputs("PASS: Constants compaction, masked/direct expression passes and If/lookup cache boundaries\n", stderr); }
+    try { constants_tests(); expression_tests(); executor_tests(); std::fputs("PASS: Constants compaction, typed command execution, and If/lookup cache boundaries\n", stderr); }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL parser optimization: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }
