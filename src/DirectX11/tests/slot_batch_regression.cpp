@@ -286,6 +286,14 @@ void lazy_seed_cases(BatchDevice& device, ID3D11Resource* a,
     require_batch(calls.get_calls == 1 && calls.set_calls == 1 && get_slot(device, L'p', 1).Get() == old &&
         bound_resource(device, L'p', 0).Get() == b && bound_resource(device, L'p', 2).Get() == a,
         "batch: a true span gap lazily fetches original bindings once and keeps exact gap identity");
+    calls = execute(gap, device);
+    require_batch(calls.get_calls == 1 && calls.set_calls == 0 && get_slot(device, L'p', 1).Get() == old,
+        "batch: an existing partial-span snapshot can prove that the requested views are already bound");
+    set_slot(device, L'p', 2, old);
+    calls = execute(gap, device);
+    require_batch(calls.get_calls == 1 && calls.set_calls == 1 &&
+        bound_resource(device, L'p', 2).Get() == a,
+        "batch: a changed binding invalidates the no-op decision");
 
     CommandList duplicate;
     append(duplicate, L"ps-t0", L"ref resourceslotbatch_b");

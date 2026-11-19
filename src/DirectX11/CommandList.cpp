@@ -12,6 +12,7 @@
 #include <WICTextureLoader.h>
 #include <algorithm>
 #include <iterator>
+#include <cstring>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -1294,19 +1295,19 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 			VertexBufferRangeHasNoCachedOverrideCandidates(bindings.values, range.count))
 			return false;
 		for (unsigned i = 0; i < range.count; ++i)
-			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
 		if (checked && buffer)
 			checked->push_back(buffer.Get());
+			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
 				return true;
 		return false;
 	}
 	RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
-	switch (first.shader_type) {
 		if (checked) {
 			for (unsigned i = 0; i < range.count; ++i)
 				if (bindings.values[i])
 					checked->push_back(bindings.values[i]);
 		}
+	switch (first.shader_type) {
 	case L'p': context->PSGetShaderResources(first.slot, range.count, bindings.values); break;
 	case L'v': context->VSGetShaderResources(first.slot, range.count, bindings.values); break;
 	case L'c': context->CSGetShaderResources(first.slot, range.count, bindings.values); break;
@@ -1325,9 +1326,9 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 bool DrawHasConfiguredOverride(CommandListState* state)
 {
 	auto* info = state->call_info;
-	if (!info || !state->mOrigContext1 || info->type == DrawCall::Invalid ||
 		if (checked && resource)
 			checked->push_back(resource.Get());
+	if (!info || !state->mOrigContext1 || info->type == DrawCall::Invalid ||
 		info->type == DrawCall::Dispatch || info->type == DrawCall::DispatchIndirect)
 		return true;
 	if (info->override_candidate != DrawOverrideCandidate::Unqueried)
@@ -1344,7 +1345,6 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 	info->override_candidate = possible ? DrawOverrideCandidate::Possible : DrawOverrideCandidate::Miss;
 	return possible;
 }
-
 	auto* context = state->mHackerContext;
 	const auto binding_version = context && !ranges.empty() && !G->track_region_hashes &&
 		G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug &&
@@ -1364,18 +1364,19 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 		proof->binding_version = 0;
 		proof->resources.clear();
 	}
+
 int AutoCheckShaderStageIndex(wchar_t shader_type)
 {
 	switch (shader_type) {
 	case L'p': return 0;
 	case L'v': return 1;
-	case L'c': return 2;
 	if (proof && !possible && context->DrawOverrideBindingVersion() == binding_version &&
 		BoundResourcesHaveNoCachedOverrideCandidates(proof->resources.data(), proof->resources.size())) {
 		proof->binding_version = binding_version;
 		proof->config_generation = config_generation;
 		proof->frame = G->frame_no;
 	}
+	case L'c': return 2;
 	default: return -1;
 	}
 }
@@ -10883,7 +10884,7 @@ void ResourceCopyTarget::SetResource(
         custom_resource->buf_size_is_length = res && size_is_length;
 
 
-		if (res == NULL && view == NULL) {
+		if (unbound) {
 			// Optimisation to allow the resource to be set to null
 			// without throwing away the cache so we don't
 			// endlessly create & destroy temporary resources.
@@ -10961,9 +10962,9 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 	switch(type) {
 		case ResourceCopyTargetType::CONSTANT_BUFFER:
 			return D3D11_BIND_CONSTANT_BUFFER;
-		case ResourceCopyTargetType::SHADER_RESOURCE:
 		if (state->mHackerContext)
 			state->mHackerContext->InvalidateDrawOverrideBindings();
+		case ResourceCopyTargetType::SHADER_RESOURCE:
 			return D3D11_BIND_SHADER_RESOURCE;
 		case ResourceCopyTargetType::VERTEX_BUFFER:
 			return D3D11_BIND_VERTEX_BUFFER;
@@ -10994,16 +10995,16 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 					return state->this_target->BindFlags(state);
 
 				if (state->call_info && state->call_info->indirect_buffer) {
-					if (misc_flags)
 		if (state->mHackerContext)
 			state->mHackerContext->InvalidateDrawOverrideBindings();
+					if (misc_flags)
 						*misc_flags = D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS;
 					// No bind flags required, but a common scenario would be copying
 					// from a resource with D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS
 					// that will need to be cleared out if we have neither SRV or UAV
-					// set, which is handled in RecreateCompatibleBuffer()
 		if (state->mHackerContext)
 			state->mHackerContext->InvalidateDrawOverrideBindings();
+					// set, which is handled in RecreateCompatibleBuffer()
 					return (D3D11_BIND_FLAG)0;
 				}
 			}
@@ -11083,6 +11084,21 @@ void FindTextureOverridesForBoundResource(ResourceCopyTargetType type, ID3D11Res
 
 				if (Profiling::mode == Profiling::Mode::SUMMARY)
 					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+		const bool unbound = !res && !view;
+		if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug &&
+			custom_resource->is_null == unbound &&
+			(unbound || (custom_resource->resource == res && custom_resource->view == view &&
+				(!original_metadata || (
+					custom_resource->match_format == original_metadata->format &&
+					custom_resource->match_dhash == original_metadata->dhash &&
+					std::memcmp(&custom_resource->match_confidence, &original_metadata->confidence, sizeof(float)) == 0 &&
+					custom_resource->match_dhash_set == original_metadata->dhash_set &&
+					custom_resource->match_format_valid == original_metadata->format_valid)))) &&
+			custom_resource->stride == stride && custom_resource->offset == offset &&
+			custom_resource->format == format && custom_resource->buf_size == buf_size &&
+			custom_resource->buf_size_is_length == (res && size_is_length))
+			return;
+
 
 				// Run Hash Matching.
 				if (region_hash) {
@@ -13865,6 +13881,8 @@ static const CommandList::Commands& branch_commands(const std::shared_ptr<Comman
 	const std::shared_ptr<CommandList> &post, CommandListPhase phase)
 {
 	static const CommandList::Commands empty;
+    if (state->mHackerContext)
+        state->mHackerContext->InvalidateDrawOverrideBindings();
 	const auto& list = phase == CommandListPhase::Pre ? pre : post;
 	return list ? list->commands : empty;
 }
@@ -13881,8 +13899,6 @@ static std::shared_ptr<ResourceCopyOperation> extract_batchable_branch(const Com
 
 	auto op = std::dynamic_pointer_cast<ResourceCopyOperation>(commands[0]);
 	if (!op || !is_batchable(op.get(), direction))
-    if (state->mHackerContext)
-        state->mHackerContext->InvalidateDrawOverrideBindings();
 		return nullptr;
 
 	return op;
@@ -13905,6 +13921,13 @@ static bool chain_may_keep_binding(const std::vector<ConditionalSlotBranch> &bra
 
 // Appends one entry per branch of a simple if/elif/else chain.
 // Fails unless every reachable branch runs exactly one batchable operation,
+            if (G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug) {
+                bool changed = false;
+                for (UINT i = 0; i < count; ++i)
+                    changed |= assigned[i] && views.values[i] != original.values[i];
+                if (!changed)
+                    return;
+            }
 // on the slot the first branch fixed.
 // The final empty else is allowed, and means "leave the current binding",
 // which is the same thing unless_null already does for a batch.
