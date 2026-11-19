@@ -107,16 +107,23 @@ void RestoreOriginalTexturesOperation::run(CommandListState* state)
 
 void TextureOverrideOperation::run(CommandListState* state)
 {
-    if (!state || !state->mHackerContext || !state->mOrigContext1 || !match_resource) return;
+    if (!state || !state->mHackerContext || !state->mOrigContext1 || (!match_resource && !match_filter)) return;
     // Follow the existing config/command lifetime lock order, including direct invocations.
     CriticalSectionLockGuard commandLifetime(&G->mCriticalSection, __FUNCTION__, __LINE__);
-    ResourceCopyTarget candidateTarget = *match_resource;
-    const auto* candidate = candidateTarget.GetCustomResource(state);
-    if (!candidate || !candidate->match_dhash_set || !candidate->match_format_valid ||
-        !std::isfinite(candidate->match_confidence)) return;
-    const uint64_t reference = candidate->match_dhash;
-    const auto requiredFormat = candidate->match_format;
-    const float confidence = (std::max)(0.0f, (std::min)(1.0f, candidate->match_confidence));
+    ResourceOriginalMetadata filter;
+    if (match_filter) {
+        filter = match_filter->Resolve().metadata;
+    } else {
+        ResourceCopyTarget candidateTarget = *match_resource;
+        const auto* candidate = candidateTarget.GetCustomResource(state);
+        if (!candidate) return;
+        filter = {candidate->match_format, candidate->match_dhash, candidate->match_confidence,
+            candidate->match_dhash_set, candidate->match_format_valid};
+    }
+    if (!filter.dhash_set || !filter.format_valid || !std::isfinite(filter.confidence)) return;
+    const uint64_t reference = filter.dhash;
+    const auto requiredFormat = filter.format;
+    const float confidence = (std::max)(0.0f, (std::min)(1.0f, filter.confidence));
     const unsigned limit = static_cast<unsigned>((1.0 - confidence) * 64.0);
     auto& cache = state->mHackerContext->GetTextureOverrideCache();
     cache.SnapshotOriginalTextures(state);

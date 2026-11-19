@@ -3,7 +3,7 @@
   "branch": "master",
   "baseline": "44378b1b3694bc28c0488f78f2d346f38a4f50d0",
   "baselineEvidence": "43/45 DX11 C/C++ files byte-identical at 7ee05173 and 44378b1b; ResourceHash.h adds const find_ptr; ResourceHash.cpp fixes two log formats. 44378b1b only changes upstream release workflow.",
-  "observedTip": "b0bff3fa56ab14487a35f2fc96e126e04aa89441",
+  "observedTip": "e2bca90e3d9dcbe1f7b33209b74481b09479ce34",
   "commits": [
     {
       "sha": "4269c75ba3ac9d5775771a190121daa5a292d664",
@@ -5317,6 +5317,65 @@
         "commands": "MSVC x64 CMake Release BUILD_TESTING=ON; cmake --build build/dx11-dump-validation --target dx11_upstream_regression --parallel 6; ctest --test-dir build/dx11-dump-validation --output-on-failure",
         "result": "PASS: DX11 DLL and regression build; all 7 CTest entries passed (23.55 seconds). Actual INI confidence/default/clamp/NaN/empty-new-key precedence and ref/copy/copy_desc metadata tests; real WARP sparse PS matching, automatic/explicit snapshot, equal-best and strict candidate priority, confidence boundary, format/missing hash/source failure, exact/null/high-slot restore, copy/ref, call reset/reload/ClearState, public draw/post and dispatch lifetime, empty/unbound shaders and deferred-context rejection. Separate native-hook process exercises same matching and trampoline COM identity; proxy loading/Present/resize regression passes.",
         "runtime": "pending: target-game validation of new matching and renamed INI metadata; no game deployment performed in this sync task."
+      }
+    },
+    {
+      "sha": "ad1ad376e0be97732a24f361c9d2c2c0b8951ce8",
+      "subject": "Added minimal Filter section implementation",
+      "status": "implemented-awaiting-validation",
+      "files": ["src/DirectX11/CommandList.cpp", "src/DirectX11/CommandList.h", "src/DirectX11/IniHandler.cpp", "src/DirectX11/tests/parser_optimization_regression.cpp", "usage/dx11/resources.md"],
+      "adaptation": "Enumerate namespaced Filter metadata before the command pass. Keep metadata alive for parsed commands through reload, preserve exact 64-bit hashes, distinguish missing and explicit zero, reject invalid format matches, clamp finite confidence, and expose identity and field getters.",
+      "validation": {
+        "commands": "MSVC x64 CMake Release build in build/dx11-dump-validation; ctest --test-dir build/dx11-dump-validation --output-on-failure -j 2",
+        "result": "PASS: DX11 Release build and all 12 CTest entries (36.86 s). Real INI parsing, absent and zero hashes, invalid format, confidence fallback and clamp, and filter getters.",
+        "runtime": "pending: target game"
+      }
+    },
+    {
+      "sha": "5cee2aff7faf7b54d1acbd51e374df8db4ddd3ef",
+      "subject": "Added ResourceFilterCopyOperation for Filter section",
+      "status": "implemented-awaiting-validation",
+      "files": ["src/DirectX11/CommandList.cpp", "src/DirectX11/CommandList.h", "src/DirectX11/tests/parser_optimization_regression.cpp", "usage/dx11/resources.md"],
+      "adaptation": "Support implicit and explicit reference plus null reset, retaining destination metadata. Serialize updates and reject cyclic references and unsupported copy modes.",
+      "validation": {
+        "commands": "ctest --test-dir build/dx11-dump-validation --output-on-failure -j 2",
+        "result": "PASS: all 12 CTest entries. Production alias dispatch, cycle refusal, null reset and effective getters.",
+        "runtime": "pending: target game"
+      }
+    },
+    {
+      "sha": "f5ce069b25e5e8a70b2e984af239e0dcadd22314",
+      "subject": "Refactored `->HammingDistance()` to use Filter section as first arg",
+      "status": "implemented-awaiting-validation",
+      "files": ["src/DirectX11/CommandList.cpp", "src/DirectX11/CommandList.h", "src/DirectX11/tests/texture_match_regression.cpp", "usage/dx11/resources.md"],
+      "adaptation": "Accept Filter and keep the existing Resource argument. Read the current referenced Filter metadata and preserve the missing-hash sentinel.",
+      "validation": {
+        "commands": "ctest --test-dir build/dx11-dump-validation --output-on-failure -j 2",
+        "result": "PASS: all 12 CTest entries. Exact Filter hash distance on WARP with and without native hooks and the existing Resource getter regressions.",
+        "runtime": "pending: target game"
+      }
+    },
+    {
+      "sha": "bc929d2e1c48f72f03a58bf3d0c7d2683e193103",
+      "subject": "Refactored TextureOverrideOperation into SlotFilterOperation",
+      "status": "implemented-awaiting-validation",
+      "files": ["src/DirectX11/CommandList.cpp", "src/DirectX11/CommandList.h", "src/DirectX11/TextureMatch.cpp", "src/DirectX11/tests/texture_match_regression.cpp", "usage/dx11/resources.md"],
+      "adaptation": "Add ps-t[Filter] and the new snapshot and restore names as front ends to the existing local hooked-context path. Preserve successful-bind priority, sparse slots, call/frame/reload snapshot lifetime, depth-copy option validation and legacy entry points.",
+      "validation": {
+        "commands": "ctest --test-dir build/dx11-dump-validation --output-on-failure -j 2",
+        "result": "PASS: all 12 CTest entries. WARP with and without native hooks exercises tied and unmatched slots, real SRV restoration, unsupported stages and copy options.",
+        "runtime": "pending: target game"
+      }
+    },
+    {
+      "sha": "e2bca90e3d9dcbe1f7b33209b74481b09479ce34",
+      "subject": "Removed `match_*` attributes from Resource section",
+      "status": "skipped",
+      "files": ["src/DirectX11/CommandList.cpp", "src/DirectX11/CommandList.h", "src/DirectX11/IniHandler.cpp", "usage/dx11/resources.md"],
+      "adaptation": "The upstream removal would break existing local INIs and local metadata propagation. Keep the Resource keys and getters as compatibility APIs and document Filter for new configs.",
+      "validation": {
+        "commands": "ctest --test-dir build/dx11-dump-validation --output-on-failure -j 2",
+        "result": "PASS: all 12 CTest entries, including legacy MatchTextures, Resource metadata propagation and legacy getter coverage."
       }
     }
   ],

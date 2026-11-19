@@ -49,6 +49,7 @@ public:
         G->constants_command_list.clear(); G->post_constants_command_list.clear();
         registered_command_lists.clear();
         explicitCommandListSections.clear(); customResourcePools.clear(); customResources.clear();
+        resourceFilters.clear();
         persistent_variables.clear(); command_list_globals.clear();
         migoto_handle = module; gLogVerbosity = log_level; gLogDebug = log_debug;
         G->gShowWarnings = warnings; G->user_config = user;
@@ -238,6 +239,38 @@ void executor_tests()
     Profiling::clear();
     Profiling::mode = old_mode;
     G->mod_runtime_optimizations = old;
+}
+
+void resource_filter_tests()
+{
+    ParserFiles files;
+    files.load("global $filter_format=0\nglobal $filter_confidence=0\nglobal $filter_identity=0\n"
+        "[FilterOriginal]\nmatch_dhash=0000000000000000\nmatch_format=BC3_UNORM\nmatch_confidence=2\n"
+        "[FilterAlias]\n[FilterInvalid]\nmatch_format=invalid\nmatch_confidence=nan\n"
+        "[CommandListFilterSet]\nFilterAlias=ref FilterOriginal\nFilterOriginal=ref FilterAlias\n"
+        "$filter_format=FilterAlias->format\n$filter_confidence=FilterAlias->confidence\n"
+        "$filter_identity=@FilterAlias === @FilterOriginal\n"
+        "[CommandListFilterReset]\nFilterAlias=null\n$filter_identity=@FilterAlias\n");
+    optimise_command_lists(nullptr);
+    const auto source = resourceFilters.at(L"filteroriginal");
+    const auto alias = resourceFilters.at(L"filteralias");
+    const auto invalid = resourceFilters.at(L"filterinvalid");
+    check(source->metadata.dhash_set && source->metadata.dhash == 0 && !source->empty &&
+        !invalid->metadata.dhash_set && !invalid->metadata.format_valid && invalid->metadata.confidence == 0.75f,
+        "filters: explicit zero hash and invalid metadata remain distinct");
+    HackerContext context(nullptr, nullptr);
+    CommandListState state;
+    state.mHackerContext = &context;
+    RunLinkedCommandList set(&explicitCommandListSections.at(L"commandlistfilterset").command_list);
+    set.run(&state);
+    check(&alias->Resolve() == source.get() && command_list_globals.at(L"$filter_identity").fval == 1 &&
+        command_list_globals.at(L"$filter_format").fval == DXGI_FORMAT_BC3_UNORM &&
+        command_list_globals.at(L"$filter_confidence").fval == 1,
+        "filters: INI lookup, alias, cycle refusal, identity, format and clamped confidence");
+    RunLinkedCommandList reset(&explicitCommandListSections.at(L"commandlistfilterreset").command_list);
+    reset.run(&state);
+    check(&alias->Resolve() == alias.get() && command_list_globals.at(L"$filter_identity").fval == 0,
+        "filters: null resets the alias to its own empty metadata");
 }
 
 void early_draw_gate_tests()
@@ -498,6 +531,6 @@ void empty_post_draw_link_tests()
 }
 void test_dx11_parser_optimization_regression()
 {
-    try { constants_tests(); expression_tests(); executor_tests(); early_draw_gate_tests(); shader_regex_empty_link_tests(); empty_post_draw_link_tests(); std::fputs("PASS: Constants compaction, typed command execution and empty ShaderRegex links in both phases\n", stderr); }
+    try { constants_tests(); expression_tests(); executor_tests(); resource_filter_tests(); early_draw_gate_tests(); shader_regex_empty_link_tests(); empty_post_draw_link_tests(); std::fputs("PASS: Constants compaction, typed command execution, resource filters and empty ShaderRegex links in both phases\n", stderr); }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL parser optimization: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }

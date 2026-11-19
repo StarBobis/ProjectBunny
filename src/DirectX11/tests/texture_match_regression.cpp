@@ -166,6 +166,32 @@ void exercise_match(bool hooked = false)
         set_slot(device, L'p', 1, secondView.Get()); // Undeclared gap must survive all operations.
     };
     bindOriginals();
+    auto slotFilter = std::make_shared<ResourceFilter>();
+    slotFilter->metadata = {DXGI_FORMAT_UNKNOWN, originalHash, 1, true, true};
+    slotFilter->empty = false;
+    require_batch(resourceFilters.emplace(L"filtermatchfixture", slotFilter).second, "Slot filter: reserve test name");
+    CommandList slotMatch, initialPre, initialPost;
+    require_batch(parse(slotMatch, L"ps-t[filtermatchfixture]", L"ref resourcematchfirst") &&
+        !parse(rejected, L"vs-t[filtermatchfixture]", L"ref resourcematchfirst") &&
+        !parse(rejected, L"ps-t[filtermatchfixture]", L"copy oD reuse_unchanged"),
+        "Slot filter: parse the PS destination and reject unsupported stage and copy options");
+    builtin(initialPre, initialPost, L"snapshotinitialtextures");
+    builtin(initialPre, initialPost, L"restoreinitialtextures");
+    execute(initialPre, device);
+    execute(slotMatch, device);
+    slot_is(device, 0, firstView.Get(), "Slot filter: matching PS slot is replaced");
+    slot_is(device, 2, firstView.Get(), "Slot filter: tied slot is replaced");
+    slot_is(device, 127, otherView.Get(), "Slot filter: unmatched slot is unchanged");
+    execute(initialPost, device);
+    slot_is(device, 0, originalView.Get(), "Slot filter: new restore command restores original view");
+    const std::wstring expression = L"ps-t0->hammingdistance(filtermatchfixture)", nsFilter;
+    CommandListScope scopeFilter;
+    scopeFilter.emplace_front();
+    CommandListExpression distance;
+    require_batch(distance.parse(&expression, &nsFilter, &scopeFilter) && distance.evaluate(&device.state) == 0,
+        "Slot filter: HammingDistance uses the exact Filter hash");
+    resourceFilters.erase(L"filtermatchfixture");
+
     execute(failedSource, device);
     require_batch(device.wrapper->GetTextureOverrideCache().hamming_distance[0] == 65,
         "MatchTextures: unresolved replacement cannot claim a best match");

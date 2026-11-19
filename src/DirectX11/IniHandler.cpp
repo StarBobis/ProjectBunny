@@ -118,6 +118,7 @@ static Section CommandListSections[] = {
 static Section RegularSections[] = {
 	{L"Pool", true},
 	{L"Resource", true},
+    {L"Filter", true},
 	{L"Key", true},
 	{L"Include", true}, // Prefix so that it may be namespaced to allow included files to include more files with relative paths
 	{L"Preset", true},
@@ -2558,6 +2559,41 @@ static void ParseResourceSections()
 
 		ParseResourceSection(section_name.c_str(), nullptr);
 	}
+}
+
+static void ParseFilterSections()
+{
+    resourceFilters.clear();
+    std::wstring prefix = L"Filter";
+    const auto end = prefix_upper_bound(ini_sections, prefix);
+    for (auto it = ini_sections.lower_bound(prefix); it != end; ++it) {
+        const auto* section = it->first.c_str();
+        auto filter = std::make_shared<ResourceFilter>();
+        auto& metadata = filter->metadata;
+        metadata.format = DXGI_FORMAT_UNKNOWN;
+        wchar_t value[MAX_PATH];
+        bool has_format = false, has_confidence = false;
+        std::string format_value;
+        if (GetIniString(section, L"match_format", nullptr, &format_value)) {
+            GetIniString(section, L"match_format", nullptr, value, MAX_PATH);
+            metadata.format = ParseFormatString(value, true);
+            metadata.format_valid = metadata.format != static_cast<DXGI_FORMAT>(-1);
+            if (!metadata.format_valid)
+                IniWarningW(L"Unknown match_format \"%ls\"\n - [%ls]\n", value, section);
+            has_format = metadata.format_valid;
+        }
+        metadata.dhash = GetIniHash(section, L"match_dhash", 0, &metadata.dhash_set);
+        metadata.confidence = GetIniFloat(section, L"match_confidence", 0.75f, &has_confidence);
+        if (!std::isfinite(metadata.confidence)) {
+            IniWarningW(L"Invalid match_confidence; using 0.75\n - [%ls]\n", section);
+            metadata.confidence = 0.75f;
+        }
+        metadata.confidence = (std::max)(0.0f, (std::min)(1.0f, metadata.confidence));
+        filter->empty = !has_format && !metadata.dhash_set && !has_confidence;
+        std::wstring key = it->first;
+        std::transform(key.begin(), key.end(), key.begin(), ::towlower);
+        resourceFilters.emplace(std::move(key), std::move(filter));
+    }
 }
 
 static bool ParseCommandListLine(const wchar_t *ini_section,
@@ -5426,6 +5462,7 @@ void LoadConfigFile()
 
 	// Must be done before any command lists that may refer to them:
     previous_registries.Restore();
+    ParseFilterSections();
 	ParseResourceSections();
 
 	// Second pass for the Constants command list:

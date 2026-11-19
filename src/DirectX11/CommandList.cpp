@@ -39,10 +39,45 @@
 CustomResources customResources;
 CustomResourcePools customResourcePools;
 CustomShaders customShaders;
+std::unordered_map<std::wstring, std::shared_ptr<ResourceFilter>> resourceFilters;
 ExplicitCommandListSections explicitCommandListSections;
 CommandListVariables command_list_globals;
 std::vector<CommandListVariable*> persistent_variables;
 std::vector<CommandList*> registered_command_lists;
+
+const ResourceFilter& ResourceFilter::Resolve() const
+{
+    const auto* current = this;
+    while (current->source)
+        current = current->source.get();
+    return *current;
+}
+
+bool ResourceFilter::SetSource(const std::shared_ptr<ResourceFilter>& filter)
+{
+    auto root = filter;
+    while (root && root->source)
+        root = root->source;
+    if (root.get() == this)
+        return false;
+    source = std::move(root);
+    return true;
+}
+
+std::shared_ptr<ResourceFilter> FindResourceFilter(std::wstring name, const std::wstring* ini_namespace)
+{
+    if (name.size() < 7 || _wcsnicmp(name.c_str(), L"filter", 6))
+        return {};
+    std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+    std::wstring qualified;
+    if (ini_namespace && get_namespaced_section_name_lower(&name, ini_namespace, &qualified)) {
+        const auto local = resourceFilters.find(qualified);
+        if (local != resourceFilters.end())
+            return local->second;
+    }
+    const auto global = resourceFilters.find(name);
+    return global == resourceFilters.end() ? nullptr : global->second;
+}
 std::unordered_set<CommandList*> command_lists_profiling;
 std::unordered_set<CommandListCommand*> command_lists_cmd_profiling;
 std::vector<std::shared_ptr<CommandList>> dynamically_allocated_command_lists;
@@ -1280,9 +1315,9 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 	if (!wcsncmp(key, L"commandlist", 11))
 		return ParseCopyCommandListCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
-    if (!wcscmp(key, L"run") && *val == L"snapshotoriginaltextures")
+    if (!wcscmp(key, L"run") && (*val == L"snapshotinitialtextures" || *val == L"snapshotoriginaltextures"))
         return AddCommandToList(new SnapshotOriginalTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
-    if (!wcscmp(key, L"run") && *val == L"restoreoriginaltextures")
+    if (!wcscmp(key, L"run") && (*val == L"restoreinitialtextures" || *val == L"restoreoriginaltextures"))
         return AddCommandToList(new RestoreOriginalTexturesOperation(), explicit_command_list, post_command_list, NULL, NULL, section, key, val);
 	return ParseDrawCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 }
@@ -4773,6 +4808,19 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return process_texture_filter(state);
 		case ParamOverrideType::SHADER:
 			return process_shader_filter(state);
+        case ParamOverrideType::RESOURCE_FILTER: {
+            CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+            const auto& filter = resource_filter->Resolve();
+            switch (filter_property) {
+            case FilterProperty::Format:
+                return static_cast<float>(filter.metadata.format);
+            case FilterProperty::Confidence:
+                return filter.metadata.confidence;
+            case FilterProperty::Identity:
+                return filter.empty ? 0.0f : EncodeFloat30(static_cast<uint32_t>(HashPointer(&filter)));
+            }
+            return 0.0f;
+        }
 		case ParamOverrideType::VERTEX_COUNT:
 			if (state->call_info)
 				return (float)state->call_info->VertexCount;
@@ -5943,6 +5991,11 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			}
 		}
 
+        if (len_target && scope && operand->parse_resource_filter(token, ini_namespace)) {
+            pos += len_target;
+            goto import_operand;
+        }
+
 		// Shader members consume the complete token after resource targets have priority.
 		if (!has_prefix && len_target && operand->parse_shader(&token, ini_namespace, scope)) {
 			pos += len_target;
@@ -6868,6 +6921,30 @@ bool CommandListOperand::parse_shader(const wstring* operand, const wstring* ini
     if (!operand || !shader_target.ParseTarget(operand->c_str(), true, ini_namespace, scope)) return false;
     type = ParamOverrideType::SHADER;
     return operand_allowed_in_context(type, scope);
+}
+
+bool CommandListOperand::parse_resource_filter(const std::wstring& operand, const std::wstring* ini_namespace)
+{
+    const auto member = operand.find(L"->");
+    const bool identity = !operand.empty() && operand.front() == L'@';
+    if (!identity && member == std::wstring::npos)
+        return false;
+    if (member != std::wstring::npos) {
+        const auto suffix = operand.substr(member);
+        if (identity)
+            return false;
+        if (!_wcsicmp(suffix.c_str(), L"->format"))
+            filter_property = FilterProperty::Format;
+        else if (!_wcsicmp(suffix.c_str(), L"->confidence"))
+            filter_property = FilterProperty::Confidence;
+        else
+            return false;
+    }
+    resource_filter = FindResourceFilter(identity ? operand.substr(1) : operand.substr(0, member), ini_namespace);
+    if (!resource_filter)
+        return false;
+    type = ParamOverrideType::RESOURCE_FILTER;
+    return true;
 }
 
 bool CommandListOperand::parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
@@ -8892,6 +8969,19 @@ bool SyntaxTarget::ParseMemberArguments(
             member_args[i].type = MemberArg::Type::Hash;
             break;
         }
+        case MemberArg::Type::ResourceOrFilter: {
+            std::wstring token;
+            if (args.PeekToken(&token)) {
+                auto filter = FindResourceFilter(std::move(token), ini_namespace);
+                if (filter) {
+                    args.ConsumeToken();
+                    member_args[i].filter = std::move(filter);
+                    member_args[i].type = MemberArg::Type::ResourceOrFilter;
+                    break;
+                }
+            }
+            [[fallthrough]];
+        }
         case MemberArg::Type::Resource:
         {
             auto resource = std::make_shared<ResourceCopyTarget>();
@@ -9119,7 +9209,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
         { L"->originalformat", 16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
         { L"->getmatchformat", 16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
         { L"->hammingdistance", 17, ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE, {{
-            MemberArg::Type::Resource,
+            MemberArg::Type::ResourceOrFilter,
         }} },
 	};
 
@@ -10017,20 +10107,23 @@ static bool validate_depth_snapshot_options(const wchar_t* section, const Resour
 static CommandListCommand* parse_slot_range_operation(const wchar_t* section, ResourceCopyTarget& dst,
     ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* commands, const wstring* ini_namespace);
 
-static CommandListCommand* parse_texture_override_operation(const wchar_t* section, ShaderTarget& shader,
+static CommandListCommand* parse_texture_override_operation(const wchar_t* section,
+    std::shared_ptr<const ResourceCopyTarget> match_resource, std::shared_ptr<ResourceFilter> match_filter,
     ResourceCopyTarget& source, ResourceCopyOptions options, CommandList* list, const wstring* ini_namespace)
 {
-    if (shader.shader_type != L'p' || shader.evaluation_mode != ShaderTargetEvaluationMode::MATCH_TEXTURES ||
-        !shader.member_args[0].resource) return nullptr;
     ResourceCopyTarget destination;
     destination.type = ResourceCopyTargetType::SHADER_RESOURCE;
     destination.shader_type = L'p';
     destination.max_slot = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
     if (!validate_depth_snapshot_options(section, destination, source, options))
         return nullptr;
-    ResourceCopyTarget filter = *shader.member_args[0].resource;
-    if (filter.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
-        filter.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE || !filter.GetCustomResource(nullptr, true)) return nullptr;
+    if (match_resource) {
+        ResourceCopyTarget target = *match_resource;
+        if (target.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
+            target.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE ||
+            !target.GetCustomResource(nullptr, true))
+            return nullptr;
+    }
     // Reuse local source flags/validation without storing any runtime pool selection.
     std::unique_ptr<CommandListCommand> base(parse_resource_copy_operation(section, destination, source, options, list, ini_namespace));
     auto* copy = dynamic_cast<ResourceCopyOperation*>(base.get());
@@ -10039,8 +10132,50 @@ static CommandListCommand* parse_texture_override_operation(const wchar_t* secti
     operation->src = std::move(copy->src);
     operation->dst = std::move(copy->dst);
     operation->options = copy->options;
-    operation->match_resource = std::move(shader.member_args[0].resource);
+    operation->match_resource = std::move(match_resource);
+    operation->match_filter = std::move(match_filter);
     return operation.release();
+}
+
+class ResourceFilterReference final : public CommandListCommand {
+public:
+    std::shared_ptr<ResourceFilter> destination, source;
+
+    void run(CommandListState* state) override
+    {
+        COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        if (!destination->SetSource(source))
+            COMMAND_LIST_LOG(state, "  ignoring cyclic filter reference\n");
+    }
+};
+
+static bool ParseFilterReference(const wchar_t* section, const wchar_t* key, const std::wstring& value,
+    CommandList* list, const std::wstring* ini_namespace, std::shared_ptr<ResourceFilter> destination)
+{
+    CommandArgumentReader args(L"filter copy", value, section, ini_namespace, list->scope);
+    std::wstring token;
+    if (!args.GetToken(&token))
+        return false;
+    if (!_wcsicmp(token.c_str(), L"ref")) {
+        if (!args.GetToken(&token))
+            return false;
+    } else if (!args.Finished()) {
+        std::wstring option;
+        if (!args.GetToken(&option) || _wcsicmp(option.c_str(), L"ref"))
+            return false;
+    }
+    if (!args.Finished())
+        return false;
+    auto source = FindResourceFilter(token, ini_namespace);
+    if (!source && _wcsicmp(token.c_str(), L"null"))
+        return false;
+    auto operation = std::make_shared<ResourceFilterReference>();
+    operation->destination = std::move(destination);
+    operation->source = std::move(source);
+    operation->ini_line = L"[" + std::wstring(section) + L"] " + key + L" = " + value;
+    list->commands.emplace_back(std::move(operation));
+    return true;
 }
 
 bool ParseCommandListResourceCopyTargetDirective(
@@ -10049,16 +10184,40 @@ bool ParseCommandListResourceCopyTargetDirective(
 {
 	//LogInfo("Parsing CommandListResourceCopyTargetDirective: `%ls = %ls`\n", key, val->c_str());
 
+    if (!key)
+        return false;
+    if (auto filter = FindResourceFilter(key, ini_namespace))
+        return ParseFilterReference(section, key, *val, command_list, ini_namespace, std::move(filter));
+
+    const std::wstring_view destination_key(key);
+    std::shared_ptr<ResourceFilter> match_filter;
+    if (destination_key.size() > 7 && destination_key.substr(0, 5) == L"ps-t[" && destination_key.back() == L']')
+        match_filter = FindResourceFilter(std::wstring(destination_key.substr(5, destination_key.size() - 6)), ini_namespace);
+    if (match_filter) {
+        ResourceCopyTarget source;
+        ResourceCopyOptions options = ResourceCopyOptions::INVALID;
+        if (!parse_resource_copy_target_source(section, *val, source, options, command_list, ini_namespace, key))
+            return false;
+        std::unique_ptr<CommandListCommand> operation(parse_texture_override_operation(section, {},
+            std::move(match_filter), source, options, command_list, ini_namespace));
+        if (!operation)
+            return false;
+        operation->ini_line = L"[" + std::wstring(section) + L"] " + key + L" = " + *val;
+        command_list->commands.emplace_back(std::move(operation));
+        return true;
+    }
+
 	ResourceCopyTarget dst = ResourceCopyTarget();
 
 	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope, true, true)) {
         ShaderTarget shader;
-        if (shader.ParseTarget(key, false, ini_namespace, command_list->scope) &&
-            shader.evaluation_mode == ShaderTargetEvaluationMode::MATCH_TEXTURES) {
+        if (shader.ParseTarget(key, false, ini_namespace, command_list->scope) && shader.shader_type == L'p' &&
+            shader.evaluation_mode == ShaderTargetEvaluationMode::MATCH_TEXTURES && shader.member_args[0].resource) {
             ResourceCopyTarget source;
             ResourceCopyOptions options = ResourceCopyOptions::INVALID;
             if (!parse_resource_copy_target_source(section, *val, source, options, command_list, ini_namespace, key)) return false;
-            std::unique_ptr<CommandListCommand> operation(parse_texture_override_operation(section, shader, source, options, command_list, ini_namespace));
+            std::unique_ptr<CommandListCommand> operation(parse_texture_override_operation(section,
+                std::move(shader.member_args[0].resource), {}, source, options, command_list, ini_namespace));
             if (!operation) return false;
             operation->ini_line = L"[" + wstring(section) + L"] " + key + L" = " + *val;
             command_list->commands.emplace_back(std::move(operation));
@@ -12132,6 +12291,12 @@ float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
     }
     if (!GetDhash(state->mHackerContext, resource.Get(), prefer_mip_size,
         allow_rehash, hash, view.Get())) return ResourcePropertyResult::UNKNOWN;
+    if (member_args[0].filter) {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        const auto& metadata = member_args[0].filter->Resolve().metadata;
+        return metadata.dhash_set ? static_cast<float>(HammingDistance(metadata.dhash, hash)) :
+            ResourcePropertyResult::UNKNOWN;
+    }
     if (!member_args[0].resource) return ResourcePropertyResult::UNKNOWN;
     // Parsed resource arguments are shared immutable syntax. Resolve this
     // invocation's local copy once, without retaining a runtime pool selection.

@@ -629,6 +629,19 @@ struct ResourceOriginalMetadata {
     bool format_valid = true;
 };
 
+struct ResourceFilter {
+    ResourceOriginalMetadata metadata;
+    bool empty = true;
+
+    const ResourceFilter& Resolve() const;
+    bool SetSource(const std::shared_ptr<ResourceFilter>& filter);
+private:
+    std::shared_ptr<ResourceFilter> source;
+};
+
+extern std::unordered_map<std::wstring, std::shared_ptr<ResourceFilter>> resourceFilters;
+std::shared_ptr<ResourceFilter> FindResourceFilter(std::wstring name, const std::wstring* ini_namespace);
+
 class CustomResource
 {
     struct AliasMetadata {
@@ -1014,6 +1027,7 @@ struct MemberArg
 		String,
 		Hash,
 		Resource,
+        ResourceOrFilter,
 	};
 
 	Type type = Type::None;
@@ -1023,6 +1037,7 @@ struct MemberArg
 	std::wstring constant_string;
 	uint64_t constant_hash = 0;
 	std::shared_ptr<const ResourceCopyTarget> resource;
+    std::shared_ptr<ResourceFilter> filter;
 
 
 	float GetValue(CommandListState* state);
@@ -1346,6 +1361,7 @@ public:
 class TextureOverrideOperation : public ResourceCopyOperation {
 public:
     std::shared_ptr<const ResourceCopyTarget> match_resource;
+    std::shared_ptr<ResourceFilter> match_filter;
     void run(CommandListState* state) override;
 };
 
@@ -1640,6 +1656,7 @@ enum class ParamOverrideType {
 	DISPATCH_NUMBER,
 	FRAME_TIME,
 	FPS,
+    RESOURCE_FILTER,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1708,6 +1725,9 @@ public:
 	// For texture filters:
 	ResourceCopyTarget texture_filter_target;
 	ShaderTarget shader_target;
+    enum class FilterProperty { Identity, Format, Confidence };
+    std::shared_ptr<ResourceFilter> resource_filter;
+    FilterProperty filter_property = FilterProperty::Identity;
 
 	// For scissor rectangle:
 	unsigned scissor;
@@ -1729,6 +1749,7 @@ public:
 	bool parse_slot(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_target(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_shader(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+    bool parse_resource_filter(const std::wstring& operand, const std::wstring* ini_namespace);
 	bool parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 
