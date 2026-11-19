@@ -61,6 +61,8 @@ XXMI Launcher 不采用模板中所有传统 Loader 参数；用启动器自己�
 | `expression_short_circuit` | 默认 `1`。仅对确认可跳过求值的 `&&`、`\|\|` 使用短路。设为 `0` 可单独恢复逻辑表达式和标量条件的原求值路径。关闭 `mod_runtime_optimizations` 时也沿用原求值路径 |
 | `draw_gate_early_reject` | 默认 `1`。对可证明安全的 `DRAW_HAS_OVERRIDE` 分支，提前筛选并在未命中时缩短命令派发。设为 `0` 可单独对照原路径。关闭 `mod_runtime_optimizations` 时也沿用原路径 |
 | `profile_draw_gate` | 默认 `0`。设为 `1` 后，CPU Summary 显示筛选、IB/VB/SRV 原生读取、候选判断、未命中入口的耗时、执行次数与快路径次数。核对调用量后设回 `0` 再比较整帧耗时，以免详细采样影响结果 |
+| `shader_regex_skip_empty_links` | 默认 `1`。ShaderRegex 链接在当前条件可证明目标列表无工作时跳过派发。设为 `0` 可恢复原路径。关闭 `mod_runtime_optimizations` 或 `expression_short_circuit` 时也使用原路径 |
+| `profile_shader_regex_links` | 默认 `0`。设为 `1` 后，CPU Summary 显示可判定的链接、确认空的链接、跳过和仍派发的空链接次数。核对计数后设回 `0`，再比较帧时 |
 | `draw_has_override_slots` | `DRAW_HAS_OVERRIDE` 使用的槽位列表。按游戏和模组填写，例如 `ib vb[0:2] ps-t0`。缺省时走直接检查 |
 | `auto_check_texture_slots` | 自动批量检查 TextureOverride 的槽位列表，例如 `ps-t[0:9]`。缺省时关闭自动批量检查 |
 | `rasterizer_disable_scissor` | 全局关闭裁剪 |

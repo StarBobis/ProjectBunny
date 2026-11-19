@@ -3886,9 +3886,13 @@ bool RunExplicitCommandList::noop(bool post, bool ignore_cto_pre, bool ignore_ct
 	return command_list_section->command_list.noop();
 }
 
+static void PrepareShaderRegexEmptyGuard(CommandList& list);
+static bool SkipEmptyShaderRegexLink(CommandList& list, CommandListState* state);
+
 std::shared_ptr<RunLinkedCommandList>
 LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 {
+	PrepareShaderRegexEmptyGuard(*link);
 	dst->DiscardExecutionPlans();
 	RunLinkedCommandList *operation = new RunLinkedCommandList(link);
 	operation->ini_line = *ini_line;
@@ -3899,6 +3903,8 @@ LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 
 void RunLinkedCommandList::run(CommandListState *state)
 {
+	if (link->shader_regex_empty_guard && SkipEmptyShaderRegexLink(*link, state))
+		return;
 	_RunCommandList(link, state, false);
 }
 
@@ -4252,6 +4258,7 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 void CommandList::DiscardExecutionPlans()
 {
 	early_draw_gate.reset();
+	shader_regex_empty_guard.reset();
 	literal_optimized_commands.clear();
 	literal_source_data = nullptr;
 	literal_source_size = 0;
@@ -10301,6 +10308,26 @@ struct ScalarIfGuard {
 	}
 };
 
+struct ShaderRegexEmptyGuard {
+	struct Condition {
+		std::vector<ScalarIfGuard::Comparison> tests;
+		bool any = false;
+
+		bool MayRun() const
+		{
+			for (const auto& test : tests) {
+				if (test.Evaluate(*test.variable) == any)
+					return any;
+			}
+			return !any;
+		}
+	};
+
+	const CommandList::Commands::value_type* source = nullptr;
+	size_t size = 0;
+	std::vector<Condition> conditions;
+};
+
 namespace {
 bool CompileScalarComparison(const CommandListEvaluatable* expression, ScalarIfGuard::Comparison& result)
 {
@@ -10317,6 +10344,51 @@ bool CompileScalarComparison(const CommandListEvaluatable* expression, ScalarIfG
 		return false;
 	result = {left->var_ftarget, right->val, op->token == L"!="};
 	return true;
+}
+
+bool ReadShaderRegexGuardTest(const CommandListEvaluatable* expression, ScalarIfGuard::Comparison& test)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	const bool inverted = op && !op->lhs && op->token == L"!";
+	const auto* variable = dynamic_cast<const CommandListOperand*>(inverted ? op->rhs.get() : expression);
+	if (variable && variable->type == ParamOverrideType::VARIABLE && variable->var_ftarget) {
+		test = {variable->var_ftarget, 0, !inverted};
+		return true;
+	}
+	return CompileScalarComparison(expression, test);
+}
+
+bool GatherShaderRegexGuardTests(const CommandListEvaluatable* expression, std::wstring_view connective,
+		std::vector<ScalarIfGuard::Comparison>& tests)
+{
+	const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+	if (op && op->token == connective)
+		return GatherShaderRegexGuardTests(op->lhs.get(), connective, tests) &&
+			GatherShaderRegexGuardTests(op->rhs.get(), connective, tests);
+	ScalarIfGuard::Comparison test;
+	if (!ReadShaderRegexGuardTest(expression, test))
+		return false;
+	tests.push_back(test);
+	return true;
+}
+
+bool CompileShaderRegexGuard(const CommandListEvaluatable* expression, ShaderRegexEmptyGuard::Condition& result)
+{
+	if (!expression || !expression->IsSafeToSkipEvaluation())
+		return false;
+	// Use a CPU-only predicate or a prefix on the left of &&. A false
+	// prefix already short-circuits the remaining reads in the old path.
+	while (expression) {
+		const auto* op = dynamic_cast<const CommandListOperator*>(expression);
+		result.tests.clear();
+		result.any = op && op->token == L"||";
+		if (GatherShaderRegexGuardTests(expression, result.any ? L"||" : L"&&", result.tests))
+			return true;
+		if (!op || op->token != L"&&")
+			return false;
+		expression = op->lhs.get();
+	}
+	return false;
 }
 
 bool CompileScalarGuard(const CommandListEvaluatable* expression, ScalarIfGuard& guard)
@@ -10496,6 +10568,53 @@ static void PrepareScalarGuardsAndLiteralBatches()
 	}
 	for (auto* list : registered_command_lists)
 		PrepareEarlyDrawGate(*list);
+}
+
+static void PrepareShaderRegexEmptyGuard(CommandList& list)
+{
+	list.shader_regex_empty_guard.reset();
+	if (list.runtime_populated || list.ResolveCommandList() != &list || list.commands.empty())
+		return;
+	auto guard = std::make_shared<ShaderRegexEmptyGuard>();
+	for (const auto& command : list.commands) {
+		const auto* branch = dynamic_cast<const IfCommand*>(command.get());
+		if (!branch)
+			return;
+		const auto& otherwise = list.post ? branch->false_commands_post : branch->false_commands_pre;
+		if (otherwise->runtime_populated || otherwise->ResolveCommandList() != otherwise.get() || !otherwise->commands.empty())
+			return;
+		ShaderRegexEmptyGuard::Condition condition;
+		if (!CompileShaderRegexGuard(branch->expression.evaluatable.get(), condition))
+			return;
+		guard->conditions.push_back(std::move(condition));
+	}
+	guard->source = list.commands.data();
+	guard->size = list.commands.size();
+	list.shader_regex_empty_guard = std::move(guard);
+}
+
+static bool SkipEmptyShaderRegexLink(CommandList& list, CommandListState* state)
+{
+	if (state->aborted || state->post != list.post || state->command_list_depth >= MAX_COMMAND_LIST_RECURSION - 1 ||
+		G->analyse_frame || gLogDebug || !G->ModRuntimeOptimizationsEnabled() ||
+		!G->expression_short_circuit.load(std::memory_order_relaxed))
+		return false;
+	const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+	if (mode == Profiling::Mode::TOP_COMMAND_LISTS || mode == Profiling::Mode::TOP_COMMANDS)
+		return false;
+	const bool enabled = G->shader_regex_skip_empty_links.load(std::memory_order_relaxed);
+	const bool profile = mode == Profiling::Mode::SUMMARY && G->profile_shader_regex_links.load(std::memory_order_relaxed);
+	if (!enabled && !profile)
+		return false;
+	const auto& guard = *list.shader_regex_empty_guard;
+	if (list.commands.data() != guard.source || list.commands.size() != guard.size ||
+		list.runtime_populated || list.ResolveCommandList() != &list)
+		return false;
+	const bool empty = std::none_of(guard.conditions.begin(), guard.conditions.end(),
+		[](const auto& condition) { return condition.MayRun(); });
+	if (profile)
+		Profiling::RecordShaderRegexLink(empty, enabled && empty);
+	return enabled && empty;
 }
 
 void IfCommand::run(CommandListState *state)

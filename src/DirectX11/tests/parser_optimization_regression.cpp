@@ -296,9 +296,94 @@ void early_draw_gate_tests()
     G->iniParams = saved_params;
     G->iniParamsReserved = saved_reserved;
 }
+
+void shader_regex_empty_link_tests()
+{
+    ParserFiles files;
+    files.load("global $dirty=0\nglobal $safe=1\nglobal $present=0\nglobal $sim=0\nglobal $runs=0\n"
+        "[CommandListGuardedRegexFixture]\n"
+        "if $dirty || !$safe\n$runs=$runs+1\nendif\n"
+        "if $present && $sim && draw_type % 2 == 0 && vs-cb1 === null\n$runs=$runs+10\nendif\n"
+        "[CommandListUnsafeRegexFixture]\nif $present && random(10)\n$runs=$runs+100\nendif\n"
+        "[CommandListElseRegexFixture]\nif $present\n$runs=$runs+100\nelse\n$runs=$runs+1000\nendif\n"
+        "[CommandListWritesRegexFixture]\n$runs=$runs+10000\n"
+        "if $present\n$runs=$runs+100\nendif\n");
+    optimise_command_lists(nullptr);
+    CommandList caller;
+    const std::wstring synthetic_line = L"run = linked command list";
+    const auto link_fixture = [&](const wchar_t* name) {
+        auto& target = explicitCommandListSections.at(name).command_list;
+        return LinkCommandLists(&caller, &target, &synthetic_line);
+    };
+    const auto guarded = link_fixture(L"commandlistguardedregexfixture");
+    const auto unsafe = link_fixture(L"commandlistunsaferegexfixture");
+    const auto has_else = link_fixture(L"commandlistelseregexfixture");
+    const auto has_write = link_fixture(L"commandlistwritesregexfixture");
+    check(guarded->link->shader_regex_empty_guard != nullptr && !unsafe->link->shader_regex_empty_guard &&
+        !has_else->link->shader_regex_empty_guard && !has_write->link->shader_regex_empty_guard,
+        "shader regex link: every false branch must be empty and every tested condition safe");
+    check(G->shader_regex_skip_empty_links && !G->profile_shader_regex_links,
+        "shader regex link: enabled by default with diagnostics off");
+
+    dx11_slot_test::BatchDevice gpu;
+    DrawCallInfo draw;
+    draw.type = DrawCall::DrawIndexed;
+    gpu.state.call_info = &draw;
+    auto& runs = command_list_globals.at(L"$runs").fval;
+    auto& dirty = command_list_globals.at(L"$dirty").fval;
+    auto& present = command_list_globals.at(L"$present").fval;
+    auto& sim = command_list_globals.at(L"$sim").fval;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const auto master = G->mod_runtime_optimizations.exchange(true);
+    const auto short_circuit = G->expression_short_circuit.exchange(true);
+    Profiling::clear();
+
+    auto* target = guarded->link;
+    const auto before = target->executions;
+    const auto cb_queries = Profiling::expression_cb_query_overhead.count;
+    guarded->run(&gpu.state);
+    check(target->executions == before && runs == 0 && Profiling::expression_cb_query_overhead.count == cb_queries,
+        "shader regex link: both inactive conditions bypass list and native queries");
+
+    G->shader_regex_skip_empty_links = false;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 1 && runs == 0 && Profiling::expression_cb_query_overhead.count == cb_queries,
+        "shader regex link: independent switch restores dispatch with the same result");
+    G->shader_regex_skip_empty_links = true;
+    dirty = 1;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 2 && runs == 1,
+        "shader regex link: possible first branch is executed at its original entry");
+    dirty = 0;
+    present = sim = 1;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 3 && runs == 11 && Profiling::expression_cb_query_overhead.count == cb_queries + 1,
+        "shader regex link: possible second branch retains the native query and body");
+
+    present = 0;
+    const auto random_count = GetExpressionRandomSampleCount();
+    unsafe->run(&gpu.state);
+    has_else->run(&gpu.state);
+    has_write->run(&gpu.state);
+    check(runs == 11011 && GetExpressionRandomSampleCount() == random_count + 1,
+        "shader regex link: eager side effects, else and top-level writes are preserved");
+    G->mod_runtime_optimizations = false;
+    guarded->run(&gpu.state);
+    check(target->executions == before + 4 && runs == 11011,
+        "shader regex link: master switch also restores the original dispatch");
+    G->mod_runtime_optimizations = true;
+    target->DiscardExecutionPlans();
+    guarded->run(&gpu.state);
+    check(target->executions == before + 5 && !target->shader_regex_empty_guard && runs == 11011,
+        "shader regex link: invalidated plan cannot suppress an existing link");
+    G->mod_runtime_optimizations = master;
+    G->expression_short_circuit = short_circuit;
+    Profiling::mode = old_mode;
+    Profiling::clear();
+}
 }
 void test_dx11_parser_optimization_regression()
 {
-    try { constants_tests(); expression_tests(); executor_tests(); early_draw_gate_tests(); std::fputs("PASS: Constants compaction, typed command execution, Draw gate and If/lookup cache boundaries\n", stderr); }
+    try { constants_tests(); expression_tests(); executor_tests(); early_draw_gate_tests(); shader_regex_empty_link_tests(); std::fputs("PASS: Constants compaction, typed command execution, Draw gate and ShaderRegex empty links\n", stderr); }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL parser optimization: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }

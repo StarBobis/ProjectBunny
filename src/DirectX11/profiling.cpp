@@ -69,6 +69,9 @@ namespace Profiling {
 namespace {
 std::mutex profiling_samples_mutex;
 Profiling::CollectionToken collection_token = std::make_shared<unsigned char>(0);
+unsigned shader_regex_guarded_links = 0;
+unsigned shader_regex_empty_links = 0;
+unsigned shader_regex_skipped_links = 0;
 }
 
 Profiling::CollectionToken Profiling::GetCollectionToken()
@@ -81,6 +84,16 @@ bool Profiling::IsCurrentCollection(const CollectionToken& token)
 {
     std::lock_guard<std::mutex> lock(profiling_samples_mutex);
     return token == collection_token;
+}
+
+void Profiling::RecordShaderRegexLink(bool empty, bool skipped)
+{
+	std::lock_guard<std::mutex> lock(profiling_samples_mutex);
+	if (mode.load(std::memory_order_relaxed) != Mode::SUMMARY)
+		return;
+	++shader_regex_guarded_links;
+	shader_regex_empty_links += empty;
+	shader_regex_skipped_links += skipped;
 }
 
 void Profiling::start(State* state)
@@ -435,6 +448,18 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
         append_gate(L"Draw gate pre miss entry (hits use fast path)", Profiling::draw_gate_pre_entry_miss);
         append_gate(L"Draw gate post miss entry (hits use fast path)", Profiling::draw_gate_post_entry_miss);
     }
+	if (G->profile_shader_regex_links.load(std::memory_order_relaxed)) {
+		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
+			L"ShaderRegex guarded links: %.2f/frame\n"
+			L"ShaderRegex empty links: %.2f/frame\n"
+			L"ShaderRegex skipped empty links: %.2f/frame\n"
+			L"ShaderRegex dispatched empty links: %.2f/frame\n",
+			static_cast<double>(shader_regex_guarded_links) / frames,
+			static_cast<double>(shader_regex_empty_links) / frames,
+			static_cast<double>(shader_regex_skipped_links) / frames,
+			static_cast<double>(shader_regex_empty_links - shader_regex_skipped_links) / frames);
+		Profiling::text += buf;
+	}
     _snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"Texture update hits: %u/%u hits/frame\n",
         Profiling::hash_tracking_overhead.hits / frames, Profiling::hash_tracking_overhead.count / frames);
     Profiling::text += buf;
@@ -585,6 +610,9 @@ void Profiling::clear()
     CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
     clear_command_list_profiling();
     std::lock_guard<std::mutex> sample_lock(profiling_samples_mutex);
+	shader_regex_guarded_links = 0;
+	shader_regex_empty_links = 0;
+	shader_regex_skipped_links = 0;
 	present_overhead.clear();
 	overlay_overhead.clear();
 	draw_overhead.clear();
