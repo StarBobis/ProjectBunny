@@ -496,10 +496,10 @@ void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 			if (*i == link)
 				return;
 		}
-		shader_override->command_list.DiscardLiteralBatch();
+		shader_override->command_list.DiscardExecutionPlans();
 		shader_override->command_list.commands.push_back(link);
 		if (post_link) {
-			shader_override->post_command_list.DiscardLiteralBatch();
+			shader_override->post_command_list.DiscardExecutionPlans();
 			shader_override->post_command_list.commands.push_back(post_link);
 		}
 		return;
@@ -509,7 +509,7 @@ void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 			if (*i == post_link)
 				return;
 		}
-		shader_override->post_command_list.DiscardLiteralBatch();
+		shader_override->post_command_list.DiscardExecutionPlans();
 		shader_override->post_command_list.commands.push_back(post_link);
 		return;
 	}
@@ -543,7 +543,7 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 		next++;
 		link = dynamic_cast<RunLinkedCommandList*>(i->get());
 		if (link) {
-			shader_override->command_list.DiscardLiteralBatch();
+			shader_override->command_list.DiscardExecutionPlans();
 			next = shader_override->command_list.commands.erase(i);
 			ret = true;
 		}
@@ -554,7 +554,7 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 		next++;
 		link = dynamic_cast<RunLinkedCommandList*>(i->get());
 		if (link) {
-			shader_override->post_command_list.DiscardLiteralBatch();
+			shader_override->post_command_list.DiscardExecutionPlans();
 			next = shader_override->post_command_list.commands.erase(i);
 			ret = true;
 		}

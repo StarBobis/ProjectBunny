@@ -616,6 +616,8 @@ struct Globals
 	std::atomic<bool> mod_runtime_optimizations{true};
 	bool ModRuntimeOptimizationsEnabled() const { return mod_runtime_optimizations.load(std::memory_order_relaxed); }
 	std::atomic<bool> expression_short_circuit{true};
+	std::atomic<bool> draw_gate_early_reject{true};
+	std::atomic<bool> profile_draw_gate{false};
 	std::atomic<uint64_t> shader_override_generation{1};
 	std::atomic<uint64_t> shader_regex_generation{1};
 	TextureOverrideMap mTextureOverrideMap;

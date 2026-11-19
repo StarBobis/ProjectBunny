@@ -32,6 +32,7 @@ class HackerContext;
 class CommandListExpression;
 class CommandList;
 struct ScalarIfGuard;
+struct EarlyDrawGate;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
 
@@ -68,6 +69,7 @@ struct ShaderResourceBatchStats {
 };
 
 class CustomShaderStateScope;
+class CustomResource;
 
 class CommandListState {
 public:
@@ -77,7 +79,6 @@ public:
 		bool result = false;
 	};
 	std::array<ScalarIfMemo, 4> scalar_if_memo{};
-
 	HackerDevice *mHackerDevice;
 	HackerContext *mHackerContext;
 	ID3D11Device1 *mOrigDevice1;
@@ -207,6 +208,7 @@ public:
 	Commands literal_optimized_commands;
 	const Commands::value_type* literal_source_data = nullptr;
 	size_t literal_source_size = 0;
+	std::shared_ptr<const EarlyDrawGate> early_draw_gate;
 
 	// For local/static variables. These are only used in the main pre
 	// command list as the post command list and any sub command lists (if
@@ -231,7 +233,7 @@ public:
 	const float* empty_if_false = nullptr;
 
 	void clear();
-	void DiscardLiteralBatch();
+	void DiscardExecutionPlans();
 
 	bool SetSourceCommandList(CommandList* source);
 	CommandList* ResolveCommandList();

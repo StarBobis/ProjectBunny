@@ -15,6 +15,7 @@
 #include <map>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 #include <sstream>
 #include <string_view>
 #include <typeinfo>
@@ -137,9 +138,89 @@ public:
     ~CommandListDepthScope() { --depth; }
 };
 
+struct EarlyDrawGate {
+	const IfCommand* outer = nullptr;
+	const float* condition = nullptr;
+	const CommandList* body = nullptr;
+	const CommandList::Commands::value_type* body_data = nullptr;
+	size_t body_size = 0;
+	CommandList::Commands on_miss;
+};
+
+namespace {
+bool DrawHasConfiguredOverride(CommandListState* state);
+}
+
+static bool DrawGateDiagnosticsEnabled()
+{
+	return G->profile_draw_gate.load(std::memory_order_relaxed) &&
+		Profiling::mode.load(std::memory_order_relaxed) == Profiling::Mode::SUMMARY;
+}
+
+static bool RunEarlyDrawGate(const EarlyDrawGate* gate, CommandList* list, CommandListState* state)
+{
+	if (!gate || state->aborted || !state->call_info || !*gate->condition ||
+		state->post != list->post || state->command_list_depth >= MAX_COMMAND_LIST_RECURSION - 1 ||
+		!G->draw_gate_early_reject.load(std::memory_order_relaxed) || !G->ModRuntimeOptimizationsEnabled() ||
+		G->analyse_frame || gLogDebug)
+		return false;
+	const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+	if (mode == Profiling::Mode::TOP_COMMANDS || mode == Profiling::Mode::TOP_COMMAND_LISTS ||
+		list->commands.size() != 1 || list->commands.front().get() != gate->outer)
+		return false;
+	const auto& body = state->post ? gate->outer->true_commands_post : gate->outer->true_commands_pre;
+	if (body.get() != gate->body || body->commands.data() != gate->body_data || body->commands.size() != gate->body_size ||
+		DrawHasConfiguredOverride(state))
+		return false;
+
+	// The false child is empty. Keep the enclosing branch depth and execute
+	// the remaining body commands at their original phase and in source order.
+	CommandListDepthScope depth(state->command_list_depth);
+	++state->extra_indent;
+	for (const auto& command : gate->on_miss) {
+		if (state->aborted) break;
+		command->run(state);
+	}
+	--state->extra_indent;
+	return true;
+}
+
+static inline void RunListCommands(CommandList* list, CommandListState* state, command_list_profiling_state* sample)
+{
+	auto& commands = list->commands;
+	auto& optimized = list->literal_optimized_commands;
+	auto& executable = !optimized.empty() && list->literal_source_data == commands.data() &&
+		list->literal_source_size == commands.size() && G->ModRuntimeOptimizationsEnabled() &&
+		!G->analyse_frame && !gLogDebug && Profiling::mode != Profiling::Mode::TOP_COMMANDS ? optimized : commands;
+	for (auto& command : executable) {
+		if (state->aborted) break;
+		profile_command_list_cmd_start(command.get(), sample);
+		command->run(state);
+		profile_command_list_cmd_end(command.get(), state, sample);
+	}
+}
+
+static void RunListWithEarlyDrawGate(CommandList* list, CommandListState* state, command_list_profiling_state* sample)
+{
+	const auto* gate = list->early_draw_gate.get();
+	if (!DrawGateDiagnosticsEnabled()) {
+		if (!RunEarlyDrawGate(gate, list, state))
+			RunListCommands(list, state, sample);
+		return;
+	}
+	Profiling::State entry;
+	if (!state->aborted && state->call_info && *gate->condition && state->post == list->post)
+		Profiling::start(&entry);
+	const bool early_miss = RunEarlyDrawGate(gate, list, state);
+	if (!early_miss)
+		RunListCommands(list, state, sample);
+	if (entry.started && state->call_info && state->call_info->override_candidate == DrawOverrideCandidate::Miss)
+		Profiling::end(&entry, list->post ? &Profiling::draw_gate_post_entry_miss : &Profiling::draw_gate_pre_entry_miss,
+			true, early_miss);
+}
+
 static void _RunResolvedCommandList(CommandList *command_list, CommandListState *state, bool recursive)
 {
-	CommandList::Commands::iterator i;
 	command_list_profiling_state profiling_state;
 
 	if (state->command_list_depth >= MAX_COMMAND_LIST_RECURSION) {
@@ -166,16 +247,10 @@ static void _RunResolvedCommandList(CommandList *command_list, CommandListState 
 
 	profile_command_list_start(command_list, state, &profiling_state);
 
-	auto& commands = command_list->commands;
-	auto& optimized = command_list->literal_optimized_commands;
-	auto& executable = !optimized.empty() && command_list->literal_source_data == commands.data() &&
-		command_list->literal_source_size == commands.size() && G->ModRuntimeOptimizationsEnabled() &&
-		!G->analyse_frame && !gLogDebug && Profiling::mode != Profiling::Mode::TOP_COMMANDS ? optimized : commands;
-	for (i = executable.begin(); i < executable.end() && !state->aborted; i++) {
-		profile_command_list_cmd_start(i->get(), &profiling_state);
-		(*i)->run(state);
-		profile_command_list_cmd_end(i->get(), state, &profiling_state);
-	}
+	if (command_list->early_draw_gate)
+		RunListWithEarlyDrawGate(command_list, state, &profiling_state);
+	else
+		RunListCommands(command_list, state, &profiling_state);
 
 	profile_command_list_end(command_list, state, &profiling_state);
 
@@ -1287,39 +1362,70 @@ public:
 	RetainedBindings& operator=(const RetainedBindings&) = delete;
 };
 
+template<class Operation>
+static auto MeasureDrawGate(Profiling::Overhead& overhead, bool enabled, Operation operation)
+{
+	if (!enabled)
+		return operation();
+	Profiling::Sample sample(overhead);
+	if constexpr (std::is_same_v<decltype(operation()), bool>) {
+		const bool matched = operation();
+		sample.Finish(matched);
+		return matched;
+	} else {
+		operation();
+	}
+}
+
 // Caller holds G for the slot configuration and TextureOverride candidates.
 bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info,
-		const DrawOverrideSlotRange& range, std::vector<ID3D11Resource*>* checked)
+		const DrawOverrideSlotRange& range, std::vector<ID3D11Resource*>* checked, bool profile)
 {
+	const auto has_candidate = [&](ID3D11Resource* resource, bool region_possible) {
+		return MeasureDrawGate(Profiling::draw_gate_candidates, profile, [&] {
+			return HasTextureOverrideCandidate(resource, info, region_possible);
+		});
+	};
 	const auto& first = range.first;
 	if (first.type == ResourceCopyTargetType::INDEX_BUFFER) {
 		Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
-		context->IAGetIndexBuffer(buffer.GetAddressOf(), nullptr, nullptr);
+		MeasureDrawGate(Profiling::draw_gate_ib, profile, [&] {
+			context->IAGetIndexBuffer(buffer.GetAddressOf(), nullptr, nullptr);
+		});
 		if (checked && buffer)
 			checked->push_back(buffer.Get());
-		return HasTextureOverrideCandidate(buffer.Get(), info, G->track_region_hashes);
+		return has_candidate(buffer.Get(), G->track_region_hashes);
 	}
 	if (first.type == ResourceCopyTargetType::VERTEX_BUFFER) {
 		RetainedBindings<ID3D11Buffer, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
-		context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
+		MeasureDrawGate(Profiling::draw_gate_vb, profile, [&] {
+			context->IAGetVertexBuffers(first.slot, range.count, bindings.values, nullptr, nullptr);
+		});
 		if (checked) {
 			for (unsigned i = 0; i < range.count; ++i)
 				if (bindings.values[i])
 					checked->push_back(bindings.values[i]);
 		}
 		if (range.count > 1 && !G->track_region_hashes && G->ModRuntimeOptimizationsEnabled() &&
-			VertexBufferRangeHasNoCachedOverrideCandidates(bindings.values, range.count))
+			!MeasureDrawGate(Profiling::draw_gate_candidates, profile, [&] {
+				return !VertexBufferRangeHasNoCachedOverrideCandidates(bindings.values, range.count);
+			}))
 			return false;
 		for (unsigned i = 0; i < range.count; ++i)
-			if (HasTextureOverrideCandidate(bindings.values[i], info, G->track_region_hashes))
+			if (has_candidate(bindings.values[i], G->track_region_hashes))
 				return true;
 		return false;
 	}
 	RetainedBindings<ID3D11ShaderResourceView, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> bindings(range.count);
+	const auto get = [&](auto getter) {
+		MeasureDrawGate(Profiling::draw_gate_srv, profile, [&] {
+			(context->*getter)(first.slot, range.count, bindings.values);
+		});
+	};
 	switch (first.shader_type) {
-	case L'p': context->PSGetShaderResources(first.slot, range.count, bindings.values); break;
-	case L'v': context->VSGetShaderResources(first.slot, range.count, bindings.values); break;
-	case L'c': context->CSGetShaderResources(first.slot, range.count, bindings.values); break;
+	case L'p': get(&ID3D11DeviceContext1::PSGetShaderResources); break;
+	case L'v': get(&ID3D11DeviceContext1::VSGetShaderResources); break;
+	case L'c': get(&ID3D11DeviceContext1::CSGetShaderResources); break;
 	default: return true;
 	}
 	for (unsigned i = 0; i < range.count; ++i) {
@@ -1328,7 +1434,7 @@ bool DrawOverrideRangeMayMatch(ID3D11DeviceContext1* context, DrawCallInfo* info
 		bindings.values[i]->GetResource(resource.GetAddressOf());
 		if (checked && resource)
 			checked->push_back(resource.Get());
-		if (HasTextureOverrideCandidate(resource.Get(), info, false))
+		if (has_candidate(resource.Get(), false))
 			return true;
 	}
 	return false;
@@ -1340,8 +1446,14 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 	if (!info || !state->mOrigContext1 || info->type == DrawCall::Invalid ||
 		info->type == DrawCall::Dispatch || info->type == DrawCall::DispatchIndirect)
 		return true;
+	const bool profile = DrawGateDiagnosticsEnabled();
 	if (info->override_candidate != DrawOverrideCandidate::Unqueried)
-		return info->override_candidate == DrawOverrideCandidate::Possible;
+		return MeasureDrawGate(Profiling::draw_gate_memo, profile, [&] {
+			return info->override_candidate == DrawOverrideCandidate::Possible;
+		});
+	std::optional<Profiling::Sample> first_check;
+	if (profile)
+		first_check.emplace(Profiling::draw_gate_uncached);
 
 	CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 	const auto& ranges = G->draw_override_slot_ranges;
@@ -1368,7 +1480,7 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 	const bool possible = ranges.empty() ||
 		((!G->mTextureOverrideMap.empty() || !G->mFuzzyTextureOverrides.empty()) &&
 		 std::any_of(ranges.begin(), ranges.end(), [&](const DrawOverrideSlotRange& range) {
-			return DrawOverrideRangeMayMatch(state->mOrigContext1, info, range, proof ? &proof->resources : nullptr);
+			return DrawOverrideRangeMayMatch(state->mOrigContext1, info, range, proof ? &proof->resources : nullptr, profile);
 		}));
 	if (proof && !possible && context->DrawOverrideBindingVersion() == binding_version &&
 		BoundResourcesHaveNoCachedOverrideCandidates(proof->resources.data(), proof->resources.size())) {
@@ -1377,6 +1489,8 @@ bool DrawHasConfiguredOverride(CommandListState* state)
 		proof->frame = G->frame_no;
 	}
 	info->override_candidate = possible ? DrawOverrideCandidate::Possible : DrawOverrideCandidate::Miss;
+	if (first_check)
+		first_check->Finish(possible);
 	return possible;
 }
 
@@ -3775,7 +3889,7 @@ bool RunExplicitCommandList::noop(bool post, bool ignore_cto_pre, bool ignore_ct
 std::shared_ptr<RunLinkedCommandList>
 LinkCommandLists(CommandList *dst, CommandList *link, const wstring *ini_line)
 {
-	dst->DiscardLiteralBatch();
+	dst->DiscardExecutionPlans();
 	RunLinkedCommandList *operation = new RunLinkedCommandList(link);
 	operation->ini_line = *ini_line;
 	std::shared_ptr<RunLinkedCommandList> p(operation);
@@ -4135,8 +4249,9 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
     }
 }
 
-void CommandList::DiscardLiteralBatch()
+void CommandList::DiscardExecutionPlans()
 {
+	early_draw_gate.reset();
 	literal_optimized_commands.clear();
 	literal_source_data = nullptr;
 	literal_source_size = 0;
@@ -4144,7 +4259,7 @@ void CommandList::DiscardLiteralBatch()
 
 void CommandList::clear()
 {
-	DiscardLiteralBatch();
+	DiscardExecutionPlans();
 	empty_if_false = nullptr;
 	commands.clear();
 	static_vars.clear();
@@ -10282,7 +10397,7 @@ public:
 
 void BatchLiteralAssignments(CommandList& list)
 {
-	list.DiscardLiteralBatch();
+	list.DiscardExecutionPlans();
 	if (list.commands.size() < 2)
 		return;
 	CommandList::Commands optimized;
@@ -10309,6 +10424,54 @@ void BatchLiteralAssignments(CommandList& list)
 		list.literal_optimized_commands = std::move(optimized);
 	}
 }
+
+void PrepareEarlyDrawGate(CommandList& list)
+{
+	// Limit the plan to a single scalar guard with an empty false branch.
+	// Only a local DRAW_TYPE assignment may precede the built-in predicate.
+	if (list.runtime_populated || list.commands.size() != 1)
+		return;
+	const auto* outer = dynamic_cast<const IfCommand*>(list.commands.front().get());
+	if (!outer)
+		return;
+	const auto* condition = dynamic_cast<const CommandListOperand*>(outer->expression.evaluatable.get());
+	const auto& otherwise = list.post ? outer->false_commands_post : outer->false_commands_pre;
+	const auto& body = list.post ? outer->true_commands_post : outer->true_commands_pre;
+	if (!condition || condition->type != ParamOverrideType::VARIABLE || !condition->var_ftarget ||
+		otherwise->runtime_populated || otherwise->ResolveCommandList() != otherwise.get() || !otherwise->commands.empty() ||
+		body->runtime_populated || body->ResolveCommandList() != body.get() || body->commands.empty())
+		return;
+
+	size_t index = 0;
+	if (const auto* assignment = dynamic_cast<const VariableAssignment*>(body->commands.front().get())) {
+		const auto* value = dynamic_cast<const CommandListOperand*>(assignment->expression.evaluatable.get());
+		if (!assignment->var || assignment->var->flags != VariableFlags::NONE || !value ||
+			value->type != ParamOverrideType::DRAW_TYPE || body->commands.size() < 2)
+			return;
+		index = 1;
+	}
+	const auto* inner = dynamic_cast<const IfCommand*>(body->commands[index].get());
+	if (!inner)
+		return;
+	const auto* operand = dynamic_cast<const CommandListOperand*>(inner->expression.evaluatable.get());
+	const auto& miss = list.post ? inner->false_commands_post : inner->false_commands_pre;
+	if (!operand || operand->type != ParamOverrideType::DRAW_HAS_OVERRIDE || miss->runtime_populated ||
+		miss->ResolveCommandList() != miss.get() || !miss->commands.empty())
+		return;
+
+	auto plan = std::make_shared<EarlyDrawGate>();
+	plan->outer = outer;
+	plan->condition = condition->var_ftarget;
+	plan->body = body.get();
+	plan->body_data = body->commands.data();
+	plan->body_size = body->commands.size();
+	const auto& executable = body->literal_optimized_commands.empty() ? body->commands : body->literal_optimized_commands;
+	for (const auto& command : executable) {
+		if (command.get() != inner)
+			plan->on_miss.push_back(command);
+	}
+	list.early_draw_gate = std::move(plan);
+}
 } // namespace
 
 static void PrepareScalarGuardsAndLiteralBatches()
@@ -10331,6 +10494,8 @@ static void PrepareScalarGuardsAndLiteralBatches()
 		}
 		BatchLiteralAssignments(*list);
 	}
+	for (auto* list : registered_command_lists)
+		PrepareEarlyDrawGate(*list);
 }
 
 void IfCommand::run(CommandListState *state)

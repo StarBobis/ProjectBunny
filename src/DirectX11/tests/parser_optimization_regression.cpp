@@ -5,6 +5,8 @@
 #include "ExpressionFunctions.h"
 #include "globals.h"
 #include "Input.h"
+#include "profiling.h"
+#include "slot_range_test_support.h"
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
@@ -213,9 +215,90 @@ void executor_tests()
     G->mod_runtime_optimizations = old;
     check(result == 2, "typed executor matches the original path with optimizations disabled");
 }
+
+void early_draw_gate_tests()
+{
+    const auto saved_params = G->iniParams;
+    const int saved_reserved = G->iniParamsReserved;
+    ParserFiles files;
+    files.load("global $gate=1\nglobal $result=0\nglobal $after=0\n"
+        "[Rendering]\ndraw_has_override_slots=ib vb[0:2] ps-t0\n"
+        "[TextureOverrideEarlyDrawGateOtherResource]\nhash=ee9afd38\nfilter_index=1\n"
+        "[CommandListEarlyDrawGate]\nif $gate\nlocal $kind=draw_type\n"
+        "if draw_has_override\n$result=$result+100\npost $result=$result+1000\nendif\n"
+        "x1=$kind\n$result=$result*10+1\npost ps-t7=null\npost $after=$after+1\nendif\n"
+        "[CommandListUnsafeEarlyDrawGate]\nif $gate\n$result=$result+1\n"
+        "if draw_has_override\n$result=$result+100\nendif\nendif\n");
+    optimise_command_lists(nullptr);
+    auto& section = explicitCommandListSections.at(L"commandlistearlydrawgate");
+    check(section.command_list.early_draw_gate && section.post_command_list.early_draw_gate,
+        "draw gate: compile pre and post from the production parser");
+    check(!explicitCommandListSections.at(L"commandlistunsafeearlydrawgate").command_list.early_draw_gate,
+        "draw gate: do not move across writes to ordinary variables");
+    check(G->draw_gate_early_reject && !G->profile_draw_gate,
+        "draw gate: default on, opt-in detailed profiling");
+
+    dx11_slot_test::BatchDevice gpu;
+    check(SUCCEEDED(gpu.device->CreateIniParamResources()) && G->iniParams.size() > 1,
+        "draw gate: allocate IniParams through the normal device path");
+    auto texture = dx11_slot_test::texture(gpu, 0xff33cc99);
+    auto view = dx11_slot_test::srv(gpu, texture.Get());
+    auto& state = gpu.state;
+    auto& result = command_list_globals.at(L"$result").fval;
+    auto& after = command_list_globals.at(L"$after").fval;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const bool old_master = G->mod_runtime_optimizations.exchange(true);
+    G->profile_draw_gate = true;
+    RunLinkedCommandList run_pre(&section.command_list), run_post(&section.post_command_list);
+    const auto initial_reads = Profiling::draw_gate_ib.count;
+    const auto initial_fast_misses = Profiling::draw_gate_pre_entry_miss.hits;
+    const auto initial_post_fast_misses = Profiling::draw_gate_post_entry_miss.hits;
+    const auto run = [&](bool fast, bool hit) {
+        G->draw_gate_early_reject = fast;
+        result = after = 0;
+        DrawCallInfo draw;
+        draw.type = DrawCall::DrawIndexed;
+        if (hit)
+            draw.override_candidate = DrawOverrideCandidate::Possible;
+        state.call_info = &draw;
+        dx11_slot_test::set_slot(gpu, L'p', 7, view.Get());
+        state.post = false;
+        run_pre.run(&state);
+        check(result == (hit ? 1001.0f : 1.0f) && G->iniParams[1].x == 2.0f && state.extra_indent == 0,
+            "draw gate: preserve local DRAW_TYPE, hit commands and IniParams writes in order");
+        state.post = true;
+        run_post.run(&state);
+        check(result == (hit ? 2001.0f : 1.0f) && after == 1.0f && !dx11_slot_test::get_slot(gpu, L'p', 7) &&
+            state.extra_indent == 0 && state.command_list_depth == 0,
+            "draw gate: preserve post order, slot writes and branch depth");
+        state.call_info = nullptr;
+    };
+    run(true, false);
+    check(Profiling::draw_gate_pre_entry_miss.hits == initial_fast_misses + 1 &&
+        Profiling::draw_gate_post_entry_miss.hits == initial_post_fast_misses + 1 &&
+        Profiling::draw_gate_ib.count == initial_reads + 1, "draw gate: native read once and fast route in both phases");
+    run(false, false);
+    check(Profiling::draw_gate_pre_entry_miss.hits == initial_fast_misses + 1 &&
+        Profiling::draw_gate_post_entry_miss.hits == initial_post_fast_misses + 1 &&
+        Profiling::draw_gate_ib.count == initial_reads + 2, "draw gate: independent opt-out uses legacy route");
+    run(true, true);
+    run(false, true);
+    G->mod_runtime_optimizations = false;
+    run(true, false);
+    check(Profiling::draw_gate_pre_entry_miss.hits == initial_fast_misses + 1 &&
+        Profiling::draw_gate_post_entry_miss.hits == initial_post_fast_misses + 1 &&
+        Profiling::draw_gate_ib.count == initial_reads + 3, "draw gate: master switch still uses legacy route");
+    G->mod_runtime_optimizations = old_master;
+    G->draw_gate_early_reject = true;
+    G->profile_draw_gate = false;
+    Profiling::mode = old_mode;
+    Profiling::clear();
+    G->iniParams = saved_params;
+    G->iniParamsReserved = saved_reserved;
+}
 }
 void test_dx11_parser_optimization_regression()
 {
-    try { constants_tests(); expression_tests(); executor_tests(); std::fputs("PASS: Constants compaction, typed command execution, and If/lookup cache boundaries\n", stderr); }
+    try { constants_tests(); expression_tests(); executor_tests(); early_draw_gate_tests(); std::fputs("PASS: Constants compaction, typed command execution, Draw gate and If/lookup cache boundaries\n", stderr); }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL parser optimization: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }

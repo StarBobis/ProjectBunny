@@ -59,6 +59,8 @@ XXMI Launcher 不采用模板中所有传统 Loader 参数；用启动器自己�
 | `cache_resource_data` | CPU 缓冲数据缓存类型 |
 | `mod_runtime_optimizations` | 默认 `1`。设为 `0` 后，跨绘制的 TextureOverride 空候选复用、资源和槽位写入去重、SlotFix 空清理跳过、标量条件预解析和字面量赋值批处理均切回原路径。此开关也控制 ShaderOverride 查询、OM 保存、资源别名解析及绘制和计算参数预解析等优化。显式配置的 `draw_has_override_slots` 和 `auto_check_texture_slots` 继续生效 |
 | `expression_short_circuit` | 默认 `1`。仅对确认可跳过求值的 `&&`、`\|\|` 使用短路。设为 `0` 可单独恢复逻辑表达式和标量条件的原求值路径。关闭 `mod_runtime_optimizations` 时也沿用原求值路径 |
+| `draw_gate_early_reject` | 默认 `1`。对可证明安全的 `DRAW_HAS_OVERRIDE` 分支，提前筛选并在未命中时缩短命令派发。设为 `0` 可单独对照原路径。关闭 `mod_runtime_optimizations` 时也沿用原路径 |
+| `profile_draw_gate` | 默认 `0`。设为 `1` 后，CPU Summary 显示筛选、IB/VB/SRV 原生读取、候选判断、未命中入口的耗时、执行次数与快路径次数。核对调用量后设回 `0` 再比较整帧耗时，以免详细采样影响结果 |
 | `draw_has_override_slots` | `DRAW_HAS_OVERRIDE` 使用的槽位列表。按游戏和模组填写，例如 `ib vb[0:2] ps-t0`。缺省时走直接检查 |
 | `auto_check_texture_slots` | 自动批量检查 TextureOverride 的槽位列表，例如 `ps-t[0:9]`。缺省时关闭自动批量检查 |
 | `rasterizer_disable_scissor` | 全局关闭裁剪 |
