@@ -215,6 +215,8 @@ public:
     std::weak_ptr<const void> profiling_generation;
 
 	bool runtime_populated = false;
+	// Set after optimisation when a single variable gates all work in this phase.
+	const float* empty_if_false = nullptr;
 
 	void clear();
 

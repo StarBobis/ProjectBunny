@@ -148,6 +148,13 @@ static void _RunResolvedCommandList(CommandList *command_list, CommandListState 
 	if (command_list->commands.empty())
 		return;
 
+	// The legacy false branch still enters an empty sub-list. Keep the
+	// dispatcher near the depth limit so it can emit the same warning.
+	if (command_list->empty_if_false && *command_list->empty_if_false == 0.0f &&
+		state->command_list_depth < MAX_COMMAND_LIST_RECURSION - 1 &&
+		G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug)
+		return;
+
 	CommandListDepthScope call_depth(state->command_list_depth);
 
 	if (recursive) {
@@ -360,6 +367,19 @@ void RunViewCommandList(HackerDevice *mHackerDevice,
 
 
 static void MergeDirectTextureChecks(CommandList* command_list);
+
+static const float* FindEmptyListGuard(const CommandList &list)
+{
+	if (list.runtime_populated || list.commands.size() != 1)
+		return nullptr;
+
+	const auto* branch = dynamic_cast<const IfCommand*>(list.commands.front().get());
+	if (!branch || !branch->false_commands_pre->noop() || !branch->false_commands_post->noop())
+		return nullptr;
+
+	const auto* guard = dynamic_cast<const CommandListOperand*>(branch->expression.evaluatable.get());
+	return guard && guard->type == ParamOverrideType::VARIABLE ? guard->var_ftarget : nullptr;
+}
 static void GetShaderResourcesBatch(CommandListState* state, wchar_t stage, UINT first, UINT count,
 		ID3D11ShaderResourceView** views);
 
@@ -444,6 +464,12 @@ void optimise_command_lists(HackerDevice *device)
 
 	for (CommandList* command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
+
+	for (auto &entry : explicitCommandListSections) {
+		auto &section = entry.second;
+		section.command_list.empty_if_false = FindEmptyListGuard(section.command_list);
+		section.post_command_list.empty_if_false = FindEmptyListGuard(section.post_command_list);
+	}
 
 	Profiling::update_cto_warning(!ignore_cto_post);
 
@@ -4063,6 +4089,7 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 
 void CommandList::clear()
 {
+	empty_if_false = nullptr;
 	commands.clear();
 	static_vars.clear();
 	source_command_list = nullptr;

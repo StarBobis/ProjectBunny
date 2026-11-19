@@ -1,5 +1,6 @@
 #include "slot_range_test_support.h"
 #include "cache_policy_test_scope.h"
+#include "profiling.h"
 using namespace dx11_slot_test;
 
 
@@ -369,6 +370,105 @@ void pool_srv_writeback(BatchDevice& device, Registry& registry)
     device.context->ClearState();
 }
 
+void guarded_slotfix_cleanup(BatchDevice& device, Registry& registry)
+{
+    const wchar_t* name = L"commandlistslotfixtestcleanup";
+    const std::wstring ns;
+    require_batch(!explicitCommandListSections.count(name), "SlotFix guard: unique fixture");
+    auto& cleanup = explicitCommandListSections[name];
+    auto& pre = cleanup.command_list;
+    auto& post = cleanup.post_command_list;
+    CommandListScope scope;
+    scope.emplace_front();
+    pre.scope = post.scope = &scope;
+    post.post = true;
+
+    auto& saved_main = registry.variable(L"$slotfix_test_saved_main", 0).fval;
+    auto& saved_glow = registry.variable(L"$slotfix_test_saved_glow", 0).fval;
+    auto& post_marker = registry.variable(L"$slotfix_test_post", 0).fval;
+    registry.pool(L"poolslotfix_test_cleanup", device, PoolIndexType::STATIC, 19);
+    const auto flow = [&](std::wstring line) {
+        require_batch(ParseCommandListFlowControl(name, &line, &pre, &post, &ns),
+            "SlotFix guard: parse actual conditional");
+    };
+    const auto copy = [&](const wchar_t* destination, std::wstring source) {
+        require_batch(ParseCommandListResourceCopyTargetDirective(name, destination, &source, &pre, &ns),
+            "SlotFix guard: parse actual slot restore");
+    };
+    const auto set = [&](CommandList& list, const wchar_t* variable, std::wstring value) {
+        require_batch(ParseCommandListVariableAssignment(name, variable, &value, nullptr, &list, &pre, &post, &ns),
+            "SlotFix guard: parse actual assignment");
+    };
+    flow(L"if $slotfix_test_saved_main");
+    copy(L"ps-t[0:9]", L"ref poolslotfix_test_cleanup[0:9]");
+    set(pre, L"$slotfix_test_saved_main", L"0");
+    flow(L"if $slotfix_test_saved_glow");
+    copy(L"ps-t[10:18]", L"ref poolslotfix_test_cleanup[10:18]");
+    set(pre, L"$slotfix_test_saved_glow", L"0");
+    flow(L"endif");
+    copy(L"poolslotfix_test_cleanup", L"null");
+    flow(L"endif");
+    set(post, L"$slotfix_test_post", L"$slotfix_test_post + 1");
+
+    CommandList caller;
+    std::wstring target(name);
+    require_batch(ParseCommandListGeneralCommands(L"SlotFixGuardRegression", L"run", &target,
+        &caller, &caller, &caller, &ns), "SlotFix guard: parse explicit post run");
+    registered_command_lists.push_back(&pre);
+    registered_command_lists.push_back(&post);
+    optimise_command_lists(device.device);
+    require_batch(pre.empty_if_false == &saved_main && !post.empty_if_false,
+        "SlotFix guard: classify the pre phase independently of other post work");
+
+    auto original = srv(device, texture(device, 0x33112244u).Get());
+    auto replacement = srv(device, texture(device, 0x55667788u).Get());
+    for (UINT slot = 0; slot <= 19; ++slot)
+        set_slot(device, L'p', slot, slot == 4 ? nullptr : original.Get());
+
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::TOP_COMMAND_LISTS);
+    const bool old_optimizations = G->mod_runtime_optimizations.exchange(true);
+    const bool old_analysis = G->analyse_frame;
+    const bool old_debug = gLogDebug;
+    G->analyse_frame = gLogDebug = false;
+    device.state.post = true;
+    DrawCallInfo skipped;
+    skipped.skip = true;
+    device.state.call_info = &skipped;
+    require_batch(execute(caller, device).set_calls == 0 && pre.executions == 0 && post_marker == 1,
+        "SlotFix guard: unsaved cleanup skips the list and preserves other post commands");
+
+    G->mod_runtime_optimizations = false;
+    require_batch(execute(caller, device).set_calls == 0 && pre.executions == 1 && post_marker == 2,
+        "SlotFix guard: compatibility switch retains the original empty cleanup dispatch");
+    G->mod_runtime_optimizations = true;
+    CommandList save;
+    append(save, L"poolslotfix_test_cleanup[0:9]", L"ref ps-t[0:9]");
+    append(save, L"poolslotfix_test_cleanup[10:18]", L"ref ps-t[10:18]");
+    execute(save, device);
+    saved_main = saved_glow = 1;
+    for (UINT slot = 0; slot <= 19; ++slot)
+        set_slot(device, L'p', slot, replacement.Get());
+    execute(caller, device);
+    for (UINT slot = 0; slot < 19; ++slot)
+        require_batch(get_slot(device, L'p', slot).Get() == (slot == 4 ? nullptr : original.Get()),
+            "SlotFix guard: a saved list restores the exact views even after a skipped draw");
+    require_batch(!saved_main && !saved_glow && pre.executions == 2 && post_marker == 3 &&
+        device.state.post && get_slot(device, L'p', 19).Get() == replacement.Get(),
+        "SlotFix guard: reset save flags and leave adjacent slots and caller phase intact");
+    require_batch(execute(caller, device).set_calls == 0 && pre.executions == 2 && post_marker == 4,
+        "SlotFix guard: the next unsaved draw skips cleanup again");
+
+    device.state.call_info = nullptr;
+    device.state.post = false;
+    device.context->ClearState();
+    Profiling::clear();
+    Profiling::mode = old_mode;
+    G->mod_runtime_optimizations = old_optimizations;
+    G->analyse_frame = old_analysis;
+    gLogDebug = old_debug;
+    explicitCommandListSections.erase(name);
+}
+
 void material_alias_metadata(BatchDevice& device, Registry& registry)
 {
     auto ordinary = texture(device, 0x31527394u);
@@ -485,6 +585,7 @@ void test_dx11_slot_range_regression()
     all_copy_options(device, registry);
     fetch_metadata(device, registry);
     pool_srv_writeback(device, registry);
+    guarded_slotfix_cleanup(device, registry);
     material_alias_metadata(device, registry);
 
 }
