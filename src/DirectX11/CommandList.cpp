@@ -233,11 +233,14 @@ static void _RunResolvedCommandList(CommandList *command_list, CommandListState 
 		return;
 
 	// The legacy false branch still enters an empty sub-list. Keep the
-	// dispatcher near the depth limit so it can emit the same warning.
+	// dispatcher near the depth limit and when collecting detailed counts.
 	if (command_list->empty_if_false && *command_list->empty_if_false == 0.0f &&
 		state->command_list_depth < MAX_COMMAND_LIST_RECURSION - 1 &&
-		G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug)
-		return;
+		G->ModRuntimeOptimizationsEnabled() && !G->analyse_frame && !gLogDebug) {
+		const auto mode = Profiling::mode.load(std::memory_order_relaxed);
+		if (mode != Profiling::Mode::TOP_COMMAND_LISTS && mode != Profiling::Mode::TOP_COMMANDS)
+			return;
+	}
 
 	CommandListDepthScope call_depth(state->command_list_depth);
 
@@ -9748,18 +9751,6 @@ static CommandListCommand* parse_resource_copy_operation(
 	//	lookup_enum_name(ResourceCopyTargetTypeNames, dst.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, dst.evaluation_mode),
 	//	lookup_enum_name(ResourceCopyTargetTypeNames, src.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, src.evaluation_mode));
 
-	if (options & ResourceCopyOptions::REUSE_UNCHANGED) {
-		const auto copy = ResourceCopyOptions::COPY | ResourceCopyOptions::REUSE_UNCHANGED;
-		if ((static_cast<int>(options) & ~ResourceCopyOptions::UNLESS_NULL) != copy ||
-			src.type != ResourceCopyTargetType::DEPTH_STENCIL_TARGET ||
-			dst.type != ResourceCopyTargetType::CUSTOM_RESOURCE || dst.custom_resource_pool ||
-			src.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE ||
-			dst.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE) {
-			LogOverlayW(LOG_WARNING, L"reuse_unchanged requires a full oD copy to a named custom resource\n - [%ls]\n", section);
-			return nullptr;
-		}
-	}
-
 	if (!(options & ResourceCopyOptions::COPY_TYPE_MASK)) {
 		// If the copy method was not speficied make a guess.
 		// References aren't always safe (e.g. a resource can't be both
@@ -10005,6 +9996,24 @@ static bool parse_resource_copy_target_source(const wchar_t* section, const wstr
     return found;
 }
 
+static bool validate_depth_snapshot_options(const wchar_t* section, const ResourceCopyTarget& dst,
+    const ResourceCopyTarget& src, ResourceCopyOptions options)
+{
+    if (!(options & ResourceCopyOptions::REUSE_UNCHANGED))
+        return true;
+
+    const auto copy = ResourceCopyOptions::COPY | ResourceCopyOptions::REUSE_UNCHANGED;
+    if ((static_cast<int>(options) & ~ResourceCopyOptions::UNLESS_NULL) == copy &&
+        src.type == ResourceCopyTargetType::DEPTH_STENCIL_TARGET &&
+        dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE && !dst.custom_resource_pool &&
+        src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE &&
+        dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE)
+        return true;
+
+    LogOverlayW(LOG_WARNING, L"reuse_unchanged requires a full oD copy to a named custom resource\n - [%ls]\n", section);
+    return false;
+}
+
 static CommandListCommand* parse_slot_range_operation(const wchar_t* section, ResourceCopyTarget& dst,
     ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* commands, const wstring* ini_namespace);
 
@@ -10013,13 +10022,15 @@ static CommandListCommand* parse_texture_override_operation(const wchar_t* secti
 {
     if (shader.shader_type != L'p' || shader.evaluation_mode != ShaderTargetEvaluationMode::MATCH_TEXTURES ||
         !shader.member_args[0].resource) return nullptr;
-    ResourceCopyTarget filter = *shader.member_args[0].resource;
-    if (filter.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
-        filter.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE || !filter.GetCustomResource(nullptr, true)) return nullptr;
     ResourceCopyTarget destination;
     destination.type = ResourceCopyTargetType::SHADER_RESOURCE;
     destination.shader_type = L'p';
     destination.max_slot = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+    if (!validate_depth_snapshot_options(section, destination, source, options))
+        return nullptr;
+    ResourceCopyTarget filter = *shader.member_args[0].resource;
+    if (filter.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
+        filter.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE || !filter.GetCustomResource(nullptr, true)) return nullptr;
     // Reuse local source flags/validation without storing any runtime pool selection.
     std::unique_ptr<CommandListCommand> base(parse_resource_copy_operation(section, destination, source, options, list, ini_namespace));
     auto* copy = dynamic_cast<ResourceCopyOperation*>(base.get());
@@ -10084,6 +10095,7 @@ bool ParseCommandListResourceCopyTargetDirective(
 		ResourceCopyTarget src;
 		ResourceCopyOptions options = ResourceCopyOptions::INVALID;
 		if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key) ||
+			!validate_depth_snapshot_options(section, dst, src, options) ||
 			src.type == ResourceCopyTargetType::VARIABLE)
 			return false;
 		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE ||

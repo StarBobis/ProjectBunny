@@ -11,6 +11,28 @@ D3D11_TEXTURE2D_DESC texture_description(UINT width, UINT height, UINT mips, UIN
     return desc;
 }
 
+void test_depth_snapshot_options(BatchDevice& device, Registry& registry)
+{
+    auto& source = registry.pool(L"pooldepthsnapshot_source", device, PoolIndexType::STATIC, 2);
+    auto& destination = registry.pool(L"pooldepthsnapshot_destination", device, PoolIndexType::STATIC, 2);
+    auto& snapshot = registry.resource(L"resourcesnapshot_options", device);
+    CommandList rejected;
+    require_batch(!parse(rejected, destination.name, L"ref " + source.name + L" reuse_unchanged"),
+        "depth snapshot options: reject reuse_unchanged on a pool alias");
+    require_batch(!parse(rejected, L"ps-t[20:21]", L"ref " + source.name + L"[0:1] reuse_unchanged"),
+        "depth snapshot options: reject reuse_unchanged on a slot range");
+    require_batch(!parse(rejected, snapshot.name, L"ref oD reuse_unchanged") &&
+        !parse(rejected, snapshot.name, L"copy_desc oD reuse_unchanged") &&
+        !parse(rejected, L"ps-t20", L"copy oD reuse_unchanged") &&
+        !parse(rejected, destination.name + L"[0]", L"copy oD reuse_unchanged") && rejected.commands.empty(),
+        "depth snapshot options: require an explicit full depth copy to an independent named resource");
+
+    CommandList supported;
+    append(supported, destination.name, L"ref " + source.name);
+    append(supported, L"ps-t[20:21]", L"ref " + source.name + L"[0:1]");
+    append(supported, snapshot.name, L"copy oD reuse_unchanged");
+}
+
 void test_depth_snapshot_reuse(BatchDevice& device, Registry& registry)
 {
     auto desc = texture_description(4, 3, 1, 1, DXGI_FORMAT_R32_TYPELESS);
@@ -127,5 +149,6 @@ void test_dx11_round7_descriptor_regression()
     scalar(device,target.name,L"copy_desc " + source_a.name);
     require_batch(target.resource == automatic.Get(),
         "round7 descriptors: normalized automatic mip description reuses the same allocation");
+    test_depth_snapshot_options(device, registry);
     test_depth_snapshot_reuse(device, registry);
 }

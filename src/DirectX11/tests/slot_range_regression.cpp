@@ -425,7 +425,8 @@ void guarded_slotfix_cleanup(BatchDevice& device, Registry& registry)
     for (UINT slot = 0; slot <= 19; ++slot)
         set_slot(device, L'p', slot, slot == 4 ? nullptr : original.Get());
 
-    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::TOP_COMMAND_LISTS);
+    // Exercise the fast path with list counters through the ordinary Summary mode.
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
     const bool old_optimizations = G->mod_runtime_optimizations.exchange(true);
     const bool old_analysis = G->analyse_frame;
     const bool old_debug = gLogDebug;

@@ -186,7 +186,8 @@ void executor_tests()
         "$compile_gate=0\n$compile_other=2\n"
         "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+100\nendif\n"
         "$compile_gate=1\n"
-        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+1\nendif\n");
+        "if $compile_gate==1 && $compile_other==2\n$compile_result=$compile_result+1\nendif\n"
+        "[CommandListGuardedEmpty]\nif $compile_gate\n$compile_result=100\nendif\n");
     optimise_command_lists(nullptr);
     auto& list = explicitCommandListSections.at(L"commandlistcompiledexecutor").command_list;
     std::shared_ptr<const ScalarIfGuard> shared;
@@ -212,8 +213,31 @@ void executor_tests()
     result = 0;
     G->mod_runtime_optimizations = false;
     run.run(&state);
-    G->mod_runtime_optimizations = old;
     check(result == 2, "typed executor matches the original path with optimizations disabled");
+
+    auto& guarded = explicitCommandListSections.at(L"commandlistguardedempty").command_list;
+    check(guarded.empty_if_false && guarded.commands.size() == 1, "empty-list profiling: compile the fast path");
+    command_list_globals.at(L"$compile_gate").fval = 0;
+    RunLinkedCommandList run_guarded(&guarded);
+    G->mod_runtime_optimizations = true;
+    const auto old_mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    Profiling::clear();
+    run_guarded.run(&state);
+    check(guarded.executions == 0, "empty-list profiling: summary still skips the empty list");
+
+    Profiling::mode = Profiling::Mode::TOP_COMMAND_LISTS;
+    Profiling::clear();
+    run_guarded.run(&state);
+    check(guarded.executions == 1, "empty-list profiling: Top Lists counts the guarded list");
+
+    Profiling::mode = Profiling::Mode::TOP_COMMANDS;
+    Profiling::clear();
+    run_guarded.run(&state);
+    check(guarded.commands.front()->pre_executions == 1 && result == 2,
+        "empty-list profiling: Top Commands counts the false condition without executing its body");
+    Profiling::clear();
+    Profiling::mode = old_mode;
+    G->mod_runtime_optimizations = old;
 }
 
 void early_draw_gate_tests()
