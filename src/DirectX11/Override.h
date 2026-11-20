@@ -83,12 +83,18 @@ private:
 
 	bool is_conditional;
 	CommandListExpression condition;
+	const float* press_condition_value = nullptr;
+	float press_condition_comparison = 0.0f;
+	bool reject_press_when_equal = true;
+
+	void PreparePressCondition();
 
 	CommandList activate_command_list;
 	CommandList deactivate_command_list;
 
 protected:
 	bool active;
+	bool PressConditionIsFalse() const;
 
 public:
 	OverrideParams mOverrideParams;
@@ -154,6 +160,7 @@ public:
 
 	void DownEvent(HackerDevice *device);
 	void UpEvent(HackerDevice *device);
+	bool RejectsPress() const override { return PressConditionIsFalse(); }
 #pragma warning(suppress : 4250) // Suppress ParseIniSection inheritance via dominance warning
 };
 

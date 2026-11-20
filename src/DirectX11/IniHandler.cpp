@@ -5218,6 +5218,7 @@ void LoadConfigFile()
     LogInfo("[Input]\n");
     RegisterIniKeyBinding(L"Input", L"toggle_input", ToggleInput, NULL, 0, NULL, InputDisableScope::NONE);
     G->input_disable_scope = GetIniEnumClass(L"Input", L"input_disable_mode", InputDisableScope::MODS, NULL, InputDisableScopeNames);
+    G->optimize_hotkey_dispatch = GetIniBool(L"Input", L"optimize_hotkey_dispatch", true, NULL);
     if (!G->disable_input_initialized) {
         G->disable_input = !GetIniBool(L"Input", L"input", true, NULL);
         G->disable_input_initialized = true;

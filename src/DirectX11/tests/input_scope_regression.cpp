@@ -194,6 +194,33 @@ public:
         G->input_disable_scope = InputDisableScope::INVALID;
         LoadConfigFile();
     }
+
+    void write_polling_config()
+    {
+        make_directory(directory / L"Polling");
+        std::string bindings =
+            "[KeyGuarded]\nkey=No_Alt Ctrl F19\ncondition=$poll_gate == 1\nrun=CommandListPollPress\n"
+            "[KeyHeld]\nkey=CTRL F20\ntype=hold\ncondition=$poll_gate\nrun=CommandListPollHold\n";
+        for (unsigned i = 0; i < 64; ++i) {
+            bindings += "[KeyInactive" + std::to_string(i) +
+                "]\nkey=No_Alt Ctrl F19\ncondition=$poll_other_gate\nrun=CommandListPollUnexpected\n";
+        }
+        write_file(directory / L"Polling" / L"keys.ini", bindings);
+        std::ofstream out(config, std::ios::binary | std::ios::trunc);
+        out << "[Logging]\nlog_level=disabled\nshow_warnings=0\n[Hunting]\nhunting=0\n"
+            "[System]\nskip_early_includes_load=0\n[Include]\nuser_config=" << settings.filename().string() <<
+            "\ninclude_recursive=" << directory.filename().string() << "/Polling\n"
+            "[Constants]\nglobal $poll_gate=0\nglobal $poll_other_gate=0\nglobal $poll_mod=0\n"
+            "global $poll_global=0\nglobal $poll_hold=0\n"
+            "[KeyGlobal]\nkey=VK_F19\nrun=CommandListPollGlobal\n"
+            "[CommandListPollGlobal]\n$poll_global=$poll_global+1\n"
+            "[CommandListPollPress]\n$poll_mod=$poll_mod+1\n"
+            "[CommandListPollUnexpected]\n$poll_mod=1000\n"
+            "[CommandListPollHold]\n$poll_hold=1\npost $poll_hold=0\n";
+        out.close();
+        check(out.good(), "write hotkey polling fixture");
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, config.c_str());
+    }
 };
 
 void source_and_default_tests(ScopeFixture& fixture, ScopeDevice& device)
@@ -330,6 +357,55 @@ void dispatch_tests(ScopeDevice& device)
     check(DispatchRegisteredInputActions(device.device) && !G->disable_input && tools.polls == 0 &&
         privileged.polls == 1 && mods.down == 1, "explicit NONE toggle can re-enable all mode even when registered out of order");
 }
+
+std::array<unsigned, 256> keyboard_polls{};
+std::array<bool, 256> keyboard_down{};
+
+SHORT WINAPI TestKeyboardState(int key)
+{
+    ++keyboard_polls.at(key);
+    return keyboard_down.at(key) ? -32768 : 0;
+}
+
+void polling_optimization_tests(ScopeFixture& fixture, ScopeDevice& device)
+{
+    fixture.write_polling_config();
+    fixture.initial_load();
+    check(G->optimize_hotkey_dispatch, "hotkey optimization defaults on in actual loader config");
+    auto& gate = command_list_globals.at(L"$poll_gate").fval;
+    auto& mod = command_list_globals.at(L"$poll_mod").fval;
+    auto& global = command_list_globals.at(L"$poll_global").fval;
+    auto& held = command_list_globals.at(L"$poll_hold").fval;
+    keyboard_down.fill(false);
+    keyboard_down[VK_CONTROL] = true;
+    auto dispatch = [&] {
+        keyboard_polls.fill(0);
+        return DispatchRegisteredInputActions(device.device, TestKeyboardState);
+    };
+    G->optimize_hotkey_dispatch = false;
+    dispatch();
+    check(keyboard_polls[VK_F19] == 66, "off switch restores per-binding virtual-key reads");
+    G->optimize_hotkey_dispatch = true;
+    dispatch();
+    check(keyboard_polls[VK_F19] == 1 && keyboard_polls[VK_CONTROL] == 1 &&
+        keyboard_polls[VK_MENU] == 1 && keyboard_polls[VK_F20] == 1,
+        "one real read per VK across combinations, negation and aliases");
+    keyboard_down[VK_F19] = true;
+    check(dispatch() && mod == 0 && global == 1,
+        "a hidden mod rejects the press while the global binding sees it");
+    gate = 1;
+    check(!dispatch() && mod == 0, "visibility change with a held key cannot manufacture a press");
+    keyboard_down[VK_F19] = false;
+    dispatch();
+    keyboard_down[VK_F19] = true;
+    check(dispatch() && mod == 1 && global == 2,
+        "a new press reaches the visible mod and the global action");
+    keyboard_down[VK_F20] = true;
+    check(dispatch() && held == 1, "conditional hold runs when visible");
+    gate = 0;
+    keyboard_down[VK_F20] = false;
+    check(dispatch() && held == 0, "release still clears an active hold after the mod disappears");
+}
 } // namespace
 
 void test_dx11_input_scope_regression()
@@ -339,7 +415,8 @@ void test_dx11_input_scope_regression()
         ScopeDevice device;
         source_and_default_tests(fixture, device);
         dispatch_tests(device);
-        std::fputs("PASS: real Input/include provenance, scope/default/reload and classified registry (memory button sampling)\n", stderr);
+        polling_optimization_tests(fixture, device);
+        std::fputs("PASS: real Input/include provenance, shared key polling, visibility and hold cleanup\n", stderr);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: input scope regression: %s\n", error.what());
         std::exit(EXIT_FAILURE);

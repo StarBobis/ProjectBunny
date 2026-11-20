@@ -49,6 +49,12 @@ XXMI Launcher 不采用模板中所有传统 Loader 参数；用启动器自己�
 
 这些是 DX11 设备控制，不能复制到 DX12 期待相同行为。
 
+## Input
+
+| 选项 | 行为 |
+| --- | --- |
+| `optimize_hotkey_dispatch` | 默认 `1`。同一轮热键分发复用相同按键和组合键的状态。模组的简单标量门控可提前拒绝无效的按下动作，仍跟踪按住和松开。设为 `0` 可恢复逐绑定查询。关闭 `mod_runtime_optimizations` 时也会回退。 |
+
 ## Rendering
 
 | 字段 | 用途 |
