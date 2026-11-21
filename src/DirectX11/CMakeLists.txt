@@ -16,7 +16,8 @@ add_custom_target(dx11_version_header
     BYPRODUCTS "${DX11_VERSION_HEADER}"
     VERBATIM
 )
-set_source_files_properties(DirectX11.rc PROPERTIES OBJECT_DEPENDS "${DX11_VERSION_HEADER}")
+set_source_files_properties(DirectX11.rc PROPERTIES OBJECT_DEPENDS
+    "${DX11_VERSION_HEADER};${CMAKE_SOURCE_DIR}/resources/fonts/couriersmall.spritefont")
 
 add_library(DirectX11 SHARED
     # DirectX11 自身源文件

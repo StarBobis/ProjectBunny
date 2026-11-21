@@ -7,6 +7,7 @@
 
 #include "OverlayText.h"
 #include "SpriteBatch.h"
+#include "SpriteFont.h"
 #include "PrimitiveBatch.h"
 #include "CommonStates.h"
 #include "Effects.h"
@@ -47,6 +48,7 @@ private:
 
 	DirectX::XMUINT2 mResolution;
 	std::unique_ptr<DirectX::SpriteBatch> mSpriteBatch;
+	std::unique_ptr<DirectX::SpriteFont> mSummaryAtlas;
 	std::unique_ptr<DirectX::CommonStates> mStates;
 	std::unique_ptr<DirectX::BasicEffect> mEffect;
 	std::unique_ptr<DirectX::PrimitiveBatch<DirectX::VertexPositionColor>> mPrimitiveBatch;
@@ -103,7 +105,7 @@ private:
 	void DrawShaderInfoLine(char *type, UINT64 selectedShader, float *y, bool shader);
 	void DrawShaderInfoLines(float *y);
 	void DrawNotices(float *y);
-	void DrawProfiling(float y, std::wstring& visible, bool wrap);
+	void DrawProfiling(float y, std::wstring& visible, bool wrap, bool summary);
 	void DrawRectangle(float x, float y, float w, float h, float r, float g, float b, float opacity);
 	void DrawOutlinedString(OverlayTextFont *font, wchar_t const *text, DirectX::XMFLOAT2 const &position, DirectX::FXMVECTOR color);
 
