@@ -248,8 +248,8 @@ void LogViewDesc(const D3D11_SHADER_RESOURCE_VIEW_DESC *desc)
 			break;
 		case D3D11_SRV_DIMENSION_BUFFER:
 			LogInfo("    ViewDimension = BUFFER\n");
-			LogInfo("      Buffer.FirstElement/NumElements = %u\n", desc->Buffer.FirstElement);
-			LogInfo("      Buffer.ElementOffset/ElementWidth = %u\n", desc->Buffer.ElementOffset);
+			LogInfo("      Buffer.FirstElement = %u\n", desc->Buffer.FirstElement);
+			LogInfo("      Buffer.NumElements = %u\n", desc->Buffer.NumElements);
 			break;
 		case D3D11_SRV_DIMENSION_TEXTURE1D:
 			LogInfo("    ViewDimension = TEXTURE1D\n");

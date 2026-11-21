@@ -11,6 +11,111 @@ D3D11_TEXTURE2D_DESC texture_description(UINT width, UINT height, UINT mips, UIN
     return desc;
 }
 
+void test_palette_buffer_copy(BatchDevice& device, Registry& registry)
+{
+    // The three float4 rows of each bone occupy 48 bytes in the INI, while
+    // the actual SRV addresses 16-byte elements in a non-structured buffer.
+    D3D11_BUFFER_DESC desc{2160, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0, 0};
+    ComPtr<ID3D11Buffer> source;
+    require_batch(SUCCEEDED(device.native->CreateBuffer(&desc, nullptr, &source)),
+        "palette copy: create native buffer");
+    D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    srv_desc.Buffer.FirstElement = 1;
+    srv_desc.Buffer.NumElements = 134;
+    ComPtr<ID3D11ShaderResourceView> source_view;
+    require_batch(SUCCEEDED(device.native->CreateShaderResourceView(source.Get(), &srv_desc, &source_view)),
+        "palette copy: initialize a typed view with a nonzero first element");
+    set_slot(device, L'v', 0, source_view.Get());
+
+    auto& target = registry.resource(L"resourcepalette_copy", device);
+    target.override_stride = 48;
+    target.override_array = 45;
+    target.bind_flags = D3D11_BIND_SHADER_RESOURCE;
+    CommandList copy;
+    append(copy, target.name, L"copy vs-t0 unless_null");
+    append(copy, L"cs-t0", L"ref " + target.name);
+    const unsigned before = Profiling::resources_created;
+    const unsigned copies = Profiling::resource_full_copies;
+    execute(copy, device);
+    ComPtr<ID3D11Resource> retained(target.resource);
+    const auto first_view = get_slot(device, L'c', 0);
+    execute(copy, device);
+    require_batch(retained && target.resource == retained.Get() && Profiling::resources_created == before + 1,
+        "palette copy: normalize native non-structured stride and reuse the allocation");
+    require_batch(Profiling::resource_full_copies == copies + 2,
+        "palette copy: reusing the destination allocation still copies each frame's data");
+    const auto bound = get_slot(device, L'c', 0);
+    require_batch(bound && bound.Get() == first_view.Get() && target.stride == 48,
+        "palette copy: retain the typed SRV and the logical INI stride");
+    D3D11_SHADER_RESOURCE_VIEW_DESC actual{};
+    bound->GetDesc(&actual);
+    require_batch(actual.Format == srv_desc.Format && actual.Buffer.FirstElement == srv_desc.Buffer.FirstElement &&
+        actual.Buffer.NumElements == srv_desc.Buffer.NumElements,
+        "palette copy: preserve the typed element window using the view stride");
+    target.override_stride = 16;
+    target.override_array = 135;
+    execute(copy, device);
+    require_batch(target.resource == retained.Get() && Profiling::resources_created == before + 1 && target.stride == 16,
+        "palette copy: equivalent physical buffers reuse the allocation across logical stride changes");
+    set_slot(device, L'v', 0, nullptr);
+    set_slot(device, L'c', 0, nullptr);
+}
+
+void test_buffer_srv_validation(BatchDevice& device, Registry& registry)
+{
+    auto native = buffer(device, 48, D3D11_BIND_SHADER_RESOURCE);
+    auto& source = registry.resource(L"resourceviewvalidation", device, native.Get());
+    source.stride = 48;
+    CommandList bind;
+    append(bind, L"cs-t0", L"ref " + source.name);
+    execute(bind, device);
+    require_batch(!get_slot(device, L'c', 0), "buffer SRV: untyped ordinary buffer clears the slot");
+
+    source.format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    source.offset = 48;
+    execute(bind, device);
+    require_batch(!get_slot(device, L'c', 0), "buffer SRV: out-of-range offset clears the slot");
+
+    source.offset = 16;
+    execute(bind, device);
+    const auto view = get_slot(device, L'c', 0);
+    require_batch(view != nullptr, "buffer SRV: valid metadata binds the same physical buffer");
+    D3D11_SHADER_RESOURCE_VIEW_DESC actual{};
+    view->GetDesc(&actual);
+    require_batch(actual.Format == source.format && actual.Buffer.FirstElement == 1 && actual.Buffer.NumElements == 2,
+        "buffer SRV: format width controls the element window");
+    source.offset = 48;
+    execute(bind, device);
+    require_batch(!get_slot(device, L'c', 0), "buffer SRV: a prior valid view cannot bypass new invalid bounds");
+    set_slot(device, L'c', 0, nullptr);
+}
+
+void test_invalid_creation_retry(BatchDevice& device, Registry& registry)
+{
+    auto native = texture(device, 0xff002244);
+    auto& source = registry.resource(L"resourceretry_source", device, native.Get(), DXGI_FORMAT_R8G8B8A8_UNORM);
+    auto& target = registry.resource(L"resourceretry_target", device);
+    target.override_width = 1;
+    target.override_height = 1;
+    target.bind_flags = D3D11_BIND_SHADER_RESOURCE;
+    CommandList copy;
+    append(copy, target.name, L"copy_desc " + source.name);
+    const unsigned before = Profiling::resources_created;
+    for (const auto mips : {10, 11, 10, 11}) {
+        target.override_mips = mips;
+        execute(copy, device);
+        require_batch(!target.resource, "allocation retry: the driver rejects invalid mip counts");
+    }
+    require_batch(Profiling::resources_created == before + 2,
+        "allocation retry: an unchanged invalid request is temporarily suppressed, even when two descriptions alternate");
+    target.override_mips = 1;
+    execute(copy, device);
+    require_batch(target.resource && Profiling::resources_created == before + 3,
+        "allocation retry: a corrected description is allowed immediately");
+}
+
 void test_depth_snapshot_options(BatchDevice& device, Registry& registry)
 {
     auto& source = registry.pool(L"pooldepthsnapshot_source", device, PoolIndexType::STATIC, 2);
@@ -149,6 +254,9 @@ void test_dx11_round7_descriptor_regression()
     scalar(device,target.name,L"copy_desc " + source_a.name);
     require_batch(target.resource == automatic.Get(),
         "round7 descriptors: normalized automatic mip description reuses the same allocation");
+    test_palette_buffer_copy(device, registry);
+    test_buffer_srv_validation(device, registry);
+    test_invalid_creation_retry(device, registry);
     test_depth_snapshot_options(device, registry);
     test_depth_snapshot_reuse(device, registry);
 }

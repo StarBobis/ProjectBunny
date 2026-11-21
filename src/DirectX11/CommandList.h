@@ -609,12 +609,23 @@ static EnumName_t<const wchar_t*, DataCacheBindFlags> DataCacheBindFlagNames[] =
 typedef unordered_map<uint32_t, pair<ID3D11Resource*, ID3D11Device*>> ResourcePoolCache;
 class ResourcePool
 {
+	struct RejectedCreation {
+		std::array<unsigned char, sizeof(D3D11_TEXTURE2D_DESC)> descriptor{};
+		ID3D11Device* device = nullptr;
+		size_t size = 0;
+		ULONGLONG retry_at = 0;
+	};
+	std::unique_ptr<std::array<RejectedCreation, 4>> rejected_creations;
+
+	RejectedCreation* FindRejectedCreation(ID3D11Device* device, const void* desc, size_t size) const;
 public:
 	ResourcePoolCache cache;
 
 	~ResourcePool();
 
 	void emplace(uint32_t hash, ID3D11Resource *resource, ID3D11Device *device);
+	bool CreationDeferred(ID3D11Device* device, const void* desc, size_t size) const;
+	void RecordInvalidCreation(ID3D11Device* device, const void* desc, size_t size);
 };
 
 class CustomResourcePool;
