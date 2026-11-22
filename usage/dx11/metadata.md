@@ -40,6 +40,21 @@ $size = vb0->Size
 
 不要把负值当作有效大小。不同 getter 有特定缺省行为，例如 BindFlags 为 0、OriginalFormat 为 -1。
 
+## 贴图 Hamming 距离
+
+```ini
+[Constants]
+global $distance = -1
+
+[FilterReference]
+match_dhash = 56577a2d6a2759a8
+
+[CommandListCompareTexture]
+$distance = ps-t0->HammingDistance(FilterReference)
+```
+
+返回目标贴图 dHash 与 Filter 参考值的位差，正常范围 `0–64`，`0` 为完全相同的 Hash。负值表示不可用，应先检查再参与阈值比较。该 getter 不应用 Filter 的格式和 confidence 条件；[结果语义与缓存策略](./perceptual-hash)和[槽位自动匹配](./filters)分别说明两种用法。
+
 ## 内容与空间哈希
 
 ```ini

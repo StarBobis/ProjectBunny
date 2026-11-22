@@ -29,6 +29,7 @@ export default defineConfig({
         { text: '预设、过渡与输入开关', link: '/dx11/presets-input' }
       ] }, { text: '资源', collapsed: false, items: [
         { text: '声明资源', link: '/dx11/resources' },
+          { text: 'Filter 与贴图筛选', link: '/dx11/filters' },
         { text: '槽位、复制与引用', link: '/dx11/resource-copy' },
         { text: '区域与范围', link: '/dx11/regions' },
         { text: '资源元数据', link: '/dx11/metadata' },

@@ -73,12 +73,14 @@ color_space = srgb
 
 ## 按 dHash 匹配像素着色器贴图槽位
 
+完整的 Filter 声明、元数据、引用和多贴图示例见 [Filter 与贴图筛选](./filters)。
+
 ```ini
 [ShaderOverrideExample]
 hash = 0123456789abcdef
 run = SnapshotInitialTextures
 ps-t[FilterMatch] = ref ResourceReplacement
-run = RestoreInitialTextures
+post run = RestoreInitialTextures
 
 [FilterMatch]
 match_dhash = 1363895a02495a04
@@ -99,6 +101,6 @@ filename = replacement.dds
 - 同一被拦截 draw 内，后来的候选只有距离更小时才能覆盖已接受结果；同距离保持先到者。比较始终使用原始贴图，而不是之前的替换结果。
 - 支持资源复制选项，例如 `ref`、`copy`。原始贴图无法计算 dHash、替换源为空、创建 SRV 或绑定失败时，不占用该槽位的最佳匹配名额。
 
-`run = SnapshotInitialTextures` 默认放在 pre，省略时首次匹配自动捕获。重复捕获不会重置同次 draw 的候选竞争。`run = RestoreInitialTextures` 默认放在 post，恢复原始 SRV（包括原来为空的已声明槽位），并重置竞争距离。可显式用 pre/post 调整执行位置。旧命令名 `SnapshotOriginalTextures` 和 `RestoreOriginalTextures` 仍可使用。请保留恢复命令，避免替换绑定泄漏到后续绘制。
+`run = SnapshotInitialTextures` 默认放在 pre，省略时首次匹配自动捕获。重复捕获不会重置同次 draw 的候选竞争。`run = RestoreInitialTextures` 也默认放在 pre，按命令顺序恢复原始 SRV（包括原来为空的已声明槽位），并重置竞争距离。若要在游戏原始 draw 后清理，使用 `post run = RestoreInitialTextures`，如上例。旧名 `SnapshotOriginalTextures` 仍默认 pre，`RestoreOriginalTextures` 为兼容已有配置仍默认 post；显式 pre/post 始终优先。请保留恢复命令，避免替换绑定泄漏到后续绘制。
 
 快照属于 Context 和当前 draw/dispatch，不复用跨帧计数；在调用结束、ClearState、Context 销毁时释放，配置重载使旧快照失效。dHash 匹配要求 immediate context，deferred context 安全跳过。调用可能触发首次 dHash 计算，配置开销取决于候选数量和贴图大小，不能视为零成本操作。

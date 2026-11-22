@@ -1317,7 +1317,10 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 
     if (!wcscmp(key, L"run") && (*val == L"snapshotinitialtextures" || *val == L"snapshotoriginaltextures"))
         return AddCommandToList(new SnapshotOriginalTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
-    if (!wcscmp(key, L"run") && (*val == L"restoreinitialtextures" || *val == L"restoreoriginaltextures"))
+    if (!wcscmp(key, L"run") && *val == L"restoreinitialtextures")
+        return AddCommandToList(new RestoreOriginalTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
+    // Preserve the established cleanup default of the local legacy spelling.
+    if (!wcscmp(key, L"run") && *val == L"restoreoriginaltextures")
         return AddCommandToList(new RestoreOriginalTexturesOperation(), explicit_command_list, post_command_list, NULL, NULL, section, key, val);
 	return ParseDrawCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 }

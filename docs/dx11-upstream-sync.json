@@ -5380,27 +5380,74 @@
     },
     {
       "sha": "8bd31f74727f033b3d9049509e19da3563c8b98c",
-      "status": "pending",
+      "status": "implemented-awaiting-validation",
       "subject": "Fixed RestoreInitialTextures wrongly defaulting to post",
-      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
+      "adaptation": "Move RestoreInitialTextures to the pre command list so restoration occurs in written order between custom draws. Explicit pre/post routing remains authoritative. Keep the local legacy RestoreOriginalTextures default at post for existing configurations, and make the game-draw cleanup example explicitly post.",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/tests/texture_match_regression.cpp",
+        "usage/dx11/resources.md",
+        "usage/dx11/command-lists.md"
+      ],
+      "validation": {
+        "commands": [
+          "MSVC x64: cmake --build build/dx11-dump-validation --target dx11_upstream_regression --parallel 6",
+          "ctest --test-dir build/dx11-dump-validation --output-on-failure -j 2"
+        ],
+        "result": "PASS: Release production and regression build; 13/13 CTest entries in 34.78 s. Real WARP with and without native hooks covers new pre-list defaults, explicit list routing for both names, no-snapshot restore, repeated restore, native SRV restoration and competition reset; existing lifecycle, reload and legacy post tests remain passing.",
+        "runtime": "pending: target-game validation of upstream texture restoration timing; user-confirmed IdentityV buffer-crash fix is a separate earlier change."
+      }
     },
     {
       "sha": "6f020ea651b9b1c32348409f68ab13c1283da8a5",
-      "status": "pending",
+      "status": "validated",
       "subject": "Added documentation for Filter section and dhash-based textures filtering",
-      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
+      "adaptation": "Adapt all nine upstream documentation files into the existing Chinese VitePress reference: Filter fields/identity/reference reset, PS-only matching, multi-texture and conditional examples, snapshot and restore, HammingDistance(Filter), confidence quantization and tuning. Explain the unoptimized example as an equivalent algorithm instead of copying its inconsistent callback names or bypassing local bind-success rules. Preserve local Resource compatibility, missing/zero hash handling, snapshot lifetime and mip/cache policy. Do not import the unmeasured upstream 0.5 ms timing claim or importer-template lifecycle claims as local guarantees.",
+      "files": [
+        "usage/dx11/filters.md",
+        "usage/dx11/perceptual-hash.md",
+        "usage/dx11/metadata.md",
+        "usage/dx11/command-lists.md",
+        "usage/dx11/resources.md"
+      ],
+      "validation": {
+        "commands": [
+          "pwsh -NoProfile -File scripts/build-docs.ps1"
+        ],
+        "result": "PASS: VitePress production build with link validation. Documentation checked against production Filter parser/getters, reference resolution and TextureMatch implementation; matching examples use tested commands."
+      }
     },
     {
       "sha": "4d4d367c9084a7ef50823e99c9369229e9532de4",
-      "status": "pending",
+      "status": "validated",
       "subject": "Fixed missing filters documentation listing and formulas syntax",
-      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
+      "adaptation": "Expose the Filter guide in the DX11 sidebar and installation overview. Render XOR/popcount and floor((1-C)*64) as text equations in fenced blocks, avoiding a new math-rendering dependency. Include the inclusive 0.90 -> 6-bit threshold, quantization and tuning examples.",
+      "files": [
+        "usage/.vitepress/config.ts",
+        "usage/dx11/index.md",
+        "usage/dx11/perceptual-hash.md"
+      ],
+      "validation": {
+        "commands": [
+          "pwsh -NoProfile -File scripts/build-docs.ps1"
+        ],
+        "result": "PASS: VitePress production build; rendered Filter navigation and threshold text verified."
+      }
     },
     {
       "sha": "a990f65449393cb5aa3331aa0f5c0c5a51fdac69",
-      "status": "pending",
+      "status": "validated",
       "subject": "Docs Fix: Filter declaration options overview format",
-      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
+      "adaptation": "Use a three-column Filter options table with matching three-column separator and data rows, incorporating the upstream Markdown formatting correction directly into the local guide.",
+      "files": [
+        "usage/dx11/filters.md"
+      ],
+      "validation": {
+        "commands": [
+          "pwsh -NoProfile -File scripts/build-docs.ps1"
+        ],
+        "result": "PASS: VitePress production build; rendered options table has three header cells and three cells per option row."
+      }
     }
   ],
   "round2AdversarialReview": {

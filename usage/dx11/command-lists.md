@@ -40,6 +40,8 @@ post ps-t0 = ref ResourceSaved
 | --- | --- |
 | `run = CommandList名称` | 调用命令列表 |
 | `run = CustomShader名称` | 运行自定义着色器 |
+| `run = SnapshotInitialTextures` | 捕获当前 PS 声明槽位的初始 SRV，默认 pre；同次 draw 重复捕获不覆盖 |
+| `run = RestoreInitialTextures` | 按命令顺序恢复快照并重置匹配竞争，默认 pre；游戏原始 draw 后清理用 `post run` |
 | `handling = skip` | 跳过原始绘制，必须在前置阶段 |
 | `handling = abort` | 结束当前命令执行路径 |
 | `CheckTextureOverride = ps-t0` | 对该槽资源执行匹配的 TextureOverride |
@@ -50,6 +52,8 @@ post ps-t0 = ref ResourceSaved
 | `special = upscaling_switch_bb` | 配合上采样切换后备缓冲 |
 
 绘制、资源操作、读回和导出分别见对应参考页。嵌套调用上限为 256；不要依赖递归做无界遍历。
+
+贴图快照的自动捕获、重复恢复和多贴图替换见 [Filter 与贴图筛选](./filters#快照与恢复的执行时机)。旧名 `RestoreOriginalTextures` 保留 post 默认行为。
 
 ## 回调与代理
 

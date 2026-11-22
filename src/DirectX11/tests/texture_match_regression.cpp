@@ -170,20 +170,40 @@ void exercise_match(bool hooked = false)
     slotFilter->metadata = {DXGI_FORMAT_UNKNOWN, originalHash, 1, true, true};
     slotFilter->empty = false;
     require_batch(resourceFilters.emplace(L"filtermatchfixture", slotFilter).second, "Slot filter: reserve test name");
-    CommandList slotMatch, initialPre, initialPost;
+    CommandList slotMatch, initialPre, initialPost, restorePre, restorePost;
     require_batch(parse(slotMatch, L"ps-t[filtermatchfixture]", L"ref resourcematchfirst") &&
         !parse(rejected, L"vs-t[filtermatchfixture]", L"ref resourcematchfirst") &&
         !parse(rejected, L"ps-t[filtermatchfixture]", L"copy oD reuse_unchanged"),
         "Slot filter: parse the PS destination and reject unsupported stage and copy options");
     builtin(initialPre, initialPost, L"snapshotinitialtextures");
-    builtin(initialPre, initialPost, L"restoreinitialtextures");
+    builtin(restorePre, restorePost, L"restoreinitialtextures");
+    require_batch(initialPre.commands.size() == 1 && initialPost.commands.empty() &&
+        restorePre.commands.size() == 1 && restorePost.commands.empty(),
+        "Slot filter: new snapshot and restore default to pre, preserving in-list ordering");
+    for (const auto name : {L"restoreinitialtextures", L"restoreoriginaltextures"}) {
+        for (const bool toPost : {false, true}) {
+            CommandList explicitPre, explicitPost;
+            std::wstring value(name), ns;
+            require_batch(ParseCommandListGeneralCommands(L"CommandListMatchTest", L"run", &value,
+                toPost ? &explicitPost : &explicitPre, &explicitPre, &explicitPost, &ns) &&
+                explicitPre.commands.size() == (toPost ? 0u : 1u) &&
+                explicitPost.commands.size() == (toPost ? 1u : 0u),
+                "Slot filter: explicit pre/post routing overrides both restore defaults");
+        }
+    }
+    execute(restorePre, device);
+    slot_is(device, 0, originalView.Get(), "Slot filter: restoring without a snapshot leaves slots unchanged");
     execute(initialPre, device);
     execute(slotMatch, device);
     slot_is(device, 0, firstView.Get(), "Slot filter: matching PS slot is replaced");
     slot_is(device, 2, firstView.Get(), "Slot filter: tied slot is replaced");
     slot_is(device, 127, otherView.Get(), "Slot filter: unmatched slot is unchanged");
-    execute(initialPost, device);
+    execute(restorePre, device);
     slot_is(device, 0, originalView.Get(), "Slot filter: new restore command restores original view");
+    execute(slotMatch, device);
+    slot_is(device, 0, firstView.Get(), "Slot filter: restore resets competition for a second assignment");
+    execute(restorePre, device);
+    slot_is(device, 0, originalView.Get(), "Slot filter: repeated in-list restores retain the captured original");
     const std::wstring expression = L"ps-t0->hammingdistance(filtermatchfixture)", nsFilter;
     CommandListScope scopeFilter;
     scopeFilter.emplace_front();
