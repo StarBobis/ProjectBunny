@@ -23,6 +23,8 @@
 #include <codecvt>
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <new>
 
 #include "log.h"
 #include "util.h"
@@ -2091,8 +2093,30 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 		return E_INVALIDARG;
 	}
 
+	// The caller only supplies original ByteWidth bytes. When an override grows
+	// the buffer, give the runtime equally large storage instead of letting it
+	// read past that allocation. Keep hashing based on the original data above.
+	std::unique_ptr<unsigned char[]> expanded_data;
+	D3D11_SUBRESOURCE_DATA expanded_initial = {};
+	const D3D11_SUBRESOURCE_DATA* initial = pInitialData;
+	if (pDesc && pNewDesc && pNewDesc->ByteWidth > pDesc->ByteWidth &&
+		pInitialData && pInitialData->pSysMem) {
+		expanded_data.reset(new (std::nothrow) unsigned char[pNewDesc->ByteWidth]);
+		if (!expanded_data) {
+			if (ppBuffer) *ppBuffer = nullptr;
+			LogWarning("ERROR: Cannot allocate initial data for resized buffer: hash=%08x, bytes=%u\n",
+				hash, pNewDesc->ByteWidth);
+			return E_OUTOFMEMORY;
+		}
+		memcpy(expanded_data.get(), pInitialData->pSysMem, pDesc->ByteWidth);
+		memset(expanded_data.get() + pDesc->ByteWidth, 0, pNewDesc->ByteWidth - pDesc->ByteWidth);
+		expanded_initial = *pInitialData;
+		expanded_initial.pSysMem = expanded_data.get();
+		initial = &expanded_initial;
+	}
+
 	LockResourceCreationMode();
-	HRESULT hr = mOrigDevice1->CreateBuffer(pNewDesc, pInitialData, ppBuffer);
+	HRESULT hr = mOrigDevice1->CreateBuffer(pNewDesc, initial, ppBuffer);
 	UnlockResourceCreationMode();
 
 	if (hr == S_OK && ppBuffer && *ppBuffer)

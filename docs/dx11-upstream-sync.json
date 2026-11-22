@@ -3,7 +3,7 @@
   "branch": "master",
   "baseline": "44378b1b3694bc28c0488f78f2d346f38a4f50d0",
   "baselineEvidence": "43/45 DX11 C/C++ files byte-identical at 7ee05173 and 44378b1b; ResourceHash.h adds const find_ptr; ResourceHash.cpp fixes two log formats. 44378b1b only changes upstream release workflow.",
-  "observedTip": "e2bca90e3d9dcbe1f7b33209b74481b09479ce34",
+  "observedTip": "a990f65449393cb5aa3331aa0f5c0c5a51fdac69",
   "commits": [
     {
       "sha": "4269c75ba3ac9d5775771a190121daa5a292d664",
@@ -5377,6 +5377,30 @@
         "commands": "ctest --test-dir build/dx11-dump-validation --output-on-failure -j 2",
         "result": "PASS: all 12 CTest entries, including legacy MatchTextures, Resource metadata propagation and legacy getter coverage."
       }
+    },
+    {
+      "sha": "8bd31f74727f033b3d9049509e19da3563c8b98c",
+      "status": "pending",
+      "subject": "Fixed RestoreInitialTextures wrongly defaulting to post",
+      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
+    },
+    {
+      "sha": "6f020ea651b9b1c32348409f68ab13c1283da8a5",
+      "status": "pending",
+      "subject": "Added documentation for Filter section and dhash-based textures filtering",
+      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
+    },
+    {
+      "sha": "4d4d367c9084a7ef50823e99c9369229e9532de4",
+      "status": "pending",
+      "subject": "Fixed missing filters documentation listing and formulas syntax",
+      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
+    },
+    {
+      "sha": "a990f65449393cb5aa3331aa0f5c0c5a51fdac69",
+      "status": "pending",
+      "subject": "Docs Fix: Filter declaration options overview format",
+      "adaptation": "Pending separate upstream review; not included in local crash diagnostics work."
     }
   ],
   "round2AdversarialReview": {

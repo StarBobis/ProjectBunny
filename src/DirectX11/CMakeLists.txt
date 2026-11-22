@@ -21,6 +21,8 @@ set_source_files_properties(DirectX11.rc PROPERTIES OBJECT_DEPENDS "${DX11_VERSI
 add_library(DirectX11 SHARED
     # DirectX11 自身源文件
     CommandList.cpp
+    CrashDiagnostics.cpp
+    CrashDiagnostics.h
     cursor.cpp
     D3D11Wrapper.cpp
     DX11Version.cpp
@@ -86,6 +88,13 @@ add_library(DirectX11 SHARED
 )
 
 add_dependencies(DirectX11 dx11_version_header)
+add_executable(dx11_crash_diagnostics_host EXCLUDE_FROM_ALL tests/crash_diagnostics_host.cpp CrashDiagnostics.cpp)
+target_include_directories(dx11_crash_diagnostics_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(dx11_crash_diagnostics_host PRIVATE Dbghelp.lib)
+set_target_msvc_options(dx11_crash_diagnostics_host)
+if(MSVC)
+    target_compile_options(DirectX11 PRIVATE /Zi)
+endif()
 target_include_directories(DirectX11 PRIVATE
     ${DX11_VERSION_DIRECTORY}
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -460,6 +469,11 @@ if(BUILD_TESTING)
         "$<TARGET_FILE:DirectX11>" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(dx11_proxy_smoke PROPERTIES TIMEOUT 30)
     if(Python3_Interpreter_FOUND)
+        add_dependencies(dx11_upstream_regression dx11_crash_diagnostics_host)
+        add_test(NAME dx11_crash_diagnostics_regression
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-crash.py"
+                "$<TARGET_FILE:dx11_crash_diagnostics_host>" "${CMAKE_BINARY_DIR}/crash-regression")
+        set_tests_properties(dx11_crash_diagnostics_regression PROPERTIES TIMEOUT 55)
         add_test(NAME dx11_mcp_regression
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
                 "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")

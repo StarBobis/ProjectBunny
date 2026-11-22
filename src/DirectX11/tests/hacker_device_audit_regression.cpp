@@ -387,8 +387,91 @@ bool resource_override_log_contains(const std::string& bytes,const std::string& 
 }
 }
 
+namespace {
+class GuardedBufferInitialData {
+    unsigned char* allocation = nullptr;
+public:
+    unsigned char* data = nullptr;
+    explicit GuardedBufferInitialData(UINT size)
+    {
+        SYSTEM_INFO info; GetSystemInfo(&info);
+        const size_t readable = (size + info.dwPageSize - 1) / info.dwPageSize * info.dwPageSize;
+        allocation = static_cast<unsigned char*>(VirtualAlloc(nullptr, readable + info.dwPageSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        require_batch(allocation != nullptr, "buffer resize: guarded source allocation");
+        DWORD old;
+        require_batch(VirtualProtect(allocation + readable, info.dwPageSize, PAGE_NOACCESS, &old) != FALSE,
+            "buffer resize: inaccessible page immediately after source");
+        data = allocation + readable - size;
+        for (UINT i = 0; i < size; ++i) data[i] = static_cast<unsigned char>(i * 17 + 3);
+    }
+    ~GuardedBufferInitialData() { if (allocation) VirtualFree(allocation, 0, MEM_RELEASE); }
+};
+
+void test_buffer_resize_initial_data()
+{
+    ResourceOverrideAuditScope configuration; BatchDevice device;
+    for (const auto sizes : {std::pair<UINT, UINT>{64, 256}, {64, 64}, {64, 32}, {378720, 139135520}}) {
+        const UINT expected_size = (std::max)(sizes.first, sizes.second);
+        GuardedBufferInitialData source(sizes.first);
+        D3D11_BUFFER_DESC desc = {};
+        desc.ByteWidth = sizes.first; desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA initial = {}; initial.pSysMem = source.data;
+        const auto data_hash = crc32c_hw(0, source.data, desc.ByteWidth);
+        const auto hash = crc32c_hw(data_hash, &desc, sizeof(desc));
+        auto& entry = G->mTextureOverrideMap[hash].emplace_back();
+        entry.ini_section = L"TextureOverrideBufferResizeRegression";
+        entry.override_byte_width = sizes.second;
+        for (const auto usage : {D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE}) {
+            desc.Usage = usage;
+            // Usage is included in the hash: install the exact production key.
+            const auto current_hash = crc32c_hw(data_hash, &desc, sizeof(desc));
+            if (current_hash != hash) G->mTextureOverrideMap[current_hash] = G->mTextureOverrideMap[hash];
+            ComPtr<ID3D11Buffer> buffer;
+            require_batch(SUCCEEDED(device.device->CreateBuffer(&desc, &initial, &buffer)),
+                "buffer resize: guarded initial data creates a real WARP buffer");
+            D3D11_BUFFER_DESC actual; buffer->GetDesc(&actual);
+            require_batch(actual.ByteWidth == expected_size && desc.ByteWidth == sizes.first && initial.pSysMem == source.data,
+                "buffer resize: expanded size and unchanged caller arguments");
+            actual.Usage = D3D11_USAGE_STAGING; actual.BindFlags = actual.MiscFlags = 0;
+            actual.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            ComPtr<ID3D11Buffer> staging;
+            require_batch(SUCCEEDED(device.native->CreateBuffer(&actual, nullptr, &staging)), "buffer resize: real staging buffer");
+            device.context->CopyResource(staging.Get(), buffer.Get());
+            D3D11_MAPPED_SUBRESOURCE mapped = {};
+            require_batch(SUCCEEDED(device.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)), "buffer resize: readback");
+            const auto bytes = static_cast<const unsigned char*>(mapped.pData);
+            const bool prefix_ok = !memcmp(bytes, source.data, sizes.first);
+            const bool tail_ok = std::all_of(bytes + sizes.first, bytes + expected_size, [](unsigned char b) { return b == 0; });
+            device.context->Unmap(staging.Get(), 0);
+            require_batch(prefix_ok && tail_ok, "buffer resize: preserves all original bytes and zeroes the entire extension");
+        }
+        configuration.clear();
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        ComPtr<ID3D11Buffer> unchanged;
+        require_batch(SUCCEEDED(device.device->CreateBuffer(&desc, &initial, &unchanged)), "buffer resize: removing override restores normal creation");
+        D3D11_BUFFER_DESC actual; unchanged->GetDesc(&actual);
+        require_batch(actual.ByteWidth == sizes.first, "buffer resize: no override leaves size unchanged");
+        // A descriptor-only hash also covers resources without initial data.
+        auto& uninitialized = G->mTextureOverrideMap[crc32c_hw(0, &desc, sizeof(desc))].emplace_back();
+        uninitialized.override_byte_width = sizes.second;
+        unchanged.Reset();
+        require_batch(SUCCEEDED(device.device->CreateBuffer(&desc, nullptr, &unchanged)), "buffer resize: no initial data remains supported");
+        unchanged->GetDesc(&actual);
+        require_batch(actual.ByteWidth == expected_size, "buffer resize: uninitialized buffers still expand");
+        configuration.clear();
+        desc.Usage = D3D11_USAGE_IMMUTABLE;
+        G->mTextureOverrideMap[crc32c_hw(0, &desc, sizeof(desc))].emplace_back().override_byte_width = expected_size;
+        unchanged.Reset();
+        require_batch(FAILED(device.device->CreateBuffer(&desc, nullptr, &unchanged)) && !unchanged,
+            "buffer resize: immutable without initial data still fails instead of silently inventing contents");
+        configuration.clear();
+    }
+}
+}
+
 void test_dx11_resource_override_validation_regression()
 {
+    test_buffer_resize_initial_data();
     ResourceOverrideAuditScope configuration; BatchDevice device;
     D3D11_TEXTURE2D_DESC original{};
     original.Width=4; original.Height=3; original.ArraySize=original.MipLevels=1;

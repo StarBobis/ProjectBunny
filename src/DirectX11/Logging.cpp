@@ -1,4 +1,5 @@
 #include "Logging.h"
+#include "CrashDiagnostics.h"
 #include <Windows.h>
 #include <cwchar>
 #include <share.h>
@@ -17,6 +18,7 @@ LogVerbosity ParseLogVerbosity(const wchar_t* level, bool calls, bool debug) noe
 
 void InitializeLogging(const wchar_t* ini_path, const wchar_t* log_path) noexcept
 {
+    InitializeCrashDiagnostics(ini_path, log_path);
     // Upstream treats both absent and explicitly empty levels as legacy mode.
     wchar_t level[256] = {};
     GetPrivateProfileStringW(L"Logging", L"log_level", L"", level, 256, ini_path);
