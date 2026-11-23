@@ -26,6 +26,7 @@ class InputListener {
 public:
 	virtual void DownEvent(HackerDevice *device) = 0;
 	virtual void UpEvent(HackerDevice *device);
+	virtual bool RejectsPress() const { return false; }
 };
 
 
@@ -116,11 +117,14 @@ public:
 // an action.
 
 class InputAction {
+protected:
+	bool CheckButtonState();
 public:
 	bool last_state;
 	InputButton *button;
 	shared_ptr<InputListener> listener;
 	InputDisableScope disable_scope = InputDisableScope::ALL;
+	size_t snapshot_index = static_cast<size_t>(-1);
 
 	InputAction(InputButton *button, shared_ptr<InputListener> listener);
 	virtual ~InputAction();
@@ -181,7 +185,8 @@ InputDisableScope GetIniKeyBindingScope(const wchar_t* section);
 
 // Dispatches registered actions after backend polling/foreground checks. Kept
 // separate so backends that supply their own button state use the same gate.
-bool DispatchRegisteredInputActions(HackerDevice *device);
+using VirtualKeyStateReader = SHORT (WINAPI*)(int);
+bool DispatchRegisteredInputActions(HackerDevice *device, VirtualKeyStateReader read_key = GetAsyncKeyState);
 size_t CountRegisteredInputActions(InputDisableScope disable_scope);
 wstring user_friendly_ini_key_binding(LPCWSTR app, LPCWSTR iniKey);
 

@@ -16,7 +16,8 @@ add_custom_target(dx11_version_header
     BYPRODUCTS "${DX11_VERSION_HEADER}"
     VERBATIM
 )
-set_source_files_properties(DirectX11.rc PROPERTIES OBJECT_DEPENDS "${DX11_VERSION_HEADER}")
+set_source_files_properties(DirectX11.rc PROPERTIES OBJECT_DEPENDS
+    "${DX11_VERSION_HEADER};${CMAKE_SOURCE_DIR}/resources/fonts/couriersmall.spritefont")
 
 add_library(DirectX11 SHARED
     # DirectX11 自身源文件
@@ -460,6 +461,7 @@ if(BUILD_TESTING)
     add_test(NAME dx11_texture_match_hooked_regression COMMAND dx11_upstream_regression --texture-match-hooked)
     add_executable(dx11_proxy_smoke tests/proxy_smoke.cpp)
     target_include_directories(dx11_proxy_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(dx11_proxy_smoke PRIVATE d3dcompiler)
     target_compile_features(dx11_proxy_smoke PRIVATE cxx_std_17)
     set_target_msvc_options(dx11_proxy_smoke)
     set_target_common_definitions(dx11_proxy_smoke)

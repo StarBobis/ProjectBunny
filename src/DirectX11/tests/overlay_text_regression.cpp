@@ -238,6 +238,37 @@ void TestLongProfilingReport(BatchDevice& device, HWND window)
     Profiling::freeze = freeze;
     Profiling::text = std::move(previous);
 }
+
+void TestPerformanceSummaryAtlas(BatchDevice& device, HWND window)
+{
+    auto chain = CreateTestChain(device, window, DXGI_FORMAT_R8G8B8A8_UNORM);
+    Overlay overlay(device.device, device.wrapper.get(), chain.Get());
+    const auto mode = Profiling::mode.exchange(Profiling::Mode::SUMMARY);
+    const bool freeze = std::exchange(Profiling::freeze, true);
+    auto previous = std::move(Profiling::text);
+    for (unsigned i = 30; i < 36; ++i) {
+        Profiling::text = L"Performance Monitor " + std::to_wstring(i) + L".0fps (CPU Performance Summary):\n"
+            L"     Overlay overhead: 50.00us/frame\n";
+        ClearBackbuffer(device, chain.Get());
+        overlay.DrawOverlay();
+    }
+    require_batch(overlay.mFontProfiling->Rasterizations() == 0,
+        "overlay: changing the ASCII summary never rasterizes a GDI panel");
+    unsigned width, height;
+    const auto pixels = ReadPixels(device, chain.Get(), width, height);
+    bool goldenText = false;
+    for (size_t i = 0; i < pixels.size(); i += 4)
+        goldenText |= pixels[i] > 100 && pixels[i + 1] > 70 && pixels[i] > pixels[i + 2];
+    require_batch(goldenText, "overlay: the summary atlas actually draws text into the backbuffer");
+
+    Profiling::text = L"Performance Monitor\n中文诊断信息\n";
+    overlay.DrawOverlay();
+    require_batch(overlay.mFontProfiling->Rasterizations() == 1,
+        "overlay: a summary containing Chinese uses the Unicode renderer");
+    Profiling::mode = mode;
+    Profiling::freeze = freeze;
+    Profiling::text = std::move(previous);
+}
 }
 
 void test_dx11_overlay_text_regression()
@@ -374,6 +405,7 @@ void test_dx11_overlay_text_regression()
     }
     TestHuntingTextSize(device, window.window, directory);
     TestLongProfilingReport(device, window.window);
+    TestPerformanceSummaryAtlas(device, window.window);
 
     // Separate renderer lifetime and device recreation.
     {

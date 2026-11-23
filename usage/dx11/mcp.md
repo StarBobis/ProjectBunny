@@ -77,6 +77,26 @@ IB 抓取传 `{"kind":"ib","indexed_range":true}` 时，只等直接 `DrawIndexe
 
 按名读取自定义 buffer 的结构化错误分别报告 `CUSTOM_RESOURCE_NOT_FOUND`、`CUSTOM_RESOURCE_UNINITIALIZED`、`CUSTOM_RESOURCE_NULL`、`CUSTOM_RESOURCE_NO_INSTANCE`、`CUSTOM_RESOURCE_NOT_BUFFER` 和 `CUSTOM_RESOURCE_WRONG_DEVICE`，分别对应名称不存在、尚未初始化、当前为 null、缺少底层实例、对象类型不符和设备不符。
 
+### 查询原始 PS 贴图的内容哈希
+
+`dx11_texture_dhash` 按 IB 哈希、实际索引数和起始索引锁定一次原始绘制，在覆盖规则执行前读取指定 PS 槽位。原始绘制随后被模组跳过的情况也能匹配。相同 IB 和索引范围用于多个 pass 时，可传 `ps_hash` 匹配该次绘制实际绑定的像素着色器。
+
+~~~json
+{
+  "ib_hash": "1234abcd",
+  "hash_mode": "region",
+  "resource_hash": "abcd1234",
+  "index_count": 600,
+  "first_index": 0,
+  "ps_hash": "0123456789abcdef",
+  "slots": [16, 17, 18]
+}
+~~~
+
+普通 IB 哈希使用 `hash_mode: "resource"`。区域哈希还要传入底层 IB 的 `resource_hash`，匹配时按实际索引范围核对区域字节。每次可指定 1 至 8 个互异的 PS 槽位。调用后用 `dx11_capture_status` 轮询同一个 ID。结果中的 `capture.slots` 列出槽号、状态、格式、纹理大小及可用的 16 位十六进制 `dhash`。空槽报告 `unbound`，无法计算的纹理报告 `unavailable`。
+
+支持的 DLL 会在 `dx11_status.features` 中公布 `texture_dhash`。实时查询根据最新已跟踪的上传选择 mip 并计算 dHash。模组匹配继续由 `dhash_allow_rehash` 决定是否更新自己的缓存。缺少当前版本的缓存时，计算可能等待 GPU，建议只传需要核对的槽位。
+
 ## 捕获时点和 F8 回退
 
 实时回读使用 staging 复制，在匹配的调用处同步取回字节。默认在调用前读取输入缓冲，在调用后读取 UAV 或 stream output。可用 `phase` 显式选择时点。大缓冲区可能使该帧等待 GPU，优先传 `offset` 和 `length`。延迟上下文录制与重放、其他 swap chain/context，以及完整的 API 调用串使用原生 F8。通过 MCP 触发 F8 后，用 `dx11_frame_analysis_files` 列出产物，再用 `dx11_frame_analysis_read` 读取所需文件。纹理字节保留在原生 F8 路径中。

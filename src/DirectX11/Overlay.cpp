@@ -12,6 +12,7 @@
 #include "log.h"
 #include "version.h"
 #include "D3D11Wrapper.h"
+#include "DX11ResourceIds.h"
 #include "Globals.h"
 #include "profiling.h"
 
@@ -119,6 +120,20 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 	mFont = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 40.0f, true);
 	mFontNotifications = std::make_unique<OverlayTextFont>(mOrigDevice, L"Microsoft YaHei UI", 18.0f);
 	mFontProfiling = std::make_unique<OverlayTextFont>(mOrigDevice, L"Consolas", 14.0f);
+	const HRSRC fontResource = FindResourceW(migoto_handle, MAKEINTRESOURCEW(IDR_COURIERSMALL), MAKEINTRESOURCEW(SPRITEFONT));
+	if (fontResource) {
+		const auto* fontData = static_cast<const uint8_t*>(LockResource(LoadResource(migoto_handle, fontResource)));
+		if (fontData) {
+			try {
+				mSummaryAtlas = std::make_unique<DirectX::SpriteFont>(mOrigDevice, fontData,
+					SizeofResource(migoto_handle, fontResource));
+				mSummaryAtlas->SetDefaultCharacter(L'?');
+			} catch (const std::exception& error) {
+				mSummaryAtlas.reset();
+				LogInfo("Performance summary font load failed: %s\n", error.what());
+			}
+		}
+	}
 
 	mSpriteBatch.reset(new DirectX::SpriteBatch(mOrigContext));
 
@@ -152,6 +167,7 @@ Overlay::~Overlay()
 	// Hacker interfaces to make sure that our cleanup code is run if this
 	// is the last reference.
 	mFont.reset(); mFontNotifications.reset(); mFontProfiling.reset();
+	mSummaryAtlas.reset();
 	mPrimitiveBatch.reset(); mEffect.reset(); mStates.reset(); mSpriteBatch.reset();
 	mInputLayout.Reset();
 	mHackerContext->Release();
@@ -766,7 +782,7 @@ static std::wstring ProfilingReportPreview(std::wstring_view report)
 	return visible;
 }
 
-void Overlay::DrawProfiling(float y, std::wstring& visible, bool wrap)
+void Overlay::DrawProfiling(float y, std::wstring& visible, bool wrap, bool summary)
 {
 	if (!wrap) {
 		constexpr float rowHeight = 18.0f;
@@ -782,6 +798,18 @@ void Overlay::DrawProfiling(float y, std::wstring& visible, bool wrap)
 		if (line != std::wstring::npos) visible.resize(line - 1);
 	}
 	if (visible.empty()) return;
+	// Summary numbers change on every refresh. Draw ASCII from the resident
+	// atlas so a new snapshot does not rasterize and upload a panel texture.
+	if (summary && mSummaryAtlas && std::all_of(visible.begin(), visible.end(), [](wchar_t c) {
+		return (c >= L' ' && c <= L'~') || c == L'\n' || c == L'\r';
+	})) {
+		const Vector2 size = mSummaryAtlas->MeasureString(visible.c_str());
+		if (size.x + 3 <= mResolution.x) {
+			DrawRectangle(0, y, size.x + 3, size.y, 0, 0, 0, 0.75);
+			mSummaryAtlas->DrawString(mSpriteBatch.get(), visible.c_str(), Vector2(0, y), DirectX::Colors::Goldenrod);
+			return;
+		}
+	}
 
 	Vector2 strSize = mFontProfiling->MeasureString(visible.c_str(), wrap);
 	DrawRectangle(0, y, strSize.x + 3, strSize.y, 0, 0, 0, 0.75);
@@ -801,6 +829,7 @@ void Overlay::DrawOverlay(void)
 {
 	std::wstring profilingText;
 	bool wrapProfilingText = true;
+	bool profilingSummary = false;
 	if (Profiling::mode != Profiling::Mode::NONE) {
 		// A command list can draw the overlay while holding the global lock.
 		// Take the snapshot before acquiring drawMutex to keep that lock order.
@@ -808,6 +837,7 @@ void Overlay::DrawOverlay(void)
 		const auto mode = Profiling::mode.load(std::memory_order_relaxed);
 		if (mode != Profiling::Mode::NONE) {
 			Profiling::update_txt();
+			profilingSummary = mode == Profiling::Mode::SUMMARY;
 			wrapProfilingText = mode != Profiling::Mode::TOP_COMMANDS && mode != Profiling::Mode::TOP_COMMAND_LISTS;
 			// DrawTextW measures its entire input before clipping the texture.
 			profilingText = wrapProfilingText ? Profiling::text : ProfilingReportPreview(Profiling::text);
@@ -867,7 +897,7 @@ void Overlay::DrawOverlay(void)
 				DrawNotices(&y);
 
 			if (!profilingText.empty())
-				DrawProfiling(y, profilingText, wrapProfilingText);
+				DrawProfiling(y, profilingText, wrapProfilingText, profilingSummary);
 		}
 		mSpriteBatch->End();
 	}

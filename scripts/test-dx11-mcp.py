@@ -42,11 +42,11 @@ class Mcp:
             raise AssertionError(f"{tool_name}: {text}")
         return json.loads(text)
 
-    def wait_capture(self, capture_id):
+    def wait_capture(self, capture_id, expected="ready"):
         for _ in range(100):
             result = self.tool("capture_status", capture_id=capture_id)
             if result["state"] != "pending":
-                assert result["state"] == "ready", result
+                assert expected is None or result["state"] == expected, result
                 return result
         raise AssertionError("capture did not finish")
 
@@ -86,12 +86,48 @@ def verify(mcp, pid, folder):
     assert capture["type"] == 4 and capture["first_index"] == 1, capture
     assert capture["index_range"] == {"offset": 8, "length": 8, "index_width": 4}, capture
     assert struct.unpack("<II", mcp.bytes(instanced["id"])) == (2, 3)
+    armed = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=3, slots=[16, 17, 18])
+    textures = mcp.wait_capture(armed["id"])["capture"]
+    assert textures["phase"] == "original_before_overrides" and textures["first_index"] == 0, textures
+    assert textures["ib_resource_hash"] == full_hash and textures["ps_hash"], textures
+    slots = textures["slots"]
+    assert [entry["slot"] for entry in slots] == [16, 17, 18], slots
+    assert slots[0]["dhash"] == "ffff00000000ffff" and slots[0]["width"] == 4, slots
+    assert slots[1]["state"] == "unbound" and slots[2]["dhash"] == "00000000ffffffff", slots
+    other = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=2, first_index=1,
+                     ps_hash=textures["ps_hash"], slots=[16])
+    assert mcp.wait_capture(other["id"])["capture"]["slots"][0]["dhash"] == "00000000ffffffff"
     assert mcp.tool("status")["region_enabled"]
     region_hash = next(value for value in mcp.tool("hunting", kind="ib")["hashes"] if value != full_hash)
     region = mcp.tool("capture", kind="ib", hash=region_hash, hash_mode="region", offset=4, length=12)
     result = mcp.wait_capture(region["id"])
     assert result["capture"]["matched_by"] == "hunting_region", result
     assert struct.unpack("<III", mcp.bytes(region["id"])) == (1, 2, 3)
+    indexed_draw = result["capture"]
+    armed = mcp.tool("texture_dhash", ib_hash=region_hash, hash_mode="region", resource_hash=full_hash,
+                     index_count=indexed_draw["index_count"], first_index=indexed_draw["first_index"],
+                     ps_hash=textures["ps_hash"], slots=[16])
+    captured = mcp.wait_capture(armed["id"])["capture"]
+    expected = "ffff00000000ffff" if indexed_draw["first_index"] == 0 else "00000000ffffffff"
+    assert captured["ib_hash"] == region_hash and captured["slots"][0]["dhash"] == expected, captured
+    (folder / "update-red-texture").touch()
+    wait_file(folder / "texture-update-observed")
+    refreshed = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=3, slots=[16])
+    updated_texture = mcp.wait_capture(refreshed["id"])["capture"]["slots"][0]
+
+    cleared = folder / "clear-ps-state"
+    cleared.touch()
+    try:
+        stale = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=3, slots=[16],
+                         ps_hash=textures["ps_hash"], frames=2)
+        stale_shader = mcp.wait_capture(stale["id"], expected=None)
+        unfiltered = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=3, slots=[16])
+        draw_without_ps = mcp.wait_capture(unfiltered["id"])["capture"]
+    finally:
+        cleared.unlink()
+    assert (updated_texture.get("dhash"), stale_shader["state"], draw_without_ps["ps_hash"]) == (
+        "00000000ffffffff", "no_matching_draw", None), (updated_texture, stale_shader, draw_without_ps)
+
     miss = mcp.tool("capture", kind="ib", hash="12345678", hash_mode="resource", frames=2)
     for _ in range(20):
         state = mcp.tool("capture_status", capture_id=miss["id"])["state"]

@@ -1,10 +1,12 @@
 #include "Input.h"
 
 #include <Xinput.h>
+#include <array>
 #include <vector>
 #include <algorithm>
 #include <sstream>
 #include <climits>
+#include <unordered_map>
 
 #include "log.h"
 #include "util.h"
@@ -58,6 +60,32 @@ static void SwitchToXinpuGetStateEx()
 // VS2013 BUG WORKAROUND: Make sure this class has a unique type name!
 class KeyParseError: public exception {} keyParseError;
 
+namespace {
+// Cache only the state used by CheckState (the high bit). Zero denotes a key
+// or combination that this dispatch pass has not yet observed.
+struct InputPollSnapshot {
+	VirtualKeyStateReader read_key;
+	bool reuse;
+	bool reject_inactive_presses;
+	std::vector<unsigned char>& combinations;
+	std::array<unsigned char, 256> virtual_keys{};
+};
+
+thread_local InputPollSnapshot* input_poll_snapshot = nullptr;
+thread_local std::vector<unsigned char> input_combination_states;
+std::unordered_map<std::wstring, size_t> input_combination_indexes;
+
+class InputPollScope {
+	InputPollSnapshot* previous;
+public:
+	explicit InputPollScope(InputPollSnapshot& current) : previous(input_poll_snapshot)
+	{
+		input_poll_snapshot = &current;
+	}
+	~InputPollScope() { input_poll_snapshot = previous; }
+};
+}
+
 void InputListener::UpEvent(HackerDevice *device)
 {
 }
@@ -97,9 +125,28 @@ InputAction::~InputAction()
 	delete button;
 }
 
+bool InputAction::CheckButtonState()
+{
+	auto* snapshot = input_poll_snapshot;
+	if (!snapshot || !snapshot->reuse || snapshot_index >= snapshot->combinations.size())
+		return button->CheckState();
+	auto& value = snapshot->combinations[snapshot_index];
+	if (!value)
+		value = button->CheckState() ? 1 : 2;
+	return value == 1;
+}
+
 bool InputAction::Dispatch(HackerDevice *device)
 {
-	bool state = button->CheckState();
+	if (input_poll_snapshot && input_poll_snapshot->reject_inactive_presses && disable_scope == InputDisableScope::MODS &&
+		!last_state && listener->RejectsPress()) {
+		// Observe the shared hardware state even for a rejected press so
+		// appearing while the key is held cannot create a new press event.
+		last_state = CheckButtonState();
+		return last_state;
+	}
+
+	bool state = CheckButtonState();
 
 	if (state == last_state)
 		return false;
@@ -137,7 +184,15 @@ VKInputButton::VKInputButton(const wchar_t *keyName) :
 
 bool VKInputButton::CheckState()
 {
-	return ((GetAsyncKeyState(vkey) < 0) ^ invert);
+	auto* snapshot = input_poll_snapshot;
+	if (!snapshot)
+		return ((GetAsyncKeyState(vkey) < 0) ^ invert);
+	if (!snapshot->reuse || static_cast<unsigned>(vkey) >= snapshot->virtual_keys.size())
+		return ((snapshot->read_key(vkey) < 0) ^ invert);
+	auto& value = snapshot->virtual_keys[vkey];
+	if (!value)
+		value = snapshot->read_key(vkey) < 0 ? 1 : 2;
+	return ((value == 1) ^ invert);
 }
 
 
@@ -167,7 +222,7 @@ bool RepeatingInputAction::Dispatch(HackerDevice *device)
 	if (GetTickCount64() < (lastTick + ms))
 		return false;
 
-	bool state = button->CheckState();
+	bool state = CheckButtonState();
 
 	// Only allow auto-repeat for down events.
 	if (state || (state != last_state))
@@ -197,7 +252,7 @@ DelayedInputAction::DelayedInputAction(InputButton *button, shared_ptr<InputList
 bool DelayedInputAction::Dispatch(HackerDevice *device)
 {
 	ULONGLONG now = GetTickCount64();
-	bool state = button->CheckState();
+	bool state = CheckButtonState();
 
 	if (state != last_state)
 		state_change_time = now;
@@ -507,6 +562,10 @@ bool RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
 	else
 		action = std::make_unique<InputAction>(button.get(), listener);
 	button.release();
+	std::wstring signature(keyName);
+	std::transform(signature.begin(), signature.end(), signature.begin(), ::towlower);
+	const auto index = input_combination_indexes.try_emplace(std::move(signature), input_combination_indexes.size());
+	action->snapshot_index = index.first->second;
 
 	LogInfoW(L"  %s=%s\n", iniKey, keyName);
 	RegisterInputAction(std::move(action), disable_scope);
@@ -570,6 +629,7 @@ wstring user_friendly_ini_key_binding(LPCWSTR app, LPCWSTR iniKey)
 
 void ClearKeyBindings()
 {
+	input_combination_indexes.clear();
 	std::vector<class InputAction *>::iterator i;
 
 	for (i = actions.begin(); i != actions.end(); i++)
@@ -634,7 +694,7 @@ bool DispatchInputEvents(HackerDevice *device)
 	return DispatchRegisteredInputActions(device);
 }
 
-bool DispatchRegisteredInputActions(HackerDevice *device)
+static bool DispatchInputActions(HackerDevice *device)
 {
 	bool input_processed = false;
 	for (InputAction* action : actions) {
@@ -644,6 +704,22 @@ bool DispatchRegisteredInputActions(HackerDevice *device)
 		input_processed |= action->Dispatch(device);
 	}
 	return input_processed;
+}
+
+bool DispatchRegisteredInputActions(HackerDevice *device, VirtualKeyStateReader read_key)
+{
+	const bool reuse = G->ModRuntimeOptimizationsEnabled() &&
+		G->optimize_hotkey_dispatch.load(std::memory_order_relaxed) && !G->analyse_frame && !gLogDebug;
+	if (!reuse && read_key == GetAsyncKeyState && !input_poll_snapshot)
+		return DispatchInputActions(device);
+
+	std::vector<unsigned char> nested_states;
+	auto& combinations = input_poll_snapshot ? nested_states : input_combination_states;
+	if (reuse)
+		combinations.assign(input_combination_indexes.size(), 0);
+	InputPollSnapshot snapshot{read_key, reuse, reuse && !Dx11LogEnabled(LogVerbosity::INFO), combinations};
+	InputPollScope scope(snapshot);
+	return DispatchInputActions(device);
 }
 
 size_t CountRegisteredInputActions(InputDisableScope disable_scope)

@@ -687,6 +687,8 @@ uint32_t GetResourceHash(ID3D11Resource *resource);
 class HackerContext;
 bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_size,
     bool rehash_updated_mip, uint64_t& out_hash, ID3D11View* view = nullptr);
+bool GetLiveDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_size,
+    uint64_t& out_hash, ID3D11View* view = nullptr);
 void ClearResourceRegionHashCache(ID3D11Resource* resource);
 UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte_offset);
 UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset);

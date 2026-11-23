@@ -248,8 +248,8 @@ void LogViewDesc(const D3D11_SHADER_RESOURCE_VIEW_DESC *desc)
 			break;
 		case D3D11_SRV_DIMENSION_BUFFER:
 			LogInfo("    ViewDimension = BUFFER\n");
-			LogInfo("      Buffer.FirstElement/NumElements = %u\n", desc->Buffer.FirstElement);
-			LogInfo("      Buffer.ElementOffset/ElementWidth = %u\n", desc->Buffer.ElementOffset);
+			LogInfo("      Buffer.FirstElement = %u\n", desc->Buffer.FirstElement);
+			LogInfo("      Buffer.NumElements = %u\n", desc->Buffer.NumElements);
 			break;
 		case D3D11_SRV_DIMENSION_TEXTURE1D:
 			LogInfo("    ViewDimension = TEXTURE1D\n");
@@ -3397,8 +3397,10 @@ static bool DhashSamplingFormat(ID3D11Resource* resource, ID3D11View* view, DXGI
     return false;
 }
 
-bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_size,
-    bool rehash_updated_mip, uint64_t& out_hash, ID3D11View* view)
+enum class DhashReadPolicy { Reuse, Rehash, Live };
+
+static bool ReadDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_size,
+    DhashReadPolicy policy, uint64_t& out_hash, ID3D11View* view)
 {
     out_hash = 0;
     if (!context || !resource) return false;
@@ -3422,6 +3424,7 @@ bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_
     std::shared_ptr<const uint8_t> identity;
     uint64_t generation = 0, mip_generation = 0;
     UINT mip = UINT_MAX;
+    const bool live = policy == DhashReadPolicy::Live;
     {
         CriticalSectionGuard(&G->mResourcesLock);
         auto* info = FindTrackedTexture2DNoLock(resource);
@@ -3429,13 +3432,17 @@ bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_
             info->mip_levels != desc.MipLevels || info->array_size != desc.ArraySize) return false;
         const bool same_key = info->dhash_valid && info->dhash_format == format &&
             info->dhash_prefer_mip_size == prefer_mip_size;
-        if (same_key && (info->dhash_generation == info->resource_generation || !rehash_updated_mip)) {
+        const bool current_generation = info->dhash_generation == info->resource_generation;
+        if (!live && same_key && (current_generation || policy == DhashReadPolicy::Reuse)) {
             out_hash = info->dhash; return true;
         }
-        const uint64_t required_generation = info->dhash_valid && rehash_updated_mip &&
-            info->dhash_generation != info->resource_generation ? info->resource_generation : 0;
+        const bool need_latest_mip = live || (info->dhash_valid && policy == DhashReadPolicy::Rehash && !current_generation);
+        const uint64_t required_generation = need_latest_mip ? info->resource_generation : 0;
         mip = info->FindOptimalMip(desc, prefer_mip_size, required_generation);
         if (mip == UINT_MAX) return false;
+        if (live && same_key && current_generation && info->dhash_mip_level == mip) {
+            out_hash = info->dhash; return true;
+        }
         if (!info->dhash_identity) info->dhash_identity = std::make_shared<const uint8_t>(0);
         identity = info->dhash_identity;
         generation = info->resource_generation;
@@ -3454,12 +3461,28 @@ bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_
             info->GetSubresourceGeneration(mip) != mip_generation || info->tracking_width != desc.Width ||
             info->tracking_height != desc.Height || info->mip_levels != desc.MipLevels || info->array_size != desc.ArraySize)
             return false;
-        info->dhash = computed; info->dhash_valid = true;
-        info->dhash_generation = generation; info->dhash_mip_level = mip;
-        info->dhash_format = format; info->dhash_prefer_mip_size = prefer_mip_size;
+        // A diagnostic read must not advance the cache seen by mod matching.
+        if (!live) {
+            info->dhash = computed; info->dhash_valid = true;
+            info->dhash_generation = generation; info->dhash_mip_level = mip;
+            info->dhash_format = format; info->dhash_prefer_mip_size = prefer_mip_size;
+        }
     }
     out_hash = computed;
     return true;
+}
+
+bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_size,
+    bool rehash_updated_mip, uint64_t& out_hash, ID3D11View* view)
+{
+    const auto policy = rehash_updated_mip ? DhashReadPolicy::Rehash : DhashReadPolicy::Reuse;
+    return ReadDhash(context, resource, prefer_mip_size, policy, out_hash, view);
+}
+
+bool GetLiveDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_size,
+    uint64_t& out_hash, ID3D11View* view)
+{
+    return ReadDhash(context, resource, prefer_mip_size, DhashReadPolicy::Live, out_hash, view);
 }
 
 unsigned HammingDistance(uint64_t a, uint64_t b)

@@ -614,6 +614,7 @@ struct Globals
 
 	ShaderOverrideMap mShaderOverrideMap;
 	std::atomic<bool> mod_runtime_optimizations{true};
+	std::atomic<bool> optimize_hotkey_dispatch{true};
 	bool ModRuntimeOptimizationsEnabled() const { return mod_runtime_optimizations.load(std::memory_order_relaxed); }
 	std::atomic<bool> expression_short_circuit{true};
 	std::atomic<bool> draw_gate_early_reject{true};

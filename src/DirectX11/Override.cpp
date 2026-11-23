@@ -21,6 +21,43 @@ Override::Override()
 	active = false;
 }
 
+// A bare variable or a variable compared with a number can be read before
+// polling without traversing the evaluator or observing GPU/command state.
+void Override::PreparePressCondition()
+{
+	press_condition_value = nullptr;
+	if (!is_conditional)
+		return;
+
+	const auto* operand = dynamic_cast<const CommandListOperand*>(condition.evaluatable.get());
+	if (operand && operand->type == ParamOverrideType::VARIABLE) {
+		press_condition_value = operand->var_ftarget;
+		press_condition_comparison = 0.0f;
+		reject_press_when_equal = true;
+		return;
+	}
+
+	const auto* op = dynamic_cast<const CommandListOperator*>(condition.evaluatable.get());
+	if (!op || (op->token != L"==" && op->token != L"!="))
+		return;
+	const auto* variable = dynamic_cast<const CommandListOperand*>(op->lhs.get());
+	const auto* literal = dynamic_cast<const CommandListOperand*>(op->rhs.get());
+	if (variable && variable->type == ParamOverrideType::VALUE)
+		std::swap(variable, literal);
+	if (!variable || variable->type != ParamOverrideType::VARIABLE ||
+		!literal || literal->type != ParamOverrideType::VALUE)
+		return;
+	press_condition_value = variable->var_ftarget;
+	press_condition_comparison = literal->val;
+	reject_press_when_equal = op->token == L"!=";
+}
+
+bool Override::PressConditionIsFalse() const
+{
+	return press_condition_value &&
+		((*press_condition_value == press_condition_comparison) == reject_press_when_equal);
+}
+
 void Override::ParseIniSection(LPCWSTR section)
 {
 	IniSectionVector *section_vec = NULL;
@@ -79,6 +116,7 @@ void Override::ParseIniSection(LPCWSTR section)
 			is_conditional = true;
 		}
 	}
+	PreparePressCondition();
 
 	// The keys/presets sections have too much conflicting syntax to be
 	// turned into a command list (at least not easily - transitions &

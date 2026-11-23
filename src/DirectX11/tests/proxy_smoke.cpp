@@ -1,7 +1,9 @@
 #include <Windows.h>
 #include <d3d11.h>
 #include <d3d11_1.h>
+#include <d3dcompiler.h>
 #include <wrl/client.h>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -165,6 +167,12 @@ int serve_mcp_fixture(const wchar_t* library)
     const UINT initial[] = {100, 1, 2, 3};
     D3D11_SUBRESOURCE_DATA data{initial, 0, 0};
     ComPtr<ID3D11Buffer> index;
+    ComPtr<ID3D11PixelShader> pixel_shader;
+    ComPtr<ID3D11ShaderResourceView> red, blue;
+    constexpr char pixel_source[] = "float4 main() : SV_Target { return float4(1, 1, 1, 1); }";
+    ComPtr<ID3DBlob> pixel_code;
+    check(SUCCEEDED(D3DCompile(pixel_source, sizeof(pixel_source) - 1, nullptr, nullptr, nullptr,
+        "main", "ps_5_0", 0, 0, &pixel_code, nullptr)), "compile MCP fixture pixel shader");
     const auto fixture = std::filesystem::path(library).parent_path();
     const auto stop = fixture / L"stop";
     const auto make_device = [&] {
@@ -173,10 +181,29 @@ int serve_mcp_fixture(const wchar_t* library)
             D3D11_SDK_VERSION, &desc, &chain, &device, nullptr, &context)), "create MCP WARP swapchain");
         check(SUCCEEDED(device->CreateBuffer(&index_desc, &data, &index)), "create MCP dynamic IB");
         context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, sizeof(UINT));
+        check(SUCCEEDED(device->CreatePixelShader(pixel_code->GetBufferPointer(), pixel_code->GetBufferSize(),
+            nullptr, pixel_shader.ReleaseAndGetAddressOf())), "create MCP fixture pixel shader");
+        const auto color_view = [&](UINT color, ComPtr<ID3D11ShaderResourceView>& result) {
+            std::array<UINT, 16> pixels;
+            pixels.fill(color);
+            D3D11_TEXTURE2D_DESC texture_desc{};
+            texture_desc.Width = texture_desc.Height = 4;
+            texture_desc.MipLevels = texture_desc.ArraySize = texture_desc.SampleDesc.Count = 1;
+            texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA image{pixels.data(), 4 * sizeof(UINT), 0};
+            ComPtr<ID3D11Texture2D> texture;
+            check(SUCCEEDED(device->CreateTexture2D(&texture_desc, &image, &texture)) &&
+                SUCCEEDED(device->CreateShaderResourceView(texture.Get(), nullptr, result.ReleaseAndGetAddressOf())),
+                "create tracked MCP fixture texture");
+        };
+        color_view(0xff0000ff, red);
+        color_view(0xffff0000, blue);
     };
     make_device();
     const auto deadline = GetTickCount64() + 45000;
     bool holding_map = false, device_switched = false, paused = false;
+    bool texture_updated = false;
     unsigned replacement_frames = 0;
     for (UINT counter = 0; GetTickCount64() < deadline && !std::filesystem::exists(stop); ++counter) {
         if (std::filesystem::exists(fixture / L"pause-present")) {
@@ -191,6 +218,9 @@ int serve_mcp_fixture(const wchar_t* library)
             context->ClearState();
             context->Flush();
             index.Reset();
+            pixel_shader.Reset();
+            red.Reset();
+            blue.Reset();
             chain.Reset();
             context.Reset();
             device.Reset();
@@ -218,9 +248,25 @@ int serve_mcp_fixture(const wchar_t* library)
                 const UINT bytes[] = {counter, 1, 2, 3};
                 memcpy(mapping.pData, bytes, sizeof(bytes));
                 context->Unmap(index.Get(), 0);
+                if (!texture_updated && std::filesystem::exists(fixture / L"update-red-texture")) {
+                    ComPtr<ID3D11Resource> texture;
+                    red->GetResource(&texture);
+                    std::array<UINT, 16> pixels;
+                    pixels.fill(0xffff0000);
+                    context->UpdateSubresource(texture.Get(), 0, nullptr, pixels.data(), 4 * sizeof(UINT), 0);
+                    texture_updated = true;
+                    std::ofstream(fixture / L"texture-update-observed").put('1');
+                }
+                if (std::filesystem::exists(fixture / L"clear-ps-state"))
+                    context->ClearState();
+                else
+                    context->PSSetShader(pixel_shader.Get(), nullptr, 0);
                 context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, sizeof(UINT));
+                ID3D11ShaderResourceView* views[] = {red.Get(), nullptr, blue.Get()};
+                context->PSSetShaderResources(16, 3, views);
                 context->Draw(3, 0);
                 context->DrawIndexed(3, 0, 0);
+                context->PSSetShaderResources(16, 1, blue.GetAddressOf());
                 context->DrawIndexedInstanced(2, 1, 1, 0, 0);
             }
         }

@@ -23,6 +23,7 @@ using Microsoft::WRL::ComPtr;
 namespace Dx11Mcp {
 std::atomic<bool> enabled{false};
 std::atomic<bool> capture_armed{false};
+std::atomic<bool> texture_dhash_armed{false};
 
 namespace {
 constexpr DWORD PipeSize = 64 * 1024;
@@ -148,7 +149,7 @@ std::mutex shader_lock;
 std::deque<ShaderRecord> shaders;
 size_t shader_bytes = 0;
 
-enum class CaptureKind { Draw, Index, Vertex, Constant, Srv, Uav, Stream, Indirect };
+enum class CaptureKind { Draw, Index, Vertex, Constant, Srv, Uav, Stream, Indirect, TextureDhash };
 constexpr std::string_view KindNames[] = {"draw", "ib", "vb", "cb", "srv", "uav", "so", "indirect"};
 constexpr std::string_view Stages[] = {"vs", "hs", "ds", "gs", "ps", "cs"};
 
@@ -159,6 +160,10 @@ struct Capture {
 	CaptureKind kind = CaptureKind::Draw;
 	std::string stage, source, hash_mode, status, details;
 	std::vector<unsigned char> bytes;
+	std::vector<UINT> texture_slots;
+	UINT texture_index_count = 0, texture_first_index = 0;
+	uint32_t texture_ib_resource = 0;
+	uint64_t texture_ps = 0;
 
 	bool after = false;
 	bool indexed_range = false;
@@ -188,6 +193,7 @@ void Complete(std::string status)
 	capture.status = std::move(status);
 	capture_context.store(nullptr, std::memory_order_release);
 	capture_armed.store(false, std::memory_order_release);
+	texture_dhash_armed.store(false, std::memory_order_release);
 }
 
 std::string DescribeCapture()
@@ -198,6 +204,19 @@ std::string DescribeCapture()
 		",\"bytes\":" + std::to_string(capture.bytes.size()) + ",\"capture\":" +
 		(capture.details.empty() ? "null" : capture.details) +
 		",\"fallback\":" + (fallback ? "\"native_f8\"" : "null") + "}";
+}
+
+std::string ArmCapture(HackerContext* context, Capture next, UINT frames)
+{
+	next.id = next_id.fetch_add(1, std::memory_order_relaxed);
+	next.frames_left = frames;
+	next.thread = GetCurrentThreadId();
+	next.status = "pending";
+	capture = std::move(next);
+	capture_context.store(context, std::memory_order_release);
+	capture_armed.store(true, std::memory_order_release);
+	texture_dhash_armed.store(capture.kind == CaptureKind::TextureDhash, std::memory_order_release);
+	return DescribeCapture();
 }
 
 HRESULT ReadBuffer(HackerContext* wrapper, ID3D11Buffer* buffer, UINT begin, UINT length,
@@ -564,7 +583,7 @@ std::string Process(HackerDevice* device, HackerContext* wrapper, std::string_vi
 		return "{\"pid\":" + std::to_string(GetCurrentProcessId()) + ",\"protocol\":1,\"version\":\"" VER_FILE_VERSION_STR
 			"\",\"frame\":" + std::to_string(G->frame_no) + ",\"hunting\":" + std::to_string(G->hunting) +
 			",\"region_enabled\":" + (G->track_region_hashes ? "true" : "false") +
-			",\"features\":[\"profiling_chunks\",\"indexed_range\",\"custom_resource_errors\"]" +
+			",\"features\":[\"profiling_chunks\",\"indexed_range\",\"custom_resource_errors\",\"texture_dhash\"]" +
 			",\"capture_coverage\":{\"context\":\"present_immediate\",\"deferred\":\"native_f8\",\"textures\":\"native_f8\"}" +
 			",\"capture_active\":" + (G->analyse_frame ? "true" : "false") +
 			",\"frame_analysis_dir\":" + Quote(Utf8(G->ANALYSIS_PATH)) + ",\"log_path\":" +
@@ -622,6 +641,31 @@ std::string Process(HackerDevice* device, HackerContext* wrapper, std::string_vi
 			out += Quote(Utf8(names[i]));
 		}
 		return out + "]}";
+	}
+	if (operation == "TEXTURE_DHASH") {
+		if (capture_armed.load()) return "{\"error\":\"a capture is pending\"}";
+		Capture next;
+		uint64_t backing = 0, indices = 0, first = 0, frames = 0;
+		if (fields.size() < 9 || fields.size() > 16 || !Number(fields[1], next.hash, 16) ||
+			!next.hash || next.hash > UINT32_MAX || (fields[2] != "resource" && fields[2] != "region") ||
+			!Number(fields[3], backing, 16) || backing > UINT32_MAX || (fields[2] == "region" && !backing) ||
+			!Number(fields[4], indices) || !indices || indices > UINT_MAX ||
+			!Number(fields[5], first) || first > UINT_MAX || !Number(fields[6], next.texture_ps, 16) ||
+			!Number(fields[7], frames) || !frames || frames > 120)
+			return ProtocolError("TEXTURE_DHASH_SELECTOR_INVALID", "An index hash, draw range, and one to eight PS slots are required; a region also needs its backing IB hash");
+		for (size_t i = 8; i < fields.size(); ++i) {
+			uint64_t slot;
+			if (!Number(fields[i], slot) || slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT ||
+				std::find(next.texture_slots.begin(), next.texture_slots.end(), slot) != next.texture_slots.end())
+				return ProtocolError("TEXTURE_DHASH_SELECTOR_INVALID", "PS slots must be unique integers from 0 through 127");
+			next.texture_slots.push_back(static_cast<UINT>(slot));
+		}
+		next.kind = CaptureKind::TextureDhash;
+		next.hash_mode = fields[2];
+		next.texture_ib_resource = static_cast<uint32_t>(backing);
+		next.texture_index_count = static_cast<UINT>(indices);
+		next.texture_first_index = static_cast<UINT>(first);
+		return ArmCapture(wrapper, std::move(next), static_cast<UINT>(frames));
 	}
 	if (operation == "POLL" && fields.size() == 2 && Number(fields[1], id) && id == capture.id && id)
 		return DescribeCapture();
@@ -721,14 +765,7 @@ std::string Process(HackerDevice* device, HackerContext* wrapper, std::string_vi
 		next.source = fields[11];
 		next.after = fields[12] == "after" ||
 			(fields[12] == "auto" && (next.kind == CaptureKind::Uav || next.kind == CaptureKind::Stream));
-		next.id = next_id.fetch_add(1, std::memory_order_relaxed);
-		next.frames_left = static_cast<UINT>(frames);
-		next.thread = GetCurrentThreadId();
-		next.status = "pending";
-		capture = std::move(next);
-		capture_context.store(wrapper, std::memory_order_release);
-		capture_armed.store(true, std::memory_order_release);
-		return DescribeCapture();
+		return ArmCapture(wrapper, std::move(next), static_cast<UINT>(frames));
 	}
 	return "{\"error\":\"invalid request, unknown or replaced capture id\"}";
 }
@@ -743,6 +780,7 @@ void OnPresent(HackerDevice* device, HackerContext* context)
 		pipe.Close();
 		capture_context.store(nullptr, std::memory_order_release);
 		capture_armed.store(false, std::memory_order_release);
+		texture_dhash_armed.store(false, std::memory_order_release);
 		capture = {};
 		profile = {};
 		service_active.store(false, std::memory_order_release);
@@ -811,6 +849,118 @@ void OnContextDestroyed(HackerContext* context) noexcept
 	capture_context.compare_exchange_strong(context, nullptr, std::memory_order_acq_rel);
 }
 
+// The caller holds G->mCriticalSection. A cached game shader is usable only
+// when its known replacement or original copy is actually bound.
+static uint64_t BoundPixelShaderHash(HackerContext* context, ID3D11PixelShader* bound)
+{
+	if (!bound) return 0;
+	const auto found = G->mShaders.find(bound);
+	if (found != G->mShaders.end()) return found->second;
+	const auto tracked = context->mCurrentPixelShaderHandle;
+	const auto replacement = G->mReloadedShaders.find(tracked);
+	if (replacement != G->mReloadedShaders.end() && replacement->second.replacement == bound)
+		return replacement->second.hash;
+	const auto original_copy = G->mOriginalShaders.find(tracked);
+	if (original_copy != G->mOriginalShaders.end() && original_copy->second == bound) {
+		const auto original_hash = G->mShaders.find(tracked);
+		if (original_hash != G->mShaders.end()) return original_hash->second;
+	}
+	return 0;
+}
+
+void OnOriginalDraw(HackerContext* context, const DrawCallInfo& call)
+{
+	if (context != capture_context.load(std::memory_order_acquire))
+		return;
+	std::unique_lock lock(render_lock, std::try_to_lock);
+	if (!lock.owns_lock() || capture.kind != CaptureKind::TextureDhash ||
+		context != capture_context.load(std::memory_order_acquire) || capture.thread != GetCurrentThreadId() ||
+		!UsesDirectIndices(call) || call.IndexCount != capture.texture_index_count ||
+		call.FirstIndex != capture.texture_first_index)
+		return;
+
+	try {
+		auto* native = context->GetPassThroughOrigContext1();
+		ComPtr<ID3D11Buffer> ib;
+		DXGI_FORMAT index_format = DXGI_FORMAT_UNKNOWN;
+		UINT binding_offset = 0;
+		native->IAGetIndexBuffer(&ib, &index_format, &binding_offset);
+		if (!ib) return;
+		ComPtr<ID3D11PixelShader> shader;
+		native->PSGetShader(&shader, nullptr, nullptr);
+		uint32_t backing_hash;
+		uint64_t ps_hash;
+		UINT mip_size;
+		{
+			CriticalSectionLockGuard globals_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+			backing_hash = GetResourceHash(ib.Get());
+			ps_hash = BoundPixelShaderHash(context, shader.Get());
+			mip_size = static_cast<UINT>((std::max)(0, G->dhash_mip_size));
+		}
+		if ((capture.texture_ps && capture.texture_ps != ps_hash) ||
+			(capture.texture_ib_resource && capture.texture_ib_resource != backing_hash))
+			return;
+		if (capture.hash_mode == "region") {
+			const UINT stride = index_format == DXGI_FORMAT_R16_UINT ? 2 :
+				(index_format == DXGI_FORMAT_R32_UINT ? 4 : 0);
+			const uint64_t begin = binding_offset + uint64_t(call.FirstIndex) * stride;
+			const uint64_t length = uint64_t(call.IndexCount) * stride;
+			D3D11_BUFFER_DESC desc{};
+			ib->GetDesc(&desc);
+			if (!stride || begin >= desc.ByteWidth || length > desc.ByteWidth - begin || length > BlobLimit) return;
+			std::vector<unsigned char> bytes;
+			if (FAILED(ReadBuffer(context, ib.Get(), static_cast<UINT>(begin), static_cast<UINT>(length), bytes)) ||
+				crc32c_hw(0, bytes.data(), bytes.size()) != capture.hash)
+				return;
+		} else if (capture.hash != backing_hash) {
+			return;
+		}
+
+		std::string out = "{\"frame\":" + std::to_string(G->frame_no) +
+			",\"draw\":" + std::to_string(context->GetDrawNumber()) +
+			",\"phase\":\"original_before_overrides\",\"ib_hash\":" + Hash(capture.hash) +
+			",\"hash_mode\":" + Quote(capture.hash_mode) + ",\"ib_resource_hash\":" + Hash(backing_hash) +
+			",\"ps_hash\":" + (ps_hash ? Hash(ps_hash, true) : "null") +
+			",\"index_count\":" + std::to_string(call.IndexCount) +
+			",\"first_index\":" + std::to_string(call.FirstIndex) + ",\"slots\":[";
+		for (UINT slot : capture.texture_slots) {
+			if (out.back() != '[') out += ',';
+			out += "{\"slot\":" + std::to_string(slot);
+			ComPtr<ID3D11ShaderResourceView> view;
+			native->PSGetShaderResources(slot, 1, &view);
+			if (!view) {
+				out += ",\"state\":\"unbound\"}";
+				continue;
+			}
+			ComPtr<ID3D11Resource> resource;
+			ComPtr<ID3D11Texture2D> texture;
+			view->GetResource(&resource);
+			if (!resource || FAILED(resource.As(&texture))) {
+				out += ",\"state\":\"not_texture2d\"}";
+				continue;
+			}
+			D3D11_TEXTURE2D_DESC desc{};
+			D3D11_SHADER_RESOURCE_VIEW_DESC view_desc{};
+			texture->GetDesc(&desc);
+			view->GetDesc(&view_desc);
+			out += ",\"width\":" + std::to_string(desc.Width) + ",\"height\":" + std::to_string(desc.Height) +
+				",\"format\":" + std::to_string(view_desc.Format) + ",\"format_name\":" + Quote(TexFormatStr(view_desc.Format));
+			uint64_t dhash;
+			const bool supported = !(desc.MiscFlags & (D3D11_RESOURCE_MISC_TILED |
+				D3D11_RESOURCE_MISC_HW_PROTECTED | D3D11_RESOURCE_MISC_RESTRICTED_CONTENT));
+			if (supported && GetLiveDhash(context, resource.Get(), mip_size, dhash, view.Get())) {
+				out += ",\"state\":\"ready\",\"dhash\":" + Hash(dhash, true) + "}";
+			} else {
+				out += ",\"state\":\"unavailable\"}";
+			}
+		}
+		capture.details = out + "]}";
+		Complete("ready");
+	} catch (const std::exception&) {
+		Complete("readback_failed");
+	}
+}
+
 void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, bool after)
 {
 	if (context != capture_context.load(std::memory_order_acquire))
@@ -818,7 +968,7 @@ void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, boo
 	std::unique_lock lock(render_lock, std::try_to_lock);
 	if (!lock.owns_lock() || !capture_armed.load(std::memory_order_relaxed) ||
 		context != capture_context.load(std::memory_order_acquire) ||
-		capture.thread != GetCurrentThreadId())
+		capture.thread != GetCurrentThreadId() || capture.kind == CaptureKind::TextureDhash)
 		return;
 	const bool compute = call.type == DrawCall::Dispatch || call.type == DrawCall::DispatchIndirect;
 	if (injected && !after) ++capture.injected_ordinal;

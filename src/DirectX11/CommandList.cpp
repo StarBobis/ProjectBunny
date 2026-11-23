@@ -2963,6 +2963,7 @@ static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource* resou
     D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     resource->GetType(&dimension);
     UINT physical_bytes = 0;
+    UINT physical_stride = 0;
     if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
         D3D11_BUFFER_DESC desc = {};
         static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
@@ -2973,6 +2974,7 @@ static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource* resou
                 !(desc.MiscFlags & aliasable_flags);
         }
         physical_bytes = desc.ByteWidth;
+        physical_stride = desc.StructureByteStride;
         // Preserve explicit caller metadata (including CB bound length) while
         // retaining the existing whole-buffer fallback when no size was supplied.
         *buf_size = *buf_size ? min(*buf_size, physical_bytes) : physical_bytes;
@@ -2986,8 +2988,9 @@ static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource* resou
         if (!*stride)
             *stride = dxgi_format_size(*format);
         if (info.is_buffer_view && dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
-            const uint64_t first = uint64_t(info.first_element) * *stride;
-            const uint64_t bytes = uint64_t(info.num_elements) * *stride;
+            const UINT view_stride = info.format == DXGI_FORMAT_UNKNOWN ? physical_stride : dxgi_format_size(info.format);
+            const uint64_t first = uint64_t(info.first_element) * view_stride;
+            const uint64_t bytes = uint64_t(info.num_elements) * view_stride;
             const uint64_t start = (std::min)(first, uint64_t(physical_bytes));
             const uint64_t end = start + (std::min)(bytes, uint64_t(physical_bytes) - start);
             if (!*offset)
@@ -7116,10 +7119,45 @@ void ResourcePool::emplace(uint32_t hash, ID3D11Resource *resource, ID3D11Device
     }
 }
 
+ResourcePool::RejectedCreation* ResourcePool::FindRejectedCreation(ID3D11Device* device, const void* desc, size_t size) const
+{
+    if (rejected_creations) {
+        for (auto& rejected : *rejected_creations) {
+            if (rejected.device == device && rejected.size == size &&
+                std::memcmp(rejected.descriptor.data(), desc, size) == 0)
+                return &rejected;
+        }
+    }
+    return nullptr;
+}
+
+bool ResourcePool::CreationDeferred(ID3D11Device* device, const void* desc, size_t size) const
+{
+    const auto* rejected = FindRejectedCreation(device, desc, size);
+    return rejected && GetTickCount64() < rejected->retry_at;
+}
+
+void ResourcePool::RecordInvalidCreation(ID3D11Device* device, const void* desc, size_t size)
+{
+    if (size > sizeof(D3D11_TEXTURE2D_DESC))
+        return;
+    auto* rejected = FindRejectedCreation(device, desc, size);
+    if (!rejected) {
+        if (!rejected_creations)
+            rejected_creations = std::make_unique<std::array<RejectedCreation, 4>>();
+        rejected = &*std::min_element(rejected_creations->begin(), rejected_creations->end(),
+            [](const auto& a, const auto& b) { return a.retry_at < b.retry_at; });
+        std::memcpy(rejected->descriptor.data(), desc, size);
+        rejected->size = size;
+        rejected->device = device;
+    }
+    rejected->retry_at = GetTickCount64() + 1000;
+}
+
 template<typename Descriptor>
 static Descriptor ResolvePoolDescriptor(Descriptor desc)
 {
-    if constexpr (!std::is_same<Descriptor, D3D11_BUFFER_DESC>::value) {
+    if constexpr (!std::is_same_v<Descriptor, D3D11_BUFFER_DESC>) {
         if (!desc.MipLevels) {
             UINT extent = desc.Width;
             if constexpr (!std::is_same<Descriptor, D3D11_TEXTURE1D_DESC>::value)
@@ -7180,19 +7218,24 @@ static ResourceType* GetResourceFromPool(
         // A lookup hash is only a bucket, never resource identity. Keep the
         // old entry intact until its replacement is successfully created.
     }
-	LogInfo("Creating cached resource %S\n", ini_line->c_str());
+	if (resource_pool->CreationDeferred(state->mOrigDevice1, desc, sizeof(*desc)))
+		return nullptr;
+	LogInfoW(L"Creating cached resource %ls\n", ini_line->c_str());
 	Profiling::resources_created++;
 
     Microsoft::WRL::ComPtr<ResourceType> created;
 	hr = (state->mOrigDevice1->*CreateResource)(desc, NULL, created.GetAddressOf());
 	if (FAILED(hr)) {
-		LogInfo("Resource copy failed %S: 0x%x\n", ini_line->c_str(), hr);
+		LogInfoW(L"Resource copy failed %ls: 0x%lx\n", ini_line->c_str(), hr);
 		LogResourceDesc(desc);
 		src_resource->GetDesc(&old_desc);
 		LogInfo("Original resource was:\n");
 		LogResourceDesc(&old_desc);
 
-        // Allocation/device failures may be transient; do not cache failure.
+        // Back off only for an invalid description on this device. Transient
+        // allocation/device errors remain eligible for an immediate retry.
+        if (hr == E_INVALIDARG)
+            resource_pool->RecordInvalidCreation(state->mOrigDevice1, desc, sizeof(*desc));
 		return NULL;
 	}
 	resource_pool->emplace(hash, created.Get(), state->mOrigDevice1);
@@ -12759,6 +12802,10 @@ static ID3D11Buffer *RecreateCompatibleBuffer(
 		CustomResource* dst_custom_resource = dst->GetCustomResource(state, true);
 		dst_custom_resource->OverrideBufferDesc(&new_desc);
 	}
+	// GetDesc clears the physical stride of non-structured buffers. The INI
+	// stride still determines the byte width above and the published metadata.
+	if (!(new_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED))
+		new_desc.StructureByteStride = 0;
 
 	return GetResourceFromPool<ID3D11Buffer, D3D11_BUFFER_DESC, &ID3D11Device::CreateBuffer>
 		(ini_line, src_resource, dst_resource, resource_pool, state, &new_desc);
@@ -13166,29 +13213,47 @@ static bool requires_raw_view(ID3D11Buffer *buf, DXGI_FORMAT format)
 	return false;
 }
 
-static D3D11_SHADER_RESOURCE_VIEW_DESC* FillOutBufferDesc(ID3D11Buffer *buf,
-		D3D11_SHADER_RESOURCE_VIEW_DESC *desc, UINT stride,
-		UINT offset, UINT buf_src_size, ResourceCopyOptions options)
+static D3D11_SHADER_RESOURCE_VIEW_DESC* FillOutBufferDesc(ID3D11Buffer* buffer,
+        D3D11_SHADER_RESOURCE_VIEW_DESC* desc, UINT,
+        UINT offset, UINT size, ResourceCopyOptions options)
 {
-	if (options & ResourceCopyOptions::RAW_VIEW || requires_raw_view(buf, desc->Format)) {
-               desc->ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
-               desc->BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
-	       // Although not specified in MSDN, raw views in SRVs appear to
-	       // require the R32_TYPELESS format (MSDN does specify this
-	       // requirement for raw UAVs) and fail if any other format is
-	       // specified. The only curiosity here is that they are described
-	       // as being accessible in 1-4 channels, seeming to imply that
-	       // formats like R32G32B32A32_TYPELESS should also work, but they
-	       // don't:
-	       desc->Format = DXGI_FORMAT_R32_TYPELESS;
-	       stride = 4;
-	       FillOutBufferDescCommon<D3D11_BUFFEREX_SRV>(&desc->BufferEx, stride, offset, desc->Format, buf_src_size);
-	} else {
-		desc->ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		FillOutBufferDescCommon<D3D11_BUFFER_SRV>(&desc->Buffer, stride, offset, desc->Format, buf_src_size);
-	}
-	return desc;
+    D3D11_BUFFER_DESC buffer_desc{};
+    buffer->GetDesc(&buffer_desc);
+    if (!(buffer_desc.BindFlags & D3D11_BIND_SHADER_RESOURCE))
+        return nullptr;
+
+    const bool allows_raw = (buffer_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS) != 0;
+    const bool raw = (options & ResourceCopyOptions::RAW_VIEW) ||
+        (allows_raw && (desc->Format == DXGI_FORMAT_UNKNOWN || desc->Format == DXGI_FORMAT_R32_TYPELESS));
+    if (raw && !allows_raw)
+        return nullptr;
+
+    const bool structured = (buffer_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) != 0;
+    if (structured && desc->Format != DXGI_FORMAT_UNKNOWN)
+        return nullptr;
+
+    // The native view's element size can differ from the INI's logical stride.
+    UINT element_size = dxgi_format_size(desc->Format);
+    if (raw)
+        element_size = 4;
+    else if (structured)
+        element_size = buffer_desc.StructureByteStride;
+    const UINT extent = (std::min)(size, buffer_desc.ByteWidth);
+    if (!element_size || offset >= extent || extent - offset < element_size)
+        return nullptr;
+
+    if (raw) {
+        desc->Format = DXGI_FORMAT_R32_TYPELESS;
+        desc->ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+        desc->BufferEx = {offset / element_size, (extent - offset) / element_size, D3D11_BUFFEREX_SRV_FLAG_RAW};
+    } else {
+        desc->ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        desc->Buffer.FirstElement = offset / element_size;
+        desc->Buffer.NumElements = (extent - offset) / element_size;
+    }
+    return desc;
 }
+
 static D3D11_RENDER_TARGET_VIEW_DESC* FillOutBufferDesc(ID3D11Buffer *buf,
 		D3D11_RENDER_TARGET_VIEW_DESC *desc, UINT stride,
 		UINT offset, UINT buf_src_size, ResourceCopyOptions options)
@@ -13506,6 +13571,12 @@ static ID3D11View* _CreateCompatibleView(
 
 			buf = (ID3D11Buffer*)resource;
 			pDesc = FillOutBufferDesc(buf, &view_desc, stride, offset, buf_src_size, options);
+			if constexpr (std::is_same_v<ViewType, ID3D11ShaderResourceView>) {
+				if (!pDesc) {
+					COMMAND_LIST_LOG(state, "  Cannot create a buffer SRV with these format, flags or bounds\n");
+					return nullptr;
+				}
+			}
 
 			// This should already handle things like:
 			// - Copying a vertex buffer to a SRV or constant buffer
@@ -14096,10 +14167,11 @@ void ResourceCopyOperation::CopyResourceToResource(
 		!dst.slot_expression && !src_view && !preserve_source_view && !source_size_is_length && !G->analyse_frame &&
 		G->ModRuntimeOptimizationsEnabled();
 	const auto shader_ref_fields = std::make_tuple(stride, offset, format, buf_src_size);
+	const bool same_shader_ref = shader_ref_resource == src_resource && shader_ref_device == state->mOrigDevice1 &&
+		shader_ref_type == dst.type && shader_ref_input == shader_ref_fields;
 	// The shader slot consumes the validated view directly. The native bind
 	// still runs so other commands or the game can change the slot in between.
-	if (plain_shader_ref && src_resource && cached_view && shader_ref_resource == src_resource &&
-		shader_ref_device == state->mOrigDevice1 && shader_ref_type == dst.type && shader_ref_input == shader_ref_fields) {
+	if (plain_shader_ref && src_resource && cached_view && same_shader_ref) {
 		++Profiling::resource_reference_copies;
 		if (auto* stats = state->slot_batch_stats) {
 			if (dst.shader_type == L'c')
@@ -14111,6 +14183,8 @@ void ResourceCopyOperation::CopyResourceToResource(
 			false, {}, compute_ref_om_uav_slots);
 		return;
 	}
+	if (shader_ref_resource && !same_shader_ref)
+		ClearCachedView();
 	shader_ref_resource = nullptr;
 
 	ResourceCopyTarget* effective_destination = destination ? destination : &this->dst;
