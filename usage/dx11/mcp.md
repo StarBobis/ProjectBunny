@@ -95,7 +95,7 @@ IB 抓取传 `{"kind":"ib","indexed_range":true}` 时，只等直接 `DrawIndexe
 
 普通 IB 哈希使用 `hash_mode: "resource"`。区域哈希还要传入底层 IB 的 `resource_hash`，匹配时按实际索引范围核对区域字节。每次可指定 1 至 8 个互异的 PS 槽位。调用后用 `dx11_capture_status` 轮询同一个 ID。结果中的 `capture.slots` 列出槽号、状态、格式、纹理大小及可用的 16 位十六进制 `dhash`。空槽报告 `unbound`，无法计算的纹理报告 `unavailable`。
 
-支持的 DLL 会在 `dx11_status.features` 中公布 `texture_dhash`。实时查询根据最新已跟踪的上传选择 mip 并计算 dHash。模组匹配继续由 `dhash_allow_rehash` 决定是否更新自己的缓存。缺少当前版本的缓存时，计算可能等待 GPU，建议只传需要核对的槽位。
+支持的 DLL 会在 `dx11_status.features` 中公布 `texture_dhash`。实时查询在绑定视图可见的 mip 范围内，根据已跟踪的上传选择最新的可用层级并计算 dHash。模组匹配继续由 `dhash_allow_rehash` 决定是否更新自己的缓存。缺少当前版本的缓存时，计算可能等待 GPU，建议只传需要核对的槽位。
 
 ## 捕获时点和 F8 回退
 

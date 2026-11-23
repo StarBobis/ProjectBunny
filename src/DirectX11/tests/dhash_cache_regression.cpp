@@ -309,6 +309,27 @@ void cache_cases(BatchDevice& device)
         "dhash cache: rehash chooses latest uploaded mip rather than an older small mip");
     require_cache(mips.Get(), 1, DXGI_FORMAT_R8G8B8A8_UNORM, 8);
 
+    D3D11_SHADER_RESOURCE_VIEW_DESC mip_view_desc{};
+    mip_view_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    mip_view_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    mip_view_desc.Texture2D.MipLevels = 1;
+    ComPtr<ID3D11ShaderResourceView> mip_zero, mip_one;
+    check(SUCCEEDED(device.native->CreateShaderResourceView(mips.Get(), &mip_view_desc, &mip_zero)),
+        "live dHash: create a view exposing only mip zero");
+    mip_view_desc.Texture2D.MostDetailedMip = 1;
+    check(SUCCEEDED(device.native->CreateShaderResourceView(mips.Get(), &mip_view_desc, &mip_one)),
+        "live dHash: create a view starting at mip one");
+    check(GetLiveDhash(device.wrapper.get(), mips.Get(), 256, value, mip_zero.Get()) && value == 0,
+        "live dHash: an upload outside the view does not invalidate the visible mip");
+    check(GetLiveDhash(device.wrapper.get(), mips.Get(), 0, value, mip_zero.Get()) && value == 0,
+        "live dHash: unrestricted mip size cannot select an invisible mip");
+    check(GetLiveDhash(device.wrapper.get(), mips.Get(), 256, value, mip_one.Get()) && value == UINT64_MAX,
+        "live dHash: the most detailed visible mip remains eligible below the preferred size");
+    update(device, mips.Get(), 0, 0xffffffff);
+    check(GetLiveDhash(device.wrapper.get(), mips.Get(), 256, value, mip_zero.Get()) && value == UINT64_MAX,
+        "live dHash: uploading the visible mip refreshes the hash");
+    require_cache(mips.Get(), 1, DXGI_FORMAT_R8G8B8A8_UNORM, 8);
+
     auto typeless = tracked(device, 1, DXGI_FORMAT_R8G8B8A8_TYPELESS, true, 0x80402010);
     D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
     sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;

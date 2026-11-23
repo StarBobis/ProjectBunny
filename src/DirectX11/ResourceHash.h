@@ -526,7 +526,8 @@ struct ResourceHandleInfo
 	bool IsSubresourceUploaded(UINT subresource) const;
 	uint64_t GetSubresourceGeneration(UINT subresource) const;
 	UINT GetSubresourceIndex(UINT mip, UINT arraySlice = 0) const;
-    UINT FindOptimalMip(const D3D11_TEXTURE2D_DESC&, UINT min_mip_size, uint64_t min_generation) const;
+    UINT FindOptimalMip(const D3D11_TEXTURE2D_DESC&, UINT min_mip_size, uint64_t min_generation,
+        UINT first_mip, UINT mip_count, bool prefer_latest) const;
 };
 
 struct CopySubresourceRegionContamination

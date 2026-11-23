@@ -3356,23 +3356,31 @@ void InvalidateTextureUploadStates()
 
 
 UINT ResourceHandleInfo::FindOptimalMip(const D3D11_TEXTURE2D_DESC& desc,
-    UINT min_mip_size, uint64_t min_generation) const
+    UINT min_mip_size, uint64_t min_generation, UINT first_mip, UINT mip_count, bool prefer_latest) const
 {
     if (desc.ArraySize != 1 || desc.SampleDesc.Count != 1 || !desc.MipLevels ||
         desc.MipLevels != mip_levels || desc.ArraySize != array_size) return UINT_MAX;
-    for (UINT i = 0; i < desc.MipLevels; ++i) {
-        const UINT mip = min_mip_size ? desc.MipLevels - 1 - i : i;
-        if (min_mip_size && mip && (std::min)((std::max)(1u, desc.Width >> mip),
+    UINT best_mip = UINT_MAX;
+    uint64_t best_generation = 0;
+    for (UINT i = 0; i < mip_count; ++i) {
+        const UINT mip = first_mip + (min_mip_size ? mip_count - 1 - i : i);
+        if (min_mip_size && mip != first_mip && (std::min)((std::max)(1u, desc.Width >> mip),
             (std::max)(1u, desc.Height >> mip)) < min_mip_size) continue;
         const uint64_t generation = GetSubresourceGeneration(mip);
-        if (generation && (!min_generation || generation >= min_generation)) return mip;
+        if (!generation || generation < min_generation) continue;
+        if (!prefer_latest) return mip;
+        if (generation > best_generation) {
+            best_mip = mip;
+            best_generation = generation;
+        }
     }
-    return UINT_MAX;
+    return best_mip;
 }
 
 // Query the actual interface before reading a view descriptor. Frame analysis
 // forwards SRVs, RTVs, UAVs and DSVs through the same ID3D11View API.
-static bool DhashSamplingFormat(ID3D11Resource* resource, ID3D11View* view, DXGI_FORMAT& format)
+static bool DhashSamplingFormat(ID3D11Resource* resource, ID3D11View* view, DXGI_FORMAT& format,
+    Texture2DViewRange* live_range)
 {
     if (!view) return true;
     Microsoft::WRL::ComPtr<ID3D11Resource> owner;
@@ -3380,8 +3388,12 @@ static bool DhashSamplingFormat(ID3D11Resource* resource, ID3D11View* view, DXGI
     if (owner.Get() != resource) return false;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
     if (SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&srv)))) {
-        D3D11_SHADER_RESOURCE_VIEW_DESC desc{}; srv->GetDesc(&desc); format = desc.Format; return true;
+        D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+        srv->GetDesc(&desc);
+        format = desc.Format;
+        return !live_range || GetTexture2DViewRange(desc, *live_range);
     }
+    if (live_range) return false;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv;
     if (SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&rtv)))) {
         D3D11_RENDER_TARGET_VIEW_DESC desc{}; rtv->GetDesc(&desc); format = desc.Format; return true;
@@ -3418,13 +3430,17 @@ static bool ReadDhash(HackerContext* context, ID3D11Resource* resource, UINT pre
     D3D11_TEXTURE2D_DESC desc{};
     texture->GetDesc(&desc);
     if (desc.ArraySize != 1 || desc.SampleDesc.Count != 1 || !desc.MipLevels) return false;
+    const bool live = policy == DhashReadPolicy::Live;
     DXGI_FORMAT format = desc.Format;
-    if (!DhashSamplingFormat(resource, view, format)) return false;
+    Texture2DViewRange range{0, desc.MipLevels, 0, 1};
+    if (!DhashSamplingFormat(resource, view, format, live ? &range : nullptr) ||
+        range.mostDetailedMip >= desc.MipLevels || !range.mipLevels ||
+        range.firstArraySlice != 0 || range.arraySize != 1) return false;
+    const UINT mip_count = (std::min)(range.mipLevels, desc.MipLevels - range.mostDetailedMip);
 
     std::shared_ptr<const uint8_t> identity;
     uint64_t generation = 0, mip_generation = 0;
     UINT mip = UINT_MAX;
-    const bool live = policy == DhashReadPolicy::Live;
     {
         CriticalSectionGuard(&G->mResourcesLock);
         auto* info = FindTrackedTexture2DNoLock(resource);
@@ -3436,9 +3452,9 @@ static bool ReadDhash(HackerContext* context, ID3D11Resource* resource, UINT pre
         if (!live && same_key && (current_generation || policy == DhashReadPolicy::Reuse)) {
             out_hash = info->dhash; return true;
         }
-        const bool need_latest_mip = live || (info->dhash_valid && policy == DhashReadPolicy::Rehash && !current_generation);
+        const bool need_latest_mip = info->dhash_valid && policy == DhashReadPolicy::Rehash && !current_generation;
         const uint64_t required_generation = need_latest_mip ? info->resource_generation : 0;
-        mip = info->FindOptimalMip(desc, prefer_mip_size, required_generation);
+        mip = info->FindOptimalMip(desc, prefer_mip_size, required_generation, range.mostDetailedMip, mip_count, live);
         if (mip == UINT_MAX) return false;
         if (live && same_key && current_generation && info->dhash_mip_level == mip) {
             out_hash = info->dhash; return true;
