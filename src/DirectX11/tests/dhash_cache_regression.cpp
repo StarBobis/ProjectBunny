@@ -282,10 +282,16 @@ void cache_cases(BatchDevice& device)
     monitor.reset();
     check(GetDhash(device.wrapper.get(), black.Get(), 256, false, value) && value == 0 && read_maps == 0,
         "dhash cache: valid zero cache hit avoids Map");
+    check(GetLiveDhash(device.wrapper.get(), black.Get(), 256, value) && value == 0 && read_maps == 0,
+        "live dHash: reuse a cache entry for the current mip and generation");
     update(device, black.Get(), 0, 0xffffffff);
     check(GetDhash(device.wrapper.get(), black.Get(), 256, false, value) && value == 0 && read_maps == 0,
         "dhash cache: first no-rehash call after upload immediately retains old zero cache");
-    check(GetDhash(device.wrapper.get(), black.Get(), 256, true, value) && value != 0 && read_maps == 1,
+    check(GetLiveDhash(device.wrapper.get(), black.Get(), 256, value) && value == UINT64_MAX && read_maps == 1,
+        "live dHash: reflect an upload even when mod matching keeps an older hash");
+    check(GetDhash(device.wrapper.get(), black.Get(), 256, false, value) && value == 0 && read_maps == 1,
+        "live dHash: the read leaves the no-rehash matching cache intact");
+    check(GetDhash(device.wrapper.get(), black.Get(), 256, true, value) && value == UINT64_MAX && read_maps == 2,
         "dhash cache: enabling rehash computes changed data rather than marking retained value fresh");
 
     auto mips = tracked(device, 3);
@@ -296,6 +302,9 @@ void cache_cases(BatchDevice& device)
         "dhash cache: changed mip preference cannot reuse a different policy cache");
     require_cache(mips.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
     update(device, mips.Get(), 1, 0xffffffff);
+    check(GetLiveDhash(device.wrapper.get(), mips.Get(), 8, value) && value == UINT64_MAX,
+        "live dHash: prefer a newly uploaded eligible mip over an older smaller mip");
+    require_cache(mips.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
     check(GetDhash(device.wrapper.get(), mips.Get(), 8, true, value) && value != 0,
         "dhash cache: rehash chooses latest uploaded mip rather than an older small mip");
     require_cache(mips.Get(), 1, DXGI_FORMAT_R8G8B8A8_UNORM, 8);

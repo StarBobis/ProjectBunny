@@ -42,11 +42,11 @@ class Mcp:
             raise AssertionError(f"{tool_name}: {text}")
         return json.loads(text)
 
-    def wait_capture(self, capture_id):
+    def wait_capture(self, capture_id, expected="ready"):
         for _ in range(100):
             result = self.tool("capture_status", capture_id=capture_id)
             if result["state"] != "pending":
-                assert result["state"] == "ready", result
+                assert expected is None or result["state"] == expected, result
                 return result
         raise AssertionError("capture did not finish")
 
@@ -110,6 +110,24 @@ def verify(mcp, pid, folder):
     captured = mcp.wait_capture(armed["id"])["capture"]
     expected = "ffff00000000ffff" if indexed_draw["first_index"] == 0 else "00000000ffffffff"
     assert captured["ib_hash"] == region_hash and captured["slots"][0]["dhash"] == expected, captured
+    (folder / "update-red-texture").touch()
+    wait_file(folder / "texture-update-observed")
+    refreshed = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=3, slots=[16])
+    updated_texture = mcp.wait_capture(refreshed["id"])["capture"]["slots"][0]
+
+    cleared = folder / "clear-ps-state"
+    cleared.touch()
+    try:
+        stale = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=3, slots=[16],
+                         ps_hash=textures["ps_hash"], frames=2)
+        stale_shader = mcp.wait_capture(stale["id"], expected=None)
+        unfiltered = mcp.tool("texture_dhash", ib_hash=full_hash, index_count=3, slots=[16])
+        draw_without_ps = mcp.wait_capture(unfiltered["id"])["capture"]
+    finally:
+        cleared.unlink()
+    assert (updated_texture.get("dhash"), stale_shader["state"], draw_without_ps["ps_hash"]) == (
+        "00000000ffffffff", "no_matching_draw", None), (updated_texture, stale_shader, draw_without_ps)
+
     miss = mcp.tool("capture", kind="ib", hash="12345678", hash_mode="resource", frames=2)
     for _ in range(20):
         state = mcp.tool("capture_status", capture_id=miss["id"])["state"]

@@ -849,6 +849,25 @@ void OnContextDestroyed(HackerContext* context) noexcept
 	capture_context.compare_exchange_strong(context, nullptr, std::memory_order_acq_rel);
 }
 
+// The caller holds G->mCriticalSection. A cached game shader is usable only
+// when its known replacement or original copy is actually bound.
+static uint64_t BoundPixelShaderHash(HackerContext* context, ID3D11PixelShader* bound)
+{
+	if (!bound) return 0;
+	const auto found = G->mShaders.find(bound);
+	if (found != G->mShaders.end()) return found->second;
+	const auto tracked = context->mCurrentPixelShaderHandle;
+	const auto replacement = G->mReloadedShaders.find(tracked);
+	if (replacement != G->mReloadedShaders.end() && replacement->second.replacement == bound)
+		return replacement->second.hash;
+	const auto original_copy = G->mOriginalShaders.find(tracked);
+	if (original_copy != G->mOriginalShaders.end() && original_copy->second == bound) {
+		const auto original_hash = G->mShaders.find(tracked);
+		if (original_hash != G->mShaders.end()) return original_hash->second;
+	}
+	return 0;
+}
+
 void OnOriginalDraw(HackerContext* context, const DrawCallInfo& call)
 {
 	if (context != capture_context.load(std::memory_order_acquire))
@@ -867,20 +886,16 @@ void OnOriginalDraw(HackerContext* context, const DrawCallInfo& call)
 		UINT binding_offset = 0;
 		native->IAGetIndexBuffer(&ib, &index_format, &binding_offset);
 		if (!ib) return;
-		const auto shader = context->mCurrentPixelShaderHandle;
+		ComPtr<ID3D11PixelShader> shader;
+		native->PSGetShader(&shader, nullptr, nullptr);
 		uint32_t backing_hash;
-		uint64_t ps_hash = 0;
+		uint64_t ps_hash;
 		UINT mip_size;
-		bool rehash;
 		{
 			CriticalSectionLockGuard globals_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
 			backing_hash = GetResourceHash(ib.Get());
-			if (shader) {
-				const auto found = G->mShaders.find(shader);
-				if (found != G->mShaders.end()) ps_hash = found->second;
-			}
+			ps_hash = BoundPixelShaderHash(context, shader.Get());
 			mip_size = static_cast<UINT>((std::max)(0, G->dhash_mip_size));
-			rehash = G->dhash_allow_rehash;
 		}
 		if ((capture.texture_ps && capture.texture_ps != ps_hash) ||
 			(capture.texture_ib_resource && capture.texture_ib_resource != backing_hash))
@@ -933,7 +948,7 @@ void OnOriginalDraw(HackerContext* context, const DrawCallInfo& call)
 			uint64_t dhash;
 			const bool supported = !(desc.MiscFlags & (D3D11_RESOURCE_MISC_TILED |
 				D3D11_RESOURCE_MISC_HW_PROTECTED | D3D11_RESOURCE_MISC_RESTRICTED_CONTENT));
-			if (supported && GetDhash(context, resource.Get(), mip_size, rehash, dhash, view.Get())) {
+			if (supported && GetLiveDhash(context, resource.Get(), mip_size, dhash, view.Get())) {
 				out += ",\"state\":\"ready\",\"dhash\":" + Hash(dhash, true) + "}";
 			} else {
 				out += ",\"state\":\"unavailable\"}";

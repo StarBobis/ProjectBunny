@@ -203,6 +203,7 @@ int serve_mcp_fixture(const wchar_t* library)
     make_device();
     const auto deadline = GetTickCount64() + 45000;
     bool holding_map = false, device_switched = false, paused = false;
+    bool texture_updated = false;
     unsigned replacement_frames = 0;
     for (UINT counter = 0; GetTickCount64() < deadline && !std::filesystem::exists(stop); ++counter) {
         if (std::filesystem::exists(fixture / L"pause-present")) {
@@ -247,8 +248,20 @@ int serve_mcp_fixture(const wchar_t* library)
                 const UINT bytes[] = {counter, 1, 2, 3};
                 memcpy(mapping.pData, bytes, sizeof(bytes));
                 context->Unmap(index.Get(), 0);
+                if (!texture_updated && std::filesystem::exists(fixture / L"update-red-texture")) {
+                    ComPtr<ID3D11Resource> texture;
+                    red->GetResource(&texture);
+                    std::array<UINT, 16> pixels;
+                    pixels.fill(0xffff0000);
+                    context->UpdateSubresource(texture.Get(), 0, nullptr, pixels.data(), 4 * sizeof(UINT), 0);
+                    texture_updated = true;
+                    std::ofstream(fixture / L"texture-update-observed").put('1');
+                }
+                if (std::filesystem::exists(fixture / L"clear-ps-state"))
+                    context->ClearState();
+                else
+                    context->PSSetShader(pixel_shader.Get(), nullptr, 0);
                 context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, sizeof(UINT));
-                context->PSSetShader(pixel_shader.Get(), nullptr, 0);
                 ID3D11ShaderResourceView* views[] = {red.Get(), nullptr, blue.Get()};
                 context->PSSetShaderResources(16, 3, views);
                 context->Draw(3, 0);
