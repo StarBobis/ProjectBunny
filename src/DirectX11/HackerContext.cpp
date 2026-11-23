@@ -943,6 +943,9 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		b.is_explicit = false;
 	}
 
+	if (Dx11Mcp::texture_dhash_armed.load(std::memory_order_relaxed))
+		Dx11Mcp::OnOriginalDraw(this, data.call_info);
+
 	// If we are not hunting shaders, we should skip all of this shader management for a performance bump.
 	if (G->hunting == HUNTING_MODE_ENABLED)
 	{

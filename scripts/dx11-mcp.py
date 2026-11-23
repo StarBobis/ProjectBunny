@@ -301,6 +301,19 @@ class Bridge:
                                   "length": integer("Maximum UTF-8 bytes in this response.", 4, CHUNK)})
         self.add("capture", "Arm a targeted live draw or buffer capture. Poll the returned ID and read its bytes.",
                  self.arm, selector, ("kind",))
+        self.add("texture_dhash", "Arm a one-shot read of original PS texture dHashes for a specific indexed draw. "
+                 "Poll with dx11_capture_status. A region hash requires the backing IB hash.",
+                 self.texture_dhash, {
+                     "ib_hash": string("8-digit index buffer resource or Hunting region hash."),
+                     "hash_mode": choice("How to interpret ib_hash.", "resource", "region", default="resource"),
+                     "resource_hash": string("Backing IB resource hash. Required with hash_mode=region."),
+                     "index_count": integer("Index count of the original draw.", 1),
+                     "first_index": integer("Start index of the original draw.", default=0),
+                     "ps_hash": string("Optional 16-digit pixel shader hash to select a rendering pass."),
+                     "slots": {"type": "array", "items": integer("PS texture slot.", 0, 127),
+                               "minItems": 1, "maxItems": 8, "uniqueItems": True},
+                     "frames": integer("Maximum Present frames to wait for the draw.", 1, 120, 30),
+                 }, ("ib_hash", "index_count", "slots"))
         self.add("capture_status", "Read the targeted capture state and binding metadata.",
                  lambda p, capture_id: p.request("POLL", capture_id),
                  {"capture_id": integer("Capture ID.", 1, ANY - 1)}, ("capture_id",))
@@ -409,6 +422,30 @@ class Bridge:
         fields = (kind, hash if hash is not None else f"{ANY:x}", stage, slot,
                   draw, frames, offset, length, hash_mode, resource_id, source, phase)
         return pipe.request("ARM", *fields, 1) if indexed_range else pipe.request("ARM", *fields)
+
+    @staticmethod
+    def texture_dhash(pipe, ib_hash, index_count, slots, hash_mode="resource", resource_hash=None,
+                      first_index=0, ps_hash=None, frames=30):
+        def selector(value, digits, label):
+            if not isinstance(value, str):
+                raise ValueError(f"{label} must be a hexadecimal string.")
+            value = value.lower().removeprefix("0x")
+            if not re.fullmatch(rf"[0-9a-f]{{1,{digits}}}", value) or int(value, 16) == 0:
+                raise ValueError(f"{label} must be a nonzero hexadecimal value of at most {digits} digits.")
+            return value
+
+        ib = selector(ib_hash, 8, "ib_hash")
+        backing = selector(resource_hash, 8, "resource_hash") if resource_hash is not None else "0"
+        shader = selector(ps_hash, 16, "ps_hash") if ps_hash is not None else "0"
+        if (hash_mode not in ("resource", "region") or (hash_mode == "region" and resource_hash is None) or
+                not isinstance(slots, list) or not 1 <= len(slots) <= 8 or
+                any(type(slot) is not int or not 0 <= slot <= 127 for slot in slots) or len(set(slots)) != len(slots)):
+            raise PipeError("Specify one to eight unique PS slots; a region requires resource_hash.",
+                            "TEXTURE_DHASH_SELECTOR_INVALID")
+        if "texture_dhash" not in pipe.request("STATUS").get("features", []):
+            raise PipeError("The running DLL lacks live texture dHash capture. Load an updated ProjectBunny DLL.",
+                            "TEXTURE_DHASH_UNSUPPORTED")
+        return pipe.request("TEXTURE_DHASH", ib, hash_mode, backing, index_count, first_index, shader, frames, *slots)
 
     @staticmethod
     def read_bytes(pipe, capture_id, offset=0, length=CHUNK):
