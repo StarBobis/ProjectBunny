@@ -168,6 +168,42 @@ static void RemoveHooks()
 
 // ----------------------------------------------------------------------------
 
+static wchar_t *normalize_target_path(wchar_t *path)
+{
+	for (wchar_t *p = path; *p; ++p) {
+		if (*p == L'/')
+			*p = L'\\';
+	}
+	if (!_wcsnicmp(path, L"\\\\?\\UNC\\", 8)) {
+		path[6] = L'\\';
+		return path + 6;
+	}
+	return !wcsncmp(path, L"\\\\?\\", 4) ? path + 4 : path;
+}
+
+static bool match_target_list(char *targets, wchar_t *exe_path)
+{
+	const wchar_t *exe = normalize_target_path(exe_path);
+	for (char *item = targets; item;) {
+		char *separator = strchr(item, '|');
+		if (separator)
+			*separator = '\0';
+		while (*item == ' ' || *item == '\t')
+			++item;
+		for (char *end = item + strlen(item); end > item &&
+				(end[-1] == ' ' || end[-1] == '\t');)
+			*--end = '\0';
+
+		wchar_t target[MAX_PATH];
+		if (*item && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+				item, -1, target, MAX_PATH) &&
+				CompareStringOrdinal(exe, -1, normalize_target_path(target), -1, TRUE) == CSTR_EQUAL)
+			return true;
+		item = separator ? separator + 1 : nullptr;
+	}
+	return false;
+}
+
 static bool verify_intended_target(HINSTANCE our_dll)
 {
 	wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
@@ -177,6 +213,7 @@ static bool verify_intended_target(HINSTANCE our_dll)
 	ULONGLONG allocation_size;
 	bool rc = false;
 	char *buf;
+	bool has_legacy_target;
 	const char *section;
 	char target[MAX_PATH], loader[MAX_PATH];
 	wchar_t target_w[MAX_PATH], loader_w[MAX_PATH];
@@ -287,7 +324,16 @@ static bool verify_intended_target(HINSTANCE our_dll)
 		}
 	}
 
-	if (!find_ini_setting_lite(section, "target", target, MAX_PATH))
+	// Copy the legacy setting before reusing the INI buffer. The list value
+	// begins after the destination and the lightweight parser copies forward.
+	has_legacy_target = find_ini_setting_lite(section, "target", target, MAX_PATH);
+	if (find_ini_setting_lite(section, "targets", buf, static_cast<SIZE_T>(allocation_size)) &&
+			buf[strspn(buf, " |\t")] != '\0') {
+		rc = match_target_list(buf, exe_path);
+		goto matched;
+	}
+
+	if (!has_legacy_target)
 		goto out_free;
 
 	// Convert to UTF16 to match the Win32 API in case there are any
@@ -312,6 +358,7 @@ static bool verify_intended_target(HINSTANCE our_dll)
 
 	rc = !_wcsicmp(exe_path + exe_len - target_len, target_w);
 
+matched:
 	if (rc) {
 		// Bump our refcount so we don't get unloaded if the injector
 		// application exits before the game has started initialising DirectX

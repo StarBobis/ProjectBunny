@@ -281,6 +281,18 @@ void test_dx11_loader_file_bounds_regression()
     fixture.run(LoaderReadFault::None, true, 1, 1, 1);
     fixture.write("[Loader]\ntarget=" + fixture.executable_name + "\n");
     fixture.run(LoaderReadFault::None, true, 1, 1, 1);
+    wchar_t executable[MAX_PATH]{};
+    const DWORD executable_length = GetModuleFileNameW(nullptr, executable, MAX_PATH);
+    require_batch(executable_length && executable_length < MAX_PATH,
+        "F163: read the exact executable spelling used by the loader");
+    const std::string full_path = std::filesystem::path(executable).u8string();
+    const std::string wrong_path = (fixture.directory / fixture.executable_name).u8string();
+    fixture.write("[Loader]\ntarget=" + wrong_path + "\ntargets= " + wrong_path + " | " + full_path + " \t\n");
+    fixture.run(LoaderReadFault::None, true, 1, 1, 1);
+    fixture.write("[Loader]\ntarget=" + full_path + "\ntargets=" + wrong_path + "\n");
+    fixture.run(LoaderReadFault::None, false, 1, 1, 1);
+    fixture.write("[Loader]\ntarget=" + full_path + "\ntargets= | \n");
+    fixture.run(LoaderReadFault::None, true, 1, 1, 1);
     fixture.write("[Loader]\ntarget=unrelated-F163.exe\n");
     fixture.run(LoaderReadFault::None, false, 1, 1, 1);
     fixture.write("[Other]\ntarget=" + fixture.executable_name + "\n");

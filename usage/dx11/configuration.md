@@ -41,6 +41,17 @@ user_config = d3dx_user.ini
 
 同类型自定义节用后缀区分，例如 `[ResourceBody]`、`[ResourceHair]`。不要重用同一名称表示不同对象。
 
+## 多个注入目标
+
+支持多路径的 Run.exe 和 DX11 DLL 都会读取 `[Loader] targets`。每项填写 EXE 的完整路径，用 `|` 分隔。当列表有内容时，匹配任一项自动通过目标校验。为兼容旧版读取器，保留单路径的 `target`。
+
+```ini
+[Loader]
+target = D:\Games\Example\Win64r\game.exe
+targets = D:\Games\Example\Win64r\game.exe|D:\Games\Example\Win64rh\game.exe
+module = d3d11.dll
+```
+
 ## 命名空间
 
 递归加载的 Mod 会隔离自定义名称。需要稳定的跨 Mod 接口时，在文件节之前显式命名：
