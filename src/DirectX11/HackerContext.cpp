@@ -3584,6 +3584,8 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstancedIndirect(THIS_
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+		if (G->analyse_frame)
+			FrameAnalysisDumpIndexedIndirectArgs(pBufferForArgs, AlignedByteOffsetForArgs);
 		mOrigContext1->DrawIndexedInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, c.call_info, false, true);

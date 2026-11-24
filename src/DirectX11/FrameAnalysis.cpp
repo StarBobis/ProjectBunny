@@ -1874,6 +1874,24 @@ void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_B
 			if (GetFileAttributes(txt_filename) == INVALID_FILE_ATTRIBUTES) {
 				DumpIBTxt(txt_filename, &map, orig_desc->ByteWidth, ib_fmt, offset, first, count, topology);
 			}
+		} else if (buf_type_mask & FrameAnalysisOptions::DUMP_INDIRECT) {
+			dedupe_buf_filename_txt(bin_filename, txt_filename, MAX_PATH, "indirect-args", -1, 0, 0);
+			FALogInfo(L"Dumping Buffer %ls -> %ls\n", filename.c_str(), txt_filename);
+			if (GetFileAttributes(txt_filename) == INVALID_FILE_ATTRIBUTES) {
+				DumpTimer timer(dump_timing, DumpStage::Text);
+				err = wfopen_ensuring_access(&fd, txt_filename, L"w");
+				if (!fd) {
+					FALogErr(L"Unable to create %ls: %u\n", txt_filename, err);
+					goto out_unmap;
+				}
+				D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
+				memcpy(&args, map.pData, sizeof(args));
+				fprintf(fd, "index count per instance: %u\ninstance count: %u\n"
+					"first index: %u\nbase vertex: %d\nfirst instance: %u\n",
+					args.IndexCountPerInstance, args.InstanceCount, args.StartIndexLocation,
+					args.BaseVertexLocation, args.StartInstanceLocation);
+				fclose(fd);
+			}
 		} else {
 			// We don't know what kind of buffer this is, so just
 			// use the generic dump routine:
@@ -1921,6 +1939,19 @@ void FrameAnalysisContext::DumpBuffer(ID3D11Buffer *buffer, wchar_t *filename,
 		return;
 
 	buffer->GetDesc(&desc);
+	const bool indirect_args = !!(buf_type_mask & FrameAnalysisOptions::DUMP_INDIRECT);
+	if (indirect_args) {
+		constexpr UINT args_size = sizeof(D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS);
+		static_assert(args_size == 20, "Unexpected indexed indirect argument layout");
+		if (offset % sizeof(UINT) || offset > desc.ByteWidth || desc.ByteWidth - offset < args_size) {
+			FALogErr(L"Indexed indirect args exceed or misalign buffer range: offset %u, size %u\n",
+				offset, desc.ByteWidth);
+			return;
+		}
+		// The staged resource contains this draw's record, starting at byte zero.
+		desc.ByteWidth = args_size;
+		desc.StructureByteStride = 0;
+	}
 	memcpy(&orig_desc, &desc, sizeof(D3D11_BUFFER_DESC));
 
 	desc.Usage = D3D11_USAGE_STAGING;
@@ -1939,7 +1970,12 @@ void FrameAnalysisContext::DumpBuffer(ID3D11Buffer *buffer, wchar_t *filename,
 		return;
 	}
 
-	GetDumpingContext()->CopyResource(staging, buffer);
+	if (indirect_args) {
+		const D3D11_BOX args_region = {offset, 0, 0, offset + desc.ByteWidth, 1, 1};
+		GetDumpingContext()->CopySubresourceRegion(staging, 0, 0, 0, 0, buffer, 0, &args_region);
+	} else {
+		GetDumpingContext()->CopyResource(staging, buffer);
+	}
 
 	if (!DeferDumpBuffer(staging, &orig_desc, filename, buf_type_mask, idx, ib_fmt, stride, offset, first, count, layout, topology, call_info, staged_ib_for_vb, ib_off_for_vb))
 		DumpBufferImmediateCtx(staging, &orig_desc, filename, buf_type_mask, idx, ib_fmt, stride, offset, first, count, layout, topology, call_info, staged_ib_for_vb, ib_off_for_vb);
@@ -2900,6 +2936,36 @@ void FrameAnalysisContext::FrameAnalysisTrigger(FrameAnalysisOptions new_options
 	}
 }
 
+void FrameAnalysisContext::FrameAnalysisDumpIndexedIndirectArgs(ID3D11Buffer *buffer, UINT offset)
+{
+	if (!buffer)
+		return;
+	const auto options = oneshot_valid ? oneshot_analyse_options : G->cur_analyse_options;
+	if (!(options & FrameAnalysisOptions::DUMP_IB) && !(options & FrameAnalysisOptions::DUMP_INDIRECT))
+		return;
+
+	CriticalSectionGuard(&G->mCriticalSection);
+	const auto previous_options = analyse_options;
+	// Record the copy in the draw's own command list. The immediate-context
+	// shortcut can see stale GPU-written arguments before that list executes.
+	analyse_options = options;
+	analyse_options &= (FrameAnalysisOptions)~FrameAnalysisOptions::DEFRD_CTX_MASK;
+	analyse_options &= (FrameAnalysisOptions)~FrameAnalysisOptions::FMT_DESC;
+	analyse_options |= FrameAnalysisOptions::DEFRD_CTX_DELAY;
+	if (!(analyse_options & FrameAnalysisOptions::FMT_BUF_MASK)) {
+		analyse_options |= FrameAnalysisOptions::FMT_BUF_BIN;
+		analyse_options |= FrameAnalysisOptions::FMT_BUF_TXT;
+	}
+
+	wchar_t filename[MAX_PATH];
+	if (SUCCEEDED(FrameAnalysisFilename(filename, MAX_PATH, false, L"indirect-args", NULL, -1, buffer))) {
+		DumpBuffer(buffer, filename, FrameAnalysisOptions::DUMP_INDIRECT, -1,
+			DXGI_FORMAT_UNKNOWN, 0, offset, 0, 0, nullptr,
+			D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED, nullptr, nullptr, nullptr, 0);
+	}
+	analyse_options = previous_options;
+}
+
 void FrameAnalysisContext::update_per_draw_analyse_options()
 {
 	analyse_options = G->cur_analyse_options;
@@ -3096,8 +3162,12 @@ void FrameAnalysisContext::FrameAnalysisDump(ID3D11Resource *resource, FrameAnal
 		// long, try again without them:
 		hr = FrameAnalysisFilenameResource(filename, MAX_PATH, L"...", resource, false);
 	}
-	if (SUCCEEDED(hr))
-		DumpResource(resource, filename, analyse_options, -1, format, stride, offset);
+	if (SUCCEEDED(hr)) {
+		// An explicit resource dump has no indexed indirect draw to select.
+		auto resource_options = analyse_options;
+		resource_options &= (FrameAnalysisOptions)~FrameAnalysisOptions::DUMP_INDIRECT;
+		DumpResource(resource, filename, resource_options, -1, format, stride, offset);
+	}
 
 	setlocale(LC_CTYPE, G->gDefaultLocale.c_str());
 

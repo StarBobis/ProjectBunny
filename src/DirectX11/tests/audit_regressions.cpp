@@ -706,6 +706,64 @@ public:
     }
 };
 
+void test_indexed_indirect_args_dump()
+{
+    BatchDevice device;
+    AuditDumpScope output;
+    AuditAnalysisDeviceScope analysis(device);
+    auto* context = analysis.context;
+    auto args = buffer(device, 40, 0, D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS);
+    const int initial[] = {0, 0, 0, 0, 0, 3, 0, 7, -2, 11};
+    const int recorded[] = {0, 0, 0, 0, 0, 9, 0, 13, -4, 17};
+    device.context->UpdateSubresource(args.Get(), 0, nullptr, initial, 0, 0);
+
+    auto read_args = [&](const wchar_t* extension) {
+        std::vector<std::string> files;
+        for (const auto& file : std::filesystem::recursive_directory_iterator(output.path)) {
+            if (file.path().parent_path().filename() != L"deduped" &&
+                file.path().extension() == extension &&
+                file.path().filename().wstring().find(L"-indirect-args") != std::wstring::npos)
+                files.push_back(read_file(file.path()));
+        }
+        return files;
+    };
+    context->DrawIndexedInstancedIndirect(args.Get(), 20);
+    require_batch(read_args(L".buf").empty(), "indexed args: no dump without an enabled option");
+    G->cur_analyse_options = FrameAnalysisOptions::DUMP_IB;
+    context->FrameAnalysisDumpIndexedIndirectArgs(args.Get(), 2);
+    context->FrameAnalysisDumpIndexedIndirectArgs(args.Get(), 24);
+    require_batch(read_args(L".buf").empty(), "indexed args: reject misalignment and truncated records");
+    context->DrawIndexedInstancedIndirect(args.Get(), 20);
+    const auto initial_bytes = std::string(reinterpret_cast<const char*>(initial + 5), 20);
+    require_batch(read_args(L".buf") == std::vector<std::string>{initial_bytes},
+        "indexed args: immediate draw dumps exactly the record at the API offset");
+    const auto text = read_args(L".txt");
+    require_batch(text.size() == 1 && text[0].find("base vertex: -2") != std::string::npos &&
+        text[0].find("first instance: 11") != std::string::npos,
+        "indexed args: text decodes signed base vertex and start instance");
+
+    ComPtr<ID3D11DeviceContext> deferred;
+    ComPtr<ID3D11DeviceContext1> deferred1;
+    require_batch(SUCCEEDED(device.native->CreateDeferredContext(0, &deferred)) &&
+        SUCCEEDED(deferred.As(&deferred1)), "indexed args: create WARP deferred context");
+    auto recorder = std::make_unique<FrameAnalysisContext>(device.native.Get(), deferred1.Get());
+    recorder->SetHackerDevice(device.device);
+    G->cur_analyse_options = FrameAnalysisOptions::DUMP_INDIRECT;
+    G->cur_analyse_options |= FrameAnalysisOptions::DEFRD_CTX_IMM;
+    deferred->UpdateSubresource(args.Get(), 0, nullptr, recorded, 0, 0);
+    recorder->DrawIndexedInstancedIndirect(args.Get(), 20);
+    deferred->UpdateSubresource(args.Get(), 0, nullptr, initial, 0, 0);
+    ComPtr<ID3D11CommandList> commands;
+    require_batch(SUCCEEDED(recorder->FinishCommandList(FALSE, &commands)),
+        "indexed args: finish the deferred draw and copies");
+    require_batch(read_args(L".buf").size() == 1, "indexed args: no deferred read before execution");
+    context->ExecuteCommandList(commands.Get(), FALSE);
+    const auto dumped = read_args(L".buf");
+    const auto recorded_bytes = std::string(reinterpret_cast<const char*>(recorded + 5), 20);
+    require_batch(dumped.size() == 2 && std::count(dumped.begin(), dumped.end(), recorded_bytes) == 1,
+        "indexed args: capture the preceding update and exclude the update after the draw");
+}
+
 std::string audit_read_native_buffer(BatchDevice& device,ID3D11Buffer* input)
 {
     D3D11_BUFFER_DESC desc{}; input->GetDesc(&desc);
@@ -3100,6 +3158,7 @@ const AuditCase audit_cases[] = {{"F-003", test_dx11_file_publication_regression
     {"F-900", test_dx11_version_regression},
     {"F-292", test_dx11_debug_layer_interfaces_regression},
     {"F-196", test_dx11_legacy_profiling_regression},
+    {"INDEXED-INDIRECT-DUMP", test_indexed_indirect_args_dump},
     {"F-001", test_f001}, {"F-105", test_dx11_disassembler_header_bounds_regression},
     {"F-106", test_f106}, {"F-114", test_f114},
     {"F-127", test_dx11_dx9_constant_reset_regression},

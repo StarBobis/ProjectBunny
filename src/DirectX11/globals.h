@@ -186,6 +186,7 @@ enum class FrameAnalysisOptions {
 	DEFRD_CTX_DELAY = 0x00800000,
 	DEFRD_CTX_MASK  = 0x00c00000,
 	SYMLINK         = 0x01000000,
+	DUMP_INDIRECT   = 0x02000000,
 	DEPRECATED      = (signed)0x80000000,
 };
 SENSIBLE_ENUM(FrameAnalysisOptions);
@@ -197,6 +198,7 @@ static EnumName_t<wchar_t *, FrameAnalysisOptions> FrameAnalysisOptionNames[] = 
 	{L"dump_cb", FrameAnalysisOptions::DUMP_CB},
 	{L"dump_vb", FrameAnalysisOptions::DUMP_VB},
 	{L"dump_ib", FrameAnalysisOptions::DUMP_IB},
+	{L"dump_indirect", FrameAnalysisOptions::DUMP_INDIRECT},
 
 	// Texture2D format selection:
 	{L"jps", FrameAnalysisOptions::FMT_2D_JPS},

@@ -303,6 +303,7 @@ public:
 	// public to allow CommandList access
 	virtual void FrameAnalysisLog(char *fmt, ...) {};
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};
+	virtual void FrameAnalysisDumpIndexedIndirectArgs(ID3D11Buffer *, UINT) {}
 	virtual void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
 		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) {};
 

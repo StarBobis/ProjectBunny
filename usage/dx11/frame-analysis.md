@@ -22,6 +22,7 @@ analyse_options = dump_cb dump_vb dump_ib buf txt
 | `dump_depth` | 深度模板 |
 | `dump_tex` | 着色器输入资源 |
 | `dump_cb/dump_vb/dump_ib` | 常量、顶点、索引缓冲 |
+| `dump_indirect` | 单独抓取 `DrawIndexedInstancedIndirect` 的参数。`dump_ib` 也会抓取这些参数 |
 | `buf/txt` | 二进制/解码文本缓冲 |
 | `dds` | DDS 纹理；完整数据可能很大 |
 | `jpg/jps` | 较小的预览图片，不能覆盖所有资源 |
@@ -39,6 +40,8 @@ analyse_options = dump_cb dump_vb dump_ib buf txt
 | `deferred_ctx_accurate` | 延后抓取以保留更新后数据，额外保存资源 |
 
 延迟上下文优先限定具体资源，不全量打开。`hold` 与大范围 DDS 组合会迅速消耗磁盘。
+
+游戏发起并实际提交的间接索引绘制会生成参数文件，文件沿用同一次 draw 的编号和着色器后缀，资源名为 `indirect-args`。其 `.buf` 从文件偏移 0 开始保存原参数缓冲区在日志 `AlignedByteOffsetForArgs` 处的 20 字节，其 `.txt` 写出每实例索引数、实例数、起始索引、带符号的顶点基址和起始实例。格式由 `buf`、`txt` 控制，两项都未指定时同时输出。参数复制随 draw 一起记录到延迟命令列表，读回发生在命令列表执行后，即使其他资源使用 `deferred_ctx_immediate`。
 
 ## 定点导出
 
