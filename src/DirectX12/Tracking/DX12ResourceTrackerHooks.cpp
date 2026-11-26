@@ -8,7 +8,7 @@
 #include "DX12Presentation.h"
 #include <algorithm>
 #include <chrono>
-#include <optional>
+#include <bit>
 #include <unordered_set>
 #include <intrin.h>
 
@@ -78,7 +78,8 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 	record.heap = descriptorHeap;
 	record.desc = *desc;
 	record.cpuStart = descriptorHeap->GetCPUDescriptorHandleForHeapStart().ptr;
-	record.gpuStart = descriptorHeap->GetGPUDescriptorHandleForHeapStart().ptr;
+	record.gpuStart = (desc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+		? descriptorHeap->GetGPUDescriptorHandleForHeapStart().ptr : 0;
 	record.increment = device->GetDescriptorHandleIncrementSize(desc->Type);
 	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
 		desc->Type, record.increment);
@@ -318,19 +319,11 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedSampler(
 	DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged(std::move(record));
 }
 
-// One CopyDescriptors call expands into several blocks (the measured average is
-// ~8 single-slot blocks per call), and every block used to re-run the whole
-// per-call setup: the tracking-mode gate (two out-of-line policy calls), the
-// copied-descriptor tally, and a fresh heap-version commit set. Only work that
-// is genuinely call-scoped lives here.
-//
-// Cache only heap boundaries within this API call, not a descriptor or a slot
-// verdict. Source and destination alternate between different heaps, so the
-// resolver's single sequential memo cannot exploit a run of destination handles.
-// Memoize only the destination stream: sources often scatter across heaps, where
-// maintaining an additional memo can cost more than the lookups it saves.
+// Cache immutable bounds while validating the active heap lifetime on every use.
 struct DescriptorCopyHeapMemo
 {
+	UINT strideShift = 0;
+	bool powerOfTwoStride = false;
 	DX12DescriptorHeapShadowUtils::HeapResolveCacheEntry entry;
 
 	bool Resolve(
@@ -352,7 +345,7 @@ struct DescriptorCopyHeapMemo
 				out->heapIndex = entry.heapIndex;
 				// Recompute even for random, repeated or descending handles;
 				// a cached heap never implies that its previous slot is reusable.
-				out->slot = static_cast<UINT>(offset / entry.increment);
+				out->slot = static_cast<UINT>(powerOfTwoStride ? offset >> strideShift : offset / entry.increment);
 				return true;
 			}
 		}
@@ -365,6 +358,8 @@ struct DescriptorCopyHeapMemo
 		entry.heapIndex = out->heapIndex;
 		entry.cpuStart = out->heap->cpuStart;
 		entry.increment = out->heap->increment;
+		powerOfTwoStride = std::has_single_bit(entry.increment);
+		strideShift = std::countr_zero(entry.increment);
 		entry.numDescriptors = out->heap->desc.NumDescriptors;
 		entry.type = out->heap->desc.Type;
 		return true;
@@ -375,8 +370,7 @@ struct DescriptorCopyCallScope
 {
 	D3D12_DESCRIPTOR_HEAP_TYPE heapType = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
 	UINT increment = 0;
-	// Owned by the multi-range caller, never retained after that call. Simple
-	// copies neither initialize this storage nor populate a one-use memo.
+	// Multi-range copies reuse the thread-local destination bounds.
 	DescriptorCopyHeapMemo *destinationMemo = nullptr;
 	// NeedsDumpOrHuntingTracking() is two out-of-line policy calls; it is
 	// sampled once per API call, exactly like the entry gate that decides
@@ -417,15 +411,17 @@ struct DescriptorCopyCallScope
 // call's single heap-version commit.
 static void FinishCopiedDescriptorCall(DescriptorCopyCallScope &scope)
 {
-	DX12_PROF_ADD_ITEMS("Desc.CopySlots", scope.copiedDescriptors);
-	DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", scope.copiedBlocks);
-	DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", scope.skippedBlocks);
-	DX12_PROF_ADD_ITEMS("Desc.CopyBlocksLocked", scope.lockedBlocks);
-	DX12_PROF_ADD_CALLS("Rm.DescCopyDirectPath", scope.directPathCalls);
-	DX12_PROF_ADD_CALLS("Rm.DescCopyChanged", scope.changedCalls);
-	DX12_PROF_ADD_CALLS("Rm.DescCopyUnchanged", scope.unchangedCalls);
-	DX12_PROF_ADD_CALLS("Rm.DescCopyLockedPath", scope.lockedPathCalls);
-	DX12_PROF_ADD_CALLS("Rm.DescCopyLedgerFallback", scope.ledgerFallbackCalls);
+	if (DX12DiagProf::Enabled()) {
+		DX12DiagProf::AddItems("Desc.CopySlots", scope.copiedDescriptors);
+		DX12DiagProf::AddItems("Desc.CopyBlocks", scope.copiedBlocks);
+		DX12DiagProf::AddItems("Desc.CopyBlocksSkipped", scope.skippedBlocks);
+		DX12DiagProf::AddItems("Desc.CopyBlocksLocked", scope.lockedBlocks);
+		DX12DiagProf::AddCalls("Rm.DescCopyDirectPath", scope.directPathCalls);
+		DX12DiagProf::AddCalls("Rm.DescCopyChanged", scope.changedCalls);
+		DX12DiagProf::AddCalls("Rm.DescCopyUnchanged", scope.unchangedCalls);
+		DX12DiagProf::AddCalls("Rm.DescCopyLockedPath", scope.lockedPathCalls);
+		DX12DiagProf::AddCalls("Rm.DescCopyLedgerFallback", scope.ledgerFallbackCalls);
+	}
 	scope.commitSet.CommitAll();
 }
 
@@ -632,13 +628,10 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			!scope.dumpOrHunt)
 		return;
 
-	// Boundaries are reused only inside a multi-range API call. Every block
-	// still reads current activity, materialization and descriptor contents;
-	// the slot/heap publication and locked fallbacks below remain unchanged.
-	// Inline, lazily initialized storage; single-range calls create no memo.
-	std::optional<DescriptorCopyHeapMemo> destinationMemo;
-	if (numDestDescriptorRanges > 1 || numSrcDescriptorRanges > 1)
-		scope.destinationMemo = &destinationMemo.emplace();
+	// Staging sources scatter; the destination stream usually stays in the
+	// same active ring across API calls. Cache only its immutable bounds.
+	static thread_local DescriptorCopyHeapMemo destinationMemo;
+	scope.destinationMemo = &destinationMemo;
 	UINT destRange = 0, srcRange = 0, destOffset = 0, srcOffset = 0;
 	DescriptorCopyRun run;
 	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(

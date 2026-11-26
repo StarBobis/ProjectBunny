@@ -3,6 +3,7 @@
 #pragma once
 
 #include "DX12WrapperCore.h"
+#include "DX12SwapChainQueues.h"
 
 namespace DX12WrapperDetail
 {
@@ -252,6 +253,8 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			// straight into the driver (WoLong startup RTV crash). Keep that
 			// entire swapchain native, including GetDevice and subsequent QI.
 			const bool wrappedQueue = device && DX12Wrapper::Unwrap(device) != device;
+			if (wrappedQueue)
+				DX12SwapChainQueues::Bind(static_cast<IDXGISwapChain*>(*swapChain), 0, DX12Wrapper::Unwrap(device));
 			const bool wrapped = wrappedQueue && DX12Wrapper::WrapDXGISwapChainResult(riid, swapChain);
 			DX12_LOG_FLUSH("DX12SwapChainBoundary",
 				"threadId=%lu,queue=%p,swapchain=%p,mode=%s,modInterception=%s",
@@ -1029,14 +1032,26 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				DX12NativeOverlayInvalidate(mSwapChain);
 			std::vector<IUnknown*> unwrappedQueues;
 			IUnknown *const *activeQueues = ppPresentQueue;
-			if (ppPresentQueue && BufferCount) {
-				unwrappedQueues.resize(BufferCount);
-				for (UINT i = 0; i < BufferCount; ++i)
+			UINT queueCount = BufferCount;
+			if (ppPresentQueue && !queueCount) {
+				DXGI_SWAP_CHAIN_DESC1 desc = {};
+				if (SUCCEEDED(swapChain3->GetDesc1(&desc)))
+					queueCount = desc.BufferCount;
+			}
+			if (ppPresentQueue && queueCount) {
+				unwrappedQueues.resize(queueCount);
+				for (UINT i = 0; i < queueCount; ++i)
 					unwrappedQueues[i] = DX12Wrapper::Unwrap(ppPresentQueue[i]);
 				activeQueues = unwrappedQueues.data();
 			}
 			hr = swapChain3->ResizeBuffers1(
 				BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, activeQueues);
+			if (SUCCEEDED(hr) && ppPresentQueue) {
+				for (UINT i = 0; i < queueCount; ++i)
+					DX12SwapChainQueues::Bind(mSwapChain, i + 1, activeQueues[i]);
+				for (UINT i = queueCount; i < DXGI_MAX_SWAP_CHAIN_BUFFERS; ++i)
+					mSwapChain->SetPrivateDataInterface(DX12SwapChainQueues::Key(i + 1), nullptr);
+			}
 			swapChain3->Release();
 			return hr;
 		}

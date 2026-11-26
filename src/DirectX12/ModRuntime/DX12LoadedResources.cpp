@@ -45,7 +45,8 @@ void DX12UploadChannelWaitOnQueue(ID3D12CommandQueue *queue)
 				}
 			}
 			if (!alreadyWaited && SUCCEEDED(queue->Wait(
-					DX12DdsTextureLoadUtils::s_uploadFence, pendingValue))) {
+					static_cast<ID3D12Fence*>(DX12Wrapper::Unwrap(DX12DdsTextureLoadUtils::s_uploadFence)),
+					pendingValue))) {
 				queue->AddRef();
 				DX12DdsTextureLoadUtils::s_uploadQueueWaits.push_back(
 					{ queue, pendingValue });

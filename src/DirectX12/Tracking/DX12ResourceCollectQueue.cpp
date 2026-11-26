@@ -185,6 +185,13 @@ UINT64 DX12ResourceCollectQueue::LastSubmittedSequence()
 	return next - 1;
 }
 
+void DX12ResourceCollectQueue::WakeForReadback()
+{
+	// Pair with the worker's predicate check to avoid a lost notification.
+	std::lock_guard lock(mutex);
+	wake.notify_one();
+}
+
 void DX12ResourceCollectQueue::WorkerLoop()
 {
 	DX12_LOG("DX12ResourceCollectQueue",
@@ -193,15 +200,20 @@ void DX12ResourceCollectQueue::WorkerLoop()
 
 	static constexpr size_t kBatchSize = 64;
 	for (;;) {
+		DX12ReadbackPublishReady();
 		DX12ResourceCollectTask batch[kBatchSize];
 		size_t batchCount = 0;
 		size_t depthAfterPop = 0;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
 			DX12_DIAG_QPC(waitBegin);
-			wake.wait(lock, []() {
+			const auto workReady = [] {
 				return stopRequested.load(std::memory_order_acquire) || !tasks.empty();
-			});
+			};
+			if (DX12ReadbackAwaitingPublication())
+				wake.wait_for(lock, std::chrono::milliseconds(2), workReady);
+			else
+				wake.wait(lock, [&] { return workReady() || DX12ReadbackAwaitingPublication(); });
 			DX12_PROF_ADD_US_ITEMS(
 				"Worker.wait.idle",
 				DX12_DIAG_ELAPSED_US(waitBegin),

@@ -827,11 +827,8 @@ uint32_t HashDescriptorBindingResource(const DX12CurrentShaderResourceBinding &b
 		uint32_t hash = 0;
 		if (DX12TryGetTextureHash(binding.descriptor.resource, &hash))
 			return hash;
-		// Mark the texture wanted: the readback pipeline captures its top mip
-		// (with bounded retries), so a missing hash - upload shape not
-		// recognized, capture dropped under load, upload before tracking -
-		// heals a frame or two after the first check instead of disabling the
-		// override for the whole session. Repeat marks are one locked probe.
+		// Retry at the next top-mip write or explicit transition that proves
+		// the layout on the consuming queue. A binding alone cannot prove it.
 		DX12MarkTextureHashWanted(binding.descriptor.resource);
 	}
 	return 0;

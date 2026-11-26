@@ -91,7 +91,8 @@ public:
 		const DX12IaReplacementExecutorCallbacks &callbacks,
 		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
-		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
+		if (!(flagsWord & (DX12HotPathState::MASK_DRAW_WORK |
+			DX12HotPathState::FLAG_PRESENT_REPLACEMENT | DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
 			DX12_PROF_COUNT("FastForward");
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 			return;

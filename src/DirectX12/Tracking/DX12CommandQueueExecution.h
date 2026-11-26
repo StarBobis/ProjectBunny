@@ -99,7 +99,7 @@ public:
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
 				DX12_DIAG_QPC_RESET(sliceBegin);
-				original(queue, numCommandLists, commandLists);
+				DX12ReadbackExecute(queue, numCommandLists, commandLists, original);
 				DX12_PROF_ADD_US_ITEMS(
 					"Queue.original_skip",
 					DX12_DIAG_ELAPSED_US(sliceBegin),
@@ -109,11 +109,6 @@ public:
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
 			}
-			// Async content capture: submit readback events queued during
-			// recording, ordered after the game's lists via Signal/Wait on
-			// the mod-owned copy queue.
-			if (DX12AsyncReadbackHasPendingWork())
-				DX12AsyncReadbackSubmitPending(queue);
 			if (shouldNotifySubmitted) {
 				DX12_DIAG_QPC_RESET(sliceBegin);
 				DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
@@ -141,16 +136,12 @@ public:
 		if (DX12InternalReplayState::IsActive()) {
 			if (original) {
 				DX12_DIAG_QPC_RESET(sliceBegin);
-				original(queue, numCommandLists, commandLists);
+				DX12ReadbackExecute(queue, numCommandLists, commandLists, original);
 				DX12_PROF_ADD_US_ITEMS(
 					"Queue.original_internal_replay",
 					DX12_DIAG_ELAPSED_US(sliceBegin),
 					numCommandLists);
 			}
-			// Keep the async readback pipeline moving during capture replay:
-			// replay submits never carry the game's normal ExecuteCommandLists.
-			if (DX12AsyncReadbackHasPendingWork())
-				DX12AsyncReadbackSubmitPending(queue);
 			DX12_PROF_ADD_US_ITEMS(
 				"Queue.total_internal_replay",
 				DX12_DIAG_ELAPSED_US(totalBegin),
@@ -159,7 +150,7 @@ public:
 			return;
 		}
 
-				if (!original) {
+		if (!original) {
 			DX12_PROF_ADD_US_ITEMS(
 				"Queue.total_no_original",
 				DX12_DIAG_ELAPSED_US(totalBegin),
@@ -173,7 +164,7 @@ public:
 				"\"stage\":\"before_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
 		DX12_DIAG_QPC_RESET(sliceBegin);
-		original(queue, numCommandLists, commandLists);
+		DX12ReadbackExecute(queue, numCommandLists, commandLists, original);
 		DX12_PROF_ADD_US_ITEMS(
 			"Queue.original",
 			DX12_DIAG_ELAPSED_US(sliceBegin),
@@ -182,11 +173,6 @@ public:
 			DX12_LOG_FLUSH("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"after_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
-		// Async content capture: submit readback events queued during
-		// recording, ordered after the game's lists via Signal/Wait on the
-		// mod-owned copy queue (pure queue operations, no recording).
-		if (DX12AsyncReadbackHasPendingWork())
-			DX12AsyncReadbackSubmitPending(queue);
 		if (shouldNotifySubmitted) {
 			DX12_PROF_STAGE_BEGIN(ExecuteCLNotify);
 			DX12_DIAG_QPC_RESET(sliceBegin);

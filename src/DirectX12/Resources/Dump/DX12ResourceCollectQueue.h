@@ -79,6 +79,7 @@ public:
 	static UINT64 LastSubmittedSequence();
 
 	static void WorkerLoop();
+	static void WakeForReadback();
 	static void DrainPending(const char *reason);
 	static void WaitForSubmittedSequence(UINT64 targetSequence, const char *reason);
 	static void WaitForIdle(const char *reason);

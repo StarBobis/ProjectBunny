@@ -46,6 +46,7 @@ add_library(DirectX12 SHARED
     Presentation/DXGIHookState.h
     Presentation/DX12WrapperCore.h
     Presentation/DX12DebugWrappers.h
+    Presentation/DX12SwapChainQueues.h
     Presentation/DX12FactoryWrappers.h
     Presentation/DX12CommandWrappers.h
     Presentation/DX12ResourceWrappers.h
@@ -246,4 +247,24 @@ if(BUILD_TESTING AND DX12_AUDIT_TESTS)
     add_test(NAME dx12_shader_model_audit
         COMMAND dx12_shader_model_audit --audit-item F-201b)
     set_tests_properties(dx12_shader_model_audit PROPERTIES TIMEOUT 60)
+
+    # Exercise the same wrapper, queues, worker and caches against WARP. Keep
+    # the executable away from the proxy DLL so it loads the system runtime.
+    get_target_property(dx12_sources DirectX12 SOURCES)
+    list(FILTER dx12_sources EXCLUDE REGEX "(Proxy/D3D12Proxy.cpp|d3d12Wrapper.def)$")
+    add_executable(dx12_runtime_audit tests/runtime_audit.cpp ${dx12_sources})
+    target_include_directories(dx12_runtime_audit PRIVATE
+        $<TARGET_PROPERTY:DirectX12,INCLUDE_DIRECTORIES>)
+    target_link_libraries(dx12_runtime_audit PRIVATE
+        $<TARGET_PROPERTY:DirectX12,LINK_LIBRARIES> d3d12.lib)
+    target_compile_definitions(dx12_runtime_audit PRIVATE MIGOTO_DX=12)
+    target_compile_features(dx12_runtime_audit PRIVATE cxx_std_20)
+    set_target_msvc_options(dx12_runtime_audit)
+    set_target_common_definitions(dx12_runtime_audit)
+    target_compile_options(dx12_runtime_audit PRIVATE /bigobj)
+    set_target_properties(dx12_runtime_audit PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/audit"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/audit")
+    add_test(NAME dx12_runtime_audit COMMAND dx12_runtime_audit)
+    set_tests_properties(dx12_runtime_audit PROPERTIES TIMEOUT 60)
 endif()

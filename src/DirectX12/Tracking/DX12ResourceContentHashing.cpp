@@ -474,6 +474,7 @@ struct CachedBufferContent
 };
 
 static std::unordered_map<ID3D12Resource*, CachedBufferContent> gBufferContentByResource;
+static std::unordered_map<ID3D12Resource*, size_t> gPendingGpuBufferWrites;
 static SRWLOCK gBufferContentLock = SRWLOCK_INIT;
 static std::atomic<UINT64> gBufferContentGeneration{1};
 
@@ -745,7 +746,7 @@ bool DX12CopyBufferContentRange(
 	std::vector<uint8_t> copiedData;
 	AcquireSRWLockShared(&gBufferContentLock);
 	auto srcFound = gBufferContentByResource.find(srcResource);
-	if (srcFound == gBufferContentByResource.end() ||
+	if (srcFound == gBufferContentByResource.end() || gPendingGpuBufferWrites.contains(srcResource) ||
 	    !DX12BufferContentCacheUtils::ArePagesValid(
 			srcFound->second,
 			srcOffset,
@@ -809,7 +810,7 @@ UINT64 DX12GetBufferContentGenerationForResource(ID3D12Resource *resource)
 	}
 	AcquireSRWLockShared(&gBufferContentLock);
 	auto found = gBufferContentByResource.find(resource);
-	const UINT64 generation = found == gBufferContentByResource.end() ?
+	const UINT64 generation = found == gBufferContentByResource.end() || gPendingGpuBufferWrites.contains(resource) ?
 		1 : found->second.generation;
 	ReleaseSRWLockShared(&gBufferContentLock);
 	DX12BufferContentGenerationTlsEntry &slot =
@@ -879,7 +880,7 @@ bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 	AcquireSRWLockShared(&gBufferContentLock);
 	std::unordered_map<ID3D12Resource*, CachedBufferContent>::iterator it =
 		gBufferContentByResource.find(summary.resource);
-	if (it == gBufferContentByResource.end()) {
+	if (it == gBufferContentByResource.end() || gPendingGpuBufferWrites.contains(summary.resource)) {
 		ReleaseSRWLockShared(&gBufferContentLock);
 		return false;
 	}
@@ -915,8 +916,40 @@ struct CachedTextureHash
 };
 
 static std::unordered_map<ID3D12Resource*, CachedTextureHash> gTextureHashByResource;
+static std::unordered_map<ID3D12Resource*, size_t> gPendingGpuTextureWrites;
 static SRWLOCK gTextureHashLock = SRWLOCK_INIT;
 static std::atomic<UINT64> gTextureHashGeneration{1};
+
+// Keep previous pages available to merge partial writes, but hide both old
+// and intermediate values from draw/hash lookups until the last queued
+// snapshot for this resource has been processed.
+void DX12SetReadbackPending(ID3D12Resource *resource, bool texture, bool begin)
+{
+	auto &lock = texture ? gTextureHashLock : gBufferContentLock;
+	auto &counts = texture ? gPendingGpuTextureWrites : gPendingGpuBufferWrites;
+	AcquireSRWLockExclusive(&lock);
+	bool visibilityChanged = false;
+	if (begin) {
+		visibilityChanged = counts[resource]++ == 0;
+	} else {
+		auto found = counts.find(resource);
+		if (found != counts.end() && --found->second == 0) {
+			counts.erase(found);
+			visibilityChanged = true;
+		}
+	}
+	if (visibilityChanged) {
+		if (texture) {
+			gTextureHashGeneration.fetch_add(1, std::memory_order_release);
+		} else {
+			const UINT64 generation = gBufferContentGeneration.fetch_add(1, std::memory_order_release) + 1;
+			auto it = gBufferContentByResource.find(resource);
+			if (it != gBufferContentByResource.end())
+				it->second.generation = generation;
+		}
+	}
+	ReleaseSRWLockExclusive(&lock);
+}
 
 bool DX12CacheTextureHash(
 	ID3D12Resource *resource, uint32_t hash, const D3D12_RESOURCE_DESC *desc, const char *source)
@@ -963,7 +996,7 @@ bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash)
 	AcquireSRWLockShared(&gTextureHashLock);
 	std::unordered_map<ID3D12Resource*, CachedTextureHash>::iterator it =
 		gTextureHashByResource.find(resource);
-	if (it == gTextureHashByResource.end()) {
+	if (it == gTextureHashByResource.end() || gPendingGpuTextureWrites.contains(resource)) {
 		ReleaseSRWLockShared(&gTextureHashLock);
 		return false;
 	}

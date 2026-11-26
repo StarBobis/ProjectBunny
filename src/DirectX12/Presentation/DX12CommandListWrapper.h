@@ -127,6 +127,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		ReleaseCachedCommandListInterface(&mCommandList9Interface);
 		ReleaseCachedCommandListInterface(&mCommandList10Interface);
 		if (mCommandList) {
+			DX12ReadbackForgetRecording(mCommandList);
 			DX12CommandListLifecycle::Unregister(mCommandList);
 			DX12CommandListRuntime::UnregisterDirectState(mCommandList);
 		}
@@ -554,13 +555,21 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		DX12_PROF_STAGE_SCOPE(ResetCmdList);
 			HRESULT hr = DX12WrapperRuntimeUtils::ResetCommandList(
 				mCommandList, &mRuntimeState, pAllocator, pInitialState, mOrigReset);
+			if (SUCCEEDED(hr)) {
+				mPassBlocksCopy = false;
+				mPredicated = false;
+				mProtected = false;
+			}
 			return hr;
 		}
 
 		void STDMETHODCALLTYPE ClearState(ID3D12PipelineState *pPipelineState) override
 		{
 		DX12_PROF_STAGE_BEGIN(ClearState);
-			mCommandList->ClearState(DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipelineState));
+			ID3D12PipelineState *state = DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipelineState);
+			mCommandList->ClearState(state);
+			mPredicated = false;
+			DX12CommandListLifecycle::ClearState(mCommandList, state);
 		DX12_PROF_STAGE_END(ClearState);
 		}
 
@@ -568,14 +577,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			UINT VertexCountPerInstance, UINT InstanceCount,
 			UINT StartVertexLocation, UINT StartInstanceLocation) override
 		{
-		// Fast-path: no draw-level work -> call driver directly, bypass hook entirely.
-		// MASK_DRAW_WORK==0 implies skipAll==1 (Update() publishes them
-		// together), so the single flags read covers both gates.
 			const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 			// A pending draw-SRV deferred restore forces the slow path so it
 			// flushes before this draw observes descriptor-heap state.
 			if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 					DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE)) &&
+			!((drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+				DX12ModPresentReplacementPendingForCurrentPresent()) &&
 				mOrigDrawInstanced) {
 			DX12_PROF_API_SCOPE(DrawInstanced);
 			mOrigDrawInstanced(mCommandList, VertexCountPerInstance, InstanceCount,
@@ -613,6 +621,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE)) &&
+			!((drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+				DX12ModPresentReplacementPendingForCurrentPresent()) &&
 			mOrigDrawIndexedInstanced) {
 			DX12_PROF_API_SCOPE(DrawIndexedInstanced);
 			mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance, InstanceCount,
@@ -680,20 +690,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				srcResource,
 				SrcOffset,
 				NumBytes);
-			// Async content capture: queue a GPU readback of the
-			// destination range instead of propagating CPU shadow content
-			// synchronously. The readback executes after this submit, so
-			// it always observes the post-copy bytes.
 			if (DX12HotPathState::NeedsIaBufferContentTracking(flags)) {
-				// Synchronously invalidate the destination's content generation:
-				// the IA hash cache key uses the per-resource content generation
-				// (not the command-list iaContentEpoch above), and the async
-				// readback only refreshes it a frame later. Without this bump a
-				// GPU-uploaded vertex/index buffer keeps a stale hash for one
-				// frame -> intermittent wrong IA replacement / model flicker.
-				DX12InvalidateBufferContent(dstResource);
-				DX12AsyncReadbackQueueBufferCapture(
-					dstResource, DstOffset, NumBytes);
+				DX12ReadbackRecordBuffer(mCommandList, dstResource, DstOffset,
+					CanReadback() ? srcResource : nullptr, SrcOffset, NumBytes);
 			}
 		}
 
@@ -710,64 +709,38 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			D3D12_TEXTURE_COPY_LOCATION dstStorage = {};
 			D3D12_TEXTURE_COPY_LOCATION srcStorage = {};
 			const D3D12_TEXTURE_COPY_LOCATION *activeDst = pDst;
-				const D3D12_TEXTURE_COPY_LOCATION *activeSrc = pSrc;
-				DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pDst, &dstStorage, &activeDst);
-				DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pSrc, &srcStorage, &activeSrc);
-			// DX11-style gating: only maintain the texture hash cache on
-			// copies when a consumer (override matching / hunt / capture)
-			// can actually read it. The ungated path hashed the full top
-			// mip and took a global lock on every streaming copy.
-			// Coverage is content-based, not upload-shape based: any write
-			// to the top mip marks the texture wanted; the readback pipeline
-			// captures it and retries until the hash publishes, so the copy
-			// shape (placed-footprint / full-cover / partial) no longer
-			// decides whether a texture can ever be matched by content hash.
-			if (DX12HotPathState::NeedsTextureHashTracking(copyFlags) &&
-				activeDst->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX &&
-				activeDst->SubresourceIndex == 0 &&
-				activeDst->pResource) {
-				DX12MarkTextureHashWanted(activeDst->pResource);
-			}
+			const D3D12_TEXTURE_COPY_LOCATION *activeSrc = pSrc;
+			DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pDst, &dstStorage, &activeDst);
+			DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pSrc, &srcStorage, &activeSrc);
 			mCommandList->CopyTextureRegion(activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
+			if (DX12HotPathState::NeedsTextureHashTracking(copyFlags) && activeSrc && activeDst &&
+				activeDst->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX &&
+				activeDst->SubresourceIndex == 0 && activeDst->pResource) {
+				DX12ReadbackRecordTextureCopy(mCommandList, activeDst->pResource,
+					DstX, DstY, DstZ, CanReadback() ? activeSrc : nullptr, pSrcBox);
 			}
+		}
 
 		void STDMETHODCALLTYPE CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource) override
 		{
-		DX12_PROF_API_SCOPE(CopyResource);
-		const UINT64 flags = DX12HotPathState::HookWorkFlags;
-		if (DX12HotPathState::NeedsPreSkinProbe(flags))
-			DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
-		DX12_PROF_STAGE_BEGIN(CopyResourceOp);
-			ID3D12Resource *dstResource =
-				DX12WrapperRuntimeUtils::UnwrapResource(pDstResource);
-			ID3D12Resource *srcResource =
-				DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource);
-			mCommandList->CopyResource(
-				dstResource,
-				srcResource);
-			// Async content capture: queue a GPU readback of the whole
-			// destination buffer instead of CPU shadow propagation. The
-			// readback executes after this submit and observes the
-			// post-copy bytes.
-			if (DX12HotPathState::NeedsIaBufferContentTracking(flags) &&
-				dstResource && srcResource) {
-				const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
-				const D3D12_RESOURCE_DESC srcDesc = srcResource->GetDesc();
-				if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-				    srcDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
-					DX12AsyncReadbackQueueBufferCapture(
-						dstResource, 0, dstDesc.Width);
-				}
+			DX12_PROF_API_SCOPE(CopyResource);
+			const UINT64 flags = DX12HotPathState::HookWorkFlags;
+			if (DX12HotPathState::NeedsPreSkinProbe(flags))
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+			DX12_PROF_STAGE_BEGIN(CopyResourceOp);
+			auto *dst = DX12WrapperRuntimeUtils::UnwrapResource(pDstResource);
+			auto *src = DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource);
+			mCommandList->CopyResource(dst, src);
+			const bool buffers = DX12HotPathState::NeedsIaBufferContentTracking(flags);
+			const bool textures = DX12HotPathState::NeedsTextureHashTracking(flags);
+			if (dst && src && (buffers || textures)) {
+				const auto desc = dst->GetDesc();
+				if (buffers && desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+					DX12ReadbackRecordBuffer(mCommandList, dst, 0, CanReadback() ? src : nullptr, 0, desc.Width);
+				else if (textures && desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+					DX12ReadbackRecordTexture(mCommandList, dst, CanReadback() ? src : nullptr);
 			}
-		// Texture->texture CopyResource writes the top mip too: mark the
-		// destination wanted so whole-resource uploads get content hashes
-		// (previously only CopyTextureRegion uploads were covered).
-		if (DX12HotPathState::NeedsTextureHashTracking(flags) && dstResource) {
-			const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
-			if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
-				DX12MarkTextureHashWanted(dstResource);
-		}
-		DX12_PROF_STAGE_END(CopyResourceOp);
+			DX12_PROF_STAGE_END(CopyResourceOp);
 		}
 
 		void STDMETHODCALLTYPE CopyTiles(
@@ -878,10 +851,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				const D3D12_RESOURCE_BARRIER *activeBarriers = pBarriers;
 				DX12WrapperRuntimeUtils::UnwrapResourceBarrierArray(
 					pBarriers, NumBarriers, &unwrappedBarriers, &activeBarriers);
-				mOrigResourceBarrier(mCommandList, NumBarriers, activeBarriers);
+				if (!CanReadback())
+					mOrigResourceBarrier(mCommandList, NumBarriers, activeBarriers);
+				else
+					DX12ReadbackForwardBarriers(mCommandList, NumBarriers, activeBarriers, mOrigResourceBarrier);
 				return;
 			}
-			DX12WrapperRuntimeUtils::ResourceBarrier(mCommandList, &mRuntimeState, NumBarriers, pBarriers, mOrigResourceBarrier);
+			DX12WrapperRuntimeUtils::ResourceBarrier(mCommandList, &mRuntimeState, NumBarriers, pBarriers, mOrigResourceBarrier, !CanReadback());
 		}
 
 		void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *pCommandList) override
@@ -1322,6 +1298,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			mCommandList->SetPredication(
 				DX12WrapperRuntimeUtils::UnwrapResource(pBuffer), AlignedBufferOffset, Operation);
+			mPredicated = pBuffer != nullptr;
 		}
 
 		void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *pData, UINT Size) override
@@ -1457,6 +1434,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			if (commandList3) {
 				commandList3->SetProtectedResourceSession(
 					DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedResourceSession));
+				mProtected = pProtectedResourceSession != nullptr;
 			}
 		DX12_PROF_STAGE_END(SetProtectedSession);
 		}
@@ -1468,6 +1446,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
 			if (commandList4) {
 				commandList4->BeginRenderPass(NumRenderTargets, pRenderTargets, pDepthStencil, Flags);
+				mPassBlocksCopy = true;
+				mPassSuspends = (Flags & D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS) != 0;
 			}
 		}
 
@@ -1477,6 +1457,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
 			if (commandList4) {
 				commandList4->EndRenderPass();
+				mPassBlocksCopy = mPassSuspends;
 			}
 		DX12_PROF_STAGE_END(EndRenderPass);
 		}
@@ -1605,7 +1586,10 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				&textureStorage,
 				&bufferStorage,
 				&activeBarrierGroups);
-			commandList7->Barrier(NumBarrierGroups, activeBarrierGroups);
+			if (!CanReadback())
+				commandList7->Barrier(NumBarrierGroups, activeBarrierGroups);
+			else
+				DX12ReadbackForwardEnhancedBarriers(mCommandList, commandList7, NumBarrierGroups, activeBarrierGroups);
 		}
 
 		void STDMETHODCALLTYPE OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef) override
@@ -1698,6 +1682,11 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		CachedCommandListInterface<ID3D12GraphicsCommandList9> mCommandList9Interface;
 		CachedCommandListInterface<ID3D12GraphicsCommandList10> mCommandList10Interface;
 		// Embedded RuntimeState avoids a sharded map lookup, as in DX11.
+		bool CanReadback() const { return !mPassBlocksCopy && !mPredicated && !mProtected; }
+		bool mPredicated = false;
+		bool mProtected = false;
+		bool mPassBlocksCopy = false;
+		bool mPassSuspends = false;
 		DX12SimulateContext mRuntimeState;
 	};
 

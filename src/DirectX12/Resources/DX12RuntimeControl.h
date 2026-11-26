@@ -155,7 +155,6 @@ public:
 	static void Shutdown()
 	{
 		DX12_LOG_TEXT("*** 3DMigoto DX12 runtime shutting down ***\n");
-		DX12AsyncReadbackShutdown();
 		DX12NativeOverlayShutdown();
 #if DX12_TIMING_BUILD
 		DX12WaitHooks::Shutdown();

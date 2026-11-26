@@ -1097,10 +1097,6 @@ public:
 			DX12_PROF_CPU_STAGE(
 				"PreSkin", "probe_cache_geometry_negative_hit", 0, 1,
 				DX12_DIAG_ELAPSED_US(t0));
-			DX12_LOG("DX12Perf",
-				"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit_geometry\",\"us\":%lld",
-				static_cast<unsigned long long>(probe->computeShaderHash),
-				static_cast<long long>(DX12_DIAG_ELAPSED_US(t0)));
 			return;
 		}
 

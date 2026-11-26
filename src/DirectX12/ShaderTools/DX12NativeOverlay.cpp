@@ -249,8 +249,8 @@ public:
 	{
 		if (!queue || !mRenderedIndexCount || !mFence)
 			return;
-		mSlotFenceValues[mRenderedSlot] = ++mFenceCounter;
-		queue->Signal(mFence, mFenceCounter);
+		const UINT64 value = ++mFenceCounter;
+		mSlotFenceValues[mRenderedSlot] = SUCCEEDED(queue->Signal(mFence, value)) ? value : UINT64_MAX;
 	}
 
 	// True when the frame has anything to draw at all. Read by the composer
@@ -300,7 +300,6 @@ private:
 	// highest index emitted is kMaxChars*4-1, so the buffer overflows the
 	// moment this cap reaches 16384.
 	static_assert(kMaxChars < 16384, "16-bit indices cannot address this many quads");
-	static constexpr DWORD kFenceWaitMs = 2000;
 	// A failed one-time font build is retried only after this cool-down, so a
 	// persistent failure cannot rebuild the GDI atlas every single frame.
 	static constexpr LONG kFontRetryFrames = 600;
@@ -771,7 +770,7 @@ float4 PSMain(PSIn input) : SV_TARGET
 	}
 
 	// One-time font atlas upload on the render thread with the game queue
-	// available. The SRV is published only once the copy retired, a failed
+	// available. The SRV is published after successful queue submission, a failed
 	// attempt is cooled down instead of being rebuilt every frame, and the
 	// upload buffer is owned by the object because the GPU reads it.
 	bool EnsureFontTexture(IDXGISwapChain *swapChain, ID3D12CommandQueue *queue)
@@ -846,7 +845,7 @@ float4 PSMain(PSIn input) : SV_TARGET
 		if (!channel)
 			return FailFontTexture("channel_unavailable", true);
 		Bunny::DX12PresentOverlayChannel::RecordScope recordScope(channel);
-		ID3D12GraphicsCommandList *commandList = channel->BeginRecord();
+		ID3D12GraphicsCommandList *commandList = channel->BeginRecord(false);
 		if (!commandList)
 			return FailFontTexture(channel->LastFailure(), true);
 		D3D12_TEXTURE_COPY_LOCATION dst = {};
@@ -871,13 +870,9 @@ float4 PSMain(PSIn input) : SV_TARGET
 		if (!channel->Submit(queue))
 			return FailFontTexture(channel->LastFailure(), false);
 
-		// The SRV must not be published before the copy retired; wait out the
-		// one-time upload inline (init path, not a frame hot path).
-		const UINT64 uploadFenceValue = ++mFenceCounter;
-		queue->Signal(mFence, uploadFenceValue);
-		if (!WaitForFenceValue(uploadFenceValue))
-			return FailFontTexture("upload_fence_timeout", false);
-
+		// The channel orders every subsequent overlay draw after this upload,
+		// including a handoff to another presentation queue. Creating the CPU
+		// descriptor needs no GPU completion; the upload stays owned here.
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		srvDesc.Format = DXGI_FORMAT_R8_UNORM;
 		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -914,45 +909,21 @@ float4 PSMain(PSIn input) : SV_TARGET
 		return false;
 	}
 
-	// Returns true when the fence value has been reached. A false result means
-	// the GPU still owns whatever was tagged with that value, so every caller
-	// must bail out instead of rewriting or releasing it.
-	bool WaitForFenceValue(UINT64 value)
-	{
-		if (mFence->GetCompletedValue() >= value)
-			return true;
-		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-		if (!event) {
-			DX12_LOG_FLUSH("DX12InGameTextOverlay",
-				"event=fence_wait_event_failed value=%llu",
-				static_cast<unsigned long long>(value));
-			return false;
-		}
-		bool retired = false;
-		if (SUCCEEDED(mFence->SetEventOnCompletion(value, event)))
-			retired = WaitForSingleObject(event, kFenceWaitMs) == WAIT_OBJECT_0;
-		CloseHandle(event);
-		if (!retired) {
-			DX12_LOG_FLUSH("DX12InGameTextOverlay",
-				"event=fence_wait_timeout value=%llu completed=%llu",
-				static_cast<unsigned long long>(value),
-				static_cast<unsigned long long>(mFence->GetCompletedValue()));
-		}
-		return retired;
-	}
-
 	// Returns the next writable vertex slot after its previous submission
 	// retired, or nullptr when that slot is still in flight: overwriting
 	// memory the GPU is reading is worse than dropping one text frame.
 	void *AcquireVertexSlot()
 	{
-		const UINT next = (mVertexCursor + 1) % kVertexSlotCount;
-		const UINT64 pending = mSlotFenceValues[next];
-		if (pending && !WaitForFenceValue(pending))
-			return nullptr;
-		mVertexCursor = next;
-		return static_cast<uint8_t *>(mVertexData) +
-			static_cast<size_t>(mVertexCursor) * kVertexSlotBytes;
+		const UINT64 completed = mFence->GetCompletedValue();
+		for (UINT i = 1; i <= kVertexSlotCount; ++i) {
+			const UINT next = (mVertexCursor + i) % kVertexSlotCount;
+			if (mSlotFenceValues[next] > completed)
+				continue;
+			mVertexCursor = next;
+			return static_cast<uint8_t *>(mVertexData) +
+				static_cast<size_t>(next) * kVertexSlotBytes;
+		}
+		return nullptr;
 	}
 
 	// ------------------------------------------------------------------
@@ -1529,7 +1500,7 @@ void DX12NativeOverlayOnSubmitted(IDXGISwapChain *swapChain, ID3D12CommandQueue 
 // objects, plus the frame count past which an ini-enabled HUD may arm itself.
 //
 // The fast path is barred from creating GPU objects (root signature, runtime
-// shader compile, PSO, heaps, and a font-atlas upload that waits on a fence)
+// shader compile, PSO, heaps, and a font-atlas upload)
 // because doing that during the first frames of a session is what used to stall
 // startup. Two things therefore have to be true before it may:
 //   - a hotkey press, which by definition happens well past startup, or
@@ -1589,10 +1560,16 @@ void DX12NativeOverlayInvalidate(IDXGISwapChain *swapChain)
 	// Resize and destruction both retire the chain's cached references before
 	// DXGI sees the operation. Also covers the mod [Present] overlay, which
 	// shares this cache with the text overlay.
+	std::lock_guard lock(Bunny::DX12PresentOverlayChannel::ComposeMutex());
 	Bunny::DX12CustomShaderSurfaceCache::InvalidateChain(swapChain);
 }
 
 void DX12NativeOverlayShutdown()
 {
-	DX12InGameTextOverlay::ClearAll();
+	// Explicit DLL teardown can follow an in-flight Present. Only retired
+	// resources may be released here; never wait under the loader lock.
+	if (Bunny::DX12PresentOverlayChannel::AllRetired()) {
+		DX12InGameTextOverlay::ClearAll();
+		Bunny::DX12PresentOverlayChannel::ClearAll();
+	}
 }

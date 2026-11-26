@@ -147,7 +147,7 @@ public:
 
 		bool NeedsRecordWork() const
 		{
-			return huntEnabled || NeedsModDrawWork();
+			return huntEnabled || presentReplacement || NeedsModDrawWork();
 		}
 
 		bool NeedsModDrawWork() const

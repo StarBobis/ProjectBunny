@@ -39,6 +39,8 @@ namespace Bunny {
 class DX12IniParamsTexture
 {
 public:
+	static constexpr UINT kUploadSlots = 4;
+
 	// Per-device singleton; never released while the process lives. Cleared
 	// together with the other caches on mod reload so a new generation
 	// re-creates everything (devices stay valid across reloads).
@@ -83,7 +85,7 @@ public:
 	// ordered CopyTextureRegion.
 	bool UpdateAndUpload(
 		ID3D12GraphicsCommandList *commandList,
-		UINT64 presentCount,
+		UINT slot,
 		UINT elementIndex,
 		const float *float4)
 	{
@@ -91,8 +93,7 @@ public:
 			return false;
 		if (elementIndex >= DX12CustomShaderRegisters::kMaxCustomElementsPerFrame)
 			return false;
-		const UINT slot = static_cast<UINT>(presentCount % kUploadSlots);
-		if (!mUploads[slot] || !mUploadMap[slot])
+		if (slot >= kUploadSlots || !mUploads[slot] || !mUploadMap[slot])
 			return false;
 		const UINT64 offset =
 			static_cast<UINT64>(elementIndex) * kUploadBytes;
@@ -142,7 +143,6 @@ private:
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-	static constexpr UINT kUploadSlots = 4;
 	static constexpr UINT kUploadBytes =
 		DX12CustomShaderRegisters::kIniParamsFloat4Count * 16u;
 
@@ -506,10 +506,8 @@ private:
 //
 // The table is assembled with CPU-side descriptor copies. Two reuse hazards
 // shape the layout:
-//  * cross-frame: the GPU may still be executing a previous present that
-//    reads the same heap, so heaps rotate per present (kHeapSlots, mirroring
-//    the ini params upload ring) - the heap written this present was last
-//    referenced kHeapSlots presents ago and is therefore idle;
+//  * cross-frame: the command channel selects a fence-retired slot shared
+//    by the command allocator, descriptor heap and ini params upload buffer;
 //  * intra-frame: every element of one present needs its own 128-slot
 //    region (kMaxCustomElementsPerFrame regions per heap), because CPU
 //    descriptor writes take effect before the GPU executes any draw of the
@@ -520,9 +518,7 @@ private:
 class DX12CustomShaderTableHeap
 {
 public:
-	// Rotation depth; matches the DX12IniParamsTexture upload ring so both
-	// share the same frames-in-flight assumption.
-	static constexpr UINT kHeapSlots = 4;
+	static constexpr UINT kHeapSlots = DX12IniParamsTexture::kUploadSlots;
 
 	static DX12CustomShaderTableHeap *ForDevice(ID3D12Device *device)
 	{
@@ -548,9 +544,11 @@ public:
 	// Selects the rotation slot for this present and resets the per-element
 	// region cursor. All subsequent calls operate on the region acquired by
 	// AcquireElementRegion.
-	bool BeginPresent(UINT64 presentCount)
+	bool BeginPresent(UINT slot)
 	{
-		mActiveSlot = static_cast<UINT>(presentCount % kHeapSlots);
+		if (slot >= kHeapSlots)
+			return false;
+		mActiveSlot = slot;
 		mElementCursor = 0;
 		mCurrentRegion = 0;
 		return EnsureHeap();
@@ -1079,6 +1077,25 @@ public:
 		Instances().clear();
 	}
 
+	static bool AllRetired()
+	{
+		std::lock_guard lock(Mutex());
+		for (const auto &entry : Instances()) {
+			auto *channel = entry.second;
+			if (channel->mFence && channel->mFence->GetCompletedValue() < channel->mNextFenceValue - 1)
+				return false;
+		}
+		return true;
+	}
+
+	static std::mutex &ComposeMutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	UINT RecordingSlot() const { return mCursor; }
+
 	bool Valid() const
 	{
 		return mFence && mSlots[0].allocator && mSlots[0].list &&
@@ -1121,30 +1138,43 @@ public:
 		return mLastFailure;
 	}
 
-	// Hands out the next recording list after waiting up to kSlotWaitMs for the
-	// slot's previous submission to retire before resetting it. Returns nullptr
-	// when that submission is still in flight: resetting an allocator whose list
-	// is still executing is invalid D3D12 usage and can remove the device, so
-	// the caller drops the frame instead.
-	ID3D12GraphicsCommandList *BeginRecord()
+	// HUD frames may be dropped. Required mod work can grow the ring through
+	// the fenced descriptor and upload slots before applying backpressure.
+	ID3D12GraphicsCommandList *BeginRecord(bool required)
 	{
-		mCursor = (mCursor + 1) % kSlots;
+		if (mFaulted)
+			return nullptr;
+		const UINT64 completed = mFence->GetCompletedValue();
+		if (completed == UINT64_MAX) {
+			mLastFailure = "device_removed";
+			return nullptr;
+		}
+		const UINT next = (mCursor + 1) % mSlotCount;
+		mCursor = next;
+		for (UINT i = 0; i < mSlotCount; ++i) {
+			const UINT index = (next + i) % mSlotCount;
+			if (mSlots[index].submittedFenceValue <= completed) {
+				mCursor = index;
+				break;
+			}
+		}
+		if (mSlots[mCursor].submittedFenceValue > completed && required &&
+			mSlotCount < kSlots && CreateSlot(mSlots[mSlotCount]))
+			mCursor = mSlotCount++;
+
 		Slot &slot = mSlots[mCursor];
-		if (slot.submittedFenceValue &&
-			mFence->GetCompletedValue() < slot.submittedFenceValue) {
-			bool retired = false;
-			HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-			if (event) {
-				if (SUCCEEDED(mFence->SetEventOnCompletion(
-					    slot.submittedFenceValue, event)))
-					retired = WaitForSingleObject(event, kSlotWaitMs) ==
-						WAIT_OBJECT_0;
-				CloseHandle(event);
-			}
-			if (!retired) {
-				mLastFailure = event ? "slot_in_flight" : "event_create_failed";
+		if (slot.submittedFenceValue > completed) {
+			mLastFailure = "slot_in_flight";
+			if (!required)
 				return nullptr;
-			}
+			HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+			if (!event)
+				return nullptr;
+			const bool retired = SUCCEEDED(mFence->SetEventOnCompletion(slot.submittedFenceValue, event)) &&
+				WaitForSingleObject(event, kSlotWaitMs) == WAIT_OBJECT_0;
+			CloseHandle(event);
+			if (!retired)
+				return nullptr;
 		}
 		if (FAILED(slot.allocator->Reset())) {
 			mLastFailure = "allocator_reset_failed";
@@ -1171,10 +1201,21 @@ public:
 			mLastFailure = "list_close_failed";
 			return false;
 		}
+		if (mQueue && mQueue != queue && FAILED(queue->Wait(mFence, mNextFenceValue - 1))) {
+			mLastFailure = "queue_handoff_failed";
+			return false;
+		}
+		if (queue != mQueue) {
+			queue->AddRef();
+			if (mQueue)
+				mQueue->Release();
+			mQueue = queue;
+		}
 		ID3D12CommandList *lists[] = { slot.list };
 		queue->ExecuteCommandLists(1, lists);
 		const UINT64 fenceValue = mNextFenceValue++;
 		if (FAILED(queue->Signal(mFence, fenceValue))) {
+			mFaulted = true;
 			mLastFailure = "queue_signal_failed";
 			return false;
 		}
@@ -1184,7 +1225,7 @@ public:
 	}
 
 private:
-	static constexpr UINT kSlots = 2;
+	static constexpr UINT kSlots = DX12CustomShaderTableHeap::kHeapSlots;
 	static constexpr DWORD kSlotWaitMs = 2000;
 
 	struct Slot
@@ -1194,28 +1235,38 @@ private:
 		UINT64 submittedFenceValue = 0;
 	};
 
-	explicit DX12PresentOverlayChannel(ID3D12Device *device)
+	bool CreateSlot(Slot &slot)
+	{
+		if (!slot.allocator && FAILED(mDevice->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&slot.allocator))))
+			return false;
+		if (FAILED(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+			slot.allocator, nullptr, IID_PPV_ARGS(&slot.list))))
+			return false;
+		if (SUCCEEDED(slot.list->Close()))
+			return true;
+		slot.list->Release();
+		slot.list = nullptr;
+		return false;
+	}
+
+	explicit DX12PresentOverlayChannel(ID3D12Device *device) : mDevice(device)
 	{
 		if (!device)
 			return;
-		for (Slot &slot : mSlots) {
-			if (FAILED(device->CreateCommandAllocator(
-				    D3D12_COMMAND_LIST_TYPE_DIRECT,
-				    IID_PPV_ARGS(&slot.allocator))))
-				return;
-			if (FAILED(device->CreateCommandList(
-				    0, D3D12_COMMAND_LIST_TYPE_DIRECT, slot.allocator,
-				    nullptr, IID_PPV_ARGS(&slot.list))))
-				return;
-			slot.list->Close();
-		}
-		if (FAILED(device->CreateFence(
-			    0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence))))
+		mDevice->AddRef();
+		if (!CreateSlot(mSlots[0]) || !CreateSlot(mSlots[1]))
 			return;
+		mSlotCount = 2;
+		device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence));
 	}
 
 	~DX12PresentOverlayChannel()
 	{
+		if (mDevice)
+			mDevice->Release();
+		if (mQueue)
+			mQueue->Release();
 		for (Slot &slot : mSlots) {
 			if (slot.list)
 				slot.list->Release();
@@ -1238,7 +1289,11 @@ private:
 		return instances;
 	}
 
+	ID3D12Device *mDevice = nullptr;
+	UINT mSlotCount = 0;
 	Slot mSlots[kSlots];
+	ID3D12CommandQueue *mQueue = nullptr;
+	bool mFaulted = false;
 	ID3D12Fence *mFence = nullptr;
 	UINT64 mNextFenceValue = 1;
 	UINT mCursor = 0;

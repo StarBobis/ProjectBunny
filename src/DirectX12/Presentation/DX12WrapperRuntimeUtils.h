@@ -305,53 +305,46 @@ public:
 		}
 	}
 
+	template <typename Barrier>
+	static bool UnwrapBarrierResources(const Barrier *source, UINT count,
+		std::vector<std::vector<Barrier>> &storage)
+	{
+		for (UINT i = 0; i < count; ++i) {
+			auto *resource = UnwrapResource(source[i].pResource);
+			if (resource == source[i].pResource)
+				continue;
+			auto &copy = storage.emplace_back(source, source + count);
+			copy[i].pResource = resource;
+			for (++i; i < count; ++i)
+				copy[i].pResource = UnwrapResource(source[i].pResource);
+			return true;
+		}
+		return false;
+	}
+
 	static void UnwrapBarrierGroups(
-		const D3D12_BARRIER_GROUP *source,
-		UINT32 count,
-		std::vector<D3D12_BARRIER_GROUP> *groupStorage,
-		std::vector<std::vector<D3D12_TEXTURE_BARRIER>> *textureStorage,
-		std::vector<std::vector<D3D12_BUFFER_BARRIER>> *bufferStorage,
+		const D3D12_BARRIER_GROUP *source, UINT count,
+		std::vector<D3D12_BARRIER_GROUP> *groups,
+		std::vector<std::vector<D3D12_TEXTURE_BARRIER>> *textures,
+		std::vector<std::vector<D3D12_BUFFER_BARRIER>> *buffers,
 		const D3D12_BARRIER_GROUP **result)
 	{
-		if (!result)
-			return;
 		*result = source;
-		if (!source || !groupStorage || !textureStorage || !bufferStorage || !count)
-			return;
-
-		groupStorage->resize(count);
-		textureStorage->clear();
-		bufferStorage->clear();
-		textureStorage->resize(count);
-		bufferStorage->resize(count);
-
-		for (UINT32 groupIndex = 0; groupIndex < count; ++groupIndex) {
-			(*groupStorage)[groupIndex] = source[groupIndex];
-			if (source[groupIndex].Type == D3D12_BARRIER_TYPE_TEXTURE &&
-				source[groupIndex].pTextureBarriers &&
-				source[groupIndex].NumBarriers) {
-				std::vector<D3D12_TEXTURE_BARRIER> &textures = (*textureStorage)[groupIndex];
-				textures.assign(
-					source[groupIndex].pTextureBarriers,
-					source[groupIndex].pTextureBarriers + source[groupIndex].NumBarriers);
-				for (UINT32 barrierIndex = 0; barrierIndex < source[groupIndex].NumBarriers; ++barrierIndex)
-					textures[barrierIndex].pResource =
-						UnwrapResource(source[groupIndex].pTextureBarriers[barrierIndex].pResource);
-				(*groupStorage)[groupIndex].pTextureBarriers = textures.data();
-			} else if (source[groupIndex].Type == D3D12_BARRIER_TYPE_BUFFER &&
-				source[groupIndex].pBufferBarriers &&
-				source[groupIndex].NumBarriers) {
-				std::vector<D3D12_BUFFER_BARRIER> &buffers = (*bufferStorage)[groupIndex];
-				buffers.assign(
-					source[groupIndex].pBufferBarriers,
-					source[groupIndex].pBufferBarriers + source[groupIndex].NumBarriers);
-				for (UINT32 barrierIndex = 0; barrierIndex < source[groupIndex].NumBarriers; ++barrierIndex)
-					buffers[barrierIndex].pResource =
-						UnwrapResource(source[groupIndex].pBufferBarriers[barrierIndex].pResource);
-				(*groupStorage)[groupIndex].pBufferBarriers = buffers.data();
-			}
+		for (UINT i = 0; source && i < count; ++i) {
+			auto group = source[i];
+			if (group.Type == D3D12_BARRIER_TYPE_TEXTURE && group.pTextureBarriers &&
+				UnwrapBarrierResources(group.pTextureBarriers, group.NumBarriers, *textures))
+				group.pTextureBarriers = textures->back().data();
+			else if (group.Type == D3D12_BARRIER_TYPE_BUFFER && group.pBufferBarriers &&
+				UnwrapBarrierResources(group.pBufferBarriers, group.NumBarriers, *buffers))
+				group.pBufferBarriers = buffers->back().data();
+			else
+				continue;
+			if (groups->empty())
+				groups->assign(source, source + count);
+			(*groups)[i] = group;
+			*result = groups->data();
 		}
-		*result = groupStorage->data();
 	}
 
 	static void STDMETHODCALLTYPE DirectQueueExecuteCommandLists(
@@ -381,7 +374,7 @@ public:
 				unwrapped[i] = UnwrapCommandList(commandLists[i]);
 			activeCommandLists = unwrapped;
 		}
-		DirectQueueExecuteCommandLists(queue, numCommandLists, activeCommandLists);
+		DX12ReadbackExecute(queue, numCommandLists, activeCommandLists, DirectQueueExecuteCommandLists);
 	}
 
 	static void STDMETHODCALLTYPE DirectDrawInstanced(
@@ -838,10 +831,7 @@ public:
 			activeCommandLists,
 			original ? original : DirectQueueExecuteCommandLists,
 			RegisterSubmittedCommandListDirect);
-		// The [Present] overlay submits on the same queue the game renders
-		// to; tracking the queue here (rare pointer changes only) keeps that
-		// submit a cheap atomic load.
-		DX12ModTrackGameDirectQueue(queue);
+		DX12ModOnQueueSubmit();
 		DX12_PROF_ADD_US("Queue.wrapper_total", DX12_DIAG_ELAPSED_US(totalBegin));
 	}
 
@@ -859,20 +849,6 @@ public:
 			(DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
-		// Probe the pending [Present] replacement only when the draw flow below
-		// cannot: with MASK_DRAW_WORK set, DX12DrawHookFlow::ExecuteHook probes
-		// it before entering the interpreter, so probing here as well ran the
-		// same check (and rebuilt the hot-path flags word) twice per draw. With
-		// no draw work that flow forwards early - which is exactly the case
-		// this covers, e.g. a mod with only a [Present] element.
-		if ((drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
-			!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
-			DX12ModPresentReplacementPendingForCurrentPresent()) {
-			const DX12IaReplacementExecutorCallbacks callbacks =
-				MakeDirectIaReplacementCallbacks();
-			DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
-				commandList, runtimeState, callbacks, drawFlags);
-		}
 		DX12WrapperRuntimeUtils::DrawInstanced(
 			commandList,
 			runtimeState,
@@ -937,17 +913,6 @@ public:
 			(DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
-		// Same narrowing as the DrawInstanced overload above: the draw flow
-		// probes the pending [Present] replacement itself whenever it enters the
-		// interpreter, so only the no-draw-work path needs it here.
-		if ((drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
-			!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
-			DX12ModPresentReplacementPendingForCurrentPresent()) {
-			const DX12IaReplacementExecutorCallbacks callbacks =
-				MakeDirectIaReplacementCallbacks();
-			DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
-				commandList, runtimeState, callbacks, drawFlags);
-		}
 		DX12WrapperRuntimeUtils::DrawIndexedInstanced(
 			commandList,
 			runtimeState,
@@ -1132,6 +1097,7 @@ public:
 			original(commandList, unwrappedAllocator, unwrappedInitialState) :
 			commandList->Reset(unwrappedAllocator, unwrappedInitialState);
 		if (SUCCEEDED(hr)) {
+			DX12ReadbackForgetRecording(commandList);
 			if (runtimeState)
 				DX12CommandListRuntime::Reset(runtimeState, unwrappedInitialState);
 			else
@@ -1192,7 +1158,7 @@ public:
 		DX12SimulateContext *runtimeState,
 		UINT numBarriers,
 		const D3D12_RESOURCE_BARRIER *barriers,
-		DX12CommandListHookSignatures::ResourceBarrier original)
+		DX12CommandListHookSignatures::ResourceBarrier original, bool skipReadback)
 	{
 		DX12_PROF_API_SCOPE(ResourceBarrier);
 		DX12_PROF_STAGE_BEGIN(ResourceBarrier);
@@ -1208,7 +1174,9 @@ public:
 		DX12_PROF_STAGE_BEGIN(BarrierCapture);
 		DX12CommandListStateFlow::CaptureResourceBarrier(commandList, numBarriers, activeBarriers);
 		DX12_PROF_STAGE_END(BarrierCapture);
-		if (original)
+		if (!skipReadback)
+			DX12ReadbackForwardBarriers(commandList, numBarriers, activeBarriers, original);
+		else if (original)
 			original(commandList, numBarriers, activeBarriers);
 		else
 			commandList->ResourceBarrier(numBarriers, activeBarriers);

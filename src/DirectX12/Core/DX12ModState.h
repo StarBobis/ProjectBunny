@@ -226,7 +226,7 @@ bool DX12ModQueuePresentCustomElements(
 bool DX12PresentOverlayCompose(IDXGISwapChain *swapChain);
 // Tracks the game's direct command queue from the ExecuteCommandLists
 // wrapper so the overlay submit lands on the same queue the game renders to.
-void DX12ModTrackGameDirectQueue(ID3D12CommandQueue *queue);
+void DX12ModOnQueueSubmit();
 bool DX12ModAdjustBufferResourceDesc(D3D12_RESOURCE_DESC *desc, const char *source);
 bool DX12ModAdjustBufferResourceDesc1(D3D12_RESOURCE_DESC1 *desc, const char *source);
 bool DX12ModAdjustUavDesc(
@@ -349,45 +349,31 @@ bool DX12CacheTextureHash(
 bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
 UINT64 DX12GetTextureHashGeneration();
 void DX12InvalidateTextureHash(ID3D12Resource *resource);
+void DX12SetReadbackPending(ID3D12Resource *resource, bool texture, bool begin);
 
 // ---------------------------------------------------------------------------
-// Async content capture (copy-queue readback pipeline).
+// Asynchronous publication of command-list-local snapshots.
 //
-// DX11 kept CPU-side buffer content by memcpy'ing at Map/Unmap time on the
-// recording thread; the DX12 port mirrored that with synchronous cache writes
-// and global-epoch bumps on every Unmap/Copy call. This pipeline replaces the
-// synchronous writes: recording threads only enqueue a tiny capture event
-// (no memcpy, no cache lock, no epoch bump). A dedicated copy queue reads the
-// buffer/texture content back into a readback ring after the game's submit,
-// and a worker thread publishes the bytes into the existing content caches
-// (DX12CacheBufferContentRange / DX12CacheTextureHash) when the fence lands.
-// Draw-time consumers therefore see content one frame late, which is exact
-// for static resources and self-corrects for streaming ones.
-// Implemented in the tracking TU (DX12ResourceTracking.cpp).
-bool DX12AsyncReadbackQueueBufferCapture(
-	ID3D12Resource *resource, UINT64 offset, UINT64 size);
-// Wanted-texture hash coverage (DX12AsyncReadback.cpp): a texture marked here
-// gets a top-mip content hash one or two frames later, with bounded retries
-// when the lossy pipeline drops its capture - a missed capture is a delay,
-// never a permanent hash loss. Called by the copy hooks on top-mip writes and
-// by override matching when it binds an unhashed TEXTURE2D. Repeat marks for
-// an already-wanted texture are a single locked probe. Forget is called on
-// publish (hash satisfied) and on resource destruction (resourceDying=true:
-// the pin is dropped without a Release, the object is mid-destruction).
+// Record snapshots beside the producing GPU operation. The native queue
+// signals after executing the owning command lists; publication is asynchronous.
+void DX12ReadbackRecordBuffer(ID3D12GraphicsCommandList *list, ID3D12Resource *target,
+	UINT64 targetOffset, ID3D12Resource *source, UINT64 sourceOffset, UINT64 size);
+void DX12ReadbackRecordTexture(ID3D12GraphicsCommandList *list, ID3D12Resource *target,
+	ID3D12Resource *source);
+void DX12ReadbackRecordTextureCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *target,
+	UINT x, UINT y, UINT z, const D3D12_TEXTURE_COPY_LOCATION *source, const D3D12_BOX *box);
 void DX12MarkTextureHashWanted(ID3D12Resource *texture);
 void DX12ReadbackForgetWantedTexture(ID3D12Resource *resource, bool resourceDying);
-// Cheap volatile gate: true when at least one capture event is pending a
-// submit. Called on the game's ExecuteCommandLists hot path.
-bool DX12AsyncReadbackHasPendingWork();
-// Submit all pending capture events on the copy queue, ordered after the
-// given (game) queue via Signal/Wait. Called after the original
-// ExecuteCommandLists call; pure queue operations on the mod-owned channel.
-void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue);
-// Once-per-frame flush of the gated pending captures, called from the
-// Present path. Collapses the per-submit fixed cost (queue Signal/Wait,
-// command list recording, event creation) to a single payment per frame.
-void DX12AsyncReadbackFlushFrameEnd();
-void DX12AsyncReadbackShutdown();
+void DX12ReadbackForwardBarriers(ID3D12GraphicsCommandList *list, UINT count,
+	const D3D12_RESOURCE_BARRIER *barriers,
+	void (STDMETHODCALLTYPE *original)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*));
+void DX12ReadbackForwardEnhancedBarriers(ID3D12GraphicsCommandList *owner, ID3D12GraphicsCommandList7 *list, UINT count,
+	const D3D12_BARRIER_GROUP *groups);
+void DX12ReadbackForgetRecording(ID3D12CommandList *list);
+void DX12ReadbackExecute(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *const *lists,
+	void (STDMETHODCALLTYPE *execute)(ID3D12CommandQueue*, UINT, ID3D12CommandList *const *));
+bool DX12ReadbackAwaitingPublication();
+void DX12ReadbackPublishReady();
 
 // ---------------------------------------------------------------------------
 // Async upload channel (ring of allocators, no per-upload CPU wait).

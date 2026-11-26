@@ -237,10 +237,8 @@ static void CaptureResourceMapWrites(
 		DX12InvalidateBufferContent(resource);
 		return;
 	}
-	// Async capture: enqueue a copy-queue readback instead of memcpy'ing the
-	// written range into the content cache on the recording thread. Only
-	// UPLOAD heaps are GPU-readable by the copy engine without barriers;
-	// READBACK heaps are CPU-read-only and never written by the game this way.
+	// CPU upload memory may be overwritten immediately after Unmap. Capture
+	// the caller-owned written range while this mapping is still valid.
 	if (!IsCpuMappableUploadResource(resource)) {
 		static volatile LONG captureSkipLogCounter = 0;
 		if ((InterlockedIncrement(&captureSkipLogCounter) & 0xFF) == 1) {
@@ -252,7 +250,10 @@ static void CaptureResourceMapWrites(
 		}
 		return;
 	}
-	DX12AsyncReadbackQueueBufferCapture(resource, offset, bytes);
+	const UINT64 width = resource->GetDesc().Width;
+	if (offset <= width && bytes <= width - offset)
+		DX12CacheBufferContentRange(resource, offset,
+			static_cast<const uint8_t*>(mapping.data) + offset, static_cast<size_t>(bytes));
 }
 
 

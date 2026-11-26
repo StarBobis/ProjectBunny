@@ -98,10 +98,6 @@ public:
 	{
 		DX12_DIAG_QPC(totalBegin);
 		DX12_DIAG_QPC(sliceBegin);
-		DX12AsyncReadbackFlushFrameEnd();
-		DX12_PROF_ADD_US("Present.readback_frame_flush", DX12_DIAG_ELAPSED_US(sliceBegin));
-
-		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12ModRunPresentMaintenance();
 		DX12_PROF_ADD_US("Present.present_maintenance", DX12_DIAG_ELAPSED_US(sliceBegin));
 

@@ -471,6 +471,17 @@ public:
 		ID3D12GraphicsCommandList *list = nullptr;
 		UINT64 busyUntilFence = 0; // 0 = never used / free
 		bool everUsed = false;     // first use skips Reset (see below)
+		ID3D12Resource *unfencedTexture = nullptr;
+		ID3D12Resource *unfencedUpload = nullptr;
+
+		void ReleaseUnfencedResources()
+		{
+			if (!unfencedUpload)
+				return;
+			unfencedUpload->Release();
+			unfencedTexture->Release();
+			unfencedUpload = unfencedTexture = nullptr;
+		}
 	};
 	inline static SRWLOCK s_uploadLock = SRWLOCK_INIT;
 	inline static ID3D12CommandQueue *s_uploadQueue = nullptr;
@@ -600,6 +611,25 @@ public:
 		return completed;
 	}
 
+	// ExecuteCommandLists has already accepted the operands. A failed signal
+	// must protect their lifetime without publishing a wait to any consumer.
+	static bool FinishUploadLocked(UploadChannelSlot &slot, ID3D12Resource *texture,
+		ID3D12Resource *upload, UINT64 value, HRESULT signal)
+	{
+		slot.busyUntilFence = value;
+		if (FAILED(signal)) {
+			texture->AddRef();
+			upload->AddRef();
+			slot.unfencedTexture = texture;
+			slot.unfencedUpload = upload;
+			return false;
+		}
+		ClearUploadQueueWaitsLocked();
+		s_uploadPendingFenceValue = value;
+		s_uploadHasPending.store(true, std::memory_order_release);
+		return true;
+	}
+
 	static bool ExecuteTextureUpload(
 		ID3D12Device *device,
 		ID3D12Resource *texture,
@@ -646,8 +676,22 @@ public:
 		for (;;) {
 			UINT64 oldestValue = UINT64_MAX;
 			const UINT64 completedValue = s_uploadFence->GetCompletedValue();
+			if (completedValue == UINT64_MAX) {
+				for (auto &slot : s_uploadSlots)
+					slot.ReleaseUnfencedResources();
+				ReleaseSRWLockExclusive(&s_uploadLock);
+				return false;
+			}
 			for (UINT i = 0; i < kUploadChannelSlots; ++i) {
 				UploadChannelSlot &slot = s_uploadSlots[i];
+				if (slot.unfencedUpload) {
+					if (completedValue < slot.busyUntilFence) {
+						// A later successful signal also covers this submission.
+						// Do not wait on a value that might never be signalled.
+						continue;
+					}
+					slot.ReleaseUnfencedResources();
+				}
 				if (slot.busyUntilFence == 0 || completedValue >= slot.busyUntilFence) {
 					slotIndex = i;
 					break;
@@ -659,6 +703,15 @@ public:
 			if (slotIndex != UINT_MAX)
 				break;
 
+			if (oldestValue == UINT64_MAX) {
+				// All slots lost their signals. Re-establish completion on this
+				// queue only; failed texture uploads are never advertised to consumers.
+				oldestValue = ++s_uploadFenceValue;
+				if (FAILED(s_uploadQueue->Signal(s_uploadFence, oldestValue))) {
+					ReleaseSRWLockExclusive(&s_uploadLock);
+					return false;
+				}
+			}
 			// The fence wait is deliberately outside s_uploadLock. No slot is
 			// modified while unlocked, so reselecting after the wait is enough to
 			// preserve allocator/list ownership correctness.
@@ -756,21 +809,17 @@ public:
 		DX12MarkStage("upload_submit");
 		ID3D12CommandList *lists[] = { slot.list };
 		s_uploadQueue->ExecuteCommandLists(1, lists);
-		s_uploadQueue->Signal(s_uploadFence, fenceValue);
+		const HRESULT signalHr = s_uploadQueue->Signal(s_uploadFence, fenceValue);
 		DX12InternalReplayState::Leave();
 		t_uploadSubmitInLock = false;
-		DX12_LOG("DX12TextureUpload",
-			"stage=submitted,slot=%u,fence=%llu,tid=%lu",
-			slotIndex, static_cast<unsigned long long>(fenceValue),
-			GetCurrentThreadId());
-		slot.busyUntilFence = fenceValue;
-		// A newer upload requires every game queue to establish a dependency on
-		// the new fence value, even if it already waited for an older one.
-		ClearUploadQueueWaitsLocked();
-		s_uploadPendingFenceValue = fenceValue;
-		s_uploadHasPending.store(true, std::memory_order_release);
+		const bool submitted = FinishUploadLocked(slot, texture, upload, fenceValue, signalHr);
 		ReleaseSRWLockExclusive(&s_uploadLock);
-		return true;
+		if (!submitted)
+			DX12_LOG_FLUSH("DX12TextureUpload", "stage=signal_failed,hr=0x%lx", signalHr);
+		else
+			DX12_LOG("DX12TextureUpload", "stage=submitted,slot=%u,fence=%llu,tid=%lu",
+				slotIndex, static_cast<unsigned long long>(fenceValue), GetCurrentThreadId());
+		return submitted;
 	}
 
 	static DX12LoadedResource *EnsureTextureResourceRecord(
