@@ -3,7 +3,7 @@
   "branch": "master",
   "baseline": "44378b1b3694bc28c0488f78f2d346f38a4f50d0",
   "baselineEvidence": "43/45 DX11 C/C++ files byte-identical at 7ee05173 and 44378b1b; ResourceHash.h adds const find_ptr; ResourceHash.cpp fixes two log formats. 44378b1b only changes upstream release workflow.",
-  "observedTip": "a990f65449393cb5aa3331aa0f5c0c5a51fdac69",
+  "observedTip": "9c6b40d5a12743439182f215450001a84744bd39",
   "commits": [
     {
       "sha": "4269c75ba3ac9d5775771a190121daa5a292d664",
@@ -5447,6 +5447,384 @@
           "pwsh -NoProfile -File scripts/build-docs.ps1"
         ],
         "result": "PASS: VitePress production build; rendered options table has three header cells and three cells per option row."
+      }
+    },
+    {
+      "sha": "70c44525100c2af59e5d9c2a62ba044d51a56fd9",
+      "status": "pending",
+      "subject": "Refactor: Modernize codebase for C++17 support",
+      "upstreamPaths": [
+        "D3D_Shaders/Assembler.cpp",
+        "D3D_Shaders/D3D_Shaders.vcxproj",
+        "D3D_Shaders/SignatureParser.cpp",
+        "D3D_Shaders/stdafx.h",
+        "DirectX11/DirectX11.vcxproj",
+        "DirectX11/HackerContext.cpp",
+        "DirectX11/HackerDevice.cpp",
+        "DirectX11/Hunting.cpp",
+        "DirectX11/ShaderRegex.cpp",
+        "DirectX11/ShaderRegex.h",
+        "util.h"
+      ],
+      "adaptation": "Compare byte type naming and compiler compatibility edits with the existing C++17 port.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 70c44525100c2af59e5d9c2a62ba044d51a56fd9"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "b4913c1713552a5bbbc75692dd91c5b9a7115c72",
+      "status": "pending",
+      "subject": "Build: Remove Win32 build configurations",
+      "upstreamPaths": [
+        "BinaryDecompiler/BinaryDecompiler.vcxproj",
+        "D3D_Shaders/D3D_Shaders.vcxproj",
+        "DirectX11/DirectX11.vcxproj",
+        "StereovisionHacks.sln"
+      ],
+      "adaptation": "Review x64 project policy; keep local CMake platform selection.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r b4913c1713552a5bbbc75692dd91c5b9a7115c72"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "854baa5f7bfaba0c187c0072e632175349790d74",
+      "status": "pending",
+      "subject": "Style: Format include directories and linker dependencies",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj"
+      ],
+      "adaptation": "Compare dependency lists with CMake; the upstream edit is to project-file formatting.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 854baa5f7bfaba0c187c0072e632175349790d74"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "8b18002fc14cba6931088f092600370b298e1442",
+      "status": "pending",
+      "subject": "Build: Move Nektra to ThirdPartyLibs and remove Win32 variant",
+      "upstreamPaths": [
+        ".gitignore",
+        "DirectX11/DLLMainHook.h",
+        "DirectX11/DirectX11.vcxproj",
+        "Nektra/",
+        "ThirdPartyLibs/"
+      ],
+      "adaptation": "Check the DLLMainHook include against the local Nektra package and discovery rules.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 8b18002fc14cba6931088f092600370b298e1442"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "b75ce03ea081ac4a762a3b76fa6eb37a07670ab8",
+      "status": "pending",
+      "subject": "Build: Move pcre2 to ThirdPartyLibs and remove Win32 variant",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj",
+        "ThirdPartyLibs/pcre2-lib/pcre2-8-64.lib",
+        "ThirdPartyLibs/pcre2-lib/pcre2-8-64d.lib",
+        "ThirdPartyLibs/pcre2-lib/pcre2.h",
+        "pcre2/pcre2-8-32.lib",
+        "pcre2/pcre2-8-32d.lib",
+        "pcre2/pcre2-8-64.lib",
+        "pcre2/pcre2-8-64d.lib",
+        "pcre2/pcre2.h"
+      ],
+      "adaptation": "Check the local PCRE2 imported library path before considering upstream directory layout changes.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r b75ce03ea081ac4a762a3b76fa6eb37a07670ab8"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "c3ce92718901a98c38e680025c2c38aa5acb7fb0",
+      "status": "pending",
+      "subject": "Build: Remove unused PCRE2 10.30 source directory",
+      "upstreamPaths": [
+        "pcre2-10.30/"
+      ],
+      "adaptation": "Check whether the removed upstream PCRE2 10.30 source tree has a local counterpart.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r c3ce92718901a98c38e680025c2c38aa5acb7fb0"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "dfa2276e0f3583a337554b1de26ed985cd404ba7",
+      "status": "pending",
+      "subject": "Feature: Switch mip dumping to DirectXTex",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj",
+        "DirectX11/FrameAnalysis.cpp",
+        "ThirdPartyLibs/"
+      ],
+      "adaptation": "Compare DDS export for full mip chains with the local path and verify DirectXTex integration requirements.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r dfa2276e0f3583a337554b1de26ed985cd404ba7"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "5e9e73afa1f27fb0586396e435a7bd021eb73c92",
+      "status": "pending",
+      "subject": "Build: Switch DirectXTK to static library and update to v2026.5.7",
+      "upstreamPaths": [
+        "DirectX11/CommandList.cpp",
+        "DirectX11/CommandList.h",
+        "DirectX11/DirectX11.vcxproj",
+        "DirectX11/ResourceHash.cpp",
+        "ThirdPartyLibs/"
+      ],
+      "adaptation": "Review DirectXTK API and linkage changes against local CommandList and ResourceHash behavior.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 5e9e73afa1f27fb0586396e435a7bd021eb73c92"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "55939f3ecb445f85353e30b715ec894e768a92c6",
+      "status": "pending",
+      "subject": "Build: Remove no longer used DirectXTK_Desktop_2017 project",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj",
+        "DirectXTK/",
+        "StereovisionHacks.sln"
+      ],
+      "adaptation": "Review together with the preceding DirectXTK packaging change; the local toolkit is built with CMake.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 55939f3ecb445f85353e30b715ec894e768a92c6"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "1cf613bafe4a54ce42bbacbe7c376fdef26fa2c8",
+      "status": "pending",
+      "subject": "Build: Remove Nektra and pcre2 from Dependencies",
+      "upstreamPaths": [
+        "StereovisionHacks.sln"
+      ],
+      "adaptation": "Check local dependency ownership; this change edits the upstream solution.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 1cf613bafe4a54ce42bbacbe7c376fdef26fa2c8"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "08e967bb52a715022dd1e3b5c6131189cc397052",
+      "status": "pending",
+      "subject": "Build: Remove unused legacy D3DCompiler projects",
+      "upstreamPaths": [
+        "D3DCompiler/",
+        "D3DCompiler_39/",
+        "D3DCompiler_41/",
+        "D3DCompiler_42/",
+        "D3DCompiler_43/",
+        "D3DCompiler_46/",
+        "StereovisionHacks.sln"
+      ],
+      "adaptation": "Check whether the removed legacy D3DCompiler projects participate in the local build or packaging.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 08e967bb52a715022dd1e3b5c6131189cc397052"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "e04e35ec998bd6369c5b696647871dc69afb8b05",
+      "status": "pending",
+      "subject": "Build: Update pcre2 to 10.49",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj",
+        "ThirdPartyLibs/",
+        "vcpkg-overlays/"
+      ],
+      "adaptation": "Assess the PCRE2 10.49 upgrade with local shader regex compilation, matching and cache regressions.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r e04e35ec998bd6369c5b696647871dc69afb8b05"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "3f055399e6828956fa8b4a8489594deb55a4cd03",
+      "status": "pending",
+      "subject": "Build: Remove unused 7zip",
+      "upstreamPaths": [
+        "7zip/7za.exe"
+      ],
+      "adaptation": "Check for local packaging consumers of the removed 7zip artifact.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 3f055399e6828956fa8b4a8489594deb55a4cd03"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "40602a30f7edc0e49e1fc72cb9930f4bf1900112",
+      "status": "pending",
+      "subject": "Build: Added audio support to DirectXTK",
+      "upstreamPaths": [
+        "ThirdPartyLibs/DirectXTK-lib/vcpkg/info/directxtk_2026-05-07_x64-windows-static.list",
+        "ThirdPartyLibs/DirectXTK-lib/vcpkg/status",
+        "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/include/directxtk/Audio.h",
+        "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/lib/DirectXTK.lib",
+        "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/share/directxmath/vcpkg.spdx.json",
+        "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/share/directxmath/vcpkg_abi_info.txt",
+        "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/share/directxtk/directxtk-config.cmake",
+        "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/share/directxtk/vcpkg.spdx.json",
+        "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/share/directxtk/vcpkg_abi_info.txt",
+        "vcpkg-overlays/triplets/x64-windows-static.cmake"
+      ],
+      "adaptation": "Check whether local DirectXTK consumers need the upstream audio build option.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 40602a30f7edc0e49e1fc72cb9930f4bf1900112"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "aaf29443b99d78b17216c1422136fd40d4558a12",
+      "status": "pending",
+      "subject": "Build: Added MinHook 1.3.4 to ThirdPartyLibs",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj",
+        "ThirdPartyLibs/"
+      ],
+      "adaptation": "Review MinHook ownership and CMake integration alongside the later hook migration.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r aaf29443b99d78b17216c1422136fd40d4558a12"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "d5c61717d421083811b28ad2a1e8b7db38d0db49",
+      "status": "pending",
+      "subject": "Build: Move CRC32C to ThirdPartyLibs",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj",
+        "ThirdPartyLibs/CRC32C/crc32c.cpp",
+        "ThirdPartyLibs/CRC32C/crc32c.h",
+        "ThirdPartyLibs/CRC32C/generated-constants.cpp",
+        "crc32c-hw-1.0.5/include/crc32c.h",
+        "crc32c-hw-1.0.5/src/crc32c.cpp",
+        "crc32c-hw-1.0.5/src/generated-constants.cpp"
+      ],
+      "adaptation": "Compare the packaged CRC32C library against the existing local source target and its hash results.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r d5c61717d421083811b28ad2a1e8b7db38d0db49"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "8c384f2db327253537ec23aee24c2f1c0268ed23",
+      "status": "pending",
+      "subject": "Build: Move d3d11TokenizedProgramFormat to ThirdPartyLibs",
+      "upstreamPaths": [
+        "DirectX11/ByteCodeReader.cpp",
+        "DirectX11/DirectX11.vcxproj",
+        "DirectX11/d3d11TokenizedProgramFormat.hpp",
+        "ThirdPartyLibs/WindowsSDK/um/d3d11TokenizedProgramFormat.hpp"
+      ],
+      "adaptation": "Check the relocated token-format header and local shader bytecode reader include paths.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 8c384f2db327253537ec23aee24c2f1c0268ed23"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "7f527eecb26884cecdd8503ea8ec7710b5b022e4",
+      "status": "pending",
+      "subject": "Build: Add minimal ReShade hook manager to ThirdPartyLibs",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj",
+        "ThirdPartyLibs/ReShade/FUNDING.yml",
+        "ThirdPartyLibs/ReShade/LICENSE.md",
+        "ThirdPartyLibs/ReShade/source/dll_log.cpp",
+        "ThirdPartyLibs/ReShade/source/dll_log.hpp",
+        "ThirdPartyLibs/ReShade/source/dll_main.cpp",
+        "ThirdPartyLibs/ReShade/source/dll_main.h",
+        "ThirdPartyLibs/ReShade/source/hook.cpp",
+        "ThirdPartyLibs/ReShade/source/hook.hpp",
+        "ThirdPartyLibs/ReShade/source/hook_manager.cpp",
+        "ThirdPartyLibs/ReShade/source/hook_manager.hpp"
+      ],
+      "adaptation": "Review the minimal ReShade hook manager dependency alongside its mouse/window hook consumer.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 7f527eecb26884cecdd8503ea8ec7710b5b022e4"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "ff11fe173e2303688a7ef183249c63f80095e5f3",
+      "status": "pending",
+      "subject": "Project: Reorganize Visual Studio filters",
+      "upstreamPaths": [
+        "DirectX11/DirectX11.vcxproj.filters"
+      ],
+      "adaptation": "Check for any local source-list impact; the upstream change edits Visual Studio filters.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r ff11fe173e2303688a7ef183249c63f80095e5f3"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
+      }
+    },
+    {
+      "sha": "9c6b40d5a12743439182f215450001a84744bd39",
+      "status": "pending",
+      "subject": "Refactor: Migrate mouse and window hooks to MinHook",
+      "upstreamPaths": [
+        "DirectX11/DLLMainHook.cpp",
+        "DirectX11/DirectX11.vcxproj",
+        "DirectX11/DirectX11.vcxproj.filters",
+        "DirectX11/HackerDXGI.cpp",
+        "DirectX11/IniHandler.cpp",
+        "DirectX11/ReShadeRuntime.cpp",
+        "DirectX11/ReShadeRuntime.hpp",
+        "DirectX11/cursor.cpp",
+        "DirectX11/cursor.h"
+      ],
+      "adaptation": "Review mouse/window hook installation, teardown and dependency ownership before adapting to the local runtime.",
+      "validation": {
+        "commands": [
+          "git diff-tree --no-commit-id --no-renames --name-only -r 9c6b40d5a12743439182f215450001a84744bd39"
+        ],
+        "result": "Upstream paths verified. Local adaptation and validation pending."
       }
     }
   ],
