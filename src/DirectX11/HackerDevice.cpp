@@ -864,7 +864,7 @@ static bool ReplaceASMShader(__in UINT64 hash, const wchar_t *pShaderType, const
 			pTimeStamp = ftWrite;
 			pHeaderLine = ReadShaderHeaderLine(asmTextBytes.data(), readSize);
 
-			vector<byte> byteCode(pBytecodeLength);
+			vector<byte_t> byteCode(pBytecodeLength);
 			memcpy(byteCode.data(), pShaderBytecode, pBytecodeLength);
 
 			// Re-assemble the ASM text back to binary

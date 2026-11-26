@@ -107,12 +107,12 @@ target_include_directories(DirectX11 PRIVATE
     ${CMAKE_SOURCE_DIR}/3rdparty                           # Nektra/NktHookLib.h
     ${CMAKE_SOURCE_DIR}/3rdparty/DirectXTK/Inc             # SpriteBatch.h, DDSTextureLoader.h, etc.
     ${CMAKE_SOURCE_DIR}/3rdparty/crc32c-hw-1.0.5/include   # crc32c.h
-    ${CMAKE_SOURCE_DIR}/3rdparty/pcre2                      # pcre2.h (预编译 lib)
 )
 
 target_link_libraries(DirectX11 PRIVATE
     BinaryDecompiler
     DirectXTK
+    pcre2-8-static
     Nektra::NktHookLib
     crc32c
     XINPUT9_1_0.lib
@@ -124,15 +124,6 @@ target_link_libraries(DirectX11 PRIVATE
 )
 
 target_compile_features(DirectX11 PRIVATE cxx_std_17)
-
-# pcre2 预编译库 — 根据架构和配置选择
-set(PCRE2_DIR "${CMAKE_SOURCE_DIR}/3rdparty/pcre2")
-target_link_libraries(DirectX11 PRIVATE
-    $<$<AND:$<CONFIG:Debug>,$<EQUAL:${CMAKE_SIZEOF_VOID_P},4>>:${PCRE2_DIR}/pcre2-8-32d.lib>
-    $<$<AND:$<NOT:$<CONFIG:Debug>>,$<EQUAL:${CMAKE_SIZEOF_VOID_P},4>>:${PCRE2_DIR}/pcre2-8-32.lib>
-    $<$<AND:$<CONFIG:Debug>,$<EQUAL:${CMAKE_SIZEOF_VOID_P},8>>:${PCRE2_DIR}/pcre2-8-64d.lib>
-    $<$<AND:$<NOT:$<CONFIG:Debug>>,$<EQUAL:${CMAKE_SIZEOF_VOID_P},8>>:${PCRE2_DIR}/pcre2-8-64.lib>
-)
 
 # 模块定义文件 — CMake 3.4+ 自动处理 .def 文件
 target_sources(DirectX11 PRIVATE

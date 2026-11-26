@@ -37,8 +37,8 @@ static vector<string> enumerateFiles(string pathName, string filter = "") {
 	return files;
 }
 
-static vector<byte> readFile(string fileName) {
-	vector<byte> buffer;
+static vector<byte_t> readFile(string fileName) {
+	vector<byte_t> buffer;
 	FILE* input = nullptr;
 	if (fopen_s(&input, fileName.c_str(), "rb") || !input)
 		throw runtime_error("Cannot open shader input: " + fileName);
@@ -60,7 +60,7 @@ static vector<byte> readFile(string fileName) {
 	return buffer;
 }
 
-static void writeFile(const string& fileName, const vector<byte>& buffer)
+static void writeFile(const string& fileName, const vector<byte_t>& buffer)
 {
 	FILE* output = nullptr;
 	if (fopen_s(&output, fileName.c_str(), "wb") || !output)
@@ -112,7 +112,7 @@ static int runShaderTool()
 			for (DWORD i = 0; i < files.size(); i++) {
 				string fileName = files[i];
 
-				vector<byte> ASM;
+				vector<byte_t> ASM;
 				disassembler(&readFile(fileName), &ASM, NULL);
 
 				fileName.erase(fileName.size() - 3, 3);
@@ -166,7 +166,7 @@ static int runShaderTool()
 			for (DWORD i = 0; i < files.size(); i++) {
 				string fileName = files[i];
 
-				vector<byte> ASM;
+				vector<byte_t> ASM;
 				disassembler(&readFile(fileName), &ASM, NULL);
 
 				fileName.erase(fileName.size() - 3, 3);

@@ -173,7 +173,7 @@ void test_dx11_shader_tool_write_regression()
             "F149: all three paths diagnose an output-open failure instead of crashing or silently succeeding");
     }
     ToolDirectoryScope directory(L"tool-output-faults");
-    const std::vector<byte> bytes{0x41,0,0xff,0x01,0x5a};
+    const std::vector<byte_t> bytes{0x41,0,0xff,0x01,0x5a};
     writeFile("normal.bin",bytes);
     require_tool(readFile("normal.bin")==bytes,"F149: preserve complete binary output including NUL bytes");
     writeFile("empty.txt",{});

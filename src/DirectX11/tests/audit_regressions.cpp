@@ -276,14 +276,14 @@ void test_f106()
 
 void test_dx11_disassembler_header_bounds_regression()
 {
-    auto put32 = [](std::vector<byte>& b, size_t off, DWORD v) {
+    auto put32 = [](std::vector<byte_t>& b, size_t off, DWORD v) {
         require_batch(off <= b.size() && b.size() - off >= sizeof(v),
             "F105: fixture word bounds");
         std::memcpy(b.data() + off, &v, sizeof(v));
     };
-    auto reject = [](std::vector<byte> input, const char* what) {
+    auto reject = [](std::vector<byte_t> input, const char* what) {
         const auto original = input;
-        std::vector<byte> output{0x41, 0x42, 0x43};
+        std::vector<byte_t> output{0x41, 0x42, 0x43};
         const auto previous = output;
         const unsigned calls = f105_disassemble_calls;
         std::fprintf(stderr, "F105: reject %s\n", what); std::fflush(stderr);
@@ -297,9 +297,9 @@ void test_dx11_disassembler_header_bounds_regression()
     // T0/T1: no complete 32-byte fixed header.
     reject({}, "F105: empty input");
     for (size_t n = 1; n < 32; ++n)
-        reject(std::vector<byte>(n, 0), "F105: short fixed header");
+        reject(std::vector<byte_t>(n, 0), "F105: short fixed header");
 
-    std::vector<byte> header(32, 0);
+    std::vector<byte_t> header(32, 0);
     std::memcpy(header.data(), "DXBC", 4);
     put32(header, 20, 1);
     put32(header, 24, 32);
@@ -313,7 +313,7 @@ void test_dx11_disassembler_header_bounds_regression()
     reject(header, "F105: count 0x40000000");
 
     // T5/T6: directory offsets must leave an 8-byte chunk header in range.
-    std::vector<byte> one(36, 0);
+    std::vector<byte_t> one(36, 0);
     std::memcpy(one.data(), "DXBC", 4);
     put32(one, 20, 1);
     put32(one, 24, 36);
@@ -324,7 +324,7 @@ void test_dx11_disassembler_header_bounds_regression()
     reject(one, "F105: directory offset ends 2 bytes early");
 
     // T7: chunk payload length must stay inside the buffer.
-    std::vector<byte> chunk(48, 0);
+    std::vector<byte_t> chunk(48, 0);
     std::memcpy(chunk.data(), "DXBC", 4);
     put32(chunk, 20, 1);
     put32(chunk, 24, 48);
@@ -335,7 +335,7 @@ void test_dx11_disassembler_header_bounds_regression()
     reject(chunk, "F105: chunk length overruns buffer");
 
     // T8: a container without a SHEX/SHDR code chunk is rejected.
-    std::vector<byte> no_code(64, 0);
+    std::vector<byte_t> no_code(64, 0);
     std::memcpy(no_code.data(), "DXBC", 4);
     put32(no_code, 20, 1);
     put32(no_code, 24, 64);
@@ -351,8 +351,8 @@ void test_dx11_disassembler_header_bounds_regression()
     require_batch(SUCCEEDED(D3DCompile(source, sizeof(source) - 1, nullptr, nullptr,
         nullptr, "main", "ps_5_0", 0, 0, &code, &errors)),
         "F105: compile real pixel shader");
-    const auto* data = static_cast<const byte*>(code->GetBufferPointer());
-    const std::vector<byte> original(data, data + code->GetBufferSize());
+    const auto* data = static_cast<const byte_t*>(code->GetBufferPointer());
+    const std::vector<byte_t> original(data, data + code->GetBufferSize());
     DWORD n;
     std::memcpy(&n, original.data() + 28, 4);
     require_batch(n >= 1 && 32 + 4 * static_cast<size_t>(n) <= original.size(),
@@ -394,7 +394,7 @@ void test_dx11_disassembler_header_bounds_regression()
     reject(long_code, "F105: code chunk length overruns buffer");
 
     // Green path: the same container still disassembles, once.
-    std::vector<byte> input = original, text;
+    std::vector<byte_t> input = original, text;
     const unsigned before = f105_disassemble_calls;
     require_batch(SUCCEEDED(disassembler(&input, &text, nullptr)),
         "F105: real shader still disassembles");
@@ -404,7 +404,7 @@ void test_dx11_disassembler_header_bounds_regression()
         "F105: valid path preserves input, emits the model line and calls the SDK once");
 
     // Aliased input/output must still publish the complete text.
-    std::vector<byte> alias = original;
+    std::vector<byte_t> alias = original;
     require_batch(SUCCEEDED(disassembler(&alias, &alias, nullptr)) && !alias.empty(),
         "F105: aliased input/output still publishes complete text");
     const std::string alias_string(alias.begin(), alias.end());
@@ -412,11 +412,11 @@ void test_dx11_disassembler_header_bounds_regression()
         "F105: aliased output is disassembly text, not the original bytecode");
 
     // SDK failure propagation leaves the output untouched.
-    std::vector<byte> failed{1, 2, 3};
+    std::vector<byte_t> failed{1, 2, 3};
     f105_disassemble_fail = true;
     const HRESULT hr = disassembler(&input, &failed, nullptr);
     f105_disassemble_fail = false;
-    require_batch(hr == E_OUTOFMEMORY && failed == std::vector<byte>({1, 2, 3}),
+    require_batch(hr == E_OUTOFMEMORY && failed == std::vector<byte_t>({1, 2, 3}),
         "F105: SDK failure propagates and leaves output untouched");
 }
 
@@ -842,6 +842,10 @@ void test_f186()
     };
     config.load(settings("0.500000").c_str(),0,true);
     require_batch(shader_regex_groups.size()==1,"F186: production parser accepts the real regex group");
+    uint32_t jit = 0;
+    char engine[64]{};
+    require_batch(pcre2_config(PCRE2_CONFIG_VERSION, engine) > 0 && std::strncmp(engine, "10.49 ", 6) == 0 &&
+        pcre2_config(PCRE2_CONFIG_JIT, &jit) == 0 && jit == 1, "F186: production PCRE2 10.49 with JIT");
     const uint32_t first_hash=shader_regex_hash;
     config.load(settings("0.750000").c_str(),0,true);
     std::fputs("F186: changing only a replacement line's UTF-16 tail must invalidate its cache key\n",stderr); std::fflush(stderr);
@@ -874,7 +878,7 @@ void test_f186()
         require_batch(load_shader_regex_cache(shader_hash,L"ps",&cached,&cached_tagline)==ShaderRegexCache::PATCH && cached==patched,
             "F186: current-version cache hit returns exact patched bytes");
         uint32_t version=0; std::ifstream file(meta,std::ios::binary); file.read(reinterpret_cast<char*>(&version),sizeof(version));
-        require_batch(file.good() && version==2,"F186: writer persists the explicit new cache version");
+        require_batch(file.good() && version==3,"F186: writer persists the explicit new cache version");
         return patched;
     };
     const auto patched_a=create_patch("0.500000",128);
@@ -884,12 +888,12 @@ void test_f186()
         "F186: reload rejects stale configuration cache without altering output");
     require_batch(!G->mShaderOverrideMap.count(shader_hash),"F186: stale cache rejection links no old group/filter");
     {
-        const uint32_t legacy[]={1,shader_regex_hash,0,0};
+        const uint32_t legacy[]={2,shader_regex_hash,0,0};
         std::ofstream file(meta,std::ios::binary|std::ios::trunc); file.write(reinterpret_cast<const char*>(legacy),sizeof(legacy)); file.close();
         require_batch(file.good(),"F186: isolated legacy-version metadata fixture");
     }
     require_batch(load_shader_regex_cache(shader_hash,L"ps",&unchanged,&tagline)==ShaderRegexCache::NO_CACHE && unchanged==original && tagline==L"unchanged",
-        "F186: version 1 is rejected even when its hash field matches the current configuration");
+        "F186: pre-PCRE2-10.49 cache is rejected even when its hash field matches the current configuration");
     const auto patched_b=create_patch("0.750000",191);
     require_batch(patched_a!=patched_b,"F186: changed replacement produces distinct real bytecode");
     const char no_match_source[]="float4 main():SV_Target{return float4(0.125,0.25,0.5,1);}";
@@ -903,7 +907,7 @@ void test_f186()
     require_batch(!apply_shader_regex_groups(&text,L"ps",&model,no_match_hash,&tagline),"F186: nonmatching shader is not patched");
     require_batch(load_shader_regex_cache(no_match_hash,L"ps",&unchanged,&tagline)==ShaderRegexCache::NO_MATCH,"F186: new-version negative cache remains usable");
     wchar_t no_match_stem[64]{}; swprintf_s(no_match_stem,L"%016llx-ps_regex.dat",no_match_hash);
-    {std::ofstream file(cache/no_match_stem,std::ios::binary|std::ios::trunc); const uint32_t truncated=2; file.write(reinterpret_cast<const char*>(&truncated),sizeof(truncated)); file.close(); require_batch(file.good(),"F186: owned truncated metadata fixture");}
+    {std::ofstream file(cache/no_match_stem,std::ios::binary|std::ios::trunc); const uint32_t truncated=3; file.write(reinterpret_cast<const char*>(&truncated),sizeof(truncated)); file.close(); require_batch(file.good(),"F186: owned truncated metadata fixture");}
     require_batch(load_shader_regex_cache(no_match_hash,L"ps",&unchanged,&tagline)==ShaderRegexCache::NO_CACHE,"F186: incomplete metadata remains a cache miss");
     config.load("",0,true);
 }

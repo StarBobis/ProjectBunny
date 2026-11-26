@@ -121,7 +121,7 @@ void test_dx11_round5_config_regression()
         RegexCacheScope cache(files.config.parent_path());
         decompile = false;
         link_shader_regex_groups_without_patterns(L"vs", &model, 0x5927c81f6515eb11ULL, &decompile);
-        std::vector<byte> bytecode;
+        std::vector<byte_t> bytecode;
         check(load_shader_regex_cache(0x5927c81f6515eb11ULL, L"vs", &bytecode, nullptr) == ShaderRegexCache::NO_MATCH,
             "regex: excluded no-pattern result round-trips through actual cache");
         decompile = false;

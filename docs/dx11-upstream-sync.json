@@ -5451,7 +5451,7 @@
     },
     {
       "sha": "70c44525100c2af59e5d9c2a62ba044d51a56fd9",
-      "status": "pending",
+      "status": "validated",
       "subject": "Refactor: Modernize codebase for C++17 support",
       "upstreamPaths": [
         "D3D_Shaders/Assembler.cpp",
@@ -5466,17 +5466,23 @@
         "DirectX11/ShaderRegex.h",
         "util.h"
       ],
-      "adaptation": "Compare byte type naming and compiler compatibility edits with the existing C++17 port.",
+      "adaptation": "Replace the byte macro with a uint8_t alias throughout the C++17 shader tools, local DLL and their regression callers. Preserve local assembler and parser fixes.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 70c44525100c2af59e5d9c2a62ba044d51a56fd9"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression D3D_Shaders",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Release x64 tools and DLL built; all 13 DX11 tests passed, including assembly and shader-regex WARP output."
+      },
+      "files": [
+        "src/D3D_Shaders",
+        "src/common/util.h",
+        "src/DirectX11"
+      ]
     },
     {
       "sha": "b4913c1713552a5bbbc75692dd91c5b9a7115c72",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Remove Win32 build configurations",
       "upstreamPaths": [
         "BinaryDecompiler/BinaryDecompiler.vcxproj",
@@ -5484,32 +5490,40 @@
         "DirectX11/DirectX11.vcxproj",
         "StereovisionHacks.sln"
       ],
-      "adaptation": "Review x64 project policy; keep local CMake platform selection.",
+      "adaptation": "Only Visual Studio Win32 configurations removed upstream. Keep existing local CMake architecture support.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r b4913c1713552a5bbbc75692dd91c5b9a7115c72"
+          "git diff --find-renames b4913c17^ b4913c17 (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "CMakeLists.txt"
+      ]
     },
     {
       "sha": "854baa5f7bfaba0c187c0072e632175349790d74",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Style: Format include directories and linker dependencies",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj"
       ],
-      "adaptation": "Compare dependency lists with CMake; the upstream edit is to project-file formatting.",
+      "adaptation": "IDE include and link formatting only; CMake uses target properties.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 854baa5f7bfaba0c187c0072e632175349790d74"
+          "git diff --find-renames 854baa5f^ 854baa5f (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "src/DirectX11/CMakeLists.txt"
+      ]
     },
     {
       "sha": "8b18002fc14cba6931088f092600370b298e1442",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Move Nektra to ThirdPartyLibs and remove Win32 variant",
       "upstreamPaths": [
         ".gitignore",
@@ -5518,17 +5532,21 @@
         "Nektra/",
         "ThirdPartyLibs/"
       ],
-      "adaptation": "Check the DLLMainHook include against the local Nektra package and discovery rules.",
+      "adaptation": "Nektra binary move only. Current shared CMake imported target already selects the matching architecture and CRT for DX11 and DX12.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 8b18002fc14cba6931088f092600370b298e1442"
+          "git diff --find-renames 8b18002f^ 8b18002f (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "cmake/FindNektra.cmake"
+      ]
     },
     {
       "sha": "b75ce03ea081ac4a762a3b76fa6eb37a07670ab8",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Move pcre2 to ThirdPartyLibs and remove Win32 variant",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj",
@@ -5541,28 +5559,36 @@
         "pcre2/pcre2-8-64d.lib",
         "pcre2/pcre2.h"
       ],
-      "adaptation": "Check the local PCRE2 imported library path before considering upstream directory layout changes.",
+      "adaptation": "Intermediate relocation of PCRE binaries superseded by the source-built 10.49 target.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r b75ce03ea081ac4a762a3b76fa6eb37a07670ab8"
+          "git diff --find-renames b75ce03e^ b75ce03e (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "3rdparty/pcre2/CMakeLists.txt"
+      ]
     },
     {
       "sha": "c3ce92718901a98c38e680025c2c38aa5acb7fb0",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Remove unused PCRE2 10.30 source directory",
       "upstreamPaths": [
         "pcre2-10.30/"
       ],
-      "adaptation": "Check whether the removed upstream PCRE2 10.30 source tree has a local counterpart.",
+      "adaptation": "The obsolete upstream PCRE2 10.30 source tree was never imported.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r c3ce92718901a98c38e680025c2c38aa5acb7fb0"
+          "git diff --find-renames c3ce9271^ c3ce9271 (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "3rdparty/pcre2"
+      ]
     },
     {
       "sha": "dfa2276e0f3583a337554b1de26ed985cd404ba7",
@@ -5619,22 +5645,26 @@
     },
     {
       "sha": "1cf613bafe4a54ce42bbacbe7c376fdef26fa2c8",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Remove Nektra and pcre2 from Dependencies",
       "upstreamPaths": [
         "StereovisionHacks.sln"
       ],
-      "adaptation": "Check local dependency ownership; this change edits the upstream solution.",
+      "adaptation": "Old Nektra and PCRE copies in Dependencies are absent locally.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 1cf613bafe4a54ce42bbacbe7c376fdef26fa2c8"
+          "git diff --find-renames 1cf613ba^ 1cf613ba (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "Dependencies"
+      ]
     },
     {
       "sha": "08e967bb52a715022dd1e3b5c6131189cc397052",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Remove unused legacy D3DCompiler projects",
       "upstreamPaths": [
         "D3DCompiler/",
@@ -5645,45 +5675,61 @@
         "D3DCompiler_46/",
         "StereovisionHacks.sln"
       ],
-      "adaptation": "Check whether the removed legacy D3DCompiler projects participate in the local build or packaging.",
+      "adaptation": "Obsolete D3DCompiler Visual Studio projects absent. Preserve the local D3DCompiler_46 CMake wrapper.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 08e967bb52a715022dd1e3b5c6131189cc397052"
+          "git diff --find-renames 08e967bb^ 08e967bb (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "src/D3DCompiler_46/CMakeLists.txt"
+      ]
     },
     {
       "sha": "e04e35ec998bd6369c5b696647871dc69afb8b05",
-      "status": "pending",
+      "status": "validated",
       "subject": "Build: Update pcre2 to 10.49",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj",
         "ThirdPartyLibs/",
         "vcpkg-overlays/"
       ],
-      "adaptation": "Assess the PCRE2 10.49 upgrade with local shader regex compilation, matching and cache regressions.",
+      "adaptation": "Build PCRE2 10.49 with its pinned SLJIT from source for the selected architecture and CRT. Invalidate persistent regex matches produced by older engines.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r e04e35ec998bd6369c5b696647871dc69afb8b05"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression D3D_Shaders",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "13/13 passed; runtime version and JIT capability checked; previous cache rejected and replacement shader rendered on WARP."
+      },
+      "files": [
+        "3rdparty/pcre2",
+        "src/DirectX11/ShaderRegex.cpp",
+        "src/DirectX11/tests/audit_regressions.cpp",
+        "src/DirectX11/CMakeLists.txt",
+        "CMakeLists.txt"
+      ]
     },
     {
       "sha": "3f055399e6828956fa8b4a8489594deb55a4cd03",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Remove unused 7zip",
       "upstreamPaths": [
         "7zip/7za.exe"
       ],
-      "adaptation": "Check for local packaging consumers of the removed 7zip artifact.",
+      "adaptation": "Removed legacy 7zip tree absent from the local repository.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 3f055399e6828956fa8b4a8489594deb55a4cd03"
+          "git diff --find-renames 3f055399^ 3f055399 (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "CMakeLists.txt"
+      ]
     },
     {
       "sha": "40602a30f7edc0e49e1fc72cb9930f4bf1900112",
@@ -5727,7 +5773,7 @@
     },
     {
       "sha": "d5c61717d421083811b28ad2a1e8b7db38d0db49",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Move CRC32C to ThirdPartyLibs",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj",
@@ -5738,17 +5784,21 @@
         "crc32c-hw-1.0.5/src/crc32c.cpp",
         "crc32c-hw-1.0.5/src/generated-constants.cpp"
       ],
-      "adaptation": "Compare the packaged CRC32C library against the existing local source target and its hash results.",
+      "adaptation": "Unchanged CRC32C source relocation. Existing CMake library already supplies shared CRC functionality.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r d5c61717d421083811b28ad2a1e8b7db38d0db49"
+          "git diff --find-renames d5c61717^ d5c61717 (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "3rdparty/crc32c-hw-1.0.5"
+      ]
     },
     {
       "sha": "8c384f2db327253537ec23aee24c2f1c0268ed23",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Build: Move d3d11TokenizedProgramFormat to ThirdPartyLibs",
       "upstreamPaths": [
         "DirectX11/ByteCodeReader.cpp",
@@ -5756,13 +5806,17 @@
         "DirectX11/d3d11TokenizedProgramFormat.hpp",
         "ThirdPartyLibs/WindowsSDK/um/d3d11TokenizedProgramFormat.hpp"
       ],
-      "adaptation": "Check the relocated token-format header and local shader bytecode reader include paths.",
+      "adaptation": "Unchanged token-format header relocated by upstream. The existing local include remains wired into CMake.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 8c384f2db327253537ec23aee24c2f1c0268ed23"
+          "git diff --find-renames 8c384f2d^ 8c384f2d (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "src/DirectX11/d3d11TokenizedProgramFormat.hpp"
+      ]
     },
     {
       "sha": "7f527eecb26884cecdd8503ea8ec7710b5b022e4",
@@ -5791,18 +5845,22 @@
     },
     {
       "sha": "ff11fe173e2303688a7ef183249c63f80095e5f3",
-      "status": "pending",
+      "status": "skipped",
       "subject": "Project: Reorganize Visual Studio filters",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj.filters"
       ],
-      "adaptation": "Check for any local source-list impact; the upstream change edits Visual Studio filters.",
+      "adaptation": "Visual Studio filter reorganization only; CMake owns source grouping locally.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r ff11fe173e2303688a7ef183249c63f80095e5f3"
+          "git diff --find-renames ff11fe17^ ff11fe17 (upstream checkout)",
+          "git ls-files"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Reviewed changed paths and local tracked inputs. Release DX11 regression passed 13/13."
+      },
+      "files": [
+        "src/DirectX11/CMakeLists.txt"
+      ]
     },
     {
       "sha": "9c6b40d5a12743439182f215450001a84744bd39",

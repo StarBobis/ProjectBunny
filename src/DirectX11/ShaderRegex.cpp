@@ -568,7 +568,8 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 	return ret;
 }
 
-#define SHADER_REGEX_CACHE_VERSION 2
+// Cached matches and misses depend on the regex engine as well as the INI.
+#define SHADER_REGEX_CACHE_VERSION 3
 struct ShaderRegexCacheHeader {
 	uint32_t version;
 	uint32_t shader_regex_hash;
@@ -593,7 +594,7 @@ static bool shader_regex_cache_path_prefix_ok(const wchar_t *path, int n, const 
 	return true;
 }
 
-ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline)
+ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte_t> *bytecode, std::wstring *tagline)
 {
 	ShaderRegexCache ret = ShaderRegexCache::NO_CACHE;
 	HANDLE meta_f = INVALID_HANDLE_VALUE;
@@ -603,7 +604,7 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 	wchar_t path[MAX_PATH];
 	uint32_t *match_ids;
 	DWORD size, size2;
-	byte *buf = NULL;
+	byte_t *buf = NULL;
 	size_t suffix;
 	int n;
 	uint32_t i;
@@ -621,7 +622,7 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 	if (size < sizeof(ShaderRegexCacheHeader))
 		goto out;
 
-	buf = new byte[size];
+	buf = new byte_t[size];
 
 	if (!ReadFile(meta_f, buf, size, &size2, NULL) || size != size2)
 		goto out;
@@ -759,7 +760,7 @@ static void save_shader_regex_cache_meta(UINT64 hash, const wchar_t *shader_type
 	}
 }
 
-void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode)
+void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector<byte_t> *bytecode)
 {
 	wchar_t path[MAX_PATH];
 	FILE *f = NULL;
