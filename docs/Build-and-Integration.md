@@ -22,7 +22,7 @@
 | [`CMakePresets.json`](../CMakePresets.json) | 6 个配置预设：Ninja 的 x64 Debug/Release 与 Win32 Debug/Release，另有 MSBuild（VS 17 2022）的 x64 Debug/Release |
 | [`cmake/`](../cmake/) | `CompilerOptions.cmake`、`FindNektra.cmake`、`GenerateDX11Version.cmake` |
 | [`src/`](../src/) | 各运行时源码：`DirectX11`、`DirectX12`、`DirectXGI`、`D3DCompiler_46`、`D3DCompiler`、`D3D_Shaders`、`BinaryDecompiler`、`HLSLDecompiler`、`common` |
-| [`3rdparty/`](../3rdparty/) | `Nektra`（预编译）、`pcre2`（预编译）、`DirectXTK`、`crc32c-hw-1.0.5`（源码编译） |
+| [`3rdparty/`](../3rdparty/) | `Nektra`（预编译）、`pcre2`、`DirectXTK`、`DirectXTex`、`MinHook`、`ReShade`、`crc32c-hw-1.0.5`（源码编译） |
 | [`third_party/dxc/`](../third_party/dxc/) | 官方 DXC 运行时投放（`dxcompiler.dll` + `dxil.dll`），见 [`README.md`](../third_party/dxc/README.md) |
 | [`config/d3dx.ini`](../config/d3dx.ini) | 出厂配置模板（DX12 版） |
 | [`Dependencies/`](../Dependencies/) | DX11 侧模板 `d3dx.ini` 与 `d3dcompiler_47.dll` 参考件 |
@@ -66,7 +66,7 @@
 
 **DX11（`d3d11.dll`）** — [`src/DirectX11/CMakeLists.txt`](../src/DirectX11/CMakeLists.txt)
 
-- 链接：`BinaryDecompiler`、`DirectXTK`、`Nektra::NktHookLib`、`crc32c`、`XINPUT9_1_0.lib`、`d3dcompiler.lib`、`DXGI.lib`、`Shlwapi.lib`、`Dbghelp.lib`，以及按架构/配置选择的 pcre2 预编译库（`pcre2-8-64.lib` / `pcre2-8-64d.lib` / 32 位对应项）。
+- 链接：`BinaryDecompiler`、`DirectXTK`、`Nektra::NktHookLib`、`crc32c`、`XINPUT9_1_0.lib`、`d3dcompiler.lib`、`DXGI.lib`、`Shlwapi.lib`、`Dbghelp.lib`，以及源码静态构建的 `pcre2-8-static`、`DirectXTex` 和 `minhook`。
 - 直接编译进目标（而非链接库）的共享源文件：[`src/common/iid.cpp`](../src/common/iid.cpp)、[`src/common/ini_parser_lite.cpp`](../src/common/ini_parser_lite.cpp)、[`src/common/util.cpp`](../src/common/util.cpp)、[`src/D3D_Shaders/Assembler.cpp`](../src/D3D_Shaders/Assembler.cpp)、[`src/D3D_Shaders/SignatureParser.cpp`](../src/D3D_Shaders/SignatureParser.cpp)、[`src/HLSLDecompiler/DecompileHLSL.cpp`](../src/HLSLDecompiler/DecompileHLSL.cpp)。
 - 预处理器定义（关键项）：`MIGOTO_DX=11`、`CRC32C_STATIC=1`、`PCRE2_STATIC`、`PCRE2_CODE_UNIT_WIDTH=8`、`DX11_VERSION_GENERATED=1`、`_USRDLL`，以及来自 `set_target_common_definitions` 的 `UNICODE`/`_UNICODE`；Debug 额外 `_DEBUG_LAYER=1`（宏名带前导下划线）。
 - 导出面由 [`d3d11Wrapper.def`](../src/DirectX11/d3d11Wrapper.def) 固定：按序号导出 `D3D11CreateDevice`、`D3D11CreateDeviceAndSwapChain`、`D3DKMT*`、`OpenAdapter10*`、`D3D11Core*`、`D3D11On12CreateDevice`，另加非序号的 `CBTProc`（外部 Loader 入口）。
@@ -106,8 +106,8 @@
 | 库 | 形态 | 说明 |
 | --- | --- | --- |
 | `Nektra`（`NktHookLib`） | 预编译 `.lib`（x86/x64 × Debug/Release） | [`cmake/FindNektra.cmake`](../cmake/FindNektra.cmake) 按 `CMAKE_SIZEOF_VOID_P` 与配置选择；头文件缺失时只警告不报错 |
-| `pcre2` | 预编译 `.lib` | DX11 链接，按架构/配置选择 `pcre2-8-32/64` 与 `d` 后缀调试版 |
-| `DirectXTK` | 源码编译 | 仅 DX11 链接，提供 `SpriteBatch`、DDS 读取等 |
+| `pcre2` | 10.49 源码静态构建 | 包含 SLJIT，源码归档位于 `3rdparty/pcre2`，配置时从本地解包 |
+| `DirectXTK` | 源码编译 | 仅 DX11 链接，提供 `SpriteBatch`、DDS 读取和工具包音频模块，着色器由 Windows SDK 的 FXC 编译 |
 | `crc32c-hw-1.0.5` | 源码编译 | DX11 与 DX12 共用 |
 
 ---
@@ -141,6 +141,9 @@ find_package(Nektra)               # 3rdparty/Nektra 预编译 hook 库
 
 add_subdirectory(3rdparty/crc32c-hw-1.0.5)
 add_subdirectory(3rdparty/DirectXTK)
+add_subdirectory(3rdparty/DirectXTex)
+add_subdirectory(3rdparty/MinHook)
+add_subdirectory(3rdparty/pcre2)
 add_subdirectory(src/BinaryDecompiler)
 add_subdirectory(src/D3D_Shaders)
 add_subdirectory(src/D3DCompiler_46)
@@ -628,7 +631,7 @@ bun run docs:preview
 | 维度 | 支持 | 依据 / 限制 |
 | --- | --- | --- |
 | 操作系统 | Windows（构建与运行） | 代码依赖 Win32 API、`d3d11.lib`/`dxgi.lib`/`d3dcompiler.lib`、`XINPUT9_1_0.lib`、DirectXTK |
-| 架构 | x64（发布与日常部署）、Win32（可选构建） | `FindNektra.cmake` 与 pcre2 都提供 32/64 位库；但发布脚本固定 `Release`/`x64` |
+| 架构 | x64（发布与日常部署）、Win32（可选构建） | Nektra 按架构选择预编译库，PCRE2 随目标架构构建；但发布脚本固定 `Release`/`x64` |
 | 编译器 | MSVC（VS 2022/18，需 C++ x64 工具） | 所有编译选项都带 `if(MSVC)` 守卫，非 MSVC 得不到 `/W3`、`/EHsc` 等 |
 | 生成器 | Ninja（脚本固定）、Visual Studio 17 2022（预设） | `CMakePresets.json` 提供 MSBuild 预设 |
 | 运行时库 | 静态 CRT（`/MT`） | 部署目录无需附带 VC++ 运行库 |

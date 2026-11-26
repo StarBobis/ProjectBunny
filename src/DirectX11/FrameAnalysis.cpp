@@ -6,6 +6,7 @@
 
 #include "D3D11Wrapper.h"
 #include "FrameAnalysis.h"
+#include "FrameAnalysisDDS.h"
 #include "Globals.h"
 #include "input.h"
 
@@ -604,14 +605,15 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 	   ((analyse_options & FrameAnalysisOptions::FMT_2D_AUTO) && FAILED(hr))) {
 		filename.replace(ext, wstring::npos, L".dds");
 		save_filename.replace(save_ext, wstring::npos, L".dds");
-		FALogInfo(L"Dumping Texture2D %ls -> %ls\n", filename.c_str(), save_filename.c_str());
-
-		hr = S_OK;
-		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES) {
+		auto dds_path = save_filename;
+		{
 			DumpTimer timer(dump_timing, DumpStage::TextureSave);
-			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, save_filename.c_str(), G->dump_mips);
+			hr = SaveFrameAnalysisDDS(GetDumpingContext(), staging, G->dump_mips, dds_path != filename, dds_path);
 		}
-		link_deduplicated_files(filename.c_str(), save_filename.c_str());
+		if (SUCCEEDED(hr)) {
+			FALogInfo(L"Dumping Texture2D %ls -> %ls\n", filename.c_str(), dds_path.c_str());
+			link_deduplicated_files(filename.c_str(), dds_path.c_str());
+		}
 	}
 
 	if (FAILED(hr))
@@ -679,10 +681,9 @@ HRESULT FrameAnalysisContext::CreateStagingResource(ID3D11Texture2D **resource,
 	// Clear out bind flags that may prevent the copy from working:
 	desc.BindFlags = 0;
 
-	// Mip maps requires bind flags, but we set them to 0:
-	// XXX: Possibly want a whilelist instead? DirectXTK only allows
-	// D3D11_RESOURCE_MISC_TEXTURECUBE
-	desc.MiscFlags &= ~D3D11_RESOURCE_MISC_GENERATE_MIPS;
+	// Preserve cube topology for DDS. Bind, sharing and mip-generation flags
+	// describe the original resource and cannot be used on the staging copy.
+	desc.MiscFlags &= D3D11_RESOURCE_MISC_TEXTURECUBE;
 
 	// Must resolve MSAA surfaces before the reverse stereo blit:
 	desc.SampleDesc.Count = 1;

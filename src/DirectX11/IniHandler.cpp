@@ -1,4 +1,5 @@
 #include "IniHandler.h"
+#include "User32Hooks.h"
 #include "McpAgent.h"
 
 #include <algorithm>
@@ -5109,6 +5110,9 @@ void LoadConfigFile()
 	}
 	LogInfo("[Logging]\n");
 	LogInfo("  log_level=%d\n", static_cast<int>(gLogVerbosity));
+
+	if (gLogDebug)
+		OpenUser32HooksLog(migoto_handle);
 
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();

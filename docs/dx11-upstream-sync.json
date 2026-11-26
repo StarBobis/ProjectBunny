@@ -5592,24 +5592,33 @@
     },
     {
       "sha": "dfa2276e0f3583a337554b1de26ed985cd404ba7",
-      "status": "pending",
+      "status": "validated",
       "subject": "Feature: Switch mip dumping to DirectXTex",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj",
         "DirectX11/FrameAnalysis.cpp",
         "ThirdPartyLibs/"
       ],
-      "adaptation": "Compare DDS export for full mip chains with the local path and verify DirectXTex integration requirements.",
+      "adaptation": "Capture multi-surface DDS using DirectXTex may2026 (4feb3e1). Keep the local top-level fast path. Include every exported subresource in the full DDS key and keep top-only output separate from earlier cached mip dumps. Preserve cube topology in staging.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r dfa2276e0f3583a337554b1de26ed985cd404ba7"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression DirectX12 D3D_Shaders",
+          "cmake --build build/dx11-upstream-debug --target DirectX11",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "WARP round-trips verify arrays, cubemaps, compressed and uncompressed mips, exact bytes, cache reuse, late-subresource changes, top-only output and a failed write. Overall Release DX11 CTest 15/15. No target game session."
+      },
+      "files": [
+        "3rdparty/DirectXTex",
+        "src/DirectX11/FrameAnalysis.cpp",
+        "src/DirectX11/FrameAnalysisDDS.cpp",
+        "src/DirectX11/tests/dds_mips_regression.cpp",
+        "usage/dx11/frame-analysis.md"
+      ]
     },
     {
       "sha": "5e9e73afa1f27fb0586396e435a7bd021eb73c92",
-      "status": "pending",
+      "status": "validated",
       "subject": "Build: Switch DirectXTK to static library and update to v2026.5.7",
       "upstreamPaths": [
         "DirectX11/CommandList.cpp",
@@ -5618,30 +5627,45 @@
         "DirectX11/ResourceHash.cpp",
         "ThirdPartyLibs/"
       ],
-      "adaptation": "Review DirectXTK API and linkage changes against local CommandList and ResourceHash behavior.",
+      "adaptation": "Build DirectXTK may2026 (5a8f5d0) statically with the existing CRT and CMake. Preserve scoped WIC factory ownership, loader exception propagation and local DDS API. Apply explicit sRGB/linear loader flags. Obtain hash layout from DirectXTex while retaining input and padding validation.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 5e9e73afa1f27fb0586396e435a7bd021eb73c92"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression DirectX12 D3D_Shaders",
+          "cmake --build build/dx11-upstream-debug --target DirectX11",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "WARP shader matching, overlay, WIC lifetime/exception, legacy DDS, explicit sRGB-to-linear metadata and byte-for-byte pixel checks passed. Overall Release DX11 CTest 15/15. No target game session."
+      },
+      "files": [
+        "3rdparty/DirectXTK",
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/tests/resource_file_audit.cpp",
+        "usage/dx11/resources.md"
+      ]
     },
     {
       "sha": "55939f3ecb445f85353e30b715ec894e768a92c6",
-      "status": "pending",
+      "status": "validated",
       "subject": "Build: Remove no longer used DirectXTK_Desktop_2017 project",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj",
         "DirectXTK/",
         "StereovisionHacks.sln"
       ],
-      "adaptation": "Review together with the preceding DirectXTK packaging change; the local toolkit is built with CMake.",
+      "adaptation": "Retire the obsolete checked-in shader bytecode and old constant-buffer header. Generate matching shaders from source via FXC. The upstream Desktop_2017 project is not part of this CMake tree.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 55939f3ecb445f85353e30b715ec894e768a92c6"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression DirectX12 D3D_Shaders",
+          "cmake --build build/dx11-upstream-debug --target DirectX11",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Fresh x64 Debug build generated the toolkit shaders. Release overlay regression passed. Overall Release DX11 CTest 15/15. No target game session."
+      },
+      "files": [
+        "3rdparty/DirectXTK/CMakeLists.txt",
+        "3rdparty/DirectXTK/Src/Shaders"
+      ]
     },
     {
       "sha": "1cf613bafe4a54ce42bbacbe7c376fdef26fa2c8",
@@ -5733,7 +5757,7 @@
     },
     {
       "sha": "40602a30f7edc0e49e1fc72cb9930f4bf1900112",
-      "status": "pending",
+      "status": "validated",
       "subject": "Build: Added audio support to DirectXTK",
       "upstreamPaths": [
         "ThirdPartyLibs/DirectXTK-lib/vcpkg/info/directxtk_2026-05-07_x64-windows-static.list",
@@ -5747,29 +5771,43 @@
         "ThirdPartyLibs/DirectXTK-lib/x64-windows-static/share/directxtk/vcpkg_abi_info.txt",
         "vcpkg-overlays/triplets/x64-windows-static.cmake"
       ],
-      "adaptation": "Check whether local DirectXTK consumers need the upstream audio build option.",
+      "adaptation": "Build the DirectXTK audio sources into the static toolkit using SDK XAudio 2.8, without introducing a new game setting.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 40602a30f7edc0e49e1fc72cb9930f4bf1900112"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression DirectX12 D3D_Shaders",
+          "cmake --build build/dx11-upstream-debug --target DirectX11",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "dx11_toolkit_audio links and executes production listener validation with valid and nonfinite positions. Audio playback was not exercised. Overall Release DX11 CTest 15/15. No target game session."
+      },
+      "files": [
+        "3rdparty/DirectXTK/Audio",
+        "3rdparty/DirectXTK/CMakeLists.txt",
+        "src/DirectX11/tests/toolkit_audio_regression.cpp"
+      ]
     },
     {
       "sha": "aaf29443b99d78b17216c1422136fd40d4558a12",
-      "status": "pending",
+      "status": "validated",
       "subject": "Build: Added MinHook 1.3.4 to ThirdPartyLibs",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj",
         "ThirdPartyLibs/"
       ],
-      "adaptation": "Review MinHook ownership and CMake integration alongside the later hook migration.",
+      "adaptation": "Build MinHook 1.3.4 (c3fcafd) as a static CMake target with architecture-selected disassembly. Preserve Nektra for its existing D3D and loader users.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r aaf29443b99d78b17216c1422136fd40d4558a12"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression DirectX12 D3D_Shaders",
+          "cmake --build build/dx11-upstream-debug --target DirectX11",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "x64 Debug and Release DLLs linked. Actual user32 calls were redirected and restored in a private regression process. Overall Release DX11 CTest 15/15. No target game session."
+      },
+      "files": [
+        "3rdparty/MinHook",
+        "CMakeLists.txt",
+        "src/DirectX11/CMakeLists.txt"
+      ]
     },
     {
       "sha": "d5c61717d421083811b28ad2a1e8b7db38d0db49",
@@ -5820,7 +5858,7 @@
     },
     {
       "sha": "7f527eecb26884cecdd8503ea8ec7710b5b022e4",
-      "status": "pending",
+      "status": "validated",
       "subject": "Build: Add minimal ReShade hook manager to ThirdPartyLibs",
       "upstreamPaths": [
         "DirectX11/DirectX11.vcxproj",
@@ -5835,13 +5873,21 @@
         "ThirdPartyLibs/ReShade/source/hook_manager.cpp",
         "ThirdPartyLibs/ReShade/source/hook_manager.hpp"
       ],
-      "adaptation": "Review the minimal ReShade hook manager dependency alongside its mouse/window hook consumer.",
+      "adaptation": "Integrate the ReShade hook and logging components required by DX11. Serialize preparation, publish original pointers before activation and retain prepared trampolines across retry. Use the existing DLL handle to open hooks_log.txt on debug configuration.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 7f527eecb26884cecdd8503ea8ec7710b5b022e4"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression DirectX12 D3D_Shaders",
+          "cmake --build build/dx11-upstream-debug --target DirectX11",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Real missing-export batch remained inactive; retry, duplicate installation, debug log initialization and teardown exercised in dx11_user32_hooks. Overall Release DX11 CTest 15/15. No target game session."
+      },
+      "files": [
+        "3rdparty/ReShade",
+        "src/DirectX11/User32Hooks.h",
+        "src/DirectX11/User32Hooks.cpp",
+        "src/DirectX11/IniHandler.cpp"
+      ]
     },
     {
       "sha": "ff11fe173e2303688a7ef183249c63f80095e5f3",
@@ -5864,7 +5910,7 @@
     },
     {
       "sha": "9c6b40d5a12743439182f215450001a84744bd39",
-      "status": "pending",
+      "status": "validated",
       "subject": "Refactor: Migrate mouse and window hooks to MinHook",
       "upstreamPaths": [
         "DirectX11/DLLMainHook.cpp",
@@ -5877,13 +5923,21 @@
         "DirectX11/cursor.cpp",
         "DirectX11/cursor.h"
       ],
-      "adaptation": "Review mouse/window hook installation, teardown and dependency ownership before adapting to the local runtime.",
+      "adaptation": "Migrate nine cursor/coordinate APIs and SetWindowPos to grouped MinHook activation. Hide only after successful installation. Preserve bypass behavior, logical cursor tracking, widened coordinate math and explicit-unload cleanup.",
       "validation": {
         "commands": [
-          "git diff-tree --no-commit-id --no-renames --name-only -r 9c6b40d5a12743439182f215450001a84744bd39"
+          "cmake --build build/dx11-dump-validation --target dx11_upstream_regression DirectX12 D3D_Shaders",
+          "cmake --build build/dx11-upstream-debug --target DirectX11",
+          "ctest --test-dir build/dx11-dump-validation -R ^dx11_ --output-on-failure"
         ],
-        "result": "Upstream paths verified. Local adaptation and validation pending."
-      }
+        "result": "Real hidden Win32 window verifies full_screen=2, scaled and native client rectangles, repeat setup and restoration. Actual game, hardware cursor display and third-party overlays remain untested. Overall Release DX11 CTest 15/15. No target game session."
+      },
+      "files": [
+        "src/DirectX11/cursor.cpp",
+        "src/DirectX11/HackerDXGI.cpp",
+        "src/DirectX11/DLLMainHook.cpp",
+        "src/DirectX11/tests/user32_hooks_regression.cpp"
+      ]
     }
   ],
   "round2AdversarialReview": {

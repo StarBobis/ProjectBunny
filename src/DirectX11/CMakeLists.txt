@@ -25,6 +25,9 @@ add_library(DirectX11 SHARED
     CrashDiagnostics.cpp
     CrashDiagnostics.h
     cursor.cpp
+    User32Hooks.cpp
+    ${CMAKE_SOURCE_DIR}/3rdparty/ReShade/hook.cpp
+    ${CMAKE_SOURCE_DIR}/3rdparty/ReShade/dll_log.cpp
     D3D11Wrapper.cpp
     DX11Version.cpp
     DX11Version.h
@@ -32,6 +35,7 @@ add_library(DirectX11 SHARED
     DLLMainHook.cpp
     ExpressionFunctions.cpp
     FrameAnalysis.cpp
+    FrameAnalysisDDS.cpp
     FrameAnalysisTiming.h
     FrameTiming.cpp
     FrameTiming.h
@@ -112,6 +116,8 @@ target_include_directories(DirectX11 PRIVATE
 target_link_libraries(DirectX11 PRIVATE
     BinaryDecompiler
     DirectXTK
+    DirectXTex
+    minhook
     pcre2-8-static
     Nektra::NktHookLib
     crc32c
@@ -370,6 +376,7 @@ if(BUILD_TESTING)
         tests/round5_config_regression.cpp
         tests/round7_descriptor_regression.cpp
         tests/round8_pool_regression.cpp
+        tests/user32_hooks_regression.cpp
         tests/dds_mips_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
@@ -447,6 +454,12 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME dx11_upstream_regression COMMAND dx11_upstream_regression)
     set_tests_properties(dx11_upstream_regression PROPERTIES TIMEOUT 60)
+    add_executable(dx11_toolkit_audio tests/toolkit_audio_regression.cpp)
+    target_compile_definitions(dx11_toolkit_audio PRIVATE _WIN32_WINNT=0x0603)
+    target_link_libraries(dx11_toolkit_audio PRIVATE DirectXTK)
+    add_dependencies(dx11_upstream_regression dx11_toolkit_audio)
+    add_test(NAME dx11_toolkit_audio COMMAND dx11_toolkit_audio)
+    add_test(NAME dx11_user32_hooks COMMAND dx11_upstream_regression --user32-hooks)
     add_test(NAME dx11_overlay_text_regression COMMAND dx11_upstream_regression --overlay-text)
     add_test(NAME dx11_texture_match_regression COMMAND dx11_upstream_regression --texture-match)
     add_test(NAME dx11_texture_match_hooked_regression COMMAND dx11_upstream_regression --texture-match-hooked)

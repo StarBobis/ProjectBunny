@@ -7534,10 +7534,12 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	if (dot != wstring::npos && (separator == wstring::npos || dot > separator) &&
 		!_wcsicmp(filename.c_str() + dot, L".dds")) {
 		LogInfoW(L"Loading custom resource %s as DDS, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
+		const auto flags = override_color_space == CustomColorSpace::SRGB ? DirectX::DDS_LOADER_FORCE_SRGB :
+			override_color_space == CustomColorSpace::LINEAR ? DirectX::DDS_LOADER_IGNORE_SRGB : DirectX::DDS_LOADER_DEFAULT;
 		hr = DirectX::CreateDDSTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
 				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
-				override_color_space == CustomColorSpace::SRGB, &resource, NULL, NULL);
+				flags, &resource, NULL, NULL);
 	} else {
 		LogInfoW(L"Loading custom resource %s as WIC, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
 		hr = DirectX::CreateWICTextureFromFileEx(mOrigDevice1,

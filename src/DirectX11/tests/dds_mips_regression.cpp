@@ -3,6 +3,8 @@
 #include "../../../3rdparty/DirectXTK/Src/dds.h"
 #include "../../../3rdparty/DirectXTK/Src/ScreenGrabRows.h"
 
+#include "../FrameAnalysisDDS.h"
+#include <DirectXTex.h>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -29,13 +31,14 @@ public:
 };
 
 void check_dds(BatchDevice& device, DXGI_FORMAT format, UINT bytes_per_unit,
-    bool compressed, UINT mip_count, bool dx10, bool tight = false)
+    bool compressed, UINT mip_count, bool dx10, bool tight = false, bool cube = false)
 {
-    const UINT width = tight ? 64 : (compressed ? 8 : 7), height = compressed ? 8 : 5;
+    const UINT width = tight ? 64 : (compressed ? 8 : 7), height = cube ? width : (compressed ? 8 : 5);
+    const UINT slices = cube ? 6 : 2;
     // A distinct second array image detects accidental array/mip interleaving.
-    std::vector<std::vector<uint8_t>> images(mip_count * 2);
+    std::vector<std::vector<uint8_t>> images(mip_count * slices);
     std::vector<D3D11_SUBRESOURCE_DATA> initial(images.size());
-    for (UINT item = 0; item < 2; ++item) {
+    for (UINT item = 0; item < slices; ++item) {
         for (UINT mip = 0; mip < mip_count; ++mip) {
             const UINT w = (std::max)(1u, width >> mip);
             const UINT h = (std::max)(1u, height >> mip);
@@ -54,7 +57,8 @@ void check_dds(BatchDevice& device, DXGI_FORMAT format, UINT bytes_per_unit,
     desc.Width = width;
     desc.Height = height;
     desc.MipLevels = mip_count;
-    desc.ArraySize = 2;
+    desc.ArraySize = slices;
+    desc.MiscFlags = cube ? D3D11_RESOURCE_MISC_TEXTURECUBE : 0;
     desc.Format = format;
     desc.SampleDesc.Count = 1;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -117,6 +121,46 @@ void check_dds(BatchDevice& device, DXGI_FORMAT format, UINT bytes_per_unit,
         }
         require_batch(bytes.size() == offset, "dds mips: exact file length excludes padding and other array images");
     }
+    DdsTemporaryFile base;
+    const auto prefix = base.path.wstring();
+    auto full_path = prefix;
+    require_batch(SUCCEEDED(SaveFrameAnalysisDDS(device.context.Get(), staging.Get(), true, true, full_path)) &&
+        full_path != prefix, "frame DDS: complete capture has its own deduplication key");
+    DirectX::ScratchImage captured;
+    require_batch(SUCCEEDED(DirectX::LoadFromDDSFile(full_path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, captured)) &&
+        captured.GetMetadata().IsCubemap() == cube && captured.GetMetadata().arraySize == slices && captured.GetMetadata().mipLevels == mip_count,
+        "frame DDS: all array slices and mip levels survive serialization");
+    for (UINT item = 0; item < slices; ++item) {
+        for (UINT mip = 0; mip < mip_count; ++mip) {
+            const auto* image = captured.GetImage(mip, item, 0);
+            const auto& expected = images[D3D11CalcSubresource(mip, item, mip_count)];
+            require_batch(image && image->slicePitch == expected.size() &&
+                !memcmp(image->pixels, expected.data(), expected.size()), "frame DDS: exact subresource pixels");
+        }
+    }
+    auto top = prefix;
+    require_batch(SUCCEEDED(SaveFrameAnalysisDDS(device.context.Get(), staging.Get(), false, true, top)) &&
+        top != prefix && top != full_path && SUCCEEDED(DirectX::LoadFromDDSFile(top.c_str(),
+            DirectX::DDS_FLAGS_NONE, nullptr, captured)) &&
+        captured.GetMetadata().mipLevels == 1 && captured.GetMetadata().arraySize == 1 &&
+        !memcmp(captured.GetPixels(), images.front().data(), images.front().size()),
+        "frame DDS: top-only mode has independent storage and contains exactly the first surface");
+    DeleteFileW(top.c_str());
+    auto directory = base.path.parent_path().wstring();
+    require_batch(FAILED(SaveFrameAnalysisDDS(device.context.Get(), staging.Get(), false, false, directory)),
+        "frame DDS: an unwritable destination directory is reported as an error");
+    auto same = prefix;
+    require_batch(SUCCEEDED(SaveFrameAnalysisDDS(device.context.Get(), staging.Get(), true, true, same)) &&
+        same == full_path, "frame DDS: immutable contents reuse the same file");
+    images.back()[0] ^= 0xff;
+    device.context->UpdateSubresource(texture.Get(), UINT(images.size() - 1), nullptr, images.back().data(),
+        initial.back().SysMemPitch, 0);
+    auto changed = prefix;
+    require_batch(SUCCEEDED(SaveFrameAnalysisDDS(device.context.Get(), texture.Get(), true, true, changed)) &&
+        changed != full_path, "frame DDS: an update outside the first surface changes the deduplication key");
+    DeleteFileW(full_path.c_str());
+    DeleteFileW(changed.c_str());
+
 }
 }
 
@@ -149,6 +193,7 @@ void test_dx11_dds_mips_regression()
     check_dds(device, DXGI_FORMAT_BC1_UNORM, 8, true, 3, false);
     check_dds(device, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, 1, false);
     check_dds(device, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, 3, false, true);
+    check_dds(device, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, 3, false, false, true);
     require_batch(DirectX::SaveDDSTextureToFile(device.context.Get(), nullptr, L"unused", true) == E_INVALIDARG &&
         DirectX::SaveDDSTextureToFile(device.context.Get(), nullptr, nullptr, false) == E_INVALIDARG,
         "dds mips: invalid source or filename rejected");

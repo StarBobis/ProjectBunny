@@ -131,6 +131,31 @@ void test_dx11_resource_filename_regression()
         "F108: generate real DDS fixture");
     CustomResource dds; load_texture(dds,device.native.Get(),L"image.DDS");
     require_batch(texture_bytes(device,dds) == expected, "F108: uppercase DDS keeps its original loader and pixel data");
+    const std::vector<uint8_t> rgba{0x17, 0x57, 0x91, 0xff};
+    D3D11_TEXTURE2D_DESC rgba_desc{};
+    rgba_desc.Width = rgba_desc.Height = rgba_desc.MipLevels = rgba_desc.ArraySize = rgba_desc.SampleDesc.Count = 1;
+    rgba_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    rgba_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA rgba_data{rgba.data(), 4, 0};
+    ComPtr<ID3D11Texture2D> rgba_texture;
+    require_batch(SUCCEEDED(device.native->CreateTexture2D(&rgba_desc, &rgba_data, &rgba_texture)) &&
+        SUCCEEDED(DirectX::SaveDDSTextureToFile(device.context.Get(), rgba_texture.Get(), L"rgba.dds")),
+        "DDS: create a known linear RGBA fixture with an sRGB counterpart");
+    CustomResource srgb; srgb.override_color_space = CustomColorSpace::SRGB;
+    load_texture(srgb, device.native.Get(), L"rgba.dds");
+    require_batch(srgb.resource && SUCCEEDED(DirectX::SaveDDSTextureToFile(device.context.Get(),
+        srgb.resource, L"tagged.dds")), "DDS: write an explicitly sRGB fixture");
+    CustomResource linear; linear.override_color_space = CustomColorSpace::LINEAR;
+    load_texture(linear, device.native.Get(), L"tagged.dds");
+    ComPtr<ID3D11Texture2D> gamma_texture, linear_texture;
+    require_batch(SUCCEEDED(srgb.resource->QueryInterface(IID_PPV_ARGS(&gamma_texture))) &&
+        linear.resource && SUCCEEDED(linear.resource->QueryInterface(IID_PPV_ARGS(&linear_texture))), "DDS: both color overrides created");
+    D3D11_TEXTURE2D_DESC gamma_desc{}, linear_desc{};
+    gamma_texture->GetDesc(&gamma_desc);
+    linear_texture->GetDesc(&linear_desc);
+    require_batch(gamma_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB &&
+        linear_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && texture_bytes(device,linear) == rgba,
+        "DDS: linear override removes sRGB metadata without changing pixels");
     std::fputs("F108: parent-dot and DDS checked\n",stderr); std::fflush(stderr);
     CustomResource missing; load_texture(missing,device.native.Get(),L"missing");
     require_batch(missing.substantiated && missing.is_null && !missing.resource && creation_lock_is_free(),

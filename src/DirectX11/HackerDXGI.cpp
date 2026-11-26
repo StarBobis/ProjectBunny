@@ -72,14 +72,14 @@
 #include "CommandList.h"
 #include "profiling.h"
 #include "McpAgent.h"
-#include "cursor.h" // For InstallHookLate
+#include "User32Hooks.h"
+#include <mutex>
 
 
 // -----------------------------------------------------------------------------
 // SetWindowPos hook, activated by full_screen=2 in d3dx.ini
 
-static BOOL(WINAPI *fnOrigSetWindowPos)(_In_ HWND hWnd, _In_opt_ HWND hWndInsertAfter,
-	_In_ int X, _In_ int Y, _In_ int cx, _In_ int cy, _In_ UINT uFlags) = nullptr;
+static std::atomic<decltype(&::SetWindowPos)> fnOrigSetWindowPos{::SetWindowPos};
 
 static BOOL WINAPI Hooked_SetWindowPos(
 	_In_ HWND hWnd,
@@ -105,29 +105,23 @@ static BOOL WINAPI Hooked_SetWindowPos(
 		return true;
 	}
 
-	return fnOrigSetWindowPos(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
+	return fnOrigSetWindowPos.load()(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
 }
 
 
 void InstallSetWindowPosHook()
 {
-	HINSTANCE hUser32;
-	int fail = 0;
-
-	// Only attempt to hook it once:
-	if (fnOrigSetWindowPos != nullptr)
+	static std::mutex mutex;
+	static bool installed = false;
+	std::lock_guard lock(mutex);
+	if (installed)
 		return;
-
-	hUser32 = NktHookLibHelpers::GetModuleBaseAddress(L"User32.dll");
-	fail |= InstallHookLate(hUser32, "SetWindowPos", (void**)&fnOrigSetWindowPos, Hooked_SetWindowPos);
-
-	if (fail) {
+	static User32Hook hook = BindUser32Hook<fnOrigSetWindowPos>("SetWindowPos", Hooked_SetWindowPos);
+	installed = InstallUser32Hooks(&hook, 1);
+	if (installed)
+		LogInfo("Successfully hooked SetWindowPos for full_screen=2\n");
+	else
 		LogOverlay(LOG_DIRE, "Failed to hook SetWindowPos for full_screen=2\n");
-		return;
-	}
-
-	LogInfo("Successfully hooked SetWindowPos for full_screen=2\n");
-	return;
 }
 
 // -----------------------------------------------------------------------------

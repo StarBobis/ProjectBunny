@@ -1,5 +1,8 @@
 # PCRE2 10.49 (6f9d7c1), including its pinned SLJIT compiler (de0259c).
 include(FetchContent)
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
 set(PCRE2_BUILD_PCRE2GREP OFF)
 set(PCRE2_BUILD_TESTS OFF)
 set(PCRE2_SUPPORT_JIT ON CACHE BOOL "Shader regex JIT support" FORCE)

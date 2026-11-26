@@ -1,4 +1,5 @@
 #include "DLLMainHook.h"
+#include "User32Hooks.h"
 
 #include "HookedDXGI.h"
 #include "D3D11Wrapper.h"
@@ -435,6 +436,8 @@ BOOL WINAPI DllMain(
 
 		case DLL_PROCESS_DETACH:
 			Dx11Diagnostics::Phase("dll_detaching");
+			if (!lpvReserved)
+				RemoveUser32Hooks();
 			RemoveHooks();
 			if (tls_idx != TLS_OUT_OF_INDEXES) {
 				// FIXME: If we are being dynamically unloaded

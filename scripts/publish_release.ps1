@@ -211,6 +211,11 @@ $shipFiles = @(
     @{ Src = "$dxcDir\dxil.dll"; Dst = 'dxil.dll';
        Hint = "DXIL backend required by dxcompiler.dll (and by d3dcompiler_47's SM6 path). Restore third_party\dxc\dxil.dll." },
     @{ Src = "$root\LICENSE.txt"; Dst = 'LICENSE.txt' },
+    @{ Src = "$root\3rdparty\DirectXTK\LICENSE"; Dst = 'DirectXTK-LICENSE.txt' },
+    @{ Src = "$root\3rdparty\DirectXTex\LICENSE"; Dst = 'DirectXTex-LICENSE.txt' },
+    @{ Src = "$root\3rdparty\MinHook\LICENSE.txt"; Dst = 'MinHook-LICENSE.txt' },
+    @{ Src = "$root\3rdparty\ReShade\LICENSE.md"; Dst = 'ReShade-LICENSE.txt' },
+    @{ Src = "$root\3rdparty\pcre2\LICENCE.txt"; Dst = 'PCRE2-LICENSE.txt' },
     @{ Src = "$root\config\d3dx.ini"; Dst = 'd3dx.ini' }
 )
 foreach ($f in $shipFiles) {

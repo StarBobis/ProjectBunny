@@ -57,7 +57,7 @@ data = 0 1 2 3
 
 ## 色彩空间
 
-WIC 图片使用 `srgb` 强制 sRGB 格式，`linear` 忽略 sRGB 元数据。DDS 的 `srgb` 可强制 sRGB，`linear` 不保证将已经是 sRGB 的 DDS 改成线性格式。
+WIC 图片和 DDS 都支持显式指定色彩空间。对于有对应线性和 sRGB 格式的 DDS，`color_space = linear` 会将已有的 sRGB 标记改为线性，`srgb` 会选用 sRGB 格式。省略该选项时保留 DDS 自带的格式。
 
 ```ini
 [ResourceColor]

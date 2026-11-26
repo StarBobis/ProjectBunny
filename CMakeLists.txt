@@ -29,6 +29,8 @@ find_package(Nektra)
 
 add_subdirectory(3rdparty/crc32c-hw-1.0.5)
 add_subdirectory(3rdparty/DirectXTK)
+add_subdirectory(3rdparty/DirectXTex)
+add_subdirectory(3rdparty/MinHook)
 add_subdirectory(3rdparty/pcre2)
 
 add_subdirectory(src/BinaryDecompiler)

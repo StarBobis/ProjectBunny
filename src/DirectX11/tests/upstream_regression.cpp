@@ -945,6 +945,7 @@ void test_dx11_round5_config_regression();
 void test_dx11_round7_descriptor_regression();
 void test_dx11_round8_pool_regression();
 void test_dx11_dds_mips_regression();
+void test_dx11_user32_hooks();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -987,7 +988,7 @@ int main(int argc, char** argv)
     const char* audit_item = nullptr;
     if (argc == 3 && !std::strcmp(argv[1], "--audit-item")) audit_item = argv[2];
     else if (!(argc == 1 || (argc == 2 &&
-        (!std::strcmp(argv[1], "--full") || !std::strcmp(argv[1], "--texture-match-hooked") ||
+        (!std::strcmp(argv[1], "--user32-hooks") || !std::strcmp(argv[1], "--full") || !std::strcmp(argv[1], "--texture-match-hooked") ||
          !std::strcmp(argv[1], "--texture-match") || !std::strcmp(argv[1], "--overlay-text") ||
          !std::strcmp(argv[1], "--shader-regex-exclusions") || !std::strcmp(argv[1], "--depth-copy"))))) {
         std::fputs("Usage: dx11_upstream_regression [--full | --audit-item F-NNN | --texture-match | --texture-match-hooked | --overlay-text | --shader-regex-exclusions | --depth-copy]\n", stderr);
@@ -1013,6 +1014,10 @@ int main(int argc, char** argv)
     }
     test_dx11_version_regression();
     try {
+        if (argc == 2 && std::string(argv[1]) == "--user32-hooks") {
+            test_dx11_user32_hooks();
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--texture-match-hooked") {
             test_dx11_texture_match_hooked_regression();
             return 0;

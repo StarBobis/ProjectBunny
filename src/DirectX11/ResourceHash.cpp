@@ -12,11 +12,16 @@
 #include "lock.h"
 #include "overlay.h"
 
-// DirectXTK headers fail to include their own pre-requisits. We just want
-// GetSurfaceInfo from LoaderHelpers
-#include "DirectXTK/Src/pch.h"
-#include "DirectXTK/Src/PlatformHelpers.h"
-#include "DirectXTK/Src/LoaderHelpers.h"
+#include <DirectXTex.h>
+
+static bool texture_layout(DXGI_FORMAT format, UINT width, UINT height,
+        size_t& slice_pitch, size_t& row_pitch, size_t& row_count)
+{
+    if (FAILED(DirectX::ComputePitch(format, width, height, row_pitch, slice_pitch)))
+        return false;
+    row_count = DirectX::ComputeScanlines(format, height);
+    return row_count && row_pitch && slice_pitch;
+}
 
 static size_t texture2d_initial_debug_prefix(const D3D11_TEXTURE2D_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial)
 {
@@ -29,7 +34,7 @@ static size_t texture2d_initial_debug_prefix(const D3D11_TEXTURE2D_DESC *desc, c
 		return 0;
 	case DXGI_FORMAT_NV11:
 		if (desc->Width % 4) return 0;
-		// LoaderHelpers uses a deliberately enlarged NV11 plane-size approximation.
+		// DirectXTex uses a deliberately enlarged NV11 plane-size approximation.
 		first_row_only = true;
 		break;
 	case DXGI_FORMAT_NV12:
@@ -44,8 +49,7 @@ static size_t texture2d_initial_debug_prefix(const D3D11_TEXTURE2D_DESC *desc, c
 		break;
 	}
 	size_t bytes = 0, row_bytes = 0, rows = 0;
-	DirectX::LoaderHelpers::GetSurfaceInfo(desc->Width, desc->Height, desc->Format, &bytes, &row_bytes, &rows);
-	if (!bytes || !row_bytes || !rows || initial->SysMemPitch < row_bytes)
+	if (!texture_layout(desc->Format, desc->Width, desc->Height, bytes, row_bytes, rows) || initial->SysMemPitch < row_bytes)
 		return 0;
 	// Tight rows form one contiguous data range. Otherwise the gap after the
 	// first row is padding, not a promised readable part of the caller's data.
@@ -730,9 +734,7 @@ static TextureDataPlan Texture2DDataPlan(const D3D11_TEXTURE2D_DESC *desc,
 		return RejectTextureData("Texture2D", "ArraySize is outside the D3D11 texture limit",
 			initial, desc->Width, desc->Height, 0, desc->Format);
 	size_t slice_pitch = 0, row_pitch = 0, row_count = 0;
-	DirectX::LoaderHelpers::GetSurfaceInfo(desc->Width, desc->Height, desc->Format,
-		&slice_pitch, &row_pitch, &row_count);
-	if (!slice_pitch || !row_pitch || !row_count)
+	if (!texture_layout(desc->Format, desc->Width, desc->Height, slice_pitch, row_pitch, row_count))
 		return RejectTextureData("Texture2D", "unsupported texture format or layout",
 			initial, desc->Width, desc->Height, 0, desc->Format);
 	if (initial->SysMemPitch < row_pitch)
@@ -762,9 +764,7 @@ static TextureDataPlan Texture3DDataPlan(const D3D11_TEXTURE3D_DESC *desc,
 			"Width, Height or Depth is outside the D3D11 texture limit",
 			initial, desc->Width, desc->Height, desc->Depth, desc->Format);
 	size_t slice_pitch = 0, row_pitch = 0, row_count = 0;
-	DirectX::LoaderHelpers::GetSurfaceInfo(desc->Width, desc->Height, desc->Format,
-		&slice_pitch, &row_pitch, &row_count);
-	if (!slice_pitch || !row_pitch || !row_count)
+	if (!texture_layout(desc->Format, desc->Width, desc->Height, slice_pitch, row_pitch, row_count))
 		return RejectTextureData("Texture3D", "unsupported texture format or layout",
 			initial, desc->Width, desc->Height, desc->Depth, desc->Format);
 	if (initial->SysMemPitch < row_pitch)
@@ -825,7 +825,8 @@ static uint32_t hash_tex2d_data(uint32_t hash, const void *data, size_t length,
 	if (!zero_padding && !skip_padding)
 		return crc32c_hw(hash, data, length);
 
-	DirectX::LoaderHelpers::GetSurfaceInfo(pDesc->Width, pDesc->Height, pDesc->Format, &slice_pitch, &row_pitch, &row_count);
+	if (!texture_layout(pDesc->Format, pDesc->Width, pDesc->Height, slice_pitch, row_pitch, row_count))
+		return hash;
 
 	uint8_t *sptr = (uint8_t*)data;
 	size_t msize = min(row_pitch, static_cast<size_t>(mapped_row_pitch));
@@ -978,7 +979,7 @@ uint32_t CalcTexture2DDataHashAccurate(
 		return 0;
 
 	// Passing length=INT_MAX, since that is an upper bound and
-	// hash_tex2d_data will work it out from DirectXTK. The plan above has
+	// hash_tex2d_data will compute it from the format. The plan above has
 	// already bounded the rows this can walk.
 	hash = hash_tex2d_data(hash, pInitialData[0].pSysMem, INT_MAX,
 			pDesc, false, true, pInitialData[0].SysMemPitch);
