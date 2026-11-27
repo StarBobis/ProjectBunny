@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "util.h"
+#include "IniKeyCycle.h"
 #include "Input.h"
 #include "HackerDevice.h"
 
@@ -168,16 +169,9 @@ class KeyOverrideCycle : public KeyOverrideBase
 {
 private:
 	std::vector<class KeyOverride> presets;
-	int current;
-	bool wrap;
-	bool smart;
+	migoto::KeyCycleCursor cursor;
+	void Step(HackerDevice *device, bool back);
 public:
-	KeyOverrideCycle() :
-		current(-1),
-		wrap(true),
-		smart(true)
-	{}
-
 	void ParseIniSection(LPCWSTR section) override;
 	void DownEvent(HackerDevice *device);
 	void BackEvent(HackerDevice *device);

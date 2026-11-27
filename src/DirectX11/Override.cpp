@@ -138,42 +138,14 @@ struct KeyOverrideCycleParam
 {
 	std::string cur;
 	std::string buf;
-	const char *ptr;
-
-	KeyOverrideCycleParam() :
-		ptr(NULL)
-	{}
+	size_t offset = 0;
 
 	bool next()
 	{
-		const char *t1, *t2;
-
-		if (!ptr)
-			ptr = buf.c_str();
-
-		// Done?
-		if (!*ptr)
+		std::string_view field;
+		if (!migoto::NextKeyCycleField(std::string_view(buf), offset, field))
 			return false;
-
-		// Skip over whitespace:
-		for (; *ptr == ' '; ptr++) {}
-
-		// Mark start of current entry:
-		t1 = ptr;
-
-		// Scan until the next comma or end of string:
-		for (; *ptr && *ptr != ','; ptr++) {}
-
-		// Scan backwards over any trailing whitespace in this entry:
-		for (t2 = ptr - 1; t2 >= t1 && *t2 == ' '; t2--) {}
-
-		// If it's a comma advance to the next item:
-		if (*ptr == ',')
-			ptr++;
-
-		// Extract this entry:
-		cur = std::string{t1, (uintptr_t)(++t2 - t1)};
-
+		cur.assign(field);
 		return true;
 	}
 
@@ -292,8 +264,8 @@ void KeyOverrideCycle::ParseIniSection(LPCWSTR section)
 	int param_idx;
 	float val;
 
-	wrap = GetIniBool(section, L"wrap", true, NULL);
-	smart = GetIniBool(section, L"smart", true, NULL);
+	cursor.wrap = GetIniBool(section, L"wrap", true, NULL);
+	cursor.smart = GetIniBool(section, L"smart", true, NULL);
 
 	GetIniSection(&section_vec, section);
 	for (entry = section_vec->begin(); entry < section_vec->end(); entry++) {
@@ -415,60 +387,27 @@ bool Override::MatchesCurrent(HackerDevice *device)
 
 void KeyOverrideCycle::UpdateCurrent(HackerDevice *device)
 {
-	// If everything in the current preset matches reality or the current
-	// transition target we are good:
-	if (current >= 0 && (size_t)current < presets.size() && presets[current].MatchesCurrent(device))
-		return;
+	const auto previous = cursor.index;
+	if (cursor.Resync(presets.size(), [&](size_t i) { return presets[i].MatchesCurrent(device); }))
+		LogInfo("Resynced key cycle: %zd -> %zu\n", static_cast<ptrdiff_t>(previous), cursor.index);
+}
 
-	// The current preset doesn't match reality - we've got out of sync.
-	// Search for any other presets that do match:
-	for (unsigned i = 0; i < presets.size(); i++) {
-		if (i != current && presets[i].MatchesCurrent(device)) {
-			LogInfo("Resynced key cycle: %i -> %i\n", current, i);
-			current = i;
-			return;
-		}
-	}
+void KeyOverrideCycle::Step(HackerDevice *device, bool back)
+{
+	if (cursor.smart)
+		UpdateCurrent(device);
+	if (cursor.Advance(presets.size(), back))
+		presets[cursor.index].Activate(device, false);
 }
 
 void KeyOverrideCycle::DownEvent(HackerDevice *device)
 {
-	if (presets.empty())
-		return;
-
-	if (smart)
-		UpdateCurrent(device);
-
-	if (current == -1)
-		current = 0;
-	else if (wrap)
-		current = (current + 1) % presets.size();
-	else if ((unsigned)current < presets.size() - 1)
-		current++;
-	else
-		return;
-
-	presets[current].Activate(device, false);
+	Step(device, false);
 }
 
 void KeyOverrideCycle::BackEvent(HackerDevice *device)
 {
-	if (presets.empty())
-		return;
-
-	if (smart)
-		UpdateCurrent(device);
-
-	if (current == -1)
-		current = (int)presets.size() - 1;
-	else if (wrap)
-		current = (int)(current ? current : presets.size()) - 1;
-	else if (current > 0)
-		current--;
-	else
-		return;
-
-	presets[current].Activate(device, false);
+	Step(device, true);
 }
 
 void KeyOverrideCycleBack::DownEvent(HackerDevice *device)

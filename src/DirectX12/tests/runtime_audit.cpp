@@ -11,6 +11,7 @@
 #include "tests/IniArithmeticCases.h"
 #include "tests/IniBitwiseCases.h"
 #include "tests/IniXInputCases.h"
+#include "tests/IniKeyCycleCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -125,8 +126,7 @@ void TestLockedVariables()
 		Keys::ConditionActive(bindings[0]) && Keys::ConditionActive(bindings[1]),
 		"post preserves the local and explicit global resolves through the lock");
 	std::vector<Keys::RuntimeAction> actions;
-	Keys::ActivateCycle(&bindings[0], &actions, 1);
-	Keys::ActivateBinding(&bindings[1], &actions, true, false);
+	Keys::ProcessBindings(&bindings, &actions, [](int vk) { return vk == VK_F2 || vk == VK_F3; }, {});
 	Require(vm.Evaluate(L"$\\mod a\\probe") == 7 && vm.Evaluate(L"$\\skin\\\u732b-mod\\variant") == 5 &&
 		vm.Evaluate(L"$\\c\\variant") == 40 && Vm::PersistDirty(), "key conditions, cycle and hold use owner");
 	Keys::DeactivateBinding(&bindings[1], &actions, true);
@@ -1375,6 +1375,40 @@ void TestControllerFrameDispatch(IDXGISwapChain1 *chain)
 	Vm::ClearGlobals();
 }
 
+void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
+{
+	using Source = RecordedControllers;
+	using Vm = MigotoCommandVmUtils;
+	const auto dir = std::filesystem::current_path() /
+		(L"cycle-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create cycle fixture");
+	const auto root = dir / L"main.ini";
+	Source::hardware = {};
+	auto &port = Source::hardware.slots[1];
+	port.connected = true;
+	Vm::State vm;
+	for (const auto &test : migoto::tests::keyCycleCases) {
+		port.state.Gamepad.wButtons = 0;
+		std::ofstream(root) << "[Constants]\n" << test.Config();
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr,
+			DX12ModLoadReason::UserReload, Source::Read), "reload cycle config");
+		Require(vm.Evaluate(L"$phase") == 99 && vm.Evaluate(L"$score") == 0, "fresh cycle globals");
+		for (const auto &press : test.presses) {
+			if (press.externalValue)
+				Vm::SetGlobal(L"$phase", *press.externalValue);
+			port.state.Gamepad.wButtons = press.back ? XINPUT_GAMEPAD_B : XINPUT_GAMEPAD_A;
+			Check(chain->Present(0, 0));
+			Require(vm.Evaluate(L"$phase") == press.value && vm.Evaluate(L"$score") == press.score, test.name);
+			port.state.Gamepad.wButtons = 0;
+			Check(chain->Present(0, 0));
+		}
+	}
+	std::ofstream(root) << "[Constants]\n";
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr), "uninstall test cycle reader and bindings");
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
+}
+
 void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 {
 	auto first = Queue(device, D3D12_COMMAND_LIST_TYPE_DIRECT);
@@ -1415,6 +1449,7 @@ void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 	Require(vm.Evaluate(L"frame_number") == frameBeforePresent + 2 && vm.Evaluate(L"time") >= presentTime,
 		"wrapped Present1 publishes its clock and frame number");
 	TestControllerFrameDispatch(chain.Get());
+	TestKeyCyclesOnPresent(chain.Get());
 	Drain(device, first.Get());
 	ComPtr<IDXGISwapChain3> chain3;
 	Check(chain.As(&chain3));

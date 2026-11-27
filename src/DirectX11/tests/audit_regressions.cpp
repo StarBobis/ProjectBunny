@@ -6,6 +6,7 @@
 #include "Override.h"
 #include "vkeys.h"
 #include "tests/IniXInputCases.h"
+#include "tests/IniKeyCycleCases.h"
 #include "HLSLDecompiler/DecompileHLSL.h"
 #include <array>
 #include <atomic>

@@ -79,10 +79,7 @@ private:
 		bool clear = true;
 		if (ini.GetString(L"System", L"clear_unknown_settings", &text)) {
 			text = IniDocumentText::ToLower(IniDocumentText::Trim(text));
-			if (!migoto::ReadIniBooleanAlias(text, clear)) {
-				if (const auto value = Vm::ReadStaticIniExpression(text))
-					clear = migoto::IniBooleanValue(*value);
-			}
+			clear = Vm::ReadStaticIniBoolean(text).value_or(true);
 		}
 		return clear ? Vm::UnknownSettingsPolicy::ClearUnchanged : Vm::UnknownSettingsPolicy::Preserve;
 	}

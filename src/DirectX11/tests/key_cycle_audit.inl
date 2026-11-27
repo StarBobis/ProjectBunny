@@ -51,6 +51,21 @@ public:
 void test_f193()
 {
     IniParameterStateScope saved; AuditConfigScope config; BatchDevice device;
+    for (const auto &test : migoto::tests::keyCycleCases) {
+        cycle_audit_load(config, device, test.Config().c_str());
+        CycleAuditLifetime item(L"KeyCycle");
+        for (const auto &press : test.presses) {
+            if (press.externalValue)
+                command_list_globals.at(L"$phase").fval = *press.externalValue;
+            if (press.back)
+                item.cycle.BackEvent(device.device);
+            else
+                item.cycle.DownEvent(device.device);
+            cycle_audit_flush(device);
+            require_batch(cycle_audit_value(L"$phase") == press.value &&
+                cycle_audit_value(L"$score") == press.score, test.name);
+        }
+    }
     cycle_audit_load(config,device,
         "global $f193_trace=0\nglobal $f193_post=0\n"
         "[CommandListF193A]\n$f193_trace=$f193_trace*10+1\npost $f193_post=$f193_post*10+1\n"

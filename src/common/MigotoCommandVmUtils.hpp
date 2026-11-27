@@ -434,16 +434,28 @@ public:
 		}
 	};
 
-	static std::optional<float> ReadStaticIniExpression(const std::wstring &text)
+	static std::optional<float> ReadStaticIniExpression(const std::wstring &text, std::wstring_view iniNamespace = {})
 	{
 		if (!ExpressionParser::ValidSyntax(text))
 			return {};
 		ExpressionContext context;
 		context.requireDeclaredVariables = true;
 		context.staticIniSetting = true;
+		context.iniNamespace = iniNamespace;
 		ExpressionParser parser(text, context, ExpressionParser::Mode::Validated);
 		const float value = parser.Parse();
 		return parser.ok ? std::optional<float>{value} : std::nullopt;
+	}
+
+	// The caller supplies trimmed, lowercase INI text, as in DX11 ParseBoolValue.
+	static std::optional<bool> ReadStaticIniBoolean(const std::wstring &text, std::wstring_view iniNamespace = {})
+	{
+		bool value;
+		if (migoto::ReadIniBooleanAlias(text, value))
+			return value;
+		if (auto expression = ReadStaticIniExpression(text, iniNamespace))
+			return migoto::IniBooleanValue(*expression);
+		return {};
 	}
 
 	class BranchFrame

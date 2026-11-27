@@ -2,7 +2,6 @@
 
 #include <Windows.h>
 
-#include <cmath>
 #include <cwctype>
 #include <sstream>
 #include <string>
@@ -11,6 +10,7 @@
 #include "DirectX12/DX12Runtime.h"
 #include "MigotoCommandVmUtils.hpp"
 #include "MigotoInputCombination.h"
+#include "IniKeyCycle.h"
 
 namespace Bunny {
 
@@ -56,7 +56,8 @@ public:
 		std::vector<VariableValues> variables;
 		std::vector<std::wstring> runCommandLists;
 		bool active = false;
-		size_t cycleIndex = static_cast<size_t>(-1);
+		migoto::KeyCycleCursor cycle;
+		std::vector<std::wstring> cycleConditions;
 	};
 
 	class RuntimeAction
@@ -106,6 +107,23 @@ public:
 				if (key == L"condition") {
 					binding.condition = IniDocumentText::ToLower(value);
 					binding.conditionNamespace = entry.iniNamespace;
+					if (binding.type == BindingType::Cycle) {
+						binding.cycleConditions = SplitCommaValues(binding.condition);
+						for (auto &condition : binding.cycleConditions) {
+							if (!condition.empty() && !MigotoCommandVmUtils::ExpressionParser::ValidSyntax(condition)) {
+								if (warnings)
+									warnings->push_back(section.name + L": invalid cycle condition: " + condition);
+								condition.clear();
+							}
+						}
+					}
+					continue;
+				}
+				if (binding.type == BindingType::Cycle && (key == L"wrap" || key == L"smart")) {
+					const auto flag = MigotoCommandVmUtils::ReadStaticIniBoolean(IniDocumentText::ToLower(value), entry.iniNamespace);
+					if (!flag && warnings)
+						warnings->push_back(section.name + L": invalid " + key + L": " + value);
+					(key == L"wrap" ? binding.cycle.wrap : binding.cycle.smart) = flag.value_or(true);
 					continue;
 				}
 				if (key == L"key" || key == L"back") {
@@ -128,6 +146,8 @@ public:
 							binding.runCommandLists.push_back(
 								IniDocumentText::ResolveNamespacedSectionReference(
 									item, L"CommandList", entry.iniNamespace));
+						} else if (binding.type == BindingType::Cycle) {
+							binding.runCommandLists.emplace_back();
 						}
 					}
 					continue;
@@ -186,20 +206,23 @@ public:
 						DeactivateBinding(&binding, actions, true);
 					continue;
 				}
+				if (binding.type == BindingType::Cycle && !SelectCycleStep(binding, trigger.reverse))
+					continue;
 				const bool allowed = ConditionActive(binding);
 				if (allowed)
-					Press(binding, trigger.reverse, actions);
+					Press(binding, actions);
 				if (g_keyPressSink)
 					EmitKeyPressDiag(binding, trigger, allowed);
 			}
 		}
 	}
 
-	static void Press(Binding &binding, bool reverse, std::vector<RuntimeAction> *actions)
+	static void Press(Binding &binding, std::vector<RuntimeAction> *actions)
 	{
 		switch (binding.type) {
 		case BindingType::Cycle:
-			ActivateCycle(&binding, actions, reverse ? -1 : 1);
+			ApplyVariables(&binding, binding.cycle.index);
+			AppendRunAction(binding, binding.cycle.index, true, actions);
 			break;
 		case BindingType::Hold:
 			// A second held trigger runs the activate action but must not replace
@@ -238,28 +261,22 @@ public:
 	static std::vector<std::wstring> SplitCommaValues(const std::wstring &value)
 	{
 		std::vector<std::wstring> values;
-		size_t start = 0;
-		for (;;) {
-			size_t comma = value.find(L',', start);
-			std::wstring item = comma == std::wstring::npos
-				? value.substr(start)
-				: value.substr(start, comma - start);
-			values.push_back(IniDocumentText::Trim(item));
-			if (comma == std::wstring::npos)
-				break;
-			start = comma + 1;
-		}
+		size_t offset = 0;
+		std::wstring_view field;
+		while (migoto::NextKeyCycleField(std::wstring_view(value), offset, field))
+			values.push_back(IniDocumentText::Trim(std::wstring(field)));
 		return values;
 	}
 
 	static bool ConditionActive(const Binding &binding)
 	{
-		if (binding.condition.empty())
+		const auto &condition = CurrentCondition(binding);
+		if (condition.empty())
 			return true;
 		MigotoCommandVmUtils::ExpressionContext context;
 		context.iniNamespace = binding.conditionNamespace;
-		return MigotoCommandVmUtils::Truthy(
-			MigotoCommandVmUtils::EvaluateExpression(context, binding.condition));
+		const auto value = MigotoCommandVmUtils::EvaluateExpression(context, condition);
+		return binding.type == BindingType::Cycle ? value != 0 : MigotoCommandVmUtils::Truthy(value);
 	}
 
 	static void ActivateBinding(
@@ -281,36 +298,30 @@ public:
 		if (!binding || !actions)
 			return;
 		RestoreVariables(binding);
-		AppendRunAction(*binding, CurrentCycleIndex(*binding), includePost, actions);
+		AppendRunAction(*binding, 0, includePost, actions);
 		binding->active = false;
 	}
 
-	// Steps the cycle by one. direction > 0 walks forward (the "key ="
-	// combination), direction < 0 walks backward (the "back =" combination).
-	// Stepping is wrap-around and re-syncs to the current variable values
-	// first, which matches the DX11 defaults (smart=true, wrap=true).
-	static void ActivateCycle(
-		Binding *binding, std::vector<RuntimeAction> *actions, int direction)
+	static bool SelectCycleStep(Binding &binding, bool back)
 	{
-		if (!binding || !actions)
-			return;
-		const size_t count = CycleValueCount(*binding);
-		if (!count)
-			return;
-		const size_t matched = FindCurrentCycleIndex(*binding, count);
-		size_t next;
-		if (direction > 0) {
-			next = matched == static_cast<size_t>(-1)
-				? ((binding->cycleIndex == static_cast<size_t>(-1)) ? 0 : ((binding->cycleIndex + 1) % count))
-				: ((matched + 1) % count);
-		} else {
-			next = matched == static_cast<size_t>(-1)
-				? ((binding->cycleIndex == static_cast<size_t>(-1)) ? count - 1 : ((binding->cycleIndex + count - 1) % count))
-				: ((matched + count - 1) % count);
-		}
-		binding->cycleIndex = next;
-		ApplyVariables(binding, next);
-		AppendRunAction(*binding, next, true, actions);
+		const auto count = CycleValueCount(binding);
+		if (binding.cycle.smart)
+			binding.cycle.Resync(count, [&](size_t index) { return CycleStepMatches(binding, index); });
+		return binding.cycle.Advance(count, back);
+	}
+
+	static const std::wstring &AtStep(const std::vector<std::wstring> &values, size_t index)
+	{
+		static const std::wstring empty;
+		return values.empty() ? empty : values[(std::min)(index, values.size() - 1)];
+	}
+
+	static const std::wstring &CurrentCondition(const Binding &binding)
+	{
+		if (binding.type != BindingType::Cycle)
+			return binding.condition;
+		const auto index = binding.cycle.index == migoto::KeyCycleCursor::unset ? 0 : binding.cycle.index;
+		return AtStep(binding.cycleConditions, index);
 	}
 
 	static void SaveVariables(Binding *binding)
@@ -345,19 +356,20 @@ public:
 			return;
 		MigotoCommandVmUtils::ExpressionContext context;
 		for (VariableValues &variable : binding->variables) {
-			if (index >= variable.values.size() || variable.values[index].empty())
+			const auto &expression = AtStep(variable.values, index);
+			if (expression.empty())
 				continue;
 			context.iniNamespace = variable.iniNamespace;
 			if (MigotoCommandVmUtils::IsLockedGlobal(context, variable.name))
 				continue;
-			double value = MigotoCommandVmUtils::EvaluateExpression(context, variable.values[index]);
+			double value = MigotoCommandVmUtils::EvaluateExpression(context, expression);
 			MigotoCommandVmUtils::SetScopedGlobal(context, variable.name, value);
 		}
 	}
 
 	static size_t CycleValueCount(const Binding &binding)
 	{
-		size_t count = 0;
+		size_t count = binding.cycleConditions.size();
 		for (const VariableValues &variable : binding.variables) {
 			if (variable.values.size() > count)
 				count = variable.values.size();
@@ -367,46 +379,30 @@ public:
 		return count;
 	}
 
-	static size_t FindCurrentCycleIndex(const Binding &binding, size_t count)
+	static bool CycleStepMatches(const Binding &binding, size_t index)
 	{
 		MigotoCommandVmUtils::ExpressionContext context;
-		for (size_t i = 0; i < count; ++i) {
-			bool anyCompared = false;
-			bool allMatch = true;
-			for (const VariableValues &variable : binding.variables) {
-				if (i >= variable.values.size() || variable.values[i].empty())
-					continue;
-				context.iniNamespace = variable.iniNamespace;
-				anyCompared = true;
-				double current = MigotoCommandVmUtils::LookupVariable(context, variable.name);
-				double expected = MigotoCommandVmUtils::EvaluateExpression(context, variable.values[i]);
-				if (std::fabs(current - expected) > 0.000001) {
-					allMatch = false;
-					break;
-				}
-			}
-			if (anyCompared && allMatch)
-				return i;
+		for (const auto &variable : binding.variables) {
+			const auto &expression = AtStep(variable.values, index);
+			if (expression.empty())
+				continue;
+			context.iniNamespace = variable.iniNamespace;
+			const auto expected = MigotoCommandVmUtils::EvaluateExpression(context, expression);
+			if (static_cast<float>(MigotoCommandVmUtils::LookupVariable(context, variable.name)) != static_cast<float>(expected))
+				return false;
 		}
-		return static_cast<size_t>(-1);
-	}
-
-	static size_t CurrentCycleIndex(const Binding &binding)
-	{
-		return binding.cycleIndex == static_cast<size_t>(-1) ? 0 : binding.cycleIndex;
+		return true;
 	}
 
 	static void AppendRunAction(
 		const Binding &binding, size_t index, bool includePost,
 		std::vector<RuntimeAction> *actions)
 	{
-		if (!actions || binding.runCommandLists.empty())
-			return;
-		size_t runIndex = binding.runCommandLists.size() == 1 ? 0 : index;
-		if (runIndex >= binding.runCommandLists.size() || binding.runCommandLists[runIndex].empty())
+		const auto &command = AtStep(binding.runCommandLists, index);
+		if (!actions || command.empty())
 			return;
 		RuntimeAction action;
-		action.commandList = binding.runCommandLists[runIndex];
+		action.commandList = command;
 		action.includePost = includePost;
 		actions->push_back(action);
 	}
@@ -433,7 +429,7 @@ public:
 		g_keyPressSink(
 			binding.section.c_str(), trigger.text.c_str(),
 			static_cast<int>(binding.type), trigger.reverse ? L"back" : L"forward",
-			binding.condition.c_str(), conditionActive ? 1 : 0,
+			CurrentCondition(binding).c_str(), conditionActive ? 1 : 0,
 			variablesState.c_str());
 	}
 };
