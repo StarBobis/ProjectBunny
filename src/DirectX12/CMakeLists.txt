@@ -175,6 +175,7 @@ target_link_libraries(DirectX12 PRIVATE
     d3dcompiler.lib
     windowscodecs.lib
     ole32.lib
+    XINPUT9_1_0.lib
     User32.lib
     Gdi32.lib
     comctl32.lib

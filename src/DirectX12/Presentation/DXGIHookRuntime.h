@@ -80,18 +80,19 @@ public:
 				swapChain, identity);
 	}
 
-	static void ConsumeUiActionsForFrame(IDXGISwapChain *swapChain)
+	static migoto::XInputSnapshot ConsumeUiActionsForFrame()
 	{
 		DX12_DIAG_QPC(sliceBegin);
-		DX12UiActions::PollKeyboard();
+		const auto controllers = DX12UiActions::PollKeyboard();
 		const bool hadActions = DX12UiActions::Consume();
 		DX12_PROF_ADD_US("Present.consume_ui_actions_poll", DX12_DIAG_ELAPSED_US(sliceBegin));
 		if (!hadActions)
-			return;
+			return controllers;
 		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12HotPathState::Update();
 		DX12CommandListRuntime::BumpTrackingGeneration();
 		DX12_PROF_ADD_US("Present.consume_ui_actions_apply", DX12_DIAG_ELAPSED_US(sliceBegin));
+		return controllers;
 	}
 
 	static void RunPostPresentRuntime(IDXGISwapChain *swapChain)

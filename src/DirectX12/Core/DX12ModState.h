@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12CommandFlow.h"
+#include "IniXInput.h"
 
 // Mod replacement interfaces, pre-skin state, and resource-runtime APIs.
 // Umbrella header: class definitions were split into per-responsibility
@@ -19,7 +20,8 @@ bool DX12ModRuntimeLoad(
 	std::wstring *statusMessage = nullptr,
 	bool *hasWarnings = nullptr,
 	bool *hasErrors = nullptr,
-	DX12ModLoadReason reason = DX12ModLoadReason::Initial);
+	DX12ModLoadReason reason = DX12ModLoadReason::Initial,
+	migoto::XInputReader controllerReader = nullptr);
 bool DX12ModRuntimeReload(DX12ModLoadReason reason = DX12ModLoadReason::UserReload);
 // Flushes hotkey/command-list changes to the persist file (d3dx_user.ini) on
 // the way out, mirroring DX11's DestroyDLL() -> SavePersistentSettings(). Safe
@@ -209,7 +211,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList);
 void DX12ModNotifyCommandListsSubmitted(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists);
-void DX12ModBeginFrame(IDXGISwapChain *swapChain);
+void DX12ModBeginFrame(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers);
+void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers);
 bool DX12ModPresentReplacementPendingForCurrentPresent();
 bool DX12ModPreparePresentReplacement(
 	ID3D12GraphicsCommandList *commandList, DX12ModIaReplacement *replacement);

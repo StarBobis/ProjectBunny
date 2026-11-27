@@ -143,7 +143,7 @@ bool IaTriggeredCandidatesDependOnActivePreSkin(
 }
 
 
-void DX12ModBeginFrame(IDXGISwapChain *swapChain)
+void DX12ModBeginFrame(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers)
 {
 #if DX12_TIMING_BUILD
 	// Arm the freeze watchdog with the first frame boundary; cheap no-op
@@ -159,10 +159,10 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	// Frame-variable collection (window/cursor snapshot + ~20 global writes
 	// per frame) only matters when command lists can actually read the
 	// variables; skip the whole snapshot when the mod has none.
-	if (gHasCommandLists.load(std::memory_order_relaxed))
+	if (gHasCommandLists.load(std::memory_order_relaxed) || gHasKeyBindings.load(std::memory_order_relaxed))
 		DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
 	MarkFrameBoundaryStage("key_bindings");
-	ProcessDx12KeyBindingsForFrame();
+	ProcessDx12KeyBindingsForFrame(controllers);
 	MarkFrameBoundaryStage("pre_skin_clear");
 
 	std::vector<DX12RetiredLoadedResource> expired;
@@ -1511,7 +1511,16 @@ static void DX12TraceFrameKeyVariables()
 #endif
 
 
-void ProcessDx12KeyBindingsForFrame()
+void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers)
+{
+	if (gHasKeyBindings.load(std::memory_order_acquire))
+		DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
+	else if (!MigotoCommandVmUtils::PersistDirty())
+		return;
+	ProcessDx12KeyBindingsForFrame(controllers);
+}
+
+void ProcessDx12KeyBindingsForFrame(const migoto::XInputSnapshot &controllers)
 {
 #if DX12_TIMING_BUILD
 	// Register the key diagnostics sink lazily on the first frame so it is
@@ -1534,7 +1543,7 @@ void ProcessDx12KeyBindingsForFrame()
 	if (TryAcquireSRWLockExclusive(&gModLock)) {
 		MarkFrameBoundaryStage("key_bindings_locked");
 		if (gLoaded)
-			Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
+			Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions, DX12HuntingHotkeys::KeyDown, controllers);
 		ReleaseSRWLockExclusive(&gModLock);
 		MarkFrameBoundaryStage("key_bindings_done");
 

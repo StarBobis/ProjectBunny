@@ -81,6 +81,7 @@ inline Bunny::CommandListMap gCommandLists;
 // when command lists exist, so hot-path code gates on this instead of
 // touching gCommandLists itself.
 inline std::atomic<bool> gHasCommandLists{ false };
+inline std::atomic<bool> gHasKeyBindings{ false };
 
 inline std::vector<Bunny::MigotoKeyBindingUtils::Binding> gKeyBindings;
 
@@ -1637,7 +1638,7 @@ enum class DX12PsoKind
 };
 
 
-void ProcessDx12KeyBindingsForFrame();
+void ProcessDx12KeyBindingsForFrame(const migoto::XInputSnapshot &controllers);
 
 
 class DX12StoredPso
@@ -3420,7 +3421,7 @@ bool PreloadPreSkinReplacementResources(ID3D12Device *device);
 bool PreloadPreSkinOutputResizeCache(ID3D12Device *device);
 
 
-void DX12ModBeginFrame(IDXGISwapChain *swapChain);
+void DX12ModBeginFrame(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers);
 
 
 bool DX12ModPreparePresentReplacement(
@@ -4291,7 +4292,7 @@ bool RunNamedCommandList(
 bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost);
 
 
-void ProcessDx12KeyBindingsForFrame();
+void ProcessDx12KeyBindingsForFrame(const migoto::XInputSnapshot &controllers);
 
 
 void AppendShaderOverrideForHashLocked(

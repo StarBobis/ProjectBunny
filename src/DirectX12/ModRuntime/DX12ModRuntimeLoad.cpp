@@ -1248,7 +1248,8 @@ bool DX12ModRuntimeLoad(
 	std::wstring *statusMessage,
 	bool *hasWarnings,
 	bool *hasErrors,
-	DX12ModLoadReason reason)
+	DX12ModLoadReason reason,
+	migoto::XInputReader controllerReader)
 {
 	// The deferred startup load can overlap a user reload from another swap
 	// chain. Publish settings, bindings and mod tables in the same load order.
@@ -1373,7 +1374,11 @@ bool DX12ModRuntimeLoad(
 	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	SetBasePaths(configPath);
 	ReleaseSRWLockExclusive(&gModLock);
-	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
+	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings, &iniLoad.warnings);
+	for (const auto &binding : keyBindings) {
+		for (const auto &trigger : binding.triggers)
+			huntingKeys.IncludeDevices(trigger.combination);
+	}
 	// Custom shader elements are rebuilt from the parsed command lists (the
 	// same action stream the draw executor consumes) so the registry and the
 	// bodies can never diverge.
@@ -1386,12 +1391,13 @@ bool DX12ModRuntimeLoad(
 	// proves whether a binding was parsed and armed (key, modifiers, type,
 	// condition). Compiled out of regular Release builds.
 	for (const Bunny::MigotoKeyBindingUtils::Binding &binding : keyBindings) {
-		DX12_LOG("DX12KeyDiag",
-			"event=registered section=%S original=%S key=%S vk=%d type=%d conditionText=%S hasBack=%d vars=%zu",
-			binding.section.c_str(), binding.originalSection.c_str(),
-			binding.keyText.c_str(), binding.key.primaryVk,
-			static_cast<int>(binding.type), binding.condition.c_str(),
-			binding.hasBack ? 1 : 0, binding.variables.size());
+		for (const auto &trigger : binding.triggers) {
+			DX12_LOG("DX12KeyDiag",
+				"event=registered section=%S original=%S key=%S controllerPorts=%u type=%d conditionText=%S reverse=%d vars=%zu",
+				binding.section.c_str(), binding.originalSection.c_str(), trigger.text.c_str(),
+				trigger.combination.Ports(), static_cast<int>(binding.type), binding.condition.c_str(),
+				trigger.reverse ? 1 : 0, binding.variables.size());
+		}
 	}
 #endif
 #if DX12_TIMING_BUILD
@@ -1538,7 +1544,8 @@ bool DX12ModRuntimeLoad(
 	gCommandLists.swap(commandLists);
 	gHasCommandLists.store(!gCommandLists.empty(), std::memory_order_release);
 	gKeyBindings.swap(keyBindings);
-	DX12HuntingHotkeys::Instance().Install(std::move(huntingKeys), DX12HuntingHotkeys::KeyDown);
+	gHasKeyBindings.store(!gKeyBindings.empty(), std::memory_order_release);
+	DX12HuntingHotkeys::Instance().Install(std::move(huntingKeys), DX12HuntingHotkeys::KeyDown, controllerReader);
 	gCustomShaderElements.swap(customShaderElements);
 	gCustomShaderElementSnapshot.store(
 		std::make_shared<const DX12CustomShaderElementMap>(gCustomShaderElements),

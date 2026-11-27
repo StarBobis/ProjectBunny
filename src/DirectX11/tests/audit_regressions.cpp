@@ -5,6 +5,7 @@
 #include "Input.h"
 #include "Override.h"
 #include "vkeys.h"
+#include "tests/IniXInputCases.h"
 #include "HLSLDecompiler/DecompileHLSL.h"
 #include <array>
 #include <atomic>
@@ -512,6 +513,17 @@ void test_f135()
         try { VKInputButton button(invalid); }
         catch (const std::exception&) { rejected = true; }
         require_batch(rejected, "F135: the real input-button consumer rejects the invalid key");
+    }
+    migoto::test::CheckXInputButtons([](const std::wstring &name, const migoto::XInputSnapshot &pads) {
+        XInputButton button(name.c_str(), pads);
+        return button.CheckState();
+    }, require_batch);
+    InputButtonList keyboardAndPad(L"ctrl XB1_LEFT_TRIGGER>64 no_XB4_A");
+    for (const wchar_t *invalid : {L"XB0_A", L"XB5_A", L"XB2_BAD", L"XB_LEFT_TRIGGE"}) {
+        bool rejected = false;
+        try { XInputButton pad(invalid); }
+        catch (const std::exception&) { rejected = true; }
+        require_batch(rejected, "DX11 rejects bad port, name and truncated trigger");
     }
     VKInputButton valid(L"no_0x41");
     require_batch(valid.vkey == 'A' && valid.invert, "DX11 negated hexadecimal button");

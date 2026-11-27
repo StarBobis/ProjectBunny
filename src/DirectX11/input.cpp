@@ -13,49 +13,7 @@
 #include "IniInputChord.h"
 #include "IniHandler.h"
 
-// Set a function pointer to the xinput get state call. By default, set it to
-// XInputGetState() in whichever xinput we are linked to (xinput9_1_0.dll). If
-// the d3dx.ini is using the guide button we will try to switch to either
-// xinput 1.3 or 1.4 to get access to the undocumented XInputGetStateEx() call.
-// We can't rely on these existing on Win7 though, so if we fail to load them
-// don't treat it as fatal and continue using the original one.
-static HMODULE xinput_lib;
-typedef DWORD (WINAPI *tXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
-static tXInputGetState _XInputGetState = XInputGetState;
-
-static void SwitchToXinpuGetStateEx()
-{
-	tXInputGetState XInputGetStateEx;
-
-	if (xinput_lib)
-		return;
-
-	// 3DMigoto is linked against xinput9_1_0.dll, but that version does
-	// not export XInputGetStateEx to get the guide button. Try loading
-	// xinput 1.3 and 1.4, which both support this functionality.
-	xinput_lib = LoadLibrary(L"xinput1_3.dll");
-	if (xinput_lib) {
-		LogInfo("Loaded xinput1_3.dll for guide button support\n");
-	} else {
-		xinput_lib = LoadLibrary(L"xinput1_4.dll");
-		if (xinput_lib) {
-			LogInfo("Loaded xinput1_4.dll for guide button support\n");
-		} else {
-			LogInfo("ERROR: Unable to load xinput 1.3 or 1.4: Guide button will not be available\n");
-			return;
-		}
-	}
-
-	// Unnamed and undocumented exports FTW
-	LPCSTR XInputGetStateExOrdinal = (LPCSTR)100;
-	XInputGetStateEx = (tXInputGetState)GetProcAddress(xinput_lib, XInputGetStateExOrdinal);
-	if (!XInputGetStateEx) {
-		LogInfo("ERROR: Unable to get XInputGetStateEx: Guide button will not be available\n");
-		return;
-	}
-
-	_XInputGetState = XInputGetStateEx;
-}
+static migoto::XInputGuideLibrary xinput;
 
 // VS2013 BUG WORKAROUND: Make sure this class has a unique type name!
 class KeyParseError: public exception {} keyParseError;
@@ -265,133 +223,21 @@ bool DelayedInputAction::Dispatch(HackerDevice *device)
 
 // -----------------------------------------------------------------------------
 
-struct XInputState_t {
-	XINPUT_STATE state;
-	bool connected;
-};
-static XInputState_t XInputState[4];
+static migoto::XInputPoller controllerPoll;
 
-bool XInputButton::_CheckState(int controller)
+XInputButton::XInputButton(const wchar_t *keyName) : XInputButton(keyName, controllerPoll.snapshot) {}
+
+XInputButton::XInputButton(const wchar_t *keyName, const migoto::XInputSnapshot &snapshot) : controllers(snapshot)
 {
-	XINPUT_GAMEPAD *gamepad = &XInputState[controller].state.Gamepad;
-
-	if (!XInputState[controller].connected)
-		return false; // Don't invert if it's not connected
-
-	if (button && (gamepad->wButtons & button))
-		return true ^ invert;
-	if (left_trigger && (gamepad->bLeftTrigger >= left_trigger))
-		return true ^ invert;
-	if (right_trigger && (gamepad->bRightTrigger >= right_trigger))
-		return true ^ invert;
-
-	return false ^ invert;
-}
-
-static EnumName_t<wchar_t *, WORD> XInputButtons[] = {
-	{L"DPAD_UP", XINPUT_GAMEPAD_DPAD_UP},
-	{L"DPAD_DOWN", XINPUT_GAMEPAD_DPAD_DOWN},
-	{L"DPAD_LEFT", XINPUT_GAMEPAD_DPAD_LEFT},
-	{L"DPAD_RIGHT", XINPUT_GAMEPAD_DPAD_RIGHT},
-	{L"START", XINPUT_GAMEPAD_START},
-	{L"BACK", XINPUT_GAMEPAD_BACK},
-	{L"LEFT_THUMB", XINPUT_GAMEPAD_LEFT_THUMB},
-	{L"RIGHT_THUMB", XINPUT_GAMEPAD_RIGHT_THUMB},
-	{L"LEFT_SHOULDER", XINPUT_GAMEPAD_LEFT_SHOULDER},
-	{L"RIGHT_SHOULDER", XINPUT_GAMEPAD_RIGHT_SHOULDER},
-	{L"A", XINPUT_GAMEPAD_A},
-	{L"B", XINPUT_GAMEPAD_B},
-	{L"X", XINPUT_GAMEPAD_X},
-	{L"Y", XINPUT_GAMEPAD_Y},
-	{L"GUIDE", 0x400}, /* Requires undocumented XInputGetStateEx call in xinput 1.3 / 1.4 */
-};
-
-// This function is parsing strings with formats such as:
-//
-// XB_DPAD_DOWN           - dpad down on any controller
-// xb1_left_trigger > 128 - left trigger half way on 1st controller
-//
-// I originally wrote this using regular expressions rather than C style
-// pointer arithmetic, but it looks like MSVC's implementation may be buggy
-// (either that or I have a very precise 100% reproducable memory corruption
-// issue), which isn't that surprising given that regular expressions are
-// uncommon in the Windows world. Feel free to rewrite this in a cleaner way.
-XInputButton::XInputButton(const wchar_t *keyName) :
-	controller(-1),
-	button(0),
-	left_trigger(0),
-	right_trigger(0),
-	invert(false)
-{
-	int i, threshold = XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
-	BYTE *trigger;
-
-	if (!_wcsnicmp(keyName, L"no_", 3)) {
-		invert = true;
-		keyName += 3;
-	}
-
-	if (_wcsnicmp(keyName, L"XB", 2))
+	if (!binding.Parse(keyName, migoto::XInputButtonBinding::Syntax::Legacy))
 		throw keyParseError;
-	keyName += 2;
-
-	if (*keyName >= L'1' && *keyName <= L'4') {
-		controller = *keyName - L'1';
-		keyName++;
-	}
-
-	if (*keyName != L'_')
-		throw keyParseError;
-	keyName++;
-
-	for (i = 0; i < ARRAYSIZE(XInputButtons); i++) {
-		if (!_wcsicmp(keyName, XInputButtons[i].name)) {
-			button = XInputButtons[i].val;
-			break;
-		}
-	}
-
-	if (!_wcsicmp(keyName, L"GUIDE"))
-		SwitchToXinpuGetStateEx();
-
-	if (button)
-		return;
-
-	if (!_wcsnicmp(keyName, L"LEFT_TRIGGER", 11)) {
-		trigger = &left_trigger;
-		keyName += 12;
-	} else if (!_wcsnicmp(keyName, L"RIGHT_TRIGGER", 12)) {
-		trigger = &right_trigger;
-		keyName += 13;
-	} else
-		throw keyParseError;
-
-	while (*keyName == L' ')
-		keyName++;
-
-	if (*keyName == L'>') {
-		keyName++;
-		while (*keyName == L' ')
-			keyName++;
-		threshold = _wtoi(keyName);
-	}
-
-	*trigger = min(threshold + 1, 255);
+	if (binding.button == migoto::XInputButtonBinding::guide)
+		xinput.Enable(0, [](const char *message) { LogInfo("%s\n", message); });
 }
 
 bool XInputButton::CheckState()
 {
-	int i;
-
-	if (controller != -1)
-		return _CheckState(controller);
-
-	for (i = 0; i < 4; i++) {
-		if (_CheckState(i))
-			return true;
-	}
-
-	return false;
+	return binding.Down(controllers);
 }
 
 InputButtonList::InputButtonList(const wchar_t *keyName)
@@ -628,26 +474,10 @@ static bool CheckForegroundWindow()
 
 bool DispatchInputEvents(HackerDevice *device)
 {
-	static time_t last_time = 0;
-	time_t now = time(NULL);
-	int j;
-
+	const auto now = time(nullptr);
 	if (!CheckForegroundWindow())
 		return false;
-
-	for (j = 0; j < 4; j++) {
-		// Stagger polling controllers that were not connected last
-		// frame over four seconds to minimise performance impact,
-		// which has been observed to be extremely significant.
-		if (!XInputState[j].connected && ((now == last_time) || (now % 4 != j)))
-			continue;
-
-		XInputState[j].connected =
-			(_XInputGetState(j, &XInputState[j].state) == ERROR_SUCCESS);
-	}
-
-	last_time = now;
-
+	controllerPoll.Update(now, migoto::XInputButtonBinding::allPorts, xinput.read);
 	return DispatchRegisteredInputActions(device);
 }
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DX12Config.h"
-#include "IniInputChord.h"
+#include "MigotoInputCombination.h"
 #include <algorithm>
 #include <mutex>
 #include <vector>
@@ -78,54 +78,19 @@ class DX12HuntingHotkeys
 	class Chord
 	{
 	public:
-		std::vector<std::pair<int, bool>> buttons;
+		migoto::InputCombination combination;
 		bool down = false;
 		bool waitForRelease = false;
 		ULONGLONG lastTick = 0;
 
-		bool Parse(const std::wstring &text, bool requirePress)
-		{
-			buttons.clear();
-			if (text.empty())
-				return true;
-			auto add = [this](const wchar_t *token) {
-				bool inverted;
-				const int key = migoto::ParseKeyboardButton(token, inverted);
-				if (key < 0)
-					return false;
-				buttons.emplace_back(key, inverted);
-				return true;
-			};
-			// DX11 tries the entire name first for aliases like "Prnt Scrn".
-			if ((!add(text.c_str()) && !migoto::VisitInputChord(text.c_str(), add)) ||
-				(requirePress && std::none_of(buttons.begin(), buttons.end(),
-					[](const auto &button) { return !button.second; }))) {
-				buttons.clear();
-				return false;
-			}
-			// Most keys are up on idle frames. Check required keys first and
-			// normalize equivalent chords to preserve their state across a reload.
-			std::sort(buttons.begin(), buttons.end(), [](const auto &a, const auto &b) {
-				return a.second != b.second ? a.second < b.second : a.first < b.first;
-			});
-			buttons.erase(std::unique(buttons.begin(), buttons.end()), buttons.end());
-			return true;
-		}
-
 		template <class ReadKey>
-		bool Active(ReadKey read) const
+		bool Pressed(ReadKey read, const migoto::XInputSnapshot &pads, ULONGLONG now,
+			bool repeatable, std::optional<int> configuredRate)
 		{
-			return !buttons.empty() && std::all_of(buttons.begin(), buttons.end(),
-				[&](const auto &button) { return read(button.first) != button.second; });
-		}
-
-		template <class ReadKey>
-		bool Pressed(ReadKey read, ULONGLONG now, bool repeatable, std::optional<int> configuredRate)
-		{
-			if (buttons.empty())
+			if (combination.Empty())
 				return false;
 			if (waitForRelease) {
-				waitForRelease = Active(read);
+				waitForRelease = combination.Active(read, pads);
 				return false;
 			}
 			const int rate = repeatable ? configuredRate.value_or(6) : 0;
@@ -134,7 +99,7 @@ class DX12HuntingHotkeys
 			// Older DX12 configs delivered fresh presses immediately.
 			if (configuredRate && rate && !repeatDue)
 				return false;
-			const bool active = Active(read);
+			const bool active = combination.Active(read, pads);
 			const bool edge = active != down;
 			down = active;
 			if (!edge && !(active && repeatDue))
@@ -151,6 +116,14 @@ public:
 		friend class DX12HuntingHotkeys;
 		std::array<Chord, std::size(specs)> chords;
 		std::optional<int> repeatRate;
+		unsigned ports = 0;
+		bool usesGuide = false;
+	public:
+		void IncludeDevices(const migoto::InputCombination &combination)
+		{
+			ports |= combination.Ports();
+			usesGuide |= combination.UsesGuide();
+		}
 	};
 
 	static Bindings Parse(const Bunny::IniDocument &ini, std::vector<std::wstring> &warnings)
@@ -172,8 +145,10 @@ public:
 			const auto &spec = specs[i];
 			if (!spec.name || !ini.GetString(L"Hunting", spec.name, &text))
 				text = spec.fallback;
-			if (!bindings.chords[i].Parse(text, spec.action == Action::WipeUserConfig) && spec.name)
+			auto &combination = bindings.chords[i].combination;
+			if (!combination.Parse(text, spec.action == Action::WipeUserConfig) && spec.name)
 				warnings.push_back(std::wstring(L"Invalid [Hunting] ") + spec.name + L": " + text);
+			bindings.IncludeDevices(combination);
 		}
 		return bindings;
 	}
@@ -181,31 +156,43 @@ public:
 	static bool KeyDown(int vk) { return GetAsyncKeyState(vk) < 0; }
 
 	template <class ReadKey>
-	void Install(Bindings bindings, ReadKey read)
+	void Install(Bindings bindings, ReadKey read, migoto::XInputReader reader = nullptr)
 	{
 		std::lock_guard lock(mutex);
+		if (bindings.usesGuide && !reader)
+			guide.Enable(LOAD_LIBRARY_SEARCH_SYSTEM32, [](const char *msg) { DX12_LOG("DX12Input", "%s", msg); });
+		else
+			guide.Disable();
+		// Probe configured ports on installation, so binding a held controller
+		// chord (especially wipe_user_config) cannot create a fresh press.
+		controllerReader = reader ? reader : guide.read;
+		controllers.Update(GetTickCount64() / 1000, bindings.ports, controllerReader, true);
 		migoto::VirtualKeySnapshot snapshot;
 		auto down = [&](int vk) { return snapshot.Down(vk, read); };
 		for (size_t i = 0; i < bindings.chords.size(); ++i) {
 			auto &updated = bindings.chords[i];
 			auto &old = current.chords[i];
-			if (updated.buttons == old.buttons)
+			if (updated.combination == old.combination)
 				updated = std::move(old);
 			else
-				updated.waitForRelease = updated.Active(down);
+				updated.waitForRelease = updated.combination.Active(down, controllers.snapshot);
 		}
 		current = std::move(bindings);
 	}
 
 	template <class ReadKey>
-	LONG Poll(ReadKey read, ULONGLONG now)
+	LONG Poll(ReadKey read, ULONGLONG now, migoto::XInputSnapshot *sample = nullptr)
 	{
 		std::lock_guard lock(mutex);
+		if (current.ports)
+			controllers.Update(now / 1000, current.ports, controllerReader);
+		if (sample)
+			*sample = controllers.snapshot;
 		migoto::VirtualKeySnapshot snapshot;
 		auto down = [&](int vk) { return snapshot.Down(vk, read); };
 		LONG actions = 0;
 		for (size_t i = 0; i < current.chords.size(); ++i) {
-			if (current.chords[i].Pressed(down, now, specs[i].repeatable, current.repeatRate))
+			if (current.chords[i].Pressed(down, controllers.snapshot, now, specs[i].repeatable, current.repeatRate))
 				actions |= static_cast<LONG>(specs[i].action);
 		}
 		return actions;
@@ -221,8 +208,11 @@ private:
 	DX12HuntingHotkeys()
 	{
 		for (size_t i = 0; i < current.chords.size(); ++i)
-			current.chords[i].Parse(specs[i].fallback, specs[i].action == Action::WipeUserConfig);
+			current.chords[i].combination.Parse(specs[i].fallback, specs[i].action == Action::WipeUserConfig);
 	}
 	std::mutex mutex;
 	Bindings current;
+	migoto::XInputPoller controllers;
+	migoto::XInputGuideLibrary guide;
+	migoto::XInputReader controllerReader = XInputGetState;
 };

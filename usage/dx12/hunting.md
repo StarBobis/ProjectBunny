@@ -28,7 +28,7 @@ repeat_rate = 4
 
 上一个、下一个和复制 Hash 分别使用 `previous_`、`next_` 和 `mark_` 前缀。目标后缀是 `pixelshader`、`vertexshader`、`computeshader`、`indexbuffer` 或 `vertexbuffer`。定位开关对应 `toggle_hunting`，清除选择对应 `done_hunting`。`repeat_rate = 0` 时每次按键只前进一步，复制 Hash 始终每次按键只触发一次。
 
-组合键用空格分隔。`no_modifiers` 要求松开 Ctrl、Alt、Shift 和两个 Win 键，`no_VK_DECIMAL` 要求松开小键盘小数点。等号右侧留空可禁用该操作。旧配置省略这些键时沿用原快捷键。当前支持键盘和虚拟鼠标按键。手柄绑定仍待实现。
+组合键用空格分隔。`no_modifiers` 要求松开 Ctrl、Alt、Shift 和两个 Win 键，`no_VK_DECIMAL` 要求松开小键盘小数点。等号右侧留空可禁用该操作。旧配置省略这些键时沿用原快捷键。也支持 XInput 手柄。例如将 `toggle_hunting` 设为 `XB2_START`，即可用 2 号手柄的 Start 键切换定位。键盘与手柄可以组成同一组合键。
 
 ## 导出
 

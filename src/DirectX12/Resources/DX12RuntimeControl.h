@@ -179,16 +179,18 @@ public:
 	inline static volatile LONG PendingActions = 0;
 
 	template <class ReadKey>
-	static void PollKeyboard(ReadKey read, ULONGLONG now)
+	static migoto::XInputSnapshot PollKeyboard(ReadKey read, ULONGLONG now)
 	{
-		const LONG actions = DX12HuntingHotkeys::Instance().Poll(read, now);
+		migoto::XInputSnapshot controllers;
+		const LONG actions = DX12HuntingHotkeys::Instance().Poll(read, now, &controllers);
 		if (actions)
 			InterlockedOr(&PendingActions, actions);
+		return controllers;
 	}
 
-	static void PollKeyboard()
+	static migoto::XInputSnapshot PollKeyboard()
 	{
-		PollKeyboard(DX12HuntingHotkeys::KeyDown, GetTickCount64());
+		return PollKeyboard(DX12HuntingHotkeys::KeyDown, GetTickCount64());
 	}
 
 	static bool Consume()

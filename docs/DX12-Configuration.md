@@ -43,17 +43,9 @@
 
 配置模板见 [`config/d3dx.ini`](../config/d3dx.ini)（该文件是 DX12 专用模板，包含 DX12 可用的 `[Hunting]` 快捷键）。
 
-**模板中仍保留若干 DX11 遗留注释，与本文档的结论冲突**（本轮未修改模板；冲突处以本文档为准）：
+`[Preset*]` 仍待实现，见 §9.5。
 
-| 模板位置 | 模板的说法 | DX12 的实际行为 |
-| --- | --- | --- |
-| `config/d3dx.ini:65-66` | 命名变量带命名空间，多个 ini 可各自使用而不冲突 | 变量名是**扁平**的，不同 Mod 的同名变量会互相覆盖，见 §4.5 |
-| `config/d3dx.ini:65` | 提到 `[Preset]s` | DX12 **没有实现预设**，见 §9.5 |
-| `config/d3dx.ini:93` | `NO_MODIFIERS` 排除所有标准修饰键（Ctrl, Alt, Shift, Windows） | `no_modifiers` 只排除 Ctrl / Alt / Shift，**不含 Windows 键**，见 §9.2 |
-| `config/d3dx.ini:95-98` | 支持 `XB_*` 手柄键名 | DX12 的键名表里**没有 `XB_*`**，见 §9.2 |
-| `config/d3dx.ini:100-101` | 一个 `[Key]` 段里可以设置多个按键 | 同一段里**只有最后一个 `key` 行生效**，见 §9.1 |
-
-模板示例 `config/d3dx.ini:110-113`（`Key = RBUTTON` 与 `Key = XB_LEFT_TRIGGER`）在 DX12 下会整体失效：最后一行 `XB_LEFT_TRIGGER` 解析不出虚拟键码，整个绑定被**静默丢弃且不报错**。
+模板中的 `Key = RBUTTON` 与 `Key = XB_LEFT_TRIGGER` 可共用一个 `hold` 设置。
 
 ### 1.2 进程门控（Process Gate）
 
@@ -308,15 +300,11 @@ CommandList\Mods\Sub\foo.ini\Bar
 
 `user_config` 文件的隐式命名空间是它的**完整路径**；由于它主要承载 `[Constants]`（精确匹配节），这不影响持久值生效。
 
-### 4.5 变量名是扁平的（重要）
+### 4.5 变量与按键的命名空间
 
-DX12 的 VM 会把 `$\LiuYin\swapkey0` 与 `$swapkey0` 折叠到**同一个全局槽**（`NormalizeVariableName`）。
+按键条件和变量赋值按各自 INI 条目的命名空间解析。`$swapkey0` 优先读取当前作用域及当前命名空间中的声明，然后回退到根变量。`$\LiuYin\swapkey0` 直接访问指定命名空间的全局变量，多个 Mod 可以各自声明同名选项。
 
-- 命名空间隔离的是**节名**，**不是变量名**。
-- 不同命名空间的同名变量会互相覆盖。需要区分时，请自己起不同的变量名。
-- 持久化写回时，变量名被折叠成最后一段（`PersistentDeclarationName`），所以 `d3dx_user.ini` 里写的是扁平名 `$swapkey0`。
-
-> 源码依据：`src/DirectX12/Config/DX12Config.h`（`kMigotoCommandListSections`、`kMigotoRegularSections`、`MakeNamespacedSectionName`、`ResolveNamespacedSectionReference`）、`src/DirectX12/Config/DX12ConfigLoader.h`（`MakeRelativeNamespace`）、`src/common/MigotoCommandVmUtils.hpp`（`NormalizeVariableName`）。
+持久变量以完整名称写入用户设置文件。读取旧版 DX12 的短名称时，优先恢复根变量。没有对应根变量时才恢复同名的可写持久变量。带 `locked` 的声明跳过保存和恢复。
 
 ---
 
@@ -467,7 +455,7 @@ global persist $some_persistent_variable = 1
 
 - 可用前缀：`global persist $` 或 `persist $`（大小写不敏感）。
 - `global ` 单独、`local ` **不**表示持久。
-- 变量名按 §4.5 扁平化，写回文件时也是扁平名。
+- 命名空间内的变量以完整名称写回文件，旧版短名称按 §4.5 恢复。
 
 ### 8.2 注册表与脏标记
 
@@ -532,25 +520,14 @@ $some_persistent_variable = 1
 | `run` | 逗号分隔的命令列表名，按 §4.3 的命名空间规则解析 |
 | `$变量` | 逗号分隔的值列表；多个变量列表按循环位置配对 |
 
-**与 DX11 的重要差异**：DX11 允许在一个 `[Key*]` 段里写多个 `key` 行（键盘 + 手柄共享同一状态）。DX12 的解析器对每个 `key` 条目**重新解析并覆盖**同一个组合键结构，因此**只有最后一个 `key` 行生效**。模板 `config/d3dx.ini:100-101` 仍按 DX11 语义描述这一点，以本文档为准（见 §1.1）。
-
-同理，`key` / `back` / `type` / `condition` / `run` 都是"最后一个生效"语义。
+同一个 `[Key*]` 段内的多个 `key` 共用开关状态、循环位置和暂存值。每个组合键有独立的按下与松开事件。`cycle` 也可绑定多个 `back`，同一帧先按配置顺序处理反向键，再处理正向键。`hold` 的第二个按键会再次执行激活动作，仍保留首次按下前的值。任一已按下的组合键释放都会停用该 `hold`。
 
 ### 9.2 组合键语法
 
-- 用空白分隔的 token 组成一个组合。
-- 第一个非修饰键成为**主键**；其后的非修饰键必须**同时按下**。
-- 要求按下的修饰键 token：`ctrl` / `control`、`shift`、`alt`。
-- 要求未按下的修饰键 token：`no_ctrl` / `no_control`、`no_shift`、`no_alt`、`no_modifiers`（一次排除 Ctrl / Alt / Shift；Win 键不参与这个判断）。
-- 键名（DX12 只支持**键盘 / 鼠标**虚拟键名）：
-  - `vk_` / `VK_` 前缀可省略；
-  - `esc` 是 `VK_ESCAPE` 的别名；
-  - 单个字符（`0`–`9`、`A`–`Z`）；
-  - `0x` 开头的十六进制虚拟键码（如 `0x77`）；
-  - 其余查 `src/common/vkeys.h` 的 `VKMappings` 表（`VK_*` 全名、`F1`–`F24`、鼠标键 `LBUTTON` / `RBUTTON` / `MBUTTON` / `XBUTTON1` / `XBUTTON2`、导航与 OEM 键）。
-- **不支持 DX11 的 `XB_*` 手柄键名**（`XB_A`、`XB_LEFT_TRIGGER` 等）。DX12 的键名表里没有这些名字，写了会解析不出虚拟键码（vk = 0）；若该段也没有可用的 `back` 键，整个绑定会被**静默丢弃且不报错**。模板 `config/d3dx.ini:95-98` 与 `config/d3dx.ini:110-113` 里的 `XB_*` 属于 DX11 遗留，见 §1.1。
-- 只由修饰键组成的组合（如 `CTRL ALT`）会把**最后一个修饰键**提升为主键。
-- 解析不出主键、且没有 `back` → **该绑定被丢弃**，不会注册（也不会报错）。
+- 单行组合键用空格分隔，同时满足所有条件时触发。重复写 `key` 或 `back` 提供多个独立入口。无效的一行产生警告，同段其他有效绑定继续工作。
+- 键盘和鼠标支持 Windows 虚拟键名称、十六进制键码、字母数字和 `esc` 别名。`no_` 表示松开指定键，`no_modifiers` 要求松开 Ctrl、Shift、Alt 和两个 Win 键。
+- XInput 支持 A/B/X/Y、十字键、Start/Back/Guide、两个肩键、左右摇杆按下和两个模拟扳机。`XB_` 指任一已连接设备，`XB1_` 至 `XB4_` 指定端口。取反时，已断开的端口始终不满足条件。
+- `XB2_RIGHT_TRIGGER > 128` 从 129 起生效，默认阈值为 30。沿用 DX11 的饱和规则，阈值为 255 时完全按下也会触发。Guide 的扩展读取器不可用时，其余按钮仍能使用。
 
 示例：
 
@@ -626,10 +603,10 @@ DX12 **没有实现预设**。`[Preset*]` 只在前缀表里登记（因此会�
 | `[System] settings_auto_save_interval` | 生效（默认 60） | 不生效；60 秒是硬编码常量 |
 | 布尔值解析 | 宽松 | 非法布尔值**解析失败**，保留原默认值 |
 | 整数解析 | 宽松 | 尾部残留字符 → 解析失败；支持 `0x` / 八进制 |
-| 键段多 `key` 行 | 支持多键共享状态 | **只有最后一个 `key` 行生效** |
+| 键段多 `key` 行 | 多键共享状态 | 多个键盘、鼠标、手柄组合共用同一状态 |
 | `back` 键 | 仅 `type=cycle` | 同 DX11 |
-| 手柄键名 | 支持 `XB_*`（`XB_A`、`XB_LEFT_TRIGGER` 等） | **不支持**；键名表里没有 `XB_*`，解析失败会让整个绑定被静默丢弃，见 §9.2 |
-| `smart` / `wrap` / `transition` / 释放延时 / 多后端输入 | 支持 | **未实现**（cycle 固定为 smart + wrap） |
+| 手柄键名 | `XB_*` | 支持 `XB_*`、端口、取反和扳机阈值，见 §9.2 |
+| `smart` / `wrap` / `transition` / 释放延时 | 支持 | **未实现**（cycle 固定为 smart + wrap） |
 | 持久化 | `d3dx_user.ini` | 同名同格式，兼容互读 |
 
 更完整的迁移清单见 [迁移范围](../usage/dx12/compatibility.md)。
@@ -644,8 +621,8 @@ DX12 **没有实现预设**。`[Preset*]` 只在前缀表里登记（因此会�
 4. **DX11 的资源目录 / 缓存目录 / 着色器导出等开关不生效**。DX12 的 `ShaderFixes` 目录固定为 `<d3dx.ini 所在目录>\ShaderFixes`。
 5. **`[Preset*]` 与 `[Pool*]` 未实现**。写了不会报错，但也不会有任何效果。
 6. **跨文件的命令列表引用需要全名**（§4.4）。隐式命名空间是文件相对路径，不是目录名。
-7. **变量名是扁平的**（§4.5）。不同 Mod 的同名变量会互相覆盖。
-8. **一个 `[Key*]` 段只能有一个有效 `key`**（§9.1）。DX11 的多键共享状态写法在 DX12 不成立。
+7. **跨 Mod 访问变量**时写出命名空间，见 §4.5。
+8. **区分组合键和替代按键**。一行 `key = Z XB_A` 要求同时按下两键。拆成两行 `key`，任一设备均可触发。
 9. **重载不能重建钩子与设备**（§6.3）。改 `[Loader]`、换 DLL 注入方式、换设备相关行为都需要重启游戏。
 10. **首次加载有 2 秒 + 3 帧的延迟**（§6.4）。刚进游戏时配置未生效属正常。
 11. **日志只在诊断 / TIMING 构建存在**，且位置跟随 DLL 目录（§7.2）。Release 构建不会有 `d3d12_log.txt`。

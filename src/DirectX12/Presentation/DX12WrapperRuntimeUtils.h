@@ -519,7 +519,7 @@ public:
 
 		DX12_PROF_FRAME_ENTER("PresentWrapper", swapChain);
 		DX12_DIAG_QPC(sliceBegin);
-		DXGIHookRuntime::ConsumeUiActionsForFrame(swapChain);
+		const auto controllers = DXGIHookRuntime::ConsumeUiActionsForFrame();
 
 		static volatile LONG firstPresentLog = 0;
 		if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
@@ -568,6 +568,8 @@ public:
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount(frameTicks);
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
+			if (SUCCEEDED(skipHr))
+				DX12ModProcessIdleFrameKeys(swapChain, controllers);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_PROF_FRAME_LEAVE("PresentWrapper", swapChain, skipHr);
@@ -619,7 +621,7 @@ public:
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 				DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12ModBeginFrame(swapChain);
+		DX12ModBeginFrame(swapChain, controllers);
 		DX12_PROF_ADD_US("Present.mod_begin_frame", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 		DX12_DIAG_QPC_RESET(sliceBegin);
@@ -664,7 +666,7 @@ public:
 
 		DX12_PROF_FRAME_ENTER("Present1Wrapper", swapChain);
 		DX12_DIAG_QPC(sliceBegin);
-		DXGIHookRuntime::ConsumeUiActionsForFrame(swapChain);
+		const auto controllers = DXGIHookRuntime::ConsumeUiActionsForFrame();
 
 		static volatile LONG firstPresent1Log = 0;
 		if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
@@ -704,6 +706,8 @@ public:
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount(frameTicks);
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
+			if (SUCCEEDED(skipHr))
+				DX12ModProcessIdleFrameKeys(swapChain, controllers);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_PROF_FRAME_LEAVE("Present1Wrapper", swapChain, skipHr);
@@ -753,7 +757,7 @@ public:
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 				DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12ModBeginFrame(swapChain);
+		DX12ModBeginFrame(swapChain, controllers);
 		DX12_PROF_ADD_US("Present.mod_begin_frame", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 		DX12_DIAG_QPC_RESET(sliceBegin);

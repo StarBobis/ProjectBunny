@@ -31,6 +31,26 @@ F10 重载 Mod 配置，不替换正在运行的 DLL。
 
 模型重叠、贴图错误或闪烁时，只保留一个替换该目标的 Mod，再逐个启用。DX11 Mod 需要适配，复制目录不能完成转换。
 
+## 键盘和手柄共用一个选项
+
+在同一个 `[Key*]` 段中重复写 `key`，键盘和 XInput 手柄就能操作同一个开关或循环。下面的例子用 Z 或 2 号手柄的 A 键向前切换，用 B 键回退。
+
+```ini
+[Constants]
+global persist $variant = 0
+
+[KeyVariant]
+type = cycle
+key = Z
+key = XB2_A
+back = XB2_B
+$variant = 0, 1, 2
+```
+
+`XB_A` 匹配任意已连接手柄，`XB1_A` 至 `XB4_A` 指定端口。方向键使用 `XB_DPAD_UP` 等名称，摇杆按下使用 `XB_LEFT_THUMB` 或 `XB_RIGHT_THUMB`。肩键、Start、Back、Guide 和左右扳机也可绑定。Guide 需要支持它的 XInput 1.3 或 1.4。
+
+`key = ctrl XB2_LEFT_TRIGGER > 128` 要求同时按住 Ctrl 并让左扳机值超过 128。扳机值范围为 0–255，省略阈值时超过 30 触发。`no_XB2_B` 要求 2 号手柄已连接且 B 松开。使用 `type = hold` 时，拔掉正在触发该组合键的手柄会释放它并恢复保存值。
+
 ## 保存的选项
 
 `global persist` 变量默认保存在 `d3dx_user.ini`。可在主配置指定路径：

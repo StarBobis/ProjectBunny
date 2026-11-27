@@ -10,7 +10,7 @@
 
 #include "DirectX12/DX12Runtime.h"
 #include "MigotoCommandVmUtils.hpp"
-#include "vkeys.h"
+#include "MigotoInputCombination.h"
 
 namespace Bunny {
 
@@ -25,28 +25,6 @@ public:
 		Cycle
 	};
 
-	class KeyCombination
-	{
-	public:
-		int primaryVk = 0;
-		// DX11 InputButtonList semantics: every positive token in the combo
-		// must be held for the combination to count as down. The first
-		// non-modifier key becomes primaryVk; any further non-modifier keys
-		// accumulate here instead of silently overwriting it.
-		std::vector<int> extraVks;
-		// Generic VK of the most recent ctrl/shift/alt token. A combination
-		// made purely of modifiers (e.g. "CTRL ALT") has no natural primary
-		// key, so the last modifier is promoted to primaryVk after parsing -
-		// in DX11 those tokens are simply buttons of the combo like any other.
-		int lastModifierVk = 0;
-		bool requireCtrl = false;
-		bool requireShift = false;
-		bool requireAlt = false;
-		bool forbidCtrl = false;
-		bool forbidShift = false;
-		bool forbidAlt = false;
-	};
-
 	class VariableValues
 	{
 	public:
@@ -57,6 +35,15 @@ public:
 		bool hasSavedValue = false;
 	};
 
+	class Trigger
+	{
+	public:
+		std::wstring text;
+		bool reverse = false;
+		migoto::InputCombination combination;
+		bool wasDown = false;
+	};
+
 	class Binding
 	{
 	public:
@@ -64,18 +51,10 @@ public:
 		std::wstring originalSection;
 		std::wstring condition;
 		std::wstring conditionNamespace;
-		std::wstring keyText;
 		BindingType type = BindingType::Activate;
-		KeyCombination key;
-		// Optional reverse ("back =") key combination. Mirrors the DX11
-		// semantics: it is only registered/used for type=cycle bindings,
-		// where a press steps the cycle backwards.
-		KeyCombination back;
-		bool hasBack = false;
+		std::vector<Trigger> triggers;
 		std::vector<VariableValues> variables;
 		std::vector<std::wstring> runCommandLists;
-		bool wasDown = false;
-		bool wasBackDown = false;
 		bool active = false;
 		size_t cycleIndex = static_cast<size_t>(-1);
 	};
@@ -102,7 +81,8 @@ public:
 		g_keyPressSink = sink;
 	}
 
-	static void ParseSections(const IniDocument &ini, std::vector<Binding> *bindings)
+	static void ParseSections(const IniDocument &ini, std::vector<Binding> *bindings,
+		std::vector<std::wstring> *warnings = nullptr)
 	{
 		if (!bindings)
 			return;
@@ -114,6 +94,9 @@ public:
 			Binding binding;
 			binding.section = section.name;
 			binding.originalSection = section.originalName.empty() ? section.name : section.originalName;
+			std::wstring type;
+			if (ini.GetString(section.name.c_str(), L"type", &type))
+				binding.type = ParseBindingType(type);
 
 			for (const IniEntry &entry : section.entries) {
 				if (!entry.hasEquals)
@@ -125,22 +108,17 @@ public:
 					binding.conditionNamespace = entry.iniNamespace;
 					continue;
 				}
-				if (key == L"key") {
-					binding.keyText = value;
-					ParseKeyCombination(value, &binding.key);
-					continue;
-				}
-				// "back = <combination>" supplies the reverse cycle key.
-				// It is stored unconditionally; ProcessBindings only makes
-				// use of it for type=cycle (DX11 behaviour), and a binding
-				// is kept if either combination resolved to a real key.
-				if (key == L"back") {
-					ParseKeyCombination(value, &binding.back);
-					binding.hasBack = true;
-					continue;
-				}
-				if (key == L"type") {
-					binding.type = ParseBindingType(value);
+				if (key == L"key" || key == L"back") {
+					const bool reverse = key == L"back";
+					if (reverse && binding.type != BindingType::Cycle)
+						continue;
+					Trigger trigger{value, reverse};
+					if (!trigger.combination.Parse(value)) {
+						if (warnings)
+							warnings->push_back(section.name + L": invalid " + key + L": " + value);
+					} else if (!trigger.combination.Empty()) {
+						binding.triggers.push_back(std::move(trigger));
+					}
 					continue;
 				}
 				if (key == L"run") {
@@ -169,69 +147,74 @@ public:
 				}
 			}
 
-			if (binding.key.primaryVk ||
-			    (binding.hasBack && binding.back.primaryVk))
-				bindings->push_back(binding);
+			auto &triggers = binding.triggers;
+			if (!triggers.empty()) {
+				// DX11 registers all cycle-back callbacks before forward callbacks.
+				if (binding.type == BindingType::Cycle)
+					std::stable_partition(triggers.begin(), triggers.end(), [](const Trigger &t) { return t.reverse; });
+				bindings->push_back(std::move(binding));
+			}
 		}
 	}
 
-	static void ProcessBindings(std::vector<Binding> *bindings, std::vector<RuntimeAction> *actions)
+	template <class ReadKey>
+	static void ProcessBindings(std::vector<Binding> *bindings, std::vector<RuntimeAction> *actions,
+		ReadKey read, const migoto::XInputSnapshot &controllers)
 	{
 		if (!bindings || !actions)
 			return;
 		actions->clear();
+		migoto::VirtualKeySnapshot keyboard;
+		auto downKey = [&](int vk) {
+			if (keyboard.Down(vk, read))
+				return true;
+			switch (vk) {
+			case VK_CONTROL: return keyboard.Down(VK_LCONTROL, read) || keyboard.Down(VK_RCONTROL, read);
+			case VK_SHIFT: return keyboard.Down(VK_LSHIFT, read) || keyboard.Down(VK_RSHIFT, read);
+			case VK_MENU: return keyboard.Down(VK_LMENU, read) || keyboard.Down(VK_RMENU, read);
+			default: return false;
+			}
+		};
 		for (Binding &binding : *bindings) {
-			const bool down = IsCombinationDown(binding.key);
-			const bool pressed = down && !binding.wasDown;
-			const bool released = !down && binding.wasDown;
-			binding.wasDown = down;
-
-			const bool backDown = binding.hasBack && IsCombinationDown(binding.back);
-			const bool backPressed = backDown && !binding.wasBackDown;
-			binding.wasBackDown = backDown;
-
-			switch (binding.type) {
-			case BindingType::Cycle:
-				// The forward ("key =") and reverse ("back =")
-				// combinations both step the same cycle; reverse is only
-				// honoured for cycle bindings (matches DX11, where "back"
-				// keys are registered solely for KeyOverrideCycleBack).
-				if (pressed && ConditionActive(binding))
-					ActivateCycle(&binding, actions, 1);
-				if (binding.hasBack && backPressed && ConditionActive(binding))
-					ActivateCycle(&binding, actions, -1);
-				break;
-			case BindingType::Hold:
-				if (pressed && ConditionActive(binding))
-					ActivateBinding(&binding, actions, true, false);
-				if (released && binding.active)
-					DeactivateBinding(&binding, actions, true);
-				break;
-			case BindingType::Toggle:
-				if (pressed && ConditionActive(binding)) {
-					if (binding.active)
+			for (Trigger &trigger : binding.triggers) {
+				const bool down = trigger.combination.Active(downKey, controllers);
+				if (down == trigger.wasDown)
+					continue;
+				trigger.wasDown = down;
+				if (!down) {
+					if (binding.type == BindingType::Hold && binding.active)
 						DeactivateBinding(&binding, actions, true);
-					else
-						ActivateBinding(&binding, actions, true, false);
+					continue;
 				}
-				break;
-			case BindingType::Activate:
-			default:
-				if (pressed && ConditionActive(binding))
-					ActivateBinding(&binding, actions, false, true);
-				break;
+				const bool allowed = ConditionActive(binding);
+				if (allowed)
+					Press(binding, trigger.reverse, actions);
+				if (g_keyPressSink)
+					EmitKeyPressDiag(binding, trigger, allowed);
 			}
+		}
+	}
 
-			// Diagnostic edge trace (TIMING builds only, sink may be null):
-			// report forward/back press edges together with the condition
-			// result and the post-action state of the binding's variables.
-			// ConditionActive is a pure expression evaluation, so tracing it
-			// here never changes the semantics of the cases above.
-			if (g_keyPressSink && (pressed || backPressed)) {
-				const bool conditionActive = ConditionActive(binding);
-				EmitKeyPressDiag(binding,
-					pressed ? L"forward" : L"back", conditionActive);
-			}
+	static void Press(Binding &binding, bool reverse, std::vector<RuntimeAction> *actions)
+	{
+		switch (binding.type) {
+		case BindingType::Cycle:
+			ActivateCycle(&binding, actions, reverse ? -1 : 1);
+			break;
+		case BindingType::Hold:
+			// A second held trigger runs the activate action but must not replace
+			// the value saved by the first. Either release deactivates the preset.
+			ActivateBinding(&binding, actions, !binding.active, binding.active);
+			break;
+		case BindingType::Toggle:
+			if (binding.active)
+				DeactivateBinding(&binding, actions, true);
+			else
+				ActivateBinding(&binding, actions, true, false);
+			break;
+		case BindingType::Activate:
+			ActivateBinding(&binding, actions, false, true);
+			break;
 		}
 	}
 
@@ -267,134 +250,6 @@ public:
 			start = comma + 1;
 		}
 		return values;
-	}
-
-	static void ParseKeyCombination(const std::wstring &value, KeyCombination *combo)
-	{
-		if (!combo)
-			return;
-		*combo = KeyCombination();
-		size_t pos = 0;
-		while (pos < value.size()) {
-			while (pos < value.size() && IsSpace(value[pos]))
-				++pos;
-			size_t start = pos;
-			while (pos < value.size() && !IsSpace(value[pos]))
-				++pos;
-			if (start == pos)
-				continue;
-			ApplyKeyToken(value.substr(start, pos - start), combo);
-		}
-		// Modifier-only combinations ("CTRL ALT", "SHIFT", ...) still need a
-		// trigger key or the binding would be dropped at registration; the
-		// require* flags already constrain the rest of the combo, so promoting
-		// the last modifier reproduces DX11's all-buttons-down edge semantics.
-		if (!combo->primaryVk && combo->lastModifierVk)
-			combo->primaryVk = combo->lastModifierVk;
-	}
-
-	static void ApplyKeyToken(const std::wstring &token, KeyCombination *combo)
-	{
-		std::wstring lower = IniDocumentText::ToLower(IniDocumentText::Trim(token));
-		if (lower.empty() || !combo)
-			return;
-		if (lower == L"ctrl" || lower == L"control") {
-			combo->requireCtrl = true;
-			combo->forbidCtrl = false;
-			combo->lastModifierVk = VK_CONTROL;
-			return;
-		}
-		if (lower == L"shift") {
-			combo->requireShift = true;
-			combo->forbidShift = false;
-			combo->lastModifierVk = VK_SHIFT;
-			return;
-		}
-		if (lower == L"alt") {
-			combo->requireAlt = true;
-			combo->forbidAlt = false;
-			combo->lastModifierVk = VK_MENU;
-			return;
-		}
-		if (lower == L"no_ctrl" || lower == L"no_control") {
-			combo->forbidCtrl = true;
-			combo->requireCtrl = false;
-			return;
-		}
-		if (lower == L"no_shift") {
-			combo->forbidShift = true;
-			combo->requireShift = false;
-			return;
-		}
-		if (lower == L"no_alt") {
-			combo->forbidAlt = true;
-			combo->requireAlt = false;
-			return;
-		}
-		if (lower == L"no_modifiers") {
-			combo->forbidCtrl = true;
-			combo->forbidShift = true;
-			combo->forbidAlt = true;
-			combo->requireCtrl = false;
-			combo->requireShift = false;
-			combo->requireAlt = false;
-			return;
-		}
-		int vk = ParseVirtualKey(lower);
-		if (!vk)
-			return;
-		if (!combo->primaryVk)
-			combo->primaryVk = vk;
-		else if (vk != combo->primaryVk)
-			combo->extraVks.push_back(vk);
-	}
-
-	static int ParseVirtualKey(const std::wstring &token)
-	{
-		std::wstring key = token;
-		if (key.rfind(L"vk_", 0) == 0)
-			key = key.substr(3);
-		// Legacy short alias not present in the shared VKMappings table:
-		if (key == L"esc")
-			return VK_ESCAPE;
-		// Shared DX11/DX12 virtual key table (common/vkeys.h): full
-		// VK_* names (OEM keys included), single characters, 0x-hex codes,
-		// F1-F24, mouse/navigation aliases, etc.
-		const int vk = ParseVKey(key.c_str());
-		return vk < 0 ? 0 : vk;
-	}
-
-	static bool IsCombinationDown(const KeyCombination &combo)
-	{
-		if (!combo.primaryVk)
-			return false;
-		const bool ctrl = KeyDown(VK_CONTROL) || KeyDown(VK_LCONTROL) || KeyDown(VK_RCONTROL);
-		const bool shift = KeyDown(VK_SHIFT) || KeyDown(VK_LSHIFT) || KeyDown(VK_RSHIFT);
-		const bool alt = KeyDown(VK_MENU) || KeyDown(VK_LMENU) || KeyDown(VK_RMENU);
-		if (combo.requireCtrl && !ctrl)
-			return false;
-		if (combo.requireShift && !shift)
-			return false;
-		if (combo.requireAlt && !alt)
-			return false;
-		if (combo.forbidCtrl && ctrl)
-			return false;
-		if (combo.forbidShift && shift)
-			return false;
-		if (combo.forbidAlt && alt)
-			return false;
-		if (!KeyDown(combo.primaryVk))
-			return false;
-		for (int vk : combo.extraVks) {
-			if (!KeyDown(vk))
-				return false;
-		}
-		return true;
-	}
-
-	static bool KeyDown(int vk)
-	{
-		return (GetAsyncKeyState(vk) & 0x8000) != 0;
 	}
 
 	static bool ConditionActive(const Binding &binding)
@@ -556,12 +411,7 @@ public:
 		actions->push_back(action);
 	}
 
-	static bool IsSpace(wchar_t ch)
-	{
-		return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n';
-	}
-
-	static void EmitKeyPressDiag(const Binding &binding, const wchar_t *direction, bool conditionActive)
+	static void EmitKeyPressDiag(const Binding &binding, const Trigger &trigger, bool conditionActive)
 	{
 		if (!g_keyPressSink)
 			return;
@@ -581,8 +431,8 @@ public:
 		}
 		const std::wstring variablesState = variables.str();
 		g_keyPressSink(
-			binding.section.c_str(), binding.keyText.c_str(),
-			static_cast<int>(binding.type), direction ? direction : L"",
+			binding.section.c_str(), trigger.text.c_str(),
+			static_cast<int>(binding.type), trigger.reverse ? L"back" : L"forward",
 			binding.condition.c_str(), conditionActive ? 1 : 0,
 			variablesState.c_str());
 	}

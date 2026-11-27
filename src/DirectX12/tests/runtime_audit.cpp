@@ -10,6 +10,7 @@
 #include "tests/IniUnaryMathCases.h"
 #include "tests/IniArithmeticCases.h"
 #include "tests/IniBitwiseCases.h"
+#include "tests/IniXInputCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -272,6 +273,145 @@ void TestSettingsHotkeys()
 	install(duplicate, {}, 0);
 	Require(poll({VK_CONTROL, VK_F7}) == 0, "unchanged held binding survives reinstall");
 	poll({});
+}
+
+class RecordedControllers
+{
+public:
+	inline static migoto::XInputSnapshot hardware;
+	inline static std::array<unsigned, XUSER_MAX_COUNT> reads{};
+
+	static DWORD WINAPI Read(DWORD port, XINPUT_STATE *state)
+	{
+		++reads.at(port);
+		const auto &slot = hardware.slots.at(port);
+		if (!slot.connected)
+			return ERROR_DEVICE_NOT_CONNECTED;
+		*state = slot.state;
+		return ERROR_SUCCESS;
+	}
+};
+
+void TestControllerInputs()
+{
+	migoto::test::CheckXInputButtons([](const std::wstring &name, const migoto::XInputSnapshot &pads) {
+		migoto::InputCombination combination;
+		Require(combination.Parse(name), "parse controller chord");
+		return combination.Active([](int) { return false; }, pads);
+	}, Require);
+	migoto::InputCombination combo;
+	for (const wchar_t *invalid : {L"CTRL XB5_A", L"XB_BAD F1", L"XB_RIGHT_TRIGGE",
+		L"XB_RIGHT_TRIGGER>foo", L"ctrl XB_RIGHT_TRIGGER>42junk", L"XB_LEFT_TRIGGER>",
+		L"XB2_LEFT_TRIGGER>999999999999999999999999"}) {
+		Require(!combo.Parse(invalid) && combo.Empty(), "invalid port, button or threshold disables whole chord");
+	}
+	Require(!combo.Parse(L"no_XB1_B", true) && combo.Empty(), "reset requires a positive keyboard or pad button");
+	Require(combo.Parse(L"ctrl XB2_LEFT_TRIGGER > 128 no_XB3_B") && combo.Ports() == 6, "mixed devices and threshold");
+	migoto::XInputSnapshot pads;
+	pads.slots[1].connected = true;
+	pads.slots[1].state.Gamepad.bLeftTrigger = 129;
+	auto ctrl = [](int vk) { return vk == VK_CONTROL; };
+	Require(!combo.Active(ctrl, pads), "absent inverted port does not qualify");
+	pads.slots[2].connected = true;
+	Require(combo.Active(ctrl, pads) && !combo.Active([](int) { return false; }, pads), "all mixed chord inputs required");
+	pads.slots[2].state.Gamepad.wButtons = XINPUT_GAMEPAD_B;
+	Require(!combo.Active(ctrl, pads), "inverted controller cancels mixed chord");
+
+	using Source = RecordedControllers;
+	Source::hardware = {};
+	Source::reads = {};
+	migoto::XInputPoller poller;
+	for (unsigned second = 4; second < 8; ++second) {
+		poller.Update(second, 15, Source::Read);
+		poller.Update(second, 15, Source::Read);
+	}
+	Require(Source::reads == std::array<unsigned,4>{1,1,1,1}, "disconnected ports staggered over four seconds");
+	Source::hardware.slots[1].connected = true;
+	poller.Update(9, 2, Source::Read);
+	poller.Update(9, 2, Source::Read);
+	Require(poller.snapshot.slots[1].connected && Source::reads[1] == 3, "connected port sampled each frame");
+	Source::hardware.slots[1].connected = false;
+	poller.Update(9, 2, Source::Read);
+	poller.Update(9, 2, Source::Read);
+	Require(!poller.snapshot.slots[1].connected && Source::reads[1] == 4, "disconnect detected then probes throttled");
+	Source::reads = {};
+	poller.Update(10, 0, Source::Read, true);
+	Require(Source::reads == std::array<unsigned,4>{}, "keyboard-only configuration makes no controller calls");
+}
+
+void TestSharedModTriggers()
+{
+	using Keys = Bunny::MigotoKeyBindingUtils;
+	using Vm = MigotoCommandVmUtils;
+	Bunny::IniDocument ini;
+	Require(ini.Parse(L"[KeyCycle]\nkey=Z\nkey=XB2_A\nkey=XB6_Y Q\nback=XB2_B\nback=VK_ESC\ntype=cycle\n"
+		L"$mode=0,1,2\nrun=CommandListZero,CommandListOne,CommandListTwo\n[KeyHeld]\nkey=CTRL H\nkey=XB2_LEFT_TRIGGER > 128\ntype=hold\n$held=9\n"
+		L"[KeyToggle]\nkey=T\nkey=XB_Y\ntype=toggle\n$value=10\n"
+		L"[KeyMod]\nkey=no_modifiers VK_F1\ntype=activate\n$plain=1\n"
+		L"[KeyTrace]\nkey=XB2_X\ncondition=random(1)>=0\n$traced=1\n"), "parse multi-trigger Mod");
+	std::vector<Keys::Binding> bindings;
+	std::vector<std::wstring> warnings;
+	Keys::ParseSections(ini, &bindings, &warnings);
+	Require(warnings.size() == 1 && bindings.size() == 5, "bad alternate leaves other triggers usable");
+	Vm::State vm;
+	vm.Assign(L"$mode", L"0");
+	vm.Assign(L"$held", L"4");
+	vm.Assign(L"$value", L"3");
+	migoto::XInputSnapshot pads;
+	pads.slots[1].connected = true;
+	auto &pad = pads.slots[1].state.Gamepad;
+	std::vector<Keys::RuntimeAction> actions;
+	auto frame = [&](std::initializer_list<int> keys) {
+		std::array<bool,256> sampled{};
+		Keys::ProcessBindings(&bindings, &actions, [&](int vk) {
+			Require(!sampled.at(vk), "multiple Mod triggers share the same keyboard poll");
+			sampled[vk] = true;
+			return std::find(keys.begin(), keys.end(), vk) != keys.end();
+		}, pads);
+	};
+	frame({'Z'});
+	Require(vm.Evaluate(L"$mode") == 1, "keyboard advances shared cycle");
+	pad.wButtons = XINPUT_GAMEPAD_A;
+	frame({'Z'});
+	frame({'Z'});
+	Require(vm.Evaluate(L"$mode") == 2, "a second held device has its own edge on the same cycle");
+	pad.wButtons = XINPUT_GAMEPAD_B;
+	frame({VK_ESCAPE});
+	Require(vm.Evaluate(L"$mode") == 0, "both reverse triggers step the same cycle");
+	pad.wButtons = 0;
+	frame({});
+	pad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B;
+	frame({});
+	Require(actions.size() == 2 && !_wcsicmp(actions.front().commandList.c_str(), L"CommandListTwo") &&
+		!_wcsicmp(actions.back().commandList.c_str(), L"CommandListZero"), "cycle-back dispatch precedes forward bindings");
+	pad.wButtons = 0;
+	frame({VK_LCONTROL, 'H'});
+	pad.bLeftTrigger = 129;
+	frame({VK_LCONTROL, 'H'});
+	Require(vm.Evaluate(L"$held") == 9, "overlapping hold keys activate the same override");
+	frame({});
+	Require(vm.Evaluate(L"$held") == 4, "release restores first saved value even with another trigger down");
+	pad.bLeftTrigger = 0;
+	frame({});
+	frame({'T'});
+	Require(vm.Evaluate(L"$value") == 10, "keyboard turns on shared toggle");
+	pad.wButtons = XINPUT_GAMEPAD_Y;
+	frame({});
+	Require(vm.Evaluate(L"$value") == 3, "controller turns off same toggle");
+	frame({VK_LWIN, VK_F1});
+	Require(vm.Evaluate(L"$plain") == 0, "no_modifiers excludes Windows keys");
+	frame({VK_F1});
+	Require(vm.Evaluate(L"$plain") == 1, "unmodified legacy virtual key");
+	const auto previousSink = Keys::g_keyPressSink;
+	Keys::SetKeyPressSink([](const wchar_t *, const wchar_t *, int, const wchar_t *,
+		const wchar_t *, int, const wchar_t *) {});
+	const auto samples = GetExpressionRandomSampleCount();
+	pad.wButtons = XINPUT_GAMEPAD_X;
+	frame({});
+	Keys::SetKeyPressSink(previousSink);
+	Require(vm.Evaluate(L"$traced") == 1 && GetExpressionRandomSampleCount() == samples + 1,
+		"tracing a controller edge does not evaluate its condition twice");
+	Vm::ClearGlobals();
 }
 
 void TestHuntingKeyBindings()
@@ -1159,6 +1299,82 @@ void TestBarrierGroups(ID3D12Device *device)
 		"mixed barrier unwrapping");
 }
 
+void TestControllerFrameDispatch(IDXGISwapChain1 *chain)
+{
+	using Source = RecordedControllers;
+	using Vm = MigotoCommandVmUtils;
+	const auto dir = std::filesystem::current_path() /
+		(L"xinput-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create XInput fixture");
+	const auto root = dir / L"main.ini";
+	std::ofstream(root) << "[Constants]\nglobal $held=3\nglobal $count=0\n[Hunting]\ntoggle_hunting=XB2_START\n"
+		"[KeyHold]\ntype=hold\nkey=XB2_A\n$held=7\n[KeyEvent]\nkey=XB2_B\nrun=CommandListCount\n"
+		"[CommandListCount]\n$count=$count+1\n";
+	Source::hardware = {};
+	Source::reads = {};
+	auto &port = Source::hardware.slots[1];
+	port.connected = true;
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_START;
+	Require(!DX12HuntIsEnabled() && DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr,
+		DX12ModLoadReason::Initial, Source::Read), "load controller-only overrides with recorded hardware input");
+	DX12HotPathState::Update();
+	Require(DX12HotPathState::skipAll != 0 && Source::reads == std::array<unsigned,4>{0,1,0,0},
+		"key-only config uses lightweight Present and probes only bound ports");
+	Source::reads = {};
+	const auto now = (GetTickCount64() / 4000 * 4 + 5) * 1000;
+	auto sample = [&](ULONGLONG tick) {
+		return DX12UiActions::PollKeyboard([](int) { return false; }, tick);
+	};
+	auto initial = sample(now);
+	Require(!DX12UiActions::Consume() && !DX12HuntIsEnabled(), "installation cannot trigger a held controller chord");
+	DX12ModProcessIdleFrameKeys(nullptr, initial);
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B;
+	auto pressed = sample(now + 10);
+	// Change the physical source between consumers; Mod sees the sample that
+	// was read alongside the UI keys, even on a keyboard/controller-only mod.
+	port.state.Gamepad.wButtons = 0;
+	DX12ModProcessIdleFrameKeys(nullptr, pressed);
+	Vm::State vm;
+	Require(vm.Evaluate(L"$held") == 7 && vm.Evaluate(L"$count") == 1 &&
+		Source::reads == std::array<unsigned,4>{0,2,0,0}, "one port read shared across UI and idle Mod actions");
+	port.connected = false;
+	DX12ModBeginFrame(nullptr, sample(now + 20));
+	Require(vm.Evaluate(L"$held") == 3 && vm.Evaluate(L"$count") == 1, "lost controller releases hold on normal frame");
+	port.connected = true;
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_START;
+	sample(now + 4000);
+	Require(DX12UiActions::Consume() && DX12HuntIsEnabled(), "controller reconnect toggles Hunting through UI dispatch");
+	sample(now + 4010);
+	Require(!DX12UiActions::Consume(), "held controller toggle fires once");
+	port.state.Gamepad.wButtons = 0;
+	sample(now + 4020);
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_START;
+	sample(now + 4030);
+	Require(DX12UiActions::Consume() && !DX12HuntIsEnabled(), "release and repress restores Hunting state");
+	port.state.Gamepad.wButtons = 0;
+	Check(chain->Present(0, 0));
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B;
+	const auto before = Source::reads[1];
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$held") == 7 && vm.Evaluate(L"$count") == 2 && Source::reads[1] == before + 1,
+		"wrapped WARP Present delivers controller-only hold and command list");
+	port.connected = false;
+	DXGI_PRESENT_PARAMETERS parameters{};
+	Check(chain->Present1(0, DXGI_PRESENT_TEST, &parameters));
+	Require(vm.Evaluate(L"$held") == 7 && Source::reads[1] == before + 1, "test Present1 does not consume input");
+	Check(chain->Present1(0, 0, &parameters));
+	Require(vm.Evaluate(L"$held") == 3 && Source::reads[1] == before + 2, "wrapped Present1 releases disconnected hold");
+	std::ofstream(root) << "[Constants]\nglobal $held=5\n";
+	Source::reads = {};
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload, Source::Read),
+		"reload without controller bindings using the same reader");
+	DX12ModProcessIdleFrameKeys(nullptr, sample(now + 8000));
+	Require(Source::reads == std::array<unsigned,4>{} && vm.Evaluate(L"$held") == 5, "removed bindings stop polling");
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
+	Vm::ClearGlobals();
+}
+
 void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 {
 	auto first = Queue(device, D3D12_COMMAND_LIST_TYPE_DIRECT);
@@ -1198,6 +1414,7 @@ void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 	Check(chain->Present1(0, 0, &parameters));
 	Require(vm.Evaluate(L"frame_number") == frameBeforePresent + 2 && vm.Evaluate(L"time") >= presentTime,
 		"wrapped Present1 publishes its clock and frame number");
+	TestControllerFrameDispatch(chain.Get());
 	Drain(device, first.Get());
 	ComPtr<IDXGISwapChain3> chain3;
 	Check(chain.As(&chain3));
@@ -1747,6 +1964,8 @@ int main(int argc, char **argv)
 		TestUnknownSettingsCleanup();
 		TestSettingsHotkeys();
 		TestHuntingKeyBindings();
+		TestControllerInputs();
+		TestSharedModTriggers();
 		TestWipeUserConfig();
 		TestExpressionNumbers();
 		TestUnaryMath();

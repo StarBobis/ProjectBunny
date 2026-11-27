@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "HackerDevice.h"
+#include "IniXInput.h"
 
 // The "input" files are a set of objects to handle user input for both gaming 
 // purposes and for tool purposes, like hunting for shaders.
@@ -87,15 +88,11 @@ public:
 // XInputButton to support xbox controllers
 class XInputButton : public InputButton {
 private:
-	int controller;
-	WORD button;
-	BYTE left_trigger;
-	BYTE right_trigger;
-	bool invert;
-
-	bool _CheckState(int controller);
+	const migoto::XInputSnapshot &controllers;
+	migoto::XInputButtonBinding binding;
 public:
 	XInputButton(const wchar_t *keyName);
+	XInputButton(const wchar_t *keyName, const migoto::XInputSnapshot &snapshot);
 	bool CheckState() override;
 };
 
