@@ -514,6 +514,15 @@ void test_f135()
         require_batch(rejected, "F135: the real input-button consumer rejects the invalid key");
     }
     VKInputButton valid(L"no_0x41");
+    require_batch(valid.vkey == 'A' && valid.invert, "DX11 negated hexadecimal button");
+    InputButtonList keyboard(L"no_modifiers VK_F10");
+    InputButtonList mixed(L"ctrl no_shift XB1_A");
+    for (const wchar_t *chord : {L"", L"ctrl not_a_button F10"}) {
+        bool rejected = false;
+        try { InputButtonList binding(chord); }
+        catch (const std::exception&) { rejected = true; }
+        require_batch(rejected, "DX11 rejects an entire empty or malformed chord");
+    }
 }
 
 void test_f176()

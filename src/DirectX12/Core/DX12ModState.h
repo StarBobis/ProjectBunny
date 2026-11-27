@@ -12,7 +12,7 @@ namespace Bunny {
 class TextureOverrideConfig;
 }
 
-enum class DX12ModLoadReason { Initial, UserReload };
+enum class DX12ModLoadReason { Initial, UserReload, WipeUserConfig };
 
 bool DX12ModRuntimeLoad(
 	const wchar_t *configPath,

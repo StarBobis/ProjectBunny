@@ -535,16 +535,18 @@ DX11 的 `mips`、`color_space`、`bind_flags`、`original_dhash` 等字段在 D
 
 ### 7.1 配置重载
 
-F10 触发 `DX12ModRuntimeReload`（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad.cpp:1625`）：
+随包配置用 F10 触发 `DX12ModRuntimeReload`。`[Hunting] reload_config` 可以重绑或留空禁用。
 
 1. **先保存**持久变量（`DX12UserConfigSave::SavePending("reload")`），使重载读到的文件里已经包含最新值（DX11 的 `ReloadConfig` 同序）。
 2. 重新解析配置、重建命令列表 / 覆盖 / 资源映射。
 3. 重置自动保存计时器（`ResetAutosaveTimer`）。
-4. 结果通过 overlay 状态提示：成功 / 有警告 / 有错误（`"F10 DX12 mod config reloaded with N error(s)"` 等）。
+4. 结果通过 overlay 状态提示：成功 / 有警告 / 有错误（`"DX12 mod config reloaded with N error(s)"` 等）。
 
 重载**不替换正在运行的 DLL**；DLL 与注入方式的变更需要重启游戏。
 
 启动阶段的首个加载是延迟执行的：只有在 Present 计数 > 2 且距请求已超过 `kDeferredInitialModLoadDelayMs`（2000 ms）时才真正加载（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad.cpp:277`）。
+
+随包配置还绑定了 `[Hunting] wipe_user_config = ctrl alt no_shift VK_F10`。按下时会放弃待保存的改动，删除原来生效的用户设置文件并重载配置。若新配置指定了另一个文件，会加载该文件。配置读取或删除失败时保留当前运行状态，修复后可重试。旧 DX12 配置需要显式添加清空快捷键。
 
 重载会根据新配置重建全局值、只读标志和持久变量登记表，并在初始化后一起发布。
 

@@ -10,7 +10,7 @@
 
 #include "log.h"
 #include "util.h"
-#include "vkeys.h"
+#include "IniInputChord.h"
 #include "IniHandler.h"
 
 // Set a function pointer to the xinput get state call. By default, set it to
@@ -167,12 +167,7 @@ bool InputAction::Dispatch(HackerDevice *device)
 VKInputButton::VKInputButton(const wchar_t *keyName) :
 	invert(false)
 {
-	if (!_wcsnicmp(keyName, L"no_", 3)) {
-		invert = true;
-		keyName += 3;
-	}
-
-	vkey = ParseVKey(keyName);
+	vkey = migoto::ParseKeyboardButton(keyName, invert);
 	if (vkey < 0)
 		throw keyParseError;
 }
@@ -406,55 +401,22 @@ bool XInputButton::CheckState()
 
 InputButtonList::InputButtonList(const wchar_t *keyName)
 {
-	const wchar_t *ptr = keyName, *cur = NULL;
-	wstring cur_key;
-
-	while (*ptr) {
-		// Skip over whitespace:
-		for (; *ptr == L' '; ptr++) {}
-
-		// Mark start of current entry:
-		cur = ptr;
-
-		// Scan until the next whitespace or end of string:
-		for (; *ptr && *ptr != L' '; ptr++) {}
-
-		// Copy the current entry to a new string (don't modify the
-		// string passed from the caller so it can still log properly)
-		// and advance pointer unless it is the end of string:
-		cur_key = wstring(cur, ptr - cur);
-		if (*ptr)
-			ptr++;
-
-		// Special case: "no_modifiers" is expanded to exclude all modifiers:
-		if (!_wcsicmp(cur_key.c_str(), L"no_modifiers")) {
-			buttons.push_back(new VKInputButton(L"NO_CTRL"));
-			buttons.push_back(new VKInputButton(L"NO_ALT"));
-			buttons.push_back(new VKInputButton(L"NO_SHIFT"));
-			// Ctrl, Alt & Shift have left/right independent
-			// variants, but Win does not, exclude both:
-			buttons.push_back(new VKInputButton(L"NO_LWIN"));
-			buttons.push_back(new VKInputButton(L"NO_RWIN"));
-		} else {
+	const bool valid = migoto::VisitInputChord(keyName, [this](const wchar_t *token) {
+		try {
+			buttons.push_back(new VKInputButton(token));
+		} catch (KeyParseError) {
 			try {
-				buttons.push_back(new VKInputButton(cur_key.c_str()));
+				buttons.push_back(new XInputButton(token));
 			} catch (KeyParseError) {
-				try {
-					buttons.push_back(new XInputButton(cur_key.c_str()));
-				} catch (KeyParseError) {
-					goto fail;
-				}
+				return false;
 			}
 		}
-	}
-
-	if (buttons.empty())
+		return true;
+	});
+	if (!valid) {
+		clear();
 		throw keyParseError;
-
-	return;
-fail:
-	clear();
-	throw keyParseError;
+	}
 }
 
 void InputButtonList::clear()

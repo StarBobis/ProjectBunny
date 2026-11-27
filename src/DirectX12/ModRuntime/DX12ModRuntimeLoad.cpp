@@ -1250,6 +1250,10 @@ bool DX12ModRuntimeLoad(
 	bool *hasErrors,
 	DX12ModLoadReason reason)
 {
+	// The deferred startup load can overlap a user reload from another swap
+	// chain. Publish settings, bindings and mod tables in the same load order.
+	static std::mutex loadMutex;
+	std::lock_guard loadLock(loadMutex);
 	Bunny::MigotoIniLoadResult iniLoad;
 	Bunny::ShaderOverrideMap shaderOverrides;
 	Bunny::ShaderRegexMap shaderRegexes;
@@ -1304,9 +1308,17 @@ bool DX12ModRuntimeLoad(
 	UINT64 loadedGeneration = 0;
 	
 	using Vm = MigotoCommandVmUtils;
-	const auto expectedRevision = reason == DX12ModLoadReason::UserReload ?
-		std::optional<uint64_t>{Vm::SettingsRevision()} : std::nullopt;
-	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad)) {
+	const bool wipe = reason == DX12ModLoadReason::WipeUserConfig;
+	const auto reload = reason == DX12ModLoadReason::Initial ?
+		Vm::SettingsReloadSnapshot{} : Vm::BeginSettingsReload(wipe);
+	if (wipe && reload.wipePath.empty()) {
+		if (statusMessage)
+			*statusMessage = L"No active user settings file to wipe.";
+		if (hasErrors)
+			*hasErrors = true;
+		return false;
+	}
+	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad, reload.wipePath)) {
 		const auto &error = iniLoad.errors.empty() ? iniLoad.document.Error() : iniLoad.errors.back();
 		DX12_LOG("DX12ModRuntime",
 			"\"status\":\"config_load_failed\",\"path\":\"%S\",\"error\":\"%S\"",
@@ -1324,6 +1336,7 @@ bool DX12ModRuntimeLoad(
 	// cleanup when the complete include tree was available on this reload.
 	const bool confirmUnknowns = reason == DX12ModLoadReason::UserReload &&
 		iniLoad.errors.empty() && iniLoad.includesComplete;
+	auto settingsKeys = DX12SettingsHotkeys::Parse(iniLoad.document, iniLoad.warnings);
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
 	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes, iniLoad.warnings);
@@ -1331,12 +1344,17 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
 	const auto settings = Bunny::DX12ConstantsVmUtils::Initialize(commandLists, iniLoad.userConfigPath,
-		confirmUnknowns ? &iniLoad.document : nullptr, expectedRevision);
+		confirmUnknowns ? &iniLoad.document : nullptr, reload);
 	if (settings.status != Vm::SettingsPublishStatus::Applied) {
-		if (statusMessage)
-			*statusMessage = settings.status == Vm::SettingsPublishStatus::ChangedDuringLoad ?
-				L"User settings changed while loading. Reload again to use the latest settings." :
-				L"Unable to update user settings. Reload again to retry.";
+		if (statusMessage) {
+			if (settings.status == Vm::SettingsPublishStatus::WipeFailed)
+				*statusMessage = L"Unable to wipe " + reload.wipePath + L" (Windows error " +
+					std::to_wstring(settings.fileError) + L").";
+			else if (settings.status == Vm::SettingsPublishStatus::ChangedDuringLoad)
+				*statusMessage = L"User settings changed while loading. Reload again to use the latest settings.";
+			else
+				*statusMessage = L"Unable to update user settings. Reload again to retry.";
+		}
 		if (hasErrors)
 			*hasErrors = true;
 		return false;
@@ -1352,7 +1370,9 @@ bool DX12ModRuntimeLoad(
 	if (!settingsNotice.empty()) {
 		DX12_LOG("DX12UserConfig", "path=%S message=%S", iniLoad.userConfigPath.c_str(), settingsNotice.c_str());
 	}
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	SetBasePaths(configPath);
+	ReleaseSRWLockExclusive(&gModLock);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
 	// Custom shader elements are rebuilt from the parsed command lists (the
 	// same action stream the draw executor consumes) so the registry and the
@@ -1518,6 +1538,7 @@ bool DX12ModRuntimeLoad(
 	gCommandLists.swap(commandLists);
 	gHasCommandLists.store(!gCommandLists.empty(), std::memory_order_release);
 	gKeyBindings.swap(keyBindings);
+	DX12SettingsHotkeys::Instance().Install(std::move(settingsKeys), DX12SettingsHotkeys::KeyDown);
 	gCustomShaderElements.swap(customShaderElements);
 	gCustomShaderElementSnapshot.store(
 		std::make_shared<const DX12CustomShaderElementMap>(gCustomShaderElements),
@@ -1687,16 +1708,18 @@ bool DX12ModRuntimeLoad(
 	if (statusMessage) {
 		wchar_t text[256];
 		if (hasIniErrors) {
-			swprintf_s(text, L"F10 DX12 mod config reloaded with %zu error(s)",
+			swprintf_s(text, L"DX12 mod config reloaded with %zu error(s)",
 				iniLoad.errors.size());
 		} else if (iniLoad.warnings.empty()) {
-			swprintf_s(text, L"F10 DX12 mod config reloaded: %zu ini, %zu TextureOverride, %zu Resource",
+			swprintf_s(text, L"DX12 mod config reloaded: %zu ini, %zu TextureOverride, %zu Resource",
 				iniLoad.loadedFiles.size(), loadedTextureOverrideCount, loadedResourceCount);
 		} else {
-			swprintf_s(text, L"F10 DX12 mod config reloaded with %zu warning(s)",
+			swprintf_s(text, L"DX12 mod config reloaded with %zu warning(s)",
 				iniLoad.warnings.size());
 		}
 		*statusMessage = text;
+		if (wipe)
+			*statusMessage += L". Wiped user settings: " + reload.wipePath;
 		if (!settingsNotice.empty())
 			*statusMessage += L". " + settingsNotice;
 	}
@@ -1725,7 +1748,7 @@ bool DX12ModRuntimeReload(DX12ModLoadReason reason)
 	// before the user config is parsed back in. This is also what makes F10 a
 	// "save and reload": the file the reload reads next contains the newest
 	// values.
-	if (!DX12UserConfigSave::SavePending("reload")) {
+	if (reason != DX12ModLoadReason::WipeUserConfig && !DX12UserConfigSave::SavePending("reload")) {
 		DX12OverlayStatusState::SetError(L"Unable to save user settings. Reload again to retry.");
 		return false;
 	}
@@ -1743,6 +1766,8 @@ bool DX12ModRuntimeReload(DX12ModLoadReason reason)
 		DX12OverlayStatusState::SetError(status.c_str());
 	else if (hasWarnings)
 		DX12OverlayStatusState::SetWarning(status.c_str());
+	else if (reason == DX12ModLoadReason::WipeUserConfig)
+		DX12OverlayStatusState::SetTemporary(L"User settings wiped. Configuration reloaded.", 3000);
 	else if (reason == DX12ModLoadReason::UserReload) {
 		wchar_t timing[128];
 		swprintf_s(timing, L"Reload Success TimeConsume: %.3f S", (GetTickCount() - start) / 1000.0);

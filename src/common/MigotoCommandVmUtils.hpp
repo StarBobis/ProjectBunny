@@ -783,12 +783,19 @@ public:
 
 	enum class UnknownSettingsPolicy { Observe, Preserve, ClearUnchanged };
 
-	enum class SettingsPublishStatus { Applied, SaveFailed, ChangedDuringLoad };
+	enum class SettingsPublishStatus { Applied, SaveFailed, WipeFailed, ChangedDuringLoad };
 
-	static uint64_t SettingsRevision()
+	class SettingsReloadSnapshot
+	{
+	public:
+		std::optional<uint64_t> revision;
+		std::wstring wipePath;
+	};
+
+	static SettingsReloadSnapshot BeginSettingsReload(bool wipe = false)
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		return VariableStore::settingsRevision;
+		return { VariableStore::settingsRevision, wipe ? VariableStore::current.savePath : std::wstring{} };
 	}
 
 	static void MarkPersistChangedLocked()
@@ -801,6 +808,7 @@ public:
 	{
 	public:
 		SettingsPublishStatus status = SettingsPublishStatus::Applied;
+		DWORD fileError = ERROR_SUCCESS;
 		bool cleanupArmed = false;
 		size_t unknown = 0;
 		size_t removed = 0;
@@ -808,17 +816,27 @@ public:
 
 	static SettingsLoadResult PublishGlobals(GlobalVariables globals,
 		UnknownSettingsPolicy policy = UnknownSettingsPolicy::Observe,
-		std::optional<uint64_t> expectedRevision = {})
+		const SettingsReloadSnapshot &reload = {})
 	{
 		SettingsLoadResult result;
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
 		auto &live = VariableStore::current;
-		if (expectedRevision && (*expectedRevision != VariableStore::settingsRevision ||
-			(!live.savePath.empty() && PersistDirty()))) {
+		const bool wiping = !reload.wipePath.empty();
+		const bool stale = reload.revision && *reload.revision != VariableStore::settingsRevision;
+		if (stale || (wiping && (!reload.revision || reload.wipePath != live.savePath)) ||
+			(reload.revision && !wiping && !live.savePath.empty() && PersistDirty())) {
 			result.status = SettingsPublishStatus::ChangedDuringLoad;
 			return result;
 		}
-		if (policy != UnknownSettingsPolicy::Observe) {
+		if (wiping) {
+			// The generation check also protects ownership. Serialize the delete
+			// and swap with autosave so the discarded values cannot be resurrected.
+			result.fileError = migoto::RemoveSavedSettingsFile(live.savePath);
+			if (result.fileError != ERROR_SUCCESS) {
+				result.status = SettingsPublishStatus::WipeFailed;
+				return result;
+			}
+		} else if (policy != UnknownSettingsPolicy::Observe) {
 			auto &snapshot = globals.confirmedUnknowns;
 			result.unknown = snapshot.size();
 			const auto action = migoto::CompareUnknownSettings(policy == UnknownSettingsPolicy::ClearUnchanged,

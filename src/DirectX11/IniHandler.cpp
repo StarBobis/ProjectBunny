@@ -5603,12 +5603,10 @@ bool SavePersistentSettings(bool force)
 
 static bool WipeUserConfig()
 {
-	if (!DeleteFileW(G->user_config.c_str())) {
-		const DWORD error = GetLastError();
-		if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
-			LogInfo("Unable to wipe user settings in %S (error=%lu)\n", G->user_config.c_str(), error);
-			return false;
-		}
+	const DWORD error = migoto::RemoveSavedSettingsFile(G->user_config);
+	if (error != ERROR_SUCCESS) {
+		LogInfo("Unable to wipe user settings in %S (error=%lu)\n", G->user_config.c_str(), error);
+		return false;
 	}
 	if (NormalizePersistentConfigPath(G->user_config) == persistent_preservation.owner_path)
 		persistent_preservation.values.clear();

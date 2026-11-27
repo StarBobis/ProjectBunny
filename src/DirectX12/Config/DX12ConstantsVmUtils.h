@@ -24,7 +24,7 @@ public:
 	using Vm = MigotoCommandVmUtils;
 
 	static Vm::SettingsLoadResult Initialize(const CommandListMap &commandLists, const std::wstring &userConfigPath = {},
-		const IniDocument *reloadConfig = nullptr, std::optional<uint64_t> expectedRevision = {})
+		const IniDocument *reloadConfig = nullptr, const Vm::SettingsReloadSnapshot &reload = {})
 	{
 		const auto policy = reloadConfig ? ReadCleanupPolicy(*reloadConfig) : Vm::UnknownSettingsPolicy::Observe;
 		Vm::GlobalVariables globals;
@@ -60,7 +60,7 @@ public:
 				migoto::RecordUnknownSetting(globals.confirmedUnknowns, name, value);
 			}
 		}
-		return Vm::PublishGlobals(std::move(globals), policy, expectedRevision);
+		return Vm::PublishGlobals(std::move(globals), policy, reload);
 	}
 
 	static const CommandListConfig *FindConstants(const CommandListMap &commandLists)

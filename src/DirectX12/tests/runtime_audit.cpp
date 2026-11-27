@@ -240,6 +240,125 @@ void TestInactiveUserSettings()
 	Vm::ClearGlobals();
 }
 
+void TestSettingsHotkeys()
+{
+	using Keys = DX12SettingsHotkeys;
+	auto &hotkeys = Keys::Instance();
+	auto install = [&](const wchar_t *config, std::initializer_list<int> held, size_t expectedWarnings) {
+		Bunny::IniDocument ini;
+		Require(ini.Parse(config), "parse settings hotkeys");
+		std::vector<std::wstring> warnings;
+		auto bindings = Keys::Parse(ini, warnings);
+		Require(warnings.size() == expectedWarnings, "report invalid settings chords");
+		hotkeys.Install(std::move(bindings), [&](int vk) { return std::find(held.begin(), held.end(), vk) != held.end(); });
+	};
+	auto poll = [&](std::initializer_list<int> held) {
+		return hotkeys.Poll([&](int vk) { return std::find(held.begin(), held.end(), vk) != held.end(); });
+	};
+	install(L"[Hunting]\n", {}, 0);
+	Require(poll({VK_CONTROL, VK_MENU, VK_F10}) == Keys::Action::None &&
+		poll({VK_DECIMAL, VK_F10}) == Keys::Action::None && poll({VK_RWIN, VK_F10}) == Keys::Action::None &&
+		poll({VK_F10}) == Keys::Action::Reload, "legacy configs keep the unmodified F10 binding only");
+	install(L"[Hunting]\nreload_config=\nwipe_user_config=no_shift bogus VK_F10\n", {}, 1);
+	Require(poll({VK_F10}) == Keys::Action::None, "empty or malformed chord is disabled as a whole");
+	install(L"[Hunting]\nreload_config=Prnt Scrn\nwipe_user_config=no_modifiers\n", {}, 1);
+	Require(poll({}) == Keys::Action::None && poll({VK_SNAPSHOT}) == Keys::Action::Reload,
+		"legacy key with spaces works and a wipe requires a positive key");
+	const auto duplicate = L"[Hunting]\nreload_config=ctrl no_0x41 F7\nwipe_user_config=ctrl no_0x41 F7\n";
+	install(duplicate, {VK_CONTROL, VK_F7}, 0);
+	Require(poll({VK_CONTROL, VK_F7}) == Keys::Action::None &&
+		poll({VK_CONTROL, 'A', VK_F7}) == Keys::Action::None &&
+		poll({VK_CONTROL, VK_F7}) == Keys::Action::Wipe, "rebind while held waits for release and fires one action");
+	install(duplicate, {}, 0);
+	Require(poll({VK_CONTROL, VK_F7}) == Keys::Action::None, "unchanged held binding survives reinstall");
+	poll({});
+}
+
+void TestWipeUserConfig()
+{
+	using Vm = MigotoCommandVmUtils;
+	const auto dir = std::filesystem::current_path() /
+		(L"settings-wipe-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create isolated wipe fixture");
+	const auto root = dir / L"main.ini";
+	const auto first = dir / L"first.ini";
+	const auto second = dir / L"second.ini";
+	auto configure = [&](const char *owner, const char *include = "") {
+		std::ofstream(root) << "[Include]\nuser_config=" << owner << "\n" << include <<
+			"[Hunting]\nreload_config=no_modifiers F6\nwipe_user_config=ctrl alt no_shift F7\n"
+			"[Constants]\nglobal persist $choice=3\nglobal locked $fixed=7\n";
+	};
+	auto press = [](std::initializer_list<int> keys) {
+		DX12UiActions::PollSettingsKeys([&](int vk) { return std::find(keys.begin(), keys.end(), vk) != keys.end(); });
+		return DX12UiActions::Consume();
+	};
+	auto bytes = [](const std::filesystem::path &path) {
+		std::ifstream file(path, std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+	};
+	auto wipe = [] { return DX12ModRuntimeReload(DX12ModLoadReason::WipeUserConfig); };
+	configure("first.ini");
+	std::ofstream(first) << "[Constants]\n$choice=12\n$inactive=-4\n$fixed=19\n";
+	Require(DX12ModRuntimeLoad(root.c_str()), "load real saved settings and configurable keys");
+	Vm::State vm;
+	Require(vm.Evaluate(L"$choice") == 12, "load saved override before reset");
+	press({});
+	vm.Assign(L"$choice", L"15");
+	Require(press({VK_F6}) && !Vm::PersistDirty() && bytes(first).find("$choice = 15") != std::string::npos,
+		"ordinary configured reload saves dirty settings");
+	press({});
+	vm.Assign(L"$choice", L"18");
+	const auto before = bytes(first);
+	HANDLE lock = CreateFileW(first.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	Require(lock != INVALID_HANDLE_VALUE, "deny deletion of actual settings file");
+	const bool refused = !wipe();
+	CloseHandle(lock);
+	Require(refused && Vm::PersistDirty() && vm.Evaluate(L"$choice") == 18 && bytes(first) == before,
+		"failed wipe retains dirty live values and original bytes");
+
+	// Interleave an edit after reading the candidate. A fresh explicit
+	// request can discard that edit, a stale publication cannot.
+	auto snapshot = Vm::BeginSettingsReload(true);
+	Bunny::MigotoIniLoadResult config;
+	Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &config, snapshot.wipePath), "stage defaults");
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(config.document, &lists);
+	vm.Assign(L"$choice", L"21");
+	auto stale = Bunny::DX12ConstantsVmUtils::Initialize(lists, config.userConfigPath, nullptr, snapshot);
+	Require(stale.status == Vm::SettingsPublishStatus::ChangedDuringLoad && bytes(first) == before &&
+		vm.Evaluate(L"$choice") == 21, "concurrent edit cancels stale wipe");
+
+	configure("first.ini", "include=missing.ini\n");
+	Require(!wipe() && Vm::PersistDirty() && bytes(first) == before, "incomplete mod tree preserves settings");
+	configure("first.ini", "include=first.ini\n");
+	Require(!wipe() && bytes(first) == before, "file required by a regular include survives reset");
+	configure("first.ini");
+	Require(!press({VK_CONTROL, VK_MENU, VK_SHIFT, VK_F7}) && press({VK_CONTROL, VK_MENU, VK_F7}) &&
+		!std::filesystem::exists(first) && !Vm::PersistDirty() && vm.Evaluate(L"$choice") == 3 &&
+		vm.Evaluate(L"$fixed") == 7, "configured wipe skips the dirty save and restores declared defaults");
+	Require(!press({VK_CONTROL, VK_MENU, VK_F7}), "held key across a real reload cannot wipe twice");
+	press({});
+	DX12ModSavePersistStateOnExit();
+	Require(!std::filesystem::exists(first) && wipe(), "clean exit and reset of an absent file");
+	vm.Assign(L"$choice", L"8");
+	DX12ModSavePersistStateOnExit();
+	Require(bytes(first).find("inactive") == std::string::npos, "discarded unknown settings stay discarded");
+
+	std::ofstream(second) << "[Constants]\n$choice=41\n";
+	const auto other = bytes(second);
+	configure("second.ini");
+	Require(wipe() && !std::filesystem::exists(first) && bytes(second) == other &&
+		vm.Evaluate(L"$choice") == 41, "wipe deletes prior owner and loads the new owner's existing settings");
+	configure("main.ini");
+	Require(DX12ModRuntimeLoad(root.c_str()), "load config with an overlapping save path");
+	const auto mainBytes = bytes(root);
+	Require(!wipe() && bytes(root) == mainBytes, "wipe cannot delete root configuration");
+	for (const auto &file : {second, root})
+		std::filesystem::remove(file);
+	std::filesystem::remove(dir);
+	Vm::ClearGlobals();
+}
+
 void TestUnknownSettingsCleanup()
 {
 	const auto dir = std::filesystem::current_path() /
@@ -332,13 +451,13 @@ void TestUnknownSettingsCleanup()
 	// read and publication. The dirty bit alone no longer records that edit.
 	std::ofstream(root, std::ios::app) << "[Constants]\nglobal persist $active=1\n";
 	Require(DX12ModRuntimeReload(), "load mutable variable for interleaved save");
-	const auto revision = MigotoCommandVmUtils::SettingsRevision();
+	const auto revision = MigotoCommandVmUtils::BeginSettingsReload();
 	Bunny::MigotoIniLoadResult config;
 	Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &config), "read candidate configuration");
 	Bunny::CommandListMap lists;
 	Bunny::MigotoCommandListParser::ParseSections(config.document, &lists);
 	vm.Assign(L"$active", L"42");
-	const auto dirtyRevision = MigotoCommandVmUtils::SettingsRevision();
+	const auto dirtyRevision = MigotoCommandVmUtils::BeginSettingsReload();
 	DX12ModSavePersistStateOnExit();
 	const auto latest = bytes(second);
 	const auto stale = Bunny::DX12ConstantsVmUtils::Initialize(lists, config.userConfigPath,
@@ -1499,6 +1618,8 @@ int main(int argc, char **argv)
 		TestLockedVariables();
 		TestInactiveUserSettings();
 		TestUnknownSettingsCleanup();
+		TestSettingsHotkeys();
+		TestWipeUserConfig();
 		TestExpressionNumbers();
 		TestUnaryMath();
 		TestFrameTiming();

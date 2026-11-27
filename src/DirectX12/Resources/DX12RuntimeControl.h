@@ -3,6 +3,7 @@
 #pragma once
 
 #include "DX12ResourceHookRuntime.h"
+#include "../Config/DX12SettingsHotkeys.h"
 #include "../Core/DX12Diagnostics.h"
 #include "../Core/Diag/DX12CrashReport.h"
 
@@ -199,10 +200,21 @@ enum class DX12UiActionBits : LONG
 	HuntMarkCS = 1 << 19,
 	HuntMarkIB = 1 << 20,
 	HuntMarkVB = 1 << 21,
+	WipeUserConfig = 1 << 22,
 };
 
 class DX12UiActions
 {
+	struct KeyBinding
+	{
+		int vk;
+		DX12UiActionBits action;
+		bool repeatable;
+		bool requiresDecimal;
+		bool down = false;
+		ULONGLONG lastFireTick = 0;
+	};
+
 public:
 	inline static volatile LONG PendingActions = 0;
 
@@ -217,21 +229,12 @@ public:
 	// is no way to leave hunting burning tracking resources with the text
 	// hidden. Numpad 1-9 / * - navigate and copy PS/VS/IB/VB, Decimal+1/2/3
 	// covers CS, Numpad+ clears the selection, F8 dumps a frame, F9 dumps
-	// shaders, F10 reloads mods. Navigation keys auto-repeat at the DX11
-	// repeat_rate of 6/s; every binding requires all modifiers released.
+	// shaders. Navigation keys auto-repeat at the DX11 repeat_rate of 6/s.
+	// The configurable settings keys have their own modifier rules.
 	static void PollKeyboard()
 	{
 		static constexpr ULONGLONG kKeyRepeatMs = 166;
 
-		struct KeyBinding
-		{
-			int vk;
-			DX12UiActionBits action;
-			bool repeatable;
-			bool requiresDecimal;
-			bool down = false;
-			ULONGLONG lastFireTick = 0;
-		};
 		static KeyBinding bindings[] = {
 			{ VK_NUMPAD0,  DX12UiActionBits::HuntToggle,     false, false },
 			{ VK_NUMPAD1,  DX12UiActionBits::HuntPreviousPS, true,  false },
@@ -252,7 +255,6 @@ public:
 			{ VK_ADD,      DX12UiActionBits::HuntReset,      false, false },
 			{ VK_F8,       DX12UiActionBits::FrameAnalysis,  false, false },
 			{ VK_F9,       DX12UiActionBits::ShaderDump,     false, false },
-			{ VK_F10,      DX12UiActionBits::ModReload,      false, false },
 			// Profiling HUD: F11 cycles Off -> Compact -> Summary -> Top ->
 			// Sections -> Counters, F12 holds the report the screen is showing
 			// so the numbers stop moving while they are read.
@@ -260,6 +262,7 @@ public:
 			{ VK_F12,      DX12UiActionBits::ProfHudFreeze,  false, false },
 		};
 
+		PollSettingsKeys(DX12SettingsHotkeys::KeyDown);
 		const bool decimalDown = (GetAsyncKeyState(VK_DECIMAL) & 0x8000) != 0;
 		const bool modifierDown =
 			(GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
@@ -283,6 +286,17 @@ public:
 				Request(binding.action);
 			}
 			binding.down = active;
+		}
+	}
+
+	template <class ReadKey>
+	static void PollSettingsKeys(ReadKey read)
+	{
+		using Hotkeys = DX12SettingsHotkeys;
+		switch (Hotkeys::Instance().Poll(read)) {
+		case Hotkeys::Action::Reload: Request(DX12UiActionBits::ModReload); break;
+		case Hotkeys::Action::Wipe: Request(DX12UiActionBits::WipeUserConfig); break;
+		default: break;
 		}
 	}
 
@@ -340,7 +354,9 @@ public:
 			RunFrameAnalysisRequest();
 		if (HasAction(actions, DX12UiActionBits::ShaderDump))
 			DX12RequestShaderDump();
-		if (HasAction(actions, DX12UiActionBits::ModReload))
+		if (HasAction(actions, DX12UiActionBits::WipeUserConfig))
+			DX12Input::RequestModReload(DX12ModLoadReason::WipeUserConfig);
+		else if (HasAction(actions, DX12UiActionBits::ModReload))
 			DX12Input::RequestModReload();
 		// Outside the hunting gate on purpose: the profiling HUD works with
 		// hunting off, and it never touches the hot-path gates.

@@ -3,7 +3,9 @@
 #include "DX12Config.h"
 #include "bounded_path_format.h"
 
+#include <filesystem>
 #include <set>
+#include "IniSavedSettings.h"
 
 // INI include traversal and process-level loader configuration.
 
@@ -25,7 +27,8 @@ public:
 class MigotoIniLoader
 {
 public:
-	static bool LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result);
+	static bool LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result,
+		const std::wstring &wipePath = {});
 };
 
 
@@ -420,7 +423,8 @@ namespace MigotoUserConfigPath
 	}
 };
 
-inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result)
+inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result,
+	const std::wstring &wipePath)
 {
 	if (!rootPath || !result)
 		return false;
@@ -431,7 +435,7 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 		// would be truncated into a different directory before the first
 		// include is resolved. Reject it and report through the error list.
 		result->errors.push_back(L"config path rejected: path too long");
-		return true;
+		return wipePath.empty();
 	}
 	MigotoIniLoaderPath::LoaderState state;
 	state.rootDir = MigotoIniLoaderPath::DirectoryOf(rootPath);
@@ -450,7 +454,29 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 		state.warnings.push_back(L"user_config path rejected: path too long: " +
 			(configuredUserConfig.empty() ? std::wstring(MigotoUserConfigPath::kDefaultFileName) : configuredUserConfig));
 	}
-	const bool loadedUserConfig = MigotoIniLoaderPath::LoadUserConfigFile(userConfig, &state);
+	const bool skipSavedValues = !wipePath.empty() && migoto::NormalizePersistentConfigPath(wipePath) ==
+		migoto::NormalizePersistentConfigPath(userConfig);
+	bool loadedUserConfig = skipSavedValues || MigotoIniLoaderPath::LoadUserConfigFile(userConfig, &state);
+	if (!wipePath.empty()) {
+		// A root, ordinary include or second name for the same file is still
+		// part of the new configuration. Never unlink it during publication.
+		std::error_code error;
+		if (std::filesystem::exists(wipePath, error)) {
+			for (const auto &path : state.loadedFiles) {
+				if (std::filesystem::equivalent(wipePath, path, error)) {
+					state.errors.push_back(L"cannot wipe settings used as a config or include: " + path);
+					break;
+				}
+				if (error)
+					break;
+			}
+		}
+		if (error)
+			state.errors.push_back(L"cannot verify the active user settings path: " + wipePath);
+		if (userConfig.empty() || !state.includesComplete)
+			state.errors.push_back(L"unable to wipe settings with an incomplete config: " + wipePath);
+		loadedUserConfig = loadedUserConfig && state.errors.empty();
+	}
 	if (loadedUserConfig)
 		result->userConfigPath = std::move(userConfig);
 

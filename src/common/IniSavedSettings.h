@@ -52,6 +52,14 @@ inline std::wstring NormalizePersistentConfigPath(std::wstring path)
 	return path;
 }
 
+inline DWORD RemoveSavedSettingsFile(const std::wstring &path)
+{
+	if (DeleteFileW(path.c_str()))
+		return ERROR_SUCCESS;
+	const DWORD error = GetLastError();
+	return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? ERROR_SUCCESS : error;
+}
+
 // Both backends pass a lowercase key. Pool slots use their decimal index.
 inline bool NormalizeSavedVariableName(std::wstring &normalized)
 {
