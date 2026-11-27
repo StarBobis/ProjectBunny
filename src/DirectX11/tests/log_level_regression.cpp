@@ -1,4 +1,5 @@
 #include "Logging.h"
+#include "tests/IniLogicalCases.h"
 #include "IniHandler.h"
 #include "globals.h"
 #include "HackerDevice.h"
@@ -165,6 +166,14 @@ void run_logging_regression()
         contains_log_text(contents(LogFile), "LOG_SYNTAX_WARNING_WITHOUT_EQUALS"),
         "first load reads new false before syntax warning while preserving warning file output");
     LoggingDevice device;
+    const auto policy = std::string("log_level=info\n[Rendering]\n") + migoto::tests::logicalPolicyKey +
+        "[Constants]\n" + migoto::tests::logicalPolicyDeclaration;
+    fixture.write(policy.c_str());
+    ReloadConfig(device.device);
+    check(G->expression_short_circuit, "missing variable defaults before the new Constants declaration");
+    ReloadConfig(device.device);
+    check(command_list_globals.at(L"$logical_policy_flag").fval == 0 && G->expression_short_circuit,
+        "early Rendering settings cannot see the outgoing or newly declared variable");
     const char* options[] = {"log_level=DeBuG", "log_level=info", "log_level=disabled\ncalls=1\ndebug=1",
         "log_level=invalid\ncalls=1", "log_level=invalid\ncalls=1\ndebug=1", "log_level=invalid\ncalls=0\ndebug=1",
         "log_level=\ncalls=1\ndebug=1", "calls=1\ndebug=1", "calls=1\ndebug=0",

@@ -1,3 +1,4 @@
+#include "IniLogicalExpression.h"
 #include "ComScope.h"
 #include "PngColorSpace.h"
 #include "ExpressionFunctions.h"
@@ -6043,7 +6044,7 @@ public:
 			return CommandListOperator::evaluate(state, device);
 
 		const bool left = lhs->evaluate(state, device) != 0.0f;
-		if (left != IsAnd)
+		if (migoto::logical::LeftDecides<IsAnd>(left))
 			return left;
 		return rhs->evaluate(state, device) != 0.0f;
 	}
@@ -6444,9 +6445,7 @@ std::shared_ptr<CommandListEvaluatable> CommandListOperator::finalise()
 
 	if ((!lhs || lhs->IsSafeToSkipEvaluation()) && rhs->IsSafeToSkipEvaluation()) {
 		const std::wstring_view op(token);
-		safe_to_skip_evaluation = op == L"&&" || op == L"||" || op == L"!" ||
-			op == L"==" || op == L"!=" || op == L"===" || op == L"!==" ||
-			op == L"<" || op == L"<=" || op == L">" || op == L">=";
+		safe_to_skip_evaluation = migoto::logical::IsBooleanOperator(op);
 		if (op == L"%") {
 			// DRAW_TYPE is finite. A nonzero finite literal divisor keeps
 			// fmod away from domain errors in common draw-type filters.
@@ -6454,7 +6453,7 @@ std::shared_ptr<CommandListEvaluatable> CommandListOperator::finalise()
 			const auto *right = dynamic_cast<const CommandListOperand *>(rhs.get());
 			safe_to_skip_evaluation = left && left->type == ParamOverrideType::DRAW_TYPE &&
 				right && right->type == ParamOverrideType::VALUE &&
-				std::isfinite(right->val) && right->val != 0.0f;
+				migoto::logical::SafeDrawTypeDivisor(right->val);
 		}
 	}
 

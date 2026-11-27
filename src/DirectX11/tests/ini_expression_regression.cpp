@@ -1,5 +1,6 @@
 #include "CommandList.h"
 #include "ExpressionFunctions.h"
+#include "tests/IniLogicalCases.h"
 #include "IniHandler.h"
 #include "Profiling.h"
 #include "slot_range_test_support.h"
@@ -69,6 +70,15 @@ static void test_logical_short_circuit(const std::wstring &ini_namespace, Comman
         Profiling::expression_cb_query_overhead.count == initial_cb + 2, "true OR skips the right-hand query");
     require_ini_expression(evaluate(L"0 || (vs-cb1 === null && 1)") == 1 &&
         Profiling::expression_cb_query_overhead.count == initial_cb + 3, "nested OR evaluates a needed right side");
+
+    for (const auto &test : migoto::tests::logicalCases) {
+        const auto text = migoto::tests::GuardedOperand(test);
+        CommandListExpression parsed;
+        require_ini_expression(parsed.parse(&text, &ini_namespace, &scope), "parse common logical classification probe");
+        require_ini_expression(parsed.evaluatable->IsSafeToSkipEvaluation() == test.safe, "DX11 subtree classification");
+        require_ini_expression(parsed.evaluate(&gpu.state) == 0, "real DX11 logical guard");
+    }
+    migoto::tests::CheckLogicalRandomOrder([&](const std::wstring &text) { return evaluate(text.c_str()); }, require_ini_expression);
 
     const auto before_random = GetExpressionRandomSampleCount();
     require_ini_expression(evaluate(L"0 && random(10)") == 0 && evaluate(L"1 || random(10)") == 1 &&

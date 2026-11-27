@@ -22,9 +22,8 @@ extern bool gLogDebug;
 #include <cwchar>
 
 // DX11 levels are independent of the DX12 logging contract.
-enum class LogVerbosity : signed char {
-    INVALID = -1, DISABLED = 0, WARNING = 1, INFO = 2, DEBUG = 3
-};
+#include "IniLogVerbosity.h"
+using migoto::LogVerbosity;
 extern LogVerbosity gLogVerbosity;
 
 inline bool Dx11LogEnabled(LogVerbosity level) noexcept

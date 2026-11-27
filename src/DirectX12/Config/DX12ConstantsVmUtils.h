@@ -24,10 +24,12 @@ public:
 	using Vm = MigotoCommandVmUtils;
 
 	static Vm::SettingsLoadResult Initialize(const CommandListMap &commandLists, const std::wstring &userConfigPath = {},
-		const IniDocument *reloadConfig = nullptr, const Vm::SettingsReloadSnapshot &reload = {})
+		const IniDocument *reloadConfig = nullptr, const Vm::SettingsReloadSnapshot &reload = {},
+		Vm::ShortcutPermission shortcuts = Vm::AllowShortcuts)
 	{
 		const auto policy = reloadConfig ? ReadCleanupPolicy(*reloadConfig) : Vm::UnknownSettingsPolicy::Observe;
 		Vm::GlobalVariables globals;
+		globals.shortcuts = shortcuts;
 		globals.savePath = userConfigPath;
 		globals.saveOwner = migoto::NormalizePersistentConfigPath(userConfigPath);
 		if (const auto *constants = FindConstants(commandLists)) {

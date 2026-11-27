@@ -1,5 +1,6 @@
 // DX12ModRuntimeLoad.cpp: mod runtime ini load/reload, config-driven index builders and runtime snapshots.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
+#include "IniLogSettings.h"
 #include "DX12ModRuntimeInternal.h"
 #include "bounded_path_format.h"
 
@@ -1243,6 +1244,25 @@ void BuildDx12TextureOverrideSectionIds(
 }
 
 
+static MigotoCommandVmUtils::ShortcutPermission ReadExpressionShortcutPolicy(
+	const Bunny::IniDocument &ini, const wchar_t *path)
+{
+	const auto *rendering = ini.FindSection(L"Rendering");
+	auto enabled = [&](const wchar_t *key) {
+		const auto *entry = rendering ? rendering->FindGlobalSetting(key) : nullptr;
+		// DX11's EarlyConfigRegistries hides old Mod variables while reading
+		// [Rendering]. Any $ operand fails binding before evaluation starts.
+		if (!entry || entry->value.find(L'$') != std::wstring::npos)
+			return true;
+		return MigotoCommandVmUtils::ReadStaticIniBoolean(Bunny::IniDocumentText::ToLower(entry->value)).value_or(true);
+	};
+	const bool optimizations = enabled(L"mod_runtime_optimizations");
+	const bool shortCircuit = enabled(L"expression_short_circuit");
+	if (!optimizations || !shortCircuit || migoto::ReadIniLogVerbosity(path) == migoto::LogVerbosity::DEBUG)
+		return nullptr;
+	return [] { return !DX12FrameAnalysis::IsActive(); };
+}
+
 bool DX12ModRuntimeLoad(
 	const wchar_t *configPath,
 	std::wstring *statusMessage,
@@ -1344,7 +1364,7 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
 	const auto settings = Bunny::DX12ConstantsVmUtils::Initialize(commandLists, iniLoad.userConfigPath,
-		confirmUnknowns ? &iniLoad.document : nullptr, reload);
+		confirmUnknowns ? &iniLoad.document : nullptr, reload, ReadExpressionShortcutPolicy(iniLoad.document, configPath));
 	if (settings.status != Vm::SettingsPublishStatus::Applied) {
 		if (statusMessage) {
 			if (settings.status == Vm::SettingsPublishStatus::WipeFailed)

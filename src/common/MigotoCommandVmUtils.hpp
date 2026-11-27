@@ -4,12 +4,14 @@
 #include <share.h>
 #include <stdio.h>
 
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <optional>
 #include <cwchar>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -20,6 +22,7 @@
 #include "IniExpressionNumbers.h"
 #include "IniSavedSettings.h"
 #include "IniBitwise.h"
+#include "IniLogicalPlan.h"
 #include "IniUnaryMath.h"
 #include "ExpressionFunctions.h"
 #include "DrawCallParameters.h"
@@ -27,6 +30,10 @@
 class MigotoCommandVmUtils
 {
 public:
+	using ShortcutPermission = bool (*)();
+	static bool AllowShortcuts() { return true; }
+	inline static std::atomic<ShortcutPermission> runtimeShortcuts{AllowShortcuts};
+
 	class GlobalVariables
 	{
 	public:
@@ -39,6 +46,7 @@ public:
 		std::wstring savePath;
 		std::wstring saveOwner;
 		bool referencedFrameVariable = false;
+		ShortcutPermission shortcuts = AllowShortcuts;
 	};
 
 	class VariableStore
@@ -100,6 +108,95 @@ public:
 		bool ok = true;
 		Mode mode;
 		std::optional<FrameTiming> timingSample;
+	private:
+		migoto::logical::PlanBuilder *analysis = nullptr;
+		const migoto::logical::Plan *logicalPlan = nullptr;
+		bool maySkip = false;
+		std::unique_ptr<migoto::logical::Plan> longPlan;
+		struct CachedPlan {
+			std::wstring source;
+			migoto::logical::Plan plan;
+		};
+
+		static void BuildPlan(const std::wstring &source, migoto::logical::Plan &plan)
+		{
+			plan.chains.clear();
+			migoto::logical::PlanBuilder builder(plan);
+			ExpressionParser syntax(source, {}, Mode::Validate);
+			syntax.analysis = &builder;
+			syntax.Parse();
+			plan.valid = syntax.ok;
+			std::sort(plan.chains.begin(), plan.chains.end(), [](const auto &a, const auto &b) { return a.key < b.key; });
+		}
+
+		const migoto::logical::Plan &GetPlan()
+		{
+			// Plans depend only on text. They retain offsets, never variable addresses
+			// or draw state. Long expressions are owned by this parser invocation.
+			if (text->size() > 4096) {
+				longPlan = std::make_unique<migoto::logical::Plan>();
+				BuildPlan(*text, *longPlan);
+				return *longPlan;
+			}
+			static thread_local std::array<CachedPlan, 16> cache;
+			auto &entry = cache[std::hash<std::wstring_view>{}(*text) % cache.size()];
+			if (entry.source != *text) {
+				BuildPlan(*text, entry.plan);
+				entry.source = *text;
+			}
+			return entry.plan;
+		}
+
+		template<bool IsAnd, float (ExpressionParser::*ReadOperand)()>
+		float ParseLogical()
+		{
+			SkipSpaces();
+			const size_t start = pos;
+			if (logicalPlan) {
+				const auto *chain = logicalPlan->Find(start, IsAnd);
+				if (!chain)
+					return (this->*ReadOperand)();
+				const size_t prefix = maySkip ? chain->safePrefix : 0;
+				// The Windows DX11 eager binary evaluator consumes the right operand
+				// first. A left-associated chain therefore visits its eager suffix backwards.
+				bool suffix = IsAnd;
+				for (size_t i = chain->rightOperands.size(); i > prefix; --i) {
+					pos = chain->rightOperands[i - 1];
+					const bool value = Truthy((this->*ReadOperand)());
+					suffix = IsAnd ? suffix && value : suffix || value;
+				}
+				pos = start;
+				float left = (this->*ReadOperand)();
+				for (size_t i = 0; i < prefix && !migoto::logical::LeftDecides<IsAnd>(left); ++i) {
+					pos = chain->rightOperands[i];
+					left = (this->*ReadOperand)();
+				}
+				pos = chain->end;
+				return IsAnd ? Truthy(left) && suffix : Truthy(left) || suffix;
+			}
+
+			const size_t unsafe = analysis ? analysis->unsafeNodes : 0;
+			float left = (this->*ReadOperand)();
+			auto match = [&] { return IsAnd ? Match(L"&&") : Match(L"||"); };
+			if (!match())
+				return left;
+			migoto::logical::Chain chain{migoto::logical::Chain::Key(start, IsAnd)};
+			do {
+				if (analysis)
+					chain.rightOperands.push_back(pos);
+				const float right = (this->*ReadOperand)();
+				left = IsAnd ? Truthy(left) && Truthy(right) : Truthy(left) || Truthy(right);
+				if (analysis && analysis->unsafeNodes == unsafe)
+					++chain.safePrefix;
+			} while (match());
+			if (analysis) {
+				chain.end = pos;
+				analysis->plan.chains.push_back(std::move(chain));
+			}
+			return left;
+		}
+
+	public:
 
 		ExpressionParser(const std::wstring &value, const ExpressionContext &evalContext, Mode mode = Mode::Evaluate)
 			: text(&value), context(evalContext), mode(mode)
@@ -115,6 +212,17 @@ public:
 
 		float Parse()
 		{
+			logicalPlan = nullptr;
+			if (mode != Mode::Validate && (text->find(L"&&") != text->npos || text->find(L"||") != text->npos)) {
+				logicalPlan = &GetPlan();
+				if (!logicalPlan->valid) {
+					ok = false;
+					return 0;
+				}
+				const auto allow = context.initializing ? context.initializing->shortcuts : runtimeShortcuts.load(std::memory_order_acquire);
+				maySkip = !context.staticIniSetting && !context.requireDeclaredVariables && allow && allow();
+				mode = Mode::Validated;
+			}
 			float value = ParseOr();
 			SkipSpaces();
 			if (pos < text->size())
@@ -124,26 +232,12 @@ public:
 
 		float ParseOr()
 		{
-			float lhs = ParseAnd();
-			while (Match(L"||")) {
-				// Parse the right operand unconditionally: a C++ short-circuit
-				// ("Truthy(lhs) || Truthy(ParseAnd())") would leave the tokens
-				// unconsumed, and Parse()'s end-of-text check would then fail
-				// the whole expression to 0 - turning "1 || 0" into false.
-				const float rhs = ParseAnd();
-				lhs = Truthy(lhs) || Truthy(rhs);
-			}
-			return lhs;
+			return ParseLogical<false, &ExpressionParser::ParseAnd>();
 		}
 
 		float ParseAnd()
 		{
-			float lhs = ParseBitwiseOr();
-			while (Match(L"&&")) {
-				const float rhs = ParseBitwiseOr();
-				lhs = Truthy(lhs) && Truthy(rhs);
-			}
-			return lhs;
+			return ParseLogical<true, &ExpressionParser::ParseBitwiseOr>();
 		}
 
 		float ParseBitwiseOr()
@@ -235,6 +329,7 @@ public:
 
 		float ParseMultiplicative()
 		{
+			const size_t beforeLeft = analysis ? analysis->nodes : 0;
 			float lhs = ParsePower();
 			for (;;) {
 				if (Match(L"//")) {
@@ -248,7 +343,11 @@ public:
 					if (mode != Mode::Validate)
 						lhs = migoto::arithmetic::Divide(lhs, rhs);
 				} else if (Match(L"%")) {
+					const size_t beforeRight = analysis ? analysis->nodes : 0;
+					const bool drawType = analysis && analysis->lastDrawType && beforeRight == beforeLeft + 2;
 					const float rhs = ParsePower();
+					if (analysis && !(drawType && analysis->nodes == beforeRight + 1 && analysis->lastFiniteNonzeroLiteral))
+						++analysis->unsafeNodes;
 					if (mode != Mode::Validate)
 						lhs = migoto::arithmetic::Remainder(lhs, rhs);
 				} else {
@@ -307,6 +406,8 @@ public:
 						ok = false;
 						return 0.0f;
 					}
+					if (analysis)
+						analysis->Identifier(MigotoIniCommandListUtils::ToLower(name));
 					return mode == Mode::Validate ? 0.0f : LookupIdentifier(name);
 				}
 				const auto normalized = MigotoIniCommandListUtils::ToLower(name);
@@ -316,6 +417,8 @@ public:
 					ok = false;
 					return 0.0f;
 				}
+				if (analysis)
+					analysis->Operator(normalized); // Function calls are never elided by DX11.
 				const float argument = ParseOr();
 				if (!Match(L")"))
 					ok = false;
@@ -346,6 +449,8 @@ public:
 				(pos + 1 < text->size() && (*text)[pos + 1] == op))
 				return false;
 			++pos;
+			if (analysis)
+				analysis->Operator(std::wstring_view(&op, 1));
 			return true;
 		}
 
@@ -356,9 +461,15 @@ public:
 			// All grammar operators are literals. Compare them directly instead
 			// of constructing a temporary string at every precedence level.
 			constexpr size_t length = N - 1;
-			if (text->compare(pos, length, op, length) != 0)
+			if (pos == text->size() || (*text)[pos] != op[0])
 				return false;
+			if constexpr (length > 1) {
+				if (text->size() - pos < length || std::char_traits<wchar_t>::compare(text->data() + pos + 1, op + 1, length - 1) != 0)
+					return false;
+			}
 			pos += length;
+			if (analysis)
+				analysis->Operator(std::wstring_view(op, length));
 			return true;
 		}
 
@@ -397,6 +508,8 @@ public:
 				return 0.0f;
 			}
 			pos += length;
+			if (analysis)
+				analysis->Literal(value);
 			return mode == Mode::Validate ? 0.0f : value;
 		}
 
@@ -902,6 +1015,7 @@ public:
 		std::swap(live, globals);
 		++VariableStore::settingsRevision;
 		VariableStore::frameVariableReferenced.store(live.referencedFrameVariable, std::memory_order_release);
+		runtimeShortcuts.store(live.shortcuts, std::memory_order_release);
 		hasLockedGlobals.store(!live.locked.empty(), std::memory_order_release);
 		ClearPersistDirty();
 		return result;

@@ -80,6 +80,18 @@ additional_foreground_window = My Controller
 
 模板中的 `[Loader] target/module/loader` 描述外部加载方式；`module` 为 `d3d12.dll`。`launch`、`require_admin`、`delay` 等是否生效由所用加载器决定。
 
-DX11 的 Device、Rendering、Hunting 和 Logging 参数不用于配置 DX12 的对应工具。不要把两个版本的主配置直接互换。
+DX12 的设备、Hunting 与日志输出选项见 DX12 配置模板。表达式求值还支持以下两个与 DX11 同名的开关，默认均为 1。
+
+```ini
+[Rendering]
+mod_runtime_optimizations = 1
+expression_short_circuit = 1
+```
+
+例如在 `if $enabled && vertex_count > 0` 中，若 `$enabled` 为 0，就会跳过右侧比较。整个逻辑子表达式都满足 DX11 的可跳过条件时才会短路。`0 && random(1)` 仍会取一次随机数，含有时间读取或普通加减法的逻辑子表达式也会对两侧求值。
+
+任一开关关闭、正在捕获帧或主 INI 的 `[Logging] log_level = debug` 生效时，逻辑运算对两侧求值。旧式 `calls = 1` 和 `debug = 1` 同时生效时也使用此规则。
+
+这两个开关在 `[Constants]` 之前读取。首次加载和 F10 重载时，引用 Mod 变量（如 `$enabled`）都会回退到默认值 1。需要关闭时可直接填写 `0`。
 
 F10 重载 Mod 配置；DLL 与注入方式变更需要重启。

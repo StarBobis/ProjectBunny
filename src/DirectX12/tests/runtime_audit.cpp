@@ -16,6 +16,9 @@
 #include "tests/IniInputDelayCases.h"
 #include "tests/IniForegroundWindowCases.h"
 #include "tests/IniInputScopeCases.h"
+#include "tests/IniLogicalCases.h"
+#include <bit>
+#include <xmmintrin.h>
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -873,6 +876,104 @@ void TestUnknownSettingsCleanup()
 	MigotoCommandVmUtils::ClearGlobals();
 }
 
+// A signalling NaN stored as a VM double raises MXCSR invalid when an actual
+// lookup converts it to float. This observes the production read without hooks.
+bool LogicalReadRaisesInvalid(MigotoCommandVmUtils::State &vm, const std::wstring &text, double expected)
+{
+	const auto saved = _mm_getcsr();
+	_mm_setcsr((saved | _MM_MASK_INVALID) & ~_MM_EXCEPT_INVALID);
+	const auto result = vm.Evaluate(text);
+	const bool invalid = (_mm_getcsr() & _MM_EXCEPT_INVALID) != 0;
+	_mm_setcsr(saved);
+	Require(result == expected, "logical probe result");
+	return invalid;
+}
+
+void TestLogicalExpressions()
+{
+	using Vm = MigotoCommandVmUtils;
+	const auto dir = std::filesystem::current_path() /
+		(L"logical-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create logical fixture directory");
+	const auto root = dir / L"main.ini";
+	auto load = [&](const char *rendering, const char *logging = "") {
+		std::ofstream(root) << "[Rendering]\n" << rendering << "[Logging]\n" << logging
+			<< "[Constants]\n" << migoto::tests::logicalPolicyDeclaration << "global $result=0\n$result=1 || random(1)\n";
+		WritePrivateProfileStringW(nullptr, nullptr, nullptr, root.c_str());
+		const auto before = GetExpressionRandomSampleCount();
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload) &&
+			GetExpressionRandomSampleCount() == before + 1 && Vm::LookupVariable({}, L"$result") == 1,
+			"install logical settings and replay eager random in Constants");
+	};
+	load(migoto::tests::logicalPolicyKey);
+	Vm::State vm;
+	vm.PushLocalScope();
+	vm.localScopes.back()[L"$ini_expression_regression_value"] = std::bit_cast<double>(UINT64_C(0x7ff0000000000001));
+	const std::wstring marker = L"$ini_expression_regression_value";
+	Require(LogicalReadRaisesInvalid(vm, L"1 && " + marker, 1), "needed signalling variable is really read");
+	for (const auto &test : migoto::tests::logicalCases)
+		Require(LogicalReadRaisesInvalid(vm, migoto::tests::GuardedOperand(test), 0) == !test.safe,
+			"DX12 skips exactly the eligible DX11 subtrees");
+	migoto::tests::CheckLogicalRandomOrder([&](const std::wstring &text) { return vm.Evaluate(text); }, Require);
+	const auto guard = L"1 || " + marker;
+	Require(!LogicalReadRaisesInvalid(vm, guard, 1), "true OR skips scalar read");
+	load(migoto::tests::logicalPolicyKey);
+	Require(vm.Evaluate(L"$logical_policy_flag") == 0 && !LogicalReadRaisesInvalid(vm, guard, 1),
+		"early Rendering settings cannot see the outgoing or newly declared variable");
+	load("expression_short_circuit=random(1) < $logical_policy_flag\n");
+	Require(!LogicalReadRaisesInvalid(vm, guard, 1), "unbound early setting defaults before sampling random");
+	load("expression_short_circuit=1 < 2\n");
+	Require(!LogicalReadRaisesInvalid(vm, L"0 && " + marker + L" && random(1)", 0),
+		"eligible inner prefix still skips when outer operator must evaluate eagerly");
+	Require(LogicalReadRaisesInvalid(vm, L"(random(1) >= 0) || " + marker, 1), "unsafe left side forbids skipping the right side");
+	load("expression_short_circuit=0\n");
+	Require(LogicalReadRaisesInvalid(vm, guard, 1), "per-feature opt-out uses the eager path");
+	load("mod_runtime_optimizations=0\nexpression_short_circuit=true\n");
+	Require(LogicalReadRaisesInvalid(vm, guard, 1), "global runtime opt-out uses the eager path");
+	load("", "log_level=debug\n");
+	Require(LogicalReadRaisesInvalid(vm, guard, 1), "debug logging forces eager evaluation");
+	load("", "calls=1\ndebug=1\n");
+	Require(LogicalReadRaisesInvalid(vm, guard, 1), "legacy debug logging forces eager evaluation");
+	load("", "log_level=info\ncalls=1\ndebug=1\n");
+	Require(!LogicalReadRaisesInvalid(vm, guard, 1), "explicit nondebug level restores the shortcut");
+	const auto settings = dir / L"d3dx_user.ini";
+	HANDLE locked = CreateFileW(settings.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+	Require(locked != INVALID_HANDLE_VALUE, "exclusively lock user settings for a failed expression reload");
+	std::ofstream(root) << "[Rendering]\nexpression_short_circuit=0\n";
+	const bool applied = DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload);
+	CloseHandle(locked);
+	std::filesystem::remove(settings);
+	Require(!applied && !LogicalReadRaisesInvalid(vm, guard, 1), "failed reload keeps the old expression policy");
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload) &&
+		LogicalReadRaisesInvalid(vm, guard, 1), "retry publishes the eager policy for the same cached expression");
+	load("");
+	Require(DX12FrameAnalysisState::Begin(), "begin real frame analysis for expression diagnostics");
+	const bool analysisRead = LogicalReadRaisesInvalid(vm, guard, 1);
+	DX12FrameAnalysisState::End();
+	Require(analysisRead && !LogicalReadRaisesInvalid(vm, guard, 1), "capture start and end affect already cached expressions");
+	Require(!Vm::ReadStaticIniExpression(L"1 || $undeclared"), "static settings validate and evaluate every variable");
+	auto context = vm.Context();
+	context.requireDeclaredVariables = true;
+	Vm::ExpressionParser strict(guard, context);
+	Require(strict.Parse() == 1 && strict.ok, "strict context evaluates a declared local");
+	const std::wstring bad = L"1 || (random(1) && 2 +)";
+	const auto samples = GetExpressionRandomSampleCount();
+	Vm::ExpressionParser invalid(bad, vm.Context());
+	Require(invalid.Parse() == 0 && !invalid.ok && GetExpressionRandomSampleCount() == samples,
+		"invalid skipped syntax cannot consume a random sample");
+	std::wstring changing = L"0 && " + marker;
+	Require(!LogicalReadRaisesInvalid(vm, changing, 0), "first plan for mutable source");
+	changing[0] = L'1';
+	Require(LogicalReadRaisesInvalid(vm, changing, 1), "cache keys compare content after buffer reuse");
+	std::wstring longChain = L"0";
+	for (unsigned i = 0; i < 1300; ++i) longChain += L" && " + marker;
+	Require(!LogicalReadRaisesInvalid(vm, longChain, 0), "long flat chain keeps bounded call depth and skips every right read");
+	Require(!LogicalReadRaisesInvalid(vm, L"(0 && " + marker + L") + (1 || " + marker + L")", 1),
+		"separate logical groups within arithmetic consume their exact operands");
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
+}
+
 void TestExpressionNumbers()
 {
 	Bunny::IniDocument ini;
@@ -1632,6 +1733,20 @@ void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
 	auto &port = Source::hardware.slots[1];
 	port.connected = true;
 	Vm::State vm;
+	std::ofstream(root) << "[Constants]\nglobal $hits=0\nglobal $blocked=0\n"
+		"[KeyLogical]\nkey=XB2_A\ncondition=1 || $hits > 0\nrun=CommandListLogical\n"
+		"[CommandListLogical]\n$hits=$hits+1\n"
+		"[KeyBlocked]\nkey=XB2_A\ncondition=0 && random(1)\n$blocked=1\n";
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::Initial, Source::Read),
+		"load logical key conditions on the WARP swap chain");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A;
+	const auto before = GetExpressionRandomSampleCount();
+	Check(chain->Present(0, DXGI_PRESENT_TEST));
+	Require(vm.Evaluate(L"$hits") == 0 && GetExpressionRandomSampleCount() == before, "test Present skips key evaluation");
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$hits") == 1 && vm.Evaluate(L"$blocked") == 0 && GetExpressionRandomSampleCount() == before + 1,
+		"Present runs the eligible key and consumes one sample in the false eager guard");
+	port.state.Gamepad.wButtons = 0;
 	std::ofstream(root) << "[Constants]\n" << migoto::tests::inputDelayIni;
 	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::Initial, Source::Read),
 		"load key delays and production command lists");
@@ -2353,6 +2468,7 @@ int main(int argc, char **argv)
 		TestSharedModTriggers();
 		TestKeyTransitionClock();
 		TestWipeUserConfig();
+		TestLogicalExpressions();
 		TestExpressionNumbers();
 		TestUnaryMath();
 		TestFrameTiming();
