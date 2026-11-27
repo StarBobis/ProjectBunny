@@ -13,6 +13,7 @@
 #include <WICTextureLoader.h>
 #include <wrl/client.h>
 #include <util.h>
+#include "IniVariableNames.h"
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
@@ -159,22 +160,6 @@ public:
 	virtual void run(CommandListState*) = 0;
 	virtual bool optimise(HackerDevice *device) { return false; }
 	virtual bool noop(bool post, bool ignore_cto_pre, bool ignore_cto_post) { return false; }
-};
-
-enum class VariableFlags {
-	NONE            = 0,
-	GLOBAL          = 0x00000001,
-	PERSIST         = 0x00000002,
-	LOCKED          = 0x00000004,
-	INVALID         = (signed)0xffffffff,
-};
-SENSIBLE_ENUM(VariableFlags);
-static EnumName_t<const wchar_t *, VariableFlags> VariableFlagNames[] = {
-	{L"global",  VariableFlags::GLOBAL},
-	{L"persist", VariableFlags::PERSIST},
-	{L"locked",  VariableFlags::LOCKED},
-
-	{NULL,       VariableFlags::INVALID} // End of list marker
 };
 
 class CommandListVariable {

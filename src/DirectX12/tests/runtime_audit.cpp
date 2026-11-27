@@ -61,6 +61,100 @@ void TestShaderRegexExclusions()
 	gShaderRegexes.clear();
 }
 
+void TestLockedVariables()
+{
+	using Vm = MigotoCommandVmUtils;
+	using Keys = Bunny::MigotoKeyBindingUtils;
+	const auto dir = std::filesystem::current_path() /
+		(L"variables-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create isolated variable fixture");
+	const auto root = dir / L"main.ini";
+	const auto user = dir / L"saved.ini";
+	const auto write = [&](const wchar_t *file, const char *contents) {
+		std::ofstream output(dir / file, std::ios::binary);
+		output << contents;
+		output.close();
+		Require(output.good(), "write variable fixture");
+	};
+	write(L"main.ini", "[Include]\ninclude=a.ini\ninclude=b.ini\ninclude=c.ini\nuser_config=saved.ini\n"
+		"[Constants]\nglobal persist $root=3\n");
+	write(L"a.ini", "namespace=Mod A\n[Constants]\n$variant=random(99)\n"
+		"persist locked global $variant=1.5\nglobal $variant=9\npost $variant=random(99)\n"
+		"global locked $only_locked=3\nglobal $bad=1+\nglobal $bad=6\n"
+		"global locked $future=$later\nglobal $future=2\nglobal $later=10\nglobal $probe\n"
+		"if $root == 3\n$probe=$future+$bad\nendif\n"
+		"[CommandListShadow]\nlocal $variant=4\n$variant=$variant+1\n$probe=$variant\n"
+		"post $variant=6\npost $probe=$variant\npost $\\mod a\\variant=random(99)\n"
+		"[KeyMode]\nkey=F2\ntype=cycle\ncondition=$probe==6\n"
+		"$variant=random(9),2,3\n$probe=6,7\n");
+	write(L"b.ini", "namespace=Skin\\\xe7\x8c\xab-mod\n[Constants]\nglobal persist $variant=20\n"
+		"global persist $root=4\nglobal $step=2\n"
+		"[KeyChange]\nkey=F3\ntype=hold\ncondition=$variant==40\n$variant=$step+3\n");
+	write(L"c.ini", "namespace=C\n[Constants]\npersist $variant=30\n");
+	write(L"saved.ini", "[Constants]\n$variant=40\n$only_locked=random(99)\n$root=50\n");
+	Bunny::CommandListMap lists;
+	std::vector<Keys::Binding> bindings;
+	const std::wstring oldUserConfig = Vm::userConfigPath;
+	auto reload = [&] {
+		Bunny::MigotoIniLoadResult config;
+		Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &config) &&
+			config.errors.empty() && config.warnings.empty(), "load included variable configs and user save");
+		Bunny::MigotoCommandListParser::ParseSections(config.document, &lists);
+		Bunny::DX12ConstantsVmUtils::Initialize(lists);
+		Keys::ParseSections(config.document, &bindings);
+	};
+	const auto before = GetExpressionRandomSampleCount();
+	reload();
+	Vm::State vm;
+	const std::wstring b = L"Skin\\\u732b-mod";
+	Require(vm.Evaluate(L"$\\MOD A\\variant") == 1.5 && vm.Evaluate(L"$variant", b) == 40 &&
+		vm.Evaluate(L"$\\c\\variant") == 40 && vm.Evaluate(L"$root") == 50 &&
+		vm.Evaluate(L"$root", b) == 4 && vm.Evaluate(L"$probe", L"Mod A") == 8,
+		"first valid declaration wins, legacy save fans out and root resolves independently");
+	Require(!Vm::PersistDirty() && bindings.size() == 2 && bindings[0].variables.size() == 1 &&
+		Keys::CycleValueCount(bindings[0]) == 2, "locked targets create no cycle steps or dirty writes");
+	const auto &shadow = lists.at(L"CommandList\\Mod A\\Shadow");
+	vm.PushLocalScope();
+	for (const auto &action : shadow.actions)
+		Require(ApplyDx12CommandVmAction(vm, action, true), "execute parsed variable action");
+	Require(vm.Evaluate(L"$variant", L"Mod A") == 5 && vm.Evaluate(L"$variant", b) == 40,
+		"a local shadows only the originating namespace");
+	vm.FlushPostAssignments();
+	vm.PopLocalScope();
+	Require(vm.Evaluate(L"$\\mod a\\probe") == 6 && vm.Evaluate(L"$\\mod a\\variant") == 1.5 &&
+		Keys::ConditionActive(bindings[0]) && Keys::ConditionActive(bindings[1]),
+		"post preserves the local and explicit global resolves through the lock");
+	std::vector<Keys::RuntimeAction> actions;
+	Keys::ActivateCycle(&bindings[0], &actions, 1);
+	Keys::ActivateBinding(&bindings[1], &actions, true, false);
+	Require(vm.Evaluate(L"$\\mod a\\probe") == 7 && vm.Evaluate(L"$\\skin\\\u732b-mod\\variant") == 5 &&
+		vm.Evaluate(L"$\\c\\variant") == 40 && Vm::PersistDirty(), "key conditions, cycle and hold use owner");
+	Keys::DeactivateBinding(&bindings[1], &actions, true);
+	Require(vm.Evaluate(L"$variant", b) == 40, "hold release restores its own saved value");
+	vm.Assign(L"$variant", L"44", b);
+	Vm::SetGlobal(L"$\\mod a\\variant", 0);
+	Require(vm.Evaluate(L"$\\mod a\\variant") == 1.5 && GetExpressionRandomSampleCount() == before,
+		"locked immediate, post, save and key assignments do not evaluate their right side");
+	Require(Vm::SavePersistedVariables(Vm::MakePersistTarget(user.wstring())), "write qualified save");
+	std::wstring saved;
+	Require(Bunny::MigotoIniLoaderPath::ReadFileText(user.wstring(), &saved) &&
+		saved.find(L"$\\skin\\\u732b-mod\\variant = 44") != std::wstring::npos &&
+		saved.find(L"$\\c\\variant = 40") != std::wstring::npos &&
+		saved.find(L"mod a") == std::wstring::npos, "UTF-8 save contains only mutable persistent targets");
+	write(L"a.ini", "namespace=Mod A\n[Constants]\nglobal persist $variant=12\n");
+	reload();
+	Require(!Vm::PersistDirty() && vm.Evaluate(L"$variant", L"Mod A") == 12 &&
+		vm.Evaluate(L"$variant", b) == 44 && vm.Evaluate(L"$root", b) == 4 &&
+		vm.Evaluate(L"$\\c\\variant") == 40, "new save round trips and reload replaces flags");
+	vm.Assign(L"$variant", L"13", L"Mod A");
+	Require(vm.Evaluate(L"$variant", L"Mod A") == 13 && Vm::PersistDirty(), "reloaded declaration is writable");
+	Vm::ClearGlobals();
+	Vm::userConfigPath = oldUserConfig;
+	for (const auto *file : {L"main.ini", L"a.ini", L"b.ini", L"c.ini", L"saved.ini"})
+		std::filesystem::remove(dir / file);
+	std::filesystem::remove(dir);
+}
+
 void TestExpressionNumbers()
 {
 	Bunny::IniDocument ini;
@@ -70,7 +164,7 @@ void TestExpressionNumbers()
 		L"global $shift = 1 << 2\nglobal $flagged = ($mask ^ $shift) & 15\n"
 		L"global $large = 16777216\nlocal $next = $large + 1\n"
 		L"global $tiny = 0.00000025\nif $tiny\nx7 = 1 / $tiny\nendif\n"
-		L"if $large == $next\nglobal $delta = $next - $large\nelse\nglobal $delta = -1\nendif\n"),
+		L"global $delta = -1\nif $large == $next\n$delta = $next - $large\nendif\n"),
 		"parse numeric expressions");
 	Bunny::CommandListMap lists;
 	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
@@ -1201,6 +1295,7 @@ int main(int argc, char **argv)
 		if (benchmark)
 			return 0;
 		TestShaderRegexExclusions();
+		TestLockedVariables();
 		TestExpressionNumbers();
 		TestUnaryMath();
 		TestFrameTiming();

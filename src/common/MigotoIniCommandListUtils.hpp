@@ -1,5 +1,6 @@
 #pragma once
 
+#include "IniVariableNames.h"
 #include <stdint.h>
 #include <cwctype>
 #include <string>
@@ -121,9 +122,7 @@ public:
 
 	static bool IsVariableDeclarationKey(const std::wstring &value)
 	{
-		return StartsWithTokenI(value, L"global $") ||
-			StartsWithTokenI(value, L"global persist $") ||
-			StartsWithTokenI(value, L"persist $");
+		return migoto::VariableDeclaration::Parse(value).IsDx12Declaration();
 	}
 
 	// A deferred "post" assignment defers any supported assignment target to

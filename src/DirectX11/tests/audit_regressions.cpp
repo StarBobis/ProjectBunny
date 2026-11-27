@@ -485,6 +485,14 @@ void test_f114()
     require_batch(command_list_globals.size() == 2 && command_list_globals.at(L"$audit_valid").fval == 7 &&
         command_list_globals.at(L"$audit_persist").fval == 9 && persistent_variables.size() == 1,
         "F114: reject missing names and continue parsing valid ordinary/persistent declarations");
+    config.load("LOCKED gLoBal $audit_locked=1.5\nglobal $audit_locked=99\n"
+        "g l $audit_abbrev=4\nglobal $audit_later=$audit_locked+2\n"
+        "global $1illegal=9\n$audit_locked=70\n");
+    require_batch(command_list_globals.size() == 3 &&
+        command_list_globals.at(L"$audit_locked").fval == 1.5f &&
+        (command_list_globals.at(L"$audit_abbrev").flags & VariableFlags::LOCKED) &&
+        command_list_globals.at(L"$audit_later").fval == 3.5f,
+        "shared variable grammar: flag order, prefixes, names, locked writes and prior initializer");
     config.load("global $audit_valid=11\n");
     require_batch(G->ModRuntimeOptimizationsEnabled(), "runtime optimizations: removing the setting restores the default on reload");
     require_batch(command_list_globals.size() == 1 && command_list_globals.at(L"$audit_valid").fval == 11 &&

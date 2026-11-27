@@ -54,7 +54,7 @@ SaveFault g_fault = SaveFault::None;
 bool g_faultConsumed = false;
 
 const auto real_fputs = &fputs;
-const auto real_vfwprintf_s = &vfwprintf_s;
+const auto real_vfprintf_s = &vfprintf_s;
 const auto real_fflush = &fflush;
 const auto real_fclose = &fclose;
 
@@ -82,7 +82,7 @@ int audit_fputs(const char *text, FILE *file)
     return real_fputs(text, file);
 }
 
-int audit_fwprintf_s(FILE *file, const wchar_t *format, ...)
+int audit_fprintf_s(FILE *file, const char *format, ...)
 {
     if (!g_faultConsumed && g_fault == SaveFault::Variable) {
         g_faultConsumed = true;
@@ -90,7 +90,7 @@ int audit_fwprintf_s(FILE *file, const wchar_t *format, ...)
     }
     va_list args;
     va_start(args, format);
-    const int result = real_vfwprintf_s(file, format, args);
+    const int result = real_vfprintf_s(file, format, args);
     va_end(args);
     return result;
 }
@@ -123,18 +123,17 @@ int audit_fclose(FILE *file)
 // No other DX11 test translation unit includes this header, so the rewritten
 // inline definition below is this executable's only definition of the writer.
 #define fputs audit_fputs
-#define fwprintf_s audit_fwprintf_s
+#define fprintf_s audit_fprintf_s
 #define fflush audit_fflush
 #define fclose audit_fclose
 #include "MigotoCommandVmUtils.hpp"
 #undef fputs
-#undef fwprintf_s
+#undef fprintf_s
 #undef fflush
 #undef fclose
 
 namespace {
 
-using PersistedVariable = MigotoCommandVmUtils::PersistedVariable;
 using VariableStore = MigotoCommandVmUtils::VariableStore;
 
 // One recorded call of the production failure sink.
@@ -163,16 +162,13 @@ void require(bool condition, const std::string &message)
 
 void install_store(std::initializer_list<std::pair<const wchar_t *, double>> values)
 {
-    std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-    VariableStore::globals.clear();
-    VariableStore::persistedVariables.clear();
+    MigotoCommandVmUtils::GlobalVariables globals;
     for (const auto &value : values) {
-        PersistedVariable declaration;
-        declaration.name = value.first;
-        declaration.key = value.first;
-        VariableStore::persistedVariables.push_back(declaration);
-        VariableStore::globals[value.first] = value.second;
+        globals.persistentNames.push_back(value.first);
+        globals.persistentKeys.insert(value.first);
+        globals.values[value.first] = value.second;
     }
+    MigotoCommandVmUtils::PublishGlobals(std::move(globals));
     VariableStore::persistDirty.store(1, std::memory_order_release);
 }
 
@@ -235,10 +231,7 @@ class StoreScope
 public:
     ~StoreScope()
     {
-        std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-        VariableStore::globals.clear();
-        VariableStore::persistedVariables.clear();
-        VariableStore::persistDirty.store(0, std::memory_order_release);
+        MigotoCommandVmUtils::ClearGlobals();
     }
 };
 
@@ -365,7 +358,7 @@ void test_persist_write_failure_regression()
         expect_success(fixture);
         expect_fopen_failure(fixture);
         expect_fault(fixture, SaveFault::Header, "fputs");
-        expect_fault(fixture, SaveFault::Variable, "fwprintf_s");
+        expect_fault(fixture, SaveFault::Variable, "fprintf_s");
         expect_fault(fixture, SaveFault::Flush, "fflush");
         expect_fault(fixture, SaveFault::Close, "fclose");
         expect_retry_after_failure(fixture);

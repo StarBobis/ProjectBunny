@@ -21,29 +21,24 @@ namespace Bunny {
 class DX12ConstantsVmUtils
 {
 public:
-	// Runs the [Constants] command list of a freshly loaded config and rebuilds
-	// the persist registry from it. The user config (d3dx_user.ini) was loaded
-	// last by MigotoIniLoader, so its assignments are part of `commandLists` and
-	// land here after the ini defaults - that is how persisted values win.
+	using Vm = MigotoCommandVmUtils;
+
 	static void Initialize(const CommandListMap &commandLists)
 	{
-		std::vector<std::wstring> persistNames;
-		CollectPersistDeclarations(commandLists, &persistNames);
-
-		MigotoCommandVmUtils::ClearGlobals();
-		if (const CommandListConfig *constants = FindConstants(commandLists)) {
-			MigotoCommandVmUtils::State state;
+		Vm::GlobalVariables globals;
+		if (const auto *constants = FindConstants(commandLists)) {
+			Vm::State state;
+			state.initializing = &globals;
 			state.PushLocalScope();
-			for (const CommandListAction &action : constants->actions)
-				ApplyAction(&state, action);
-			state.PopLocalScope();
+			for (const auto &action : constants->actions) {
+				if (action.kind == CommandListActionKind::VariableAssignment)
+					RegisterDeclaration(state, action);
+			}
+			for (const auto &action : constants->actions)
+				ApplyAction(state, action);
+			state.FlushPostAssignments();
 		}
-
-		MigotoCommandVmUtils::RegisterPersistedVariables(persistNames);
-		// The registry now describes the live config and every value matches the
-		// file that was just read, so nothing is pending until the next write
-		// (DX11 clears user_config_dirty the same way after loading).
-		MigotoCommandVmUtils::ClearPersistDirty();
+		Vm::PublishGlobals(std::move(globals));
 	}
 
 	static const CommandListConfig *FindConstants(const CommandListMap &commandLists)
@@ -55,87 +50,101 @@ public:
 		return nullptr;
 	}
 
-	// Every variable declared as persistent, in declaration order, across all
-	// parsed sections ([Constants] of the mod inis plus the same section of
-	// d3dx_user.ini). Duplicates are left in the list; registration keeps the
-	// first, matching DX11's "redeclaration keeps the original flags".
-	static void CollectPersistDeclarations(
-		const CommandListMap &commandLists, std::vector<std::wstring> *out)
+private:
+	static void RegisterDeclaration(Vm::State &state, const CommandListAction &action)
 	{
-		if (!out)
+		const auto declaration = migoto::VariableDeclaration::Parse(action.key);
+		if (!declaration.IsDx12Declaration())
 			return;
-		out->clear();
-		for (const auto &item : commandLists) {
-			for (const CommandListAction &action : item.second.actions) {
-				if (action.kind != CommandListActionKind::VariableAssignment &&
-				    action.kind != CommandListActionKind::PostVariableAssignment)
-					continue;
-				const std::wstring name = PersistentDeclarationName(
-					action.key.empty() ? action.rawLine : action.key);
-				if (name.empty())
-					continue;
-				if (!IsPersistDeclarationLine(
-					    action.rawLine.empty() ? action.key : action.rawLine))
-					continue;
-				out->push_back(name);
-			}
+
+		const auto name = declaration.name;
+		const bool qualified = name.substr(0, 2) == L"$\\";
+		if (qualified) {
+			const auto separator = name.rfind(L'\\');
+			if (separator <= 2 || migoto::VariableTokenEnd(name, 1) != name.size() ||
+				!migoto::ValidVariableName(L"$" + std::wstring(name.substr(separator + 1))))
+				return;
+		} else if (!migoto::ValidVariableName(name)) {
+			return;
+		}
+		const auto key = qualified || action.iniNamespace.empty() ? std::wstring(name) :
+			migoto::NamespacedVariable(name, action.iniNamespace);
+		auto &globals = *state.initializing;
+		if (globals.values.count(key))
+			return;
+
+		float value = 0;
+		if (!action.value.empty()) {
+			auto context = state.Context(action.iniNamespace);
+			context.requireDeclaredVariables = true;
+			Vm::ExpressionParser parser(action.value, context);
+			value = parser.Parse();
+			if (!parser.ok)
+				return;
+		}
+		globals.values.emplace(key, value);
+		if (declaration.flags & VariableFlags::LOCKED) {
+			globals.locked.insert(key);
+		} else if (declaration.flags & VariableFlags::PERSIST) {
+			globals.persistentKeys.insert(key);
+			globals.persistentNames.push_back(key);
 		}
 	}
 
-	// The name a persist declaration is written back under. The command-list
-	// parser lower-cases every action key, so the declared spelling has to be
-	// recovered from ExtractVariableName and collapsed onto the flat global the
-	// VM actually uses: "$\LiuYin\swapkey0" and "$swapkey0" are one variable in
-	// DX12 (NormalizeVariableName), and the name written to d3dx_user.ini must
-	// resolve back to that same slot when the file is read again. Writing the
-	// raw namespaced spelling would not: "$\TestMod\panel_x = 0.5" re-reads as
-	// "$\testmod\panel_x", which normalizes to "$\testmod\panel_x" instead of
-	// the "$panel_x" slot the mod and the [Key] bindings write.
-	static std::wstring PersistentDeclarationName(const std::wstring &key)
+	// Older DX12 saves wrote a single unqualified value for every mod sharing
+	// that leaf. Seed each matching mutable declaration until the first new save.
+	static bool RestoreLegacyValue(Vm::State &state, const CommandListAction &action)
 	{
-		const std::wstring extracted = MigotoCommandVmUtils::ExtractVariableName(key);
-		const size_t lastSeparator = extracted.rfind(L'\\');
-		if (lastSeparator == std::wstring::npos || lastSeparator + 1 >= extracted.size())
-			return extracted;
-		return L"$" + extracted.substr(lastSeparator + 1);
+		const auto &key = action.key;
+		if (key.size() < 2 || key[0] != L'$' || key[1] == L'\\' || Vm::userConfigPath.empty() ||
+			_wcsicmp(action.iniNamespace.c_str(), Vm::userConfigPath.c_str()) != 0)
+			return false;
+		auto &globals = *state.initializing;
+		if (Vm::FindGlobal(globals, key, action.iniNamespace) != globals.values.end())
+			return false;
+		const std::wstring_view leaf = std::wstring_view(key).substr(1);
+		std::optional<double> value;
+		for (const auto &name : globals.persistentNames) {
+			const auto separator = name.rfind(L'\\');
+			if (separator == std::wstring::npos || std::wstring_view(name).substr(separator + 1) != leaf)
+				continue;
+			if (!value)
+				value = state.Evaluate(action.value, action.iniNamespace);
+			globals.values.at(name) = *value;
+		}
+		if (value)
+			return true;
+		for (const auto &name : globals.locked) {
+			const auto separator = name.rfind(L'\\');
+			if (separator != std::wstring::npos && std::wstring_view(name).substr(separator + 1) == leaf)
+				return true;
+		}
+		return false;
 	}
 
-	// Mirrors the "global persist $x" / "persist $x" prefixes DX11 accepts
-	// (VariableFlagNames). "global " alone and "local " are not persistent.
-	static bool IsPersistDeclarationLine(const std::wstring &line)
+	static void ApplyAction(Vm::State &state, const CommandListAction &action)
 	{
-		const std::wstring lower =
-			IniDocumentText::ToLower(IniDocumentText::Trim(line));
-		return lower.rfind(L"global persist $", 0) == 0 ||
-			lower.rfind(L"persist $", 0) == 0;
-	}
-
-	// The subset of the command-list VM that [Constants] can contain: control
-	// flow, variable assignment (deferred targets included), local declarations
-	// and shader constants. Everything else in that section is ignored on
-	// purpose - [Constants] is a declaration list, not a command list body.
-	static void ApplyAction(
-		MigotoCommandVmUtils::State *state, const CommandListAction &action)
-	{
-		if (!state)
-			return;
+		const auto &ns = action.iniNamespace;
 		if (action.kind == CommandListActionKind::ControlFlow) {
-			state->ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
+			state.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine, ns);
 			return;
 		}
-		if (!state->Active())
+		if (!state.Active())
 			return;
-
 		switch (action.kind) {
 		case CommandListActionKind::VariableAssignment:
+			if (!migoto::VariableDeclaration::Parse(action.key).IsDx12Declaration() &&
+				!RestoreLegacyValue(state, action))
+				state.Assign(action.key, action.value, ns);
+			break;
 		case CommandListActionKind::PostVariableAssignment:
-			state->Assign(action.key, action.value);
+			state.QueuePostAssign(action.key, action.value, ns);
 			break;
 		case CommandListActionKind::LocalVariableAssignment:
-			state->DeclareLocal(action.key, action.value);
+			state.DeclareLocal(action.key, action.value, ns);
 			break;
 		case CommandListActionKind::SetShaderConstant:
-			state->AssignSymbol(action.key, action.value);
+			state.AssignSymbol(action.key, action.value, ns);
 			break;
 		default:
 			break;

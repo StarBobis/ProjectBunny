@@ -4322,7 +4322,7 @@ void RunPreSkinMatchVmActions(
 	for (const auto &action : config.actions)
 		ApplyDx12CommandVmAction(vm, action, true);
 #if DX12_TIMING_BUILD
-	TracePreSkinMatchVmValues(config, vm.Context());
+	TracePreSkinMatchVmValues(config, vm.Context(config.iniNamespace));
 #endif
 }
 

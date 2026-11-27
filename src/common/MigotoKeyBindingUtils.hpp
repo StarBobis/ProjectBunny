@@ -51,6 +51,7 @@ public:
 	{
 	public:
 		std::wstring name;
+		std::wstring iniNamespace;
 		std::vector<std::wstring> values;
 		double savedValue = 0.0;
 		bool hasSavedValue = false;
@@ -62,6 +63,7 @@ public:
 		std::wstring section;
 		std::wstring originalSection;
 		std::wstring condition;
+		std::wstring conditionNamespace;
 		std::wstring keyText;
 		BindingType type = BindingType::Activate;
 		KeyCombination key;
@@ -120,6 +122,7 @@ public:
 				std::wstring value = IniDocumentText::Trim(entry.value);
 				if (key == L"condition") {
 					binding.condition = IniDocumentText::ToLower(value);
+					binding.conditionNamespace = entry.iniNamespace;
 					continue;
 				}
 				if (key == L"key") {
@@ -154,6 +157,11 @@ public:
 				if (!key.empty() && key[0] == L'$') {
 					VariableValues variable;
 					variable.name = MigotoCommandVmUtils::ExtractVariableName(key);
+					variable.iniNamespace = entry.iniNamespace;
+					MigotoCommandVmUtils::ExpressionContext context;
+					context.iniNamespace = variable.iniNamespace;
+					if (MigotoCommandVmUtils::IsLockedGlobal(context, variable.name))
+						continue;
 					variable.values = SplitCommaValues(value);
 					if (!variable.name.empty())
 						binding.variables.push_back(variable);
@@ -394,6 +402,7 @@ public:
 		if (binding.condition.empty())
 			return true;
 		MigotoCommandVmUtils::ExpressionContext context;
+		context.iniNamespace = binding.conditionNamespace;
 		return MigotoCommandVmUtils::Truthy(
 			MigotoCommandVmUtils::EvaluateExpression(context, binding.condition));
 	}
@@ -455,6 +464,7 @@ public:
 			return;
 		MigotoCommandVmUtils::ExpressionContext context;
 		for (VariableValues &variable : binding->variables) {
+			context.iniNamespace = variable.iniNamespace;
 			variable.savedValue = MigotoCommandVmUtils::LookupVariable(context, variable.name);
 			variable.hasSavedValue = true;
 		}
@@ -467,7 +477,9 @@ public:
 		for (VariableValues &variable : binding->variables) {
 			if (!variable.hasSavedValue)
 				continue;
-			MigotoCommandVmUtils::SetGlobal(variable.name, variable.savedValue);
+			MigotoCommandVmUtils::ExpressionContext context;
+			context.iniNamespace = variable.iniNamespace;
+			MigotoCommandVmUtils::SetScopedGlobal(context, variable.name, variable.savedValue);
 			variable.hasSavedValue = false;
 		}
 	}
@@ -480,8 +492,11 @@ public:
 		for (VariableValues &variable : binding->variables) {
 			if (index >= variable.values.size() || variable.values[index].empty())
 				continue;
+			context.iniNamespace = variable.iniNamespace;
+			if (MigotoCommandVmUtils::IsLockedGlobal(context, variable.name))
+				continue;
 			double value = MigotoCommandVmUtils::EvaluateExpression(context, variable.values[index]);
-			MigotoCommandVmUtils::SetGlobal(variable.name, value);
+			MigotoCommandVmUtils::SetScopedGlobal(context, variable.name, value);
 		}
 	}
 
@@ -506,6 +521,7 @@ public:
 			for (const VariableValues &variable : binding.variables) {
 				if (i >= variable.values.size() || variable.values[i].empty())
 					continue;
+				context.iniNamespace = variable.iniNamespace;
 				anyCompared = true;
 				double current = MigotoCommandVmUtils::LookupVariable(context, variable.name);
 				double expected = MigotoCommandVmUtils::EvaluateExpression(context, variable.values[i]);
@@ -557,6 +573,7 @@ public:
 				continue;
 			if (written)
 				variables << L" ";
+			context.iniNamespace = variable.iniNamespace;
 			variables << variable.name << L"="
 					  << MigotoCommandVmUtils::LookupVariable(context, variable.name);
 			if (++written >= 32)

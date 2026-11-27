@@ -18,6 +18,7 @@
 
 #include "MigotoIniCommandListUtils.hpp"
 #include "IniExpressionNumbers.h"
+#include "IniVariableNames.h"
 #include "IniBitwise.h"
 #include "IniUnaryMath.h"
 #include "ExpressionFunctions.h"
@@ -26,38 +27,21 @@
 class MigotoCommandVmUtils
 {
 public:
-	// A variable declared with the "persist" prefix in [Constants]. DX11 holds
-	// the same data in CommandListVariable::name plus VariableFlags::PERSIST;
-	// `name` here is already collapsed onto the flat global the DX12 VM uses
-	// ("$swapkey0", not "$\LiuYin\swapkey0"), because that is the name that has
-	// to be written to d3dx_user.ini for the file to resolve back to the same
-	// slot on the next load. `key` is the lookup form used to match writes.
-	class PersistedVariable
+	class GlobalVariables
 	{
 	public:
-		std::wstring name;
-		std::wstring key;
+		std::unordered_map<std::wstring, double> values;
+		std::unordered_set<std::wstring> locked;
+		std::vector<std::wstring> persistentNames;
+		std::unordered_set<std::wstring> persistentKeys;
+		bool referencedFrameVariable = false;
 	};
 
 	class VariableStore
 	{
 	public:
 		inline static std::mutex globalsMutex;
-		inline static std::unordered_map<std::wstring, double> globals;
-		// Persist registry (DX11 parity for d3dx_user.ini):
-		//   - `persistedVariables` holds every variable declared with the
-		//     "persist" prefix, in declaration order, exactly as DX11's
-		//     persistent_variables vector does;
-		//   - `persistedKeys` indexes them by a namespace-collapsed key so a
-		//     write through the DX12 VM's flattened name ("$swapkey0") matches
-		//     an entry declared as "$\LiuYin\swapkey0";
-		//   - `persistDirty` is the equivalent of DX11's user_config_dirty: it
-		//     is set only when a persist variable's value actually changes, so
-		//     an idle session never rewrites the file.
-		// All three are guarded by globalsMutex; persistDirty is duplicated in
-		// an atomic so the per-write check is a single relaxed load.
-		inline static std::vector<PersistedVariable> persistedVariables;
-		inline static std::unordered_set<std::wstring> persistedKeys;
+		inline static GlobalVariables current;
 		inline static std::atomic<int> persistDirty = 0;
 		// Set once a command-list expression references any per-frame variable
 		// (window size, cursor, DPI, hunting/analysis flags). DX11 evaluates
@@ -95,6 +79,9 @@ public:
 	public:
 		std::vector<std::unordered_map<std::wstring, double>> *localScopes = nullptr;
 		const DrawCallParameters *call = nullptr;
+		std::wstring_view iniNamespace;
+		GlobalVariables *initializing = nullptr;
+		bool requireDeclaredVariables = false;
 	};
 
 	class ExpressionParser
@@ -410,6 +397,10 @@ public:
 		std::wstring ParseIdentifier()
 		{
 			size_t start = pos;
+			if ((*text)[pos] == L'$') {
+				pos = migoto::VariableTokenEnd(*text, pos + 1, true);
+				return text->substr(start, pos - start);
+			}
 			while (pos < text->size() && IsIdentifierChar((*text)[pos]))
 				++pos;
 			return text->substr(start, pos - start);
@@ -417,7 +408,12 @@ public:
 
 		float LookupIdentifier(const std::wstring &name)
 		{
-			return static_cast<float>(MigotoCommandVmUtils::LookupVariable(context, name, &timingSample));
+			bool missing = false;
+			const auto value = LookupVariable(context, name, &timingSample,
+				context.requireDeclaredVariables && name.front() == L'$' ? &missing : nullptr);
+			if (missing)
+				ok = false;
+			return static_cast<float>(value);
 		}
 	};
 
@@ -429,17 +425,13 @@ public:
 		bool branchTaken = false;
 	};
 
-	// A single deferred "post" assignment queued while a command list runs
-	// and evaluated when its scope flushes. `constantTarget` marks writes to
-	// the custom shader constants (x87/...): those are stored in the same
-	// global table as $variables, but the target name has no '$' prefix, so
-	// the flush path must not apply ExtractVariableName-style filtering.
+	// Defer expression evaluation in the originating INI namespace.
 	class PostAssignment
 	{
 	public:
 		std::wstring name;
 		std::wstring expression;
-		bool constantTarget = false;
+		std::wstring iniNamespace;
 	};
 
 	class State
@@ -447,6 +439,7 @@ public:
 	public:
 		std::vector<std::unordered_map<std::wstring, double>> localScopes;
 		DrawCallParameters call;
+		GlobalVariables *initializing = nullptr;
 		std::vector<BranchFrame> branches;
 		std::vector<PostAssignment> postAssignments;
 
@@ -466,110 +459,89 @@ public:
 			return branches.empty() ? true : branches.back().active;
 		}
 
-		ExpressionContext Context()
+		ExpressionContext Context(std::wstring_view iniNamespace = {})
 		{
 			ExpressionContext context;
 			context.localScopes = &localScopes;
 			context.call = &call;
+			context.iniNamespace = iniNamespace;
+			context.initializing = initializing;
 			return context;
 		}
 
-		double Evaluate(const std::wstring &expression)
+		double Evaluate(const std::wstring &expression, std::wstring_view iniNamespace = {})
 		{
-			ExpressionParser parser(expression, Context());
+			ExpressionParser parser(expression, Context(iniNamespace));
 			return parser.Parse();
 		}
 
-		bool EvaluateBool(const std::wstring &expression)
+		bool EvaluateBool(const std::wstring &expression, std::wstring_view iniNamespace = {})
 		{
-			return Truthy(Evaluate(expression));
+			return Truthy(Evaluate(expression, iniNamespace));
 		}
 
-		void DeclareLocal(const std::wstring &key, const std::wstring &value)
+		void DeclareLocal(const std::wstring &key, const std::wstring &value, std::wstring_view iniNamespace = {})
 		{
 			if (localScopes.empty())
 				PushLocalScope();
-			std::wstring name = ExtractVariableName(key);
-			if (name.empty())
-				return;
-			localScopes.back()[name] = value.empty() ? 0.0 : Evaluate(value);
+			const auto name = ExtractVariableName(key);
+			if (migoto::ValidVariableName(name)) {
+				const auto key = iniNamespace.empty() ? name : migoto::NamespacedVariable(name, iniNamespace);
+				localScopes.back()[key] = value.empty() ? 0.0 : Evaluate(value, iniNamespace);
+			}
 		}
 
-		void Assign(const std::wstring &key, const std::wstring &value)
+		void Assign(const std::wstring &key, const std::wstring &value, std::wstring_view iniNamespace = {})
 		{
-			std::wstring name = ExtractVariableName(key);
-			if (name.empty())
-				return;
-			AssignResolvedName(name, value.empty() ? 0.0 : Evaluate(value));
-		}
-
-		void AssignSymbol(const std::wstring &key, const std::wstring &value)
-		{
-			std::wstring name = NormalizeVariableName(key);
+			const auto name = ExtractVariableName(key);
 			if (!name.empty())
-				AssignResolvedName(name, value.empty() ? 0.0 : Evaluate(value));
+				AssignExpression(name, value, iniNamespace);
 		}
 
-		void AssignResolvedName(const std::wstring &name, double evaluated)
+		void AssignSymbol(const std::wstring &key, const std::wstring &value, std::wstring_view iniNamespace = {})
 		{
-			for (auto scope = localScopes.rbegin(); scope != localScopes.rend(); ++scope) {
-				auto found = scope->find(name);
-				if (found != scope->end()) {
-					found->second = evaluated;
-					return;
-				}
-			}
-			SetGlobal(name, evaluated);
+			AssignExpression(NormalizeVariableName(key), value, iniNamespace);
 		}
 
-		void QueuePostAssign(const std::wstring &key, const std::wstring &value)
+		void AssignExpression(const std::wstring &name, const std::wstring &expression, std::wstring_view iniNamespace)
 		{
-			std::wstring name = ExtractVariableName(key);
-			if (!name.empty()) {
-				postAssignments.push_back(PostAssignment{ name, value, false });
+			if (name.empty())
+				return;
+			const auto context = Context(iniNamespace);
+			if (auto *local = FindLocal(context, name)) {
+				*local = expression.empty() ? 0.0 : Evaluate(expression, iniNamespace);
 				return;
 			}
-
-			// Shader-constant targets arrive as "post x87" - a prefix the
-			// '$'-only ExtractVariableName rejects. Strip the prefix and keep
-			// the assignment only when the remainder is a supported constant
-			// name, so unrecognised deferred targets stay visible as silent
-			// drops instead of corrupting the global table.
-			std::wstring text = MigotoIniCommandListUtils::ToLower(
-				MigotoIniCommandListUtils::Trim(key));
-			if (text.rfind(L"post ", 0) != 0)
+			if (IsLockedGlobal(context, name))
 				return;
-			text = MigotoIniCommandListUtils::Trim(text.substr(5));
-			if (text.empty() || !MigotoIniCommandListUtils::IsShaderConstantKey(text))
-				return;
-			postAssignments.push_back(PostAssignment{ text, value, true });
+			const double value = expression.empty() ? 0.0 : Evaluate(expression, iniNamespace);
+			SetScopedGlobal(context, name, value);
 		}
 
-		void FlushPostAssignments()
+		void QueuePostAssign(const std::wstring &key, const std::wstring &value, std::wstring_view iniNamespace = {})
 		{
-			std::vector<PostAssignment> pending;
-			pending.swap(postAssignments);
-			for (const PostAssignment &assignment : pending) {
-				const double evaluated = Evaluate(assignment.expression);
-				if (assignment.constantTarget) {
-					// Mirror a live "x87 = expr" write (AssignSymbol ->
-					// AssignResolvedName) so deferred and immediate constant
-					// assignments share one write path. Constant names never
-					// collide with '$' locals, so this resolves to the same
-					// global slot SetGlobal would use.
-					AssignResolvedName(assignment.name, evaluated);
-				} else {
-					SetGlobal(assignment.name, evaluated);
-				}
-			}
+			const auto text = MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(key));
+			const auto name = text.rfind(L"post ", 0) == 0 ?
+				MigotoIniCommandListUtils::Trim(text.substr(5)) : text;
+			if ((!name.empty() && name.front() == L'$') || MigotoIniCommandListUtils::IsShaderConstantKey(name))
+				postAssignments.push_back({name, value, std::wstring(iniNamespace)});
 		}
 
-		void ApplyControlFlow(const std::wstring &rawLine)
+		void FlushPostAssignments(size_t first = 0)
+		{
+			for (size_t i = first; i < postAssignments.size(); ++i) {
+				const auto &assignment = postAssignments[i];
+				AssignExpression(assignment.name, assignment.expression, assignment.iniNamespace);
+			}
+			postAssignments.resize(first);
+		}
+
+		void ApplyControlFlow(const std::wstring &rawLine, std::wstring_view iniNamespace = {})
 		{
 			std::wstring line = MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(rawLine));
 			if (line.rfind(L"if ", 0) == 0) {
 				bool parent = Active();
-				bool condition = parent && EvaluateBool(line.substr(3));
+				bool condition = parent && EvaluateBool(line.substr(3), iniNamespace);
 				BranchFrame frame;
 				frame.parentActive = parent;
 				frame.active = condition;
@@ -582,7 +554,7 @@ public:
 					return;
 				BranchFrame &frame = branches.back();
 				size_t prefix = line.rfind(L"elif ", 0) == 0 ? 5 : 8;
-				bool condition = frame.parentActive && !frame.branchTaken && EvaluateBool(line.substr(prefix));
+				bool condition = frame.parentActive && !frame.branchTaken && EvaluateBool(line.substr(prefix), iniNamespace);
 				frame.active = condition;
 				frame.branchTaken = frame.branchTaken || condition;
 				return;
@@ -615,27 +587,16 @@ public:
 
 	static std::wstring NormalizeVariableName(const std::wstring &value)
 	{
-		std::wstring normalized = MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(value));
-		// Collapse DX11-style namespaced global references ("$\namespace\var")
-		// onto the flat global name ("$var"). The DX12 VM stores every global
-		// without namespacing, so the namespace qualifier names the same
-		// variable; without this, reads of "$\Default\swapkey0" would miss the
-		// "$swapkey0" written by the Default namespace's [Constants] and keys.
-		if (normalized.size() > 2 && normalized[0] == L'$' && normalized[1] == L'\\') {
-			const size_t lastSeparator = normalized.rfind(L'\\');
-			if (lastSeparator > 1 && lastSeparator + 1 < normalized.size())
-				normalized = L"$" + normalized.substr(lastSeparator + 1);
-		}
-		return normalized;
+		return MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(value));
 	}
 
 	// Cold path: runs once per referenced variable per command-list execution,
 	// so a linear scan over the ~22 per-frame variable names is fine. The flag
 	// gate first makes the common case (already referenced) a single relaxed
 	// load.
-	static void MarkFrameVariableReferenced(const std::wstring &normalized)
+	static void MarkFrameVariableReferenced(const std::wstring &normalized, GlobalVariables *initializing)
 	{
-		if (VariableStore::frameVariableReferenced.load(std::memory_order_relaxed))
+		if (initializing ? initializing->referencedFrameVariable : VariableStore::frameVariableReferenced.load(std::memory_order_relaxed))
 			return;
 		static const wchar_t *const kFrameVariables[] = {
 			L"window_width", L"window_height",
@@ -651,8 +612,10 @@ public:
 		};
 		for (const wchar_t *candidate : kFrameVariables) {
 			if (normalized == candidate) {
-				VariableStore::frameVariableReferenced.store(
-					1, std::memory_order_release);
+				if (initializing)
+					initializing->referencedFrameVariable = true;
+				else
+					VariableStore::frameVariableReferenced.store(1, std::memory_order_release);
 				return;
 			}
 		}
@@ -672,17 +635,29 @@ public:
 		return text.empty() || text[0] != L'$' ? L"" : text;
 	}
 
+	static double *FindLocal(ExpressionContext context, const std::wstring &name)
+	{
+		if (!context.localScopes || name.size() < 2 || name[0] != L'$' || name[1] == L'\\')
+			return nullptr;
+		std::wstring qualified;
+		for (auto scope = context.localScopes->rbegin(); scope != context.localScopes->rend(); ++scope) {
+			if (scope->empty())
+				continue;
+			if (!context.iniNamespace.empty() && qualified.empty())
+				qualified = migoto::NamespacedVariable(name, context.iniNamespace);
+			auto found = scope->find(qualified.empty() ? name : qualified);
+			if (found != scope->end())
+				return &found->second;
+		}
+		return nullptr;
+	}
+
 	static double LookupVariable(ExpressionContext context, const std::wstring &name,
-		std::optional<FrameTiming> *timingSample = nullptr)
+		std::optional<FrameTiming> *timingSample = nullptr, bool *missing = nullptr)
 	{
 		std::wstring normalized = NormalizeVariableName(name);
-		if (context.localScopes) {
-			for (auto scope = context.localScopes->rbegin(); scope != context.localScopes->rend(); ++scope) {
-				auto found = scope->find(normalized);
-				if (found != scope->end())
-					return found->second;
-			}
-		}
+		if (auto *local = FindLocal(context, normalized))
+			return *local;
 
 		if (!normalized.empty() && (normalized.front() == L't' || normalized.front() == L'f')) {
 			if (const auto field = FrameTiming::Find(normalized)) {
@@ -712,63 +687,100 @@ public:
 		if (normalized == L"nan")
 			return std::numeric_limits<double>::quiet_NaN();
 
-		MarkFrameVariableReferenced(normalized);
+		if (!normalized.empty() && normalized.front() != L'$')
+			MarkFrameVariableReferenced(normalized, context.initializing);
 
+		auto read = [&](const GlobalVariables &globals) {
+			const auto found = FindGlobal(globals, normalized, context.iniNamespace);
+			if (found != globals.values.end())
+				return found->second;
+			if (missing)
+				*missing = true;
+			return 0.0;
+		};
+		if (context.initializing)
+			return read(*context.initializing);
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		auto found = VariableStore::globals.find(normalized);
-		return found != VariableStore::globals.end() ? found->second : 0.0;
+		return read(VariableStore::current);
+	}
+
+	static auto FindGlobal(const GlobalVariables &globals, const std::wstring &name, std::wstring_view iniNamespace)
+		-> std::unordered_map<std::wstring, double>::const_iterator
+	{
+		if (!iniNamespace.empty() && name.size() > 1 && name[0] == L'$' && name[1] != L'\\') {
+			const auto found = globals.values.find(migoto::NamespacedVariable(name, iniNamespace));
+			if (found != globals.values.end())
+				return found;
+		}
+		return globals.values.find(name);
+	}
+
+	static bool IsLockedGlobal(ExpressionContext context, const std::wstring &name)
+	{
+		auto test = [&](const GlobalVariables &globals) {
+			if (globals.locked.empty())
+				return false;
+			const auto found = FindGlobal(globals, name, context.iniNamespace);
+			return found != globals.values.end() && globals.locked.count(found->first) != 0;
+		};
+		if (context.initializing)
+			return test(*context.initializing);
+		if (!hasLockedGlobals.load(std::memory_order_acquire))
+			return false;
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		return test(VariableStore::current);
+	}
+
+	static void SetScopedGlobal(ExpressionContext context, const std::wstring &name, double value)
+	{
+		auto write = [&](GlobalVariables &globals) {
+			const auto found = FindGlobal(globals, name, context.iniNamespace);
+			const auto &key = found == globals.values.end() ? name : found->first;
+			if (!globals.locked.empty() && globals.locked.count(key))
+				return;
+			if (!context.initializing && (found == globals.values.end() || found->second != value) &&
+				globals.persistentKeys.count(key))
+				VariableStore::persistDirty.store(1, std::memory_order_release);
+			globals.values[key] = value;
+		};
+		if (context.initializing) {
+			write(*context.initializing);
+			return;
+		}
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		write(VariableStore::current);
 	}
 
 	static void SetGlobal(const std::wstring &name, double value)
 	{
-		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		WriteGlobalLocked(NormalizeVariableName(name), value);
+		SetScopedGlobal({}, NormalizeVariableName(name), value);
 	}
 
-	// Copies the whole global table under a single lock acquisition. Bulk
-	// readers (the custom element ini-params pack consults up to 2048
-	// register names per element) must not pay one lock round-trip per name.
 	static void CopyGlobals(std::unordered_map<std::wstring, double> *out)
 	{
-		if (!out)
-			return;
-		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		*out = VariableStore::globals;
-	}
-
-	// DX11 parity for the persist prefix: records which variables a "persist"
-	// declaration covers. Called once per config load, after every ini file
-	// (d3dx_user.ini included) has been parsed and the [Constants] section has
-	// been replayed, so the registry always describes the generation that is
-	// live now - exactly like ParseConstantsSection() rebuilding
-	// persistent_variables. `names` are declaration-order names as written in
-	// the ini ("$\Mods\LiuYin.ini\swapkey0", "$swapkey0", ...); duplicates that
-	// collapse onto the same variable keep their first declaration, matching
-	// DX11's "redeclaration keeps the original flags" behaviour.
-	static void RegisterPersistedVariables(const std::vector<std::wstring> &names)
-	{
-		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		VariableStore::persistedVariables.clear();
-		VariableStore::persistedKeys.clear();
-		for (const std::wstring &name : names) {
-			const std::wstring key = PersistedVariableKey(name);
-			if (key.empty())
-				continue;
-			if (!VariableStore::persistedKeys.insert(key).second)
-				continue;
-			PersistedVariable variable;
-			variable.name = name;
-			variable.key = key;
-			VariableStore::persistedVariables.push_back(std::move(variable));
+		if (out) {
+			std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+			*out = VariableStore::current.values;
 		}
 	}
+
+	static void PublishGlobals(GlobalVariables globals)
+	{
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		std::swap(VariableStore::current, globals);
+		VariableStore::frameVariableReferenced.store(VariableStore::current.referencedFrameVariable, std::memory_order_release);
+		hasLockedGlobals.store(!VariableStore::current.locked.empty(), std::memory_order_release);
+		ClearPersistDirty();
+	}
+
+	inline static std::atomic<bool> hasLockedGlobals{false};
 
 	// True once a config has registered at least one persist declaration; the
 	// offline persistence test uses it to prove the registry was rebuilt.
 	static bool HasPersistedVariables()
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		return !VariableStore::persistedVariables.empty();
+		return !VariableStore::current.persistentNames.empty();
 	}
 
 	// Fast, lock-free "is there anything to write" probe for the per-frame
@@ -836,28 +848,15 @@ public:
 			stage ? stage : "", error, path.c_str());
 	}
 
-	// Writes the live values of every persist variable to `target` in the
-	// exact DX11 SavePersistentSettings() format, so a d3dx_user.ini produced
-	// here is byte-compatible with the DX11 runtime and vice versa:
-	//
-	//   ; AUTOMATICALLY GENERATED FILE - DO NOT EDIT
-	//   ...
-	//   [Constants]
-	//   $some_persistent_variable = 1
-	//
-	// What goes in the file is the registry built by
-	// RegisterPersistedVariables, and the values come from the live global
-	// table, so the file always reflects the newest hotkey state. Returns false
-	// without touching the file when nothing is declared as persistent or the
-	// file cannot be opened, and returns false while leaving the dirty flag set
-	// when any write, flush or close fails so the next autosave retries.
+	// Write live mutable declarations in their registration order. A failed
+	// write, flush or close leaves the dirty flag set for the next autosave.
 	static bool SavePersistedVariables(const PersistTarget &target)
 	{
 		if (target.directory.empty() || target.fileName.empty())
 			return false;
 
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		if (VariableStore::persistedVariables.empty()) {
+		if (VariableStore::current.persistentNames.empty()) {
 			// Nothing is declared as persist any more (for instance the mod was
 			// removed): drop the pending flag instead of retrying every frame.
 			ClearPersistDirty();
@@ -895,14 +894,21 @@ public:
 		}
 
 		if (ok) {
-			failedStage = "fwprintf_s";
-			for (const PersistedVariable &declaration : VariableStore::persistedVariables) {
-				auto found = VariableStore::globals.find(
-					NormalizeVariableName(declaration.name));
-				if (found == VariableStore::globals.end())
+			failedStage = "fprintf_s";
+			for (const auto &name : VariableStore::current.persistentNames) {
+				auto found = VariableStore::current.values.find(name);
+				if (found == VariableStore::current.values.end())
 					continue;
-				if (fwprintf_s(file, L"%ls = %.9g\n",
-					declaration.name.c_str(), found->second) < 0) {
+				const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.c_str(), -1,
+					nullptr, 0, nullptr, nullptr);
+				std::string utf8(size, '\0');
+				if (!size || !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.c_str(), -1,
+					utf8.data(), size, nullptr, nullptr)) {
+					ok = false;
+					failedStage = "UTF-8";
+					break;
+				}
+				if (fprintf_s(file, "%s = %.9g\n", utf8.c_str(), found->second) < 0) {
 					ok = false;
 					break;
 				}
@@ -947,58 +953,28 @@ public:
 	static void SetGlobalIfChanged(const std::wstring &normalizedName, double value)
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		auto found = VariableStore::globals.find(normalizedName);
-		if (found != VariableStore::globals.end() && found->second == value)
+		auto found = VariableStore::current.values.find(normalizedName);
+		if (found != VariableStore::current.values.end() && found->second == value)
 			return;
 		WriteGlobalLocked(normalizedName, value);
 	}
 
-	// DX12 flattens namespaced globals ("$\LiuYin\swapkey0" and "$swapkey0"
-	// name the same slot, see NormalizeVariableName), so the persist registry
-	// has to answer "does this flattened name belong to a persist variable"
-	// without knowing which namespace it came from. Every caller normalizes
-	// first, so this only rejects names the VM itself would not collapse onto a
-	// flat global ("$\foo", with no second separator, keeps its qualifier).
-	static std::wstring PersistedVariableKey(const std::wstring &name)
-	{
-		const std::wstring normalized = NormalizeVariableName(name);
-		if (normalized.size() < 2 || normalized[0] != L'$' ||
-		    normalized[1] == L'\\')
-			return L"";
-		return normalized;
-	}
-
 	static void ClearGlobals()
 	{
-		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		VariableStore::globals.clear();
-		// A reload may have dropped the command lists that referenced frame
-		// variables; re-arm the lazy-collection gate. The next expression
-		// evaluation re-registers if the new config still uses them.
-		VariableStore::frameVariableReferenced.store(0, std::memory_order_release);
+		PublishGlobals({});
 	}
 
-	static void WriteGlobalLocked(const std::wstring &normalizedName, double value)
+	// The frame publisher supplies built-in names. These writes never target
+	// user declarations, which start with '$'.
+	static void WriteGlobalLocked(const std::wstring &name, double value)
 	{
-		auto found = VariableStore::globals.find(normalizedName);
-		const bool changed = found == VariableStore::globals.end() ||
-			found->second != value;
-		VariableStore::globals[normalizedName] = value;
-		if (changed)
-			MarkPersistedWriteLocked(normalizedName);
-	}
-
-	// The DX11 counterpart is "G->user_config_dirty |= (var->fval != orig)"
-	// inside VariableAssignment::run(). The relaxed load in front keeps the
-	// common case - a write while the file is already pending - down to a
-	// single atomic read, and the set lookup only runs on the first write
-	// after each save.
-	static void MarkPersistedWriteLocked(const std::wstring &normalizedName)
-	{
-		if (VariableStore::persistDirty.load(std::memory_order_relaxed))
+		auto &globals = VariableStore::current;
+		if (globals.locked.count(name))
 			return;
-		if (!VariableStore::persistedKeys.count(normalizedName))
-			return;
-		VariableStore::persistDirty.store(1, std::memory_order_release);
+		auto [it, inserted] = globals.values.try_emplace(name, value);
+		const bool changed = inserted || it->second != value;
+		it->second = value;
+		if (changed && globals.persistentKeys.count(name))
+			VariableStore::persistDirty.store(1, std::memory_order_release);
 	}
 };

@@ -58,7 +58,7 @@ run → checktextureoverride → handling(skip) → draw → drawindexed → dis
 
 - `run = X`：`X` 以 `CommandList` / `BuiltInCommandList` / `CustomShader` / `BuiltInCustomShader` 开头，或精确等于 `Present` / `Constants` 时，按显式节名解析；否则按 `CommandList` + 名称在当前命名空间内解析（`src/DirectX12/Config/DX12Config.h:705`，`ResolveCommandListReference`）。
 - 资源引用：`ref ` 前缀会被剥掉后按 `Resource` 命名空间解析（`:717`，`ResolveResourceReference`）。绑定值上也可直接写 `ref `：`ps-tN = ref ResourceX` 与 `ps-tN = ResourceX` 等价（`src/DirectX12/ModRuntime/DX12ResourceAliasStore.h:109`）。
-- 变量名会**折叠命名空间**：`$\Example\foo` 与 `$foo` 指向同一个全局变量（`src/common/MigotoCommandVmUtils.hpp:469`，`NormalizeVariableName`）。
+- `$foo` 先查当前命名空间内的局部变量和全局声明，再查根全局变量。`$\Example\foo` 直接访问该命名空间的全局变量。
 
 ---
 
@@ -94,7 +94,8 @@ run → checktextureoverride → handling(skip) → draw → drawindexed → dis
 | 语法 | 动作 | 作用域 |
 | --- | --- | --- |
 | `$名 = 表达式` | `VariableAssignment` | 先在 local 作用域由内向外查找命中；未命中则写全局表。 |
-| `global $名 = 表达式` | `VariableAssignment` | 同上（`global` 只是声明前缀）。 |
+| `global $名 = 表达式` | `VariableAssignment` | 在 `[Constants]` 声明所属命名空间的标量。缺省初值为 0。 |
+| `global locked $名 = 表达式` | `VariableAssignment` | 只读，后续赋值及热键跳过此目标。 |
 | `global persist $名 = 表达式` | `VariableAssignment` | 同上，并登记为持久变量。 |
 | `persist $名 = 表达式` | `VariableAssignment` | 同上，并登记为持久变量。 |
 | `local $名 = 表达式` | `LocalVariableAssignment` | 写入**当前最内层** local 作用域。 |
@@ -103,7 +104,7 @@ run → checktextureoverride → handling(skip) → draw → drawindexed → dis
 
 判定规则见 `src/common/MigotoIniCommandListUtils.hpp:116`（`IsVariableAssignmentKey` / `IsVariableDeclarationKey` / `IsLocalVariableAssignmentKey` / `IsPostVariableAssignmentKey`）。
 
-前缀剥离顺序为 `post ` → `local ` → `global persist ` → `global ` → `persist `（`src/common/MigotoCommandVmUtils.hpp:514`，`ExtractVariableName`）；`global persist ` 先于 `global ` 命中，所以 `global persist $x` 正确剥离为 `$x`。
+加载 `[Constants]` 时先登记有效全局声明，再执行局部变量、条件、赋值，最后执行排队的 `post` 赋值。全局初值可以引用前面已经声明的变量。同一完整名称以第一次有效声明为准。声明标志的解析复用 DX11 实现。
 
 **作用域规则**：每次进入一个命令列表或动作列表，执行器压入一个 local 作用域，退出时弹出（`DX12CommandListExecutor.h:74`，`CommandVmRunScope`）。因此：
 
@@ -545,7 +546,7 @@ F10 触发 `DX12ModRuntimeReload`（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad
 
 启动阶段的首个加载是延迟执行的：只有在 Present 计数 > 2 且距请求已超过 `kDeferredInitialModLoadDelayMs`（2000 ms）时才真正加载（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad.cpp:277`）。
 
-重载会清空全局变量表与帧变量惰性采集标志（`src/common/MigotoCommandVmUtils.hpp:803`），并重建持久变量登记表。
+重载会根据新配置重建全局值、只读标志和持久变量登记表，并在初始化后一起发布。
 
 ### 7.2 持久变量与自动保存
 
@@ -558,9 +559,9 @@ F10 触发 `DX12ModRuntimeReload`（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad
 | 文件格式 | `; AUTOMATICALLY GENERATED FILE - DO NOT EDIT` + `[Constants]` + `$名 = 值`（`%.9g`） | `src/common/MigotoCommandVmUtils.hpp:686` |
 | 路径 | `[Include] user_config`，默认 `d3dx_user.ini` | `src/DirectX12/Config/DX12ConfigLoader.h:369` |
 
-写盘失败（打开 / 写 / flush / close 任一步）会写日志 `DX12UserConfig` / `save_failed` 并**保持脏标记**，下一个周期重试；不会因失败而截断文件。
+写盘失败（打开 / 写 / flush / close 任一步）会写日志 `DX12UserConfig` / `save_failed` 并**保持脏标记**，下一个周期重试。
 
-写入的名字是**折叠命名空间后的扁平名**：`$\TestMod\panel_x` 写进文件的是 `$panel_x`（`src/DirectX12/Config/DX12ConstantsVmUtils.h:94`），这样重新读入后仍落到同一个变量槽位。
+属于某个命名空间的持久变量用完整名称写入 UTF-8 文件，例如 `$\testmod\panel_x`。旧 DX12 存档里的 `$panel_x` 优先恢复根变量。没有根变量时，恢复同名的可写持久变量。带 `locked` 标志的声明跳过保存和恢复。
 
 用户配置文件最后加载，因此其中的持久值**覆盖** Mod INI 里的默认值（`src/DirectX12/Config/DX12ConstantsVmUtils.h:25`）。
 
@@ -590,7 +591,7 @@ DDS 纹理的像素上传走一条**私有队列 + 围栏**通道（`src/DirectX
 | 表达式数值 | float32 算术、比较、位操作、数学函数、`**`、`===`、二进制字面量 | 数字解析、算术、位运算、移位和一元数学函数与 DX11 共享实现。`===`、`!==` 比较 float32 位模式 |
 | 逻辑求值 | — | `&&` / `\|\|` **两侧都求值**（不短路） |
 | 除零 | — | 结果为 0，不报错 |
-| `global` 前缀 | 显式写全局变量 | 与 `$x` 同路径；作用域链上有同名 local 时写 local |
+| `[Constants]` 全局声明 | 支持 `global`、`locked`、`persist` | 标量沿用 DX11 声明标志和命名空间规则，同时兼容旧版 `persist $x` 写法 |
 | 递归深度 | 256 层 | `depth > 16` 即停止（`DX12CommandListExecutor.h:1417`） |
 | 自递归 | — | 同名列表已在调用栈上时跳过该次调用（`:1744`，`EnterCommandList`） |
 | 帧计数器 | `frame_number`、`draw_number`、`dispatch_number` | 主交换链帧号已接入，逐绘制与逐派发计数待实现 |

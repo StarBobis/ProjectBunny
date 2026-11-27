@@ -1,3 +1,4 @@
+#include "IniVariableNames.h"
 #include "IniHandler.h"
 #include "IniExpressionNumbers.h"
 #include "User32Hooks.h"
@@ -343,15 +344,7 @@ bool get_namespaced_section_name_lower(const wstring *section, const wstring *in
 
 wstring get_namespaced_var_name_lower(const wstring& var, const wstring *ini_namespace)
 {
-    if (var.empty()) return {};
-    wstring ret = L"$\\";
-    if (ini_namespace) ret += *ini_namespace;
-    std::transform(ret.begin() + 2, ret.end(), ret.begin() + 2, ::towlower);
-    ret += L'\\';
-    ret.reserve(ret.size() + var.size() - 1);
-    for (size_t i = 1; i < var.size(); ++i)
-        ret += var[i] <= 127 ? ascii_tolower(var[i]) : static_cast<wchar_t>(::towlower(var[i]));
-    return ret;
+	return migoto::NamespacedVariable(var, ini_namespace ? std::wstring_view(*ini_namespace) : std::wstring_view{});
 }
 
 static bool _get_section_namespace(IniSections *custom_ini_sections, const wchar_t *section, wstring *ret)
@@ -2752,7 +2745,6 @@ static void ParseConstantsSection()
 	VariableFlags flags;
 	IniSectionVector *section = NULL;
 	wstring *key, *val, name;
-	const wchar_t *name_pos;
 	const wstring *ini_namespace;
 
 	// The naming on this one is historical - [Constants] used to define
@@ -2798,15 +2790,15 @@ static void ParseConstantsSection()
 		// with static initialisers where pre/post doesn't make sense
 		// (and [Constants] doesn't support them as yet either)
 
-		flags = parse_enum_option_string_prefix<const wchar_t *, VariableFlags>
-			(VariableFlagNames, name.c_str(), &name_pos);
+		const auto declaration = migoto::VariableDeclaration::Parse(name);
+		flags = declaration.flags;
         if (!(flags & VariableFlags::GLOBAL)) {
             if (write_index != read_index)
                 (*section)[write_index] = std::move(entry);
             ++write_index;
             continue;
         }
-		name = name_pos ? name_pos : L"";
+		name.erase(0, name.size() - declaration.name.size());
 
 		if (!valid_variable_name(name)) {
 			IniWarningW(L"Illegal global variable name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), ini_namespace->c_str());

@@ -9,23 +9,23 @@ inline bool ApplyDx12CommandVmAction(MigotoCommandVmUtils::State &vm,
 {
 	switch (action.kind) {
 	case Bunny::CommandListActionKind::ControlFlow:
-		vm.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
+		vm.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine, action.iniNamespace);
 		return true;
 	case Bunny::CommandListActionKind::VariableAssignment:
 		if (vm.Active())
-			vm.Assign(action.key, action.value);
+			vm.Assign(action.key, action.value, action.iniNamespace);
 		return true;
 	case Bunny::CommandListActionKind::PostVariableAssignment:
 		if (includePost && vm.Active())
-			vm.QueuePostAssign(action.key, action.value);
+			vm.QueuePostAssign(action.key, action.value, action.iniNamespace);
 		return true;
 	case Bunny::CommandListActionKind::LocalVariableAssignment:
 		if (vm.Active())
-			vm.DeclareLocal(action.key, action.value);
+			vm.DeclareLocal(action.key, action.value, action.iniNamespace);
 		return true;
 	case Bunny::CommandListActionKind::SetShaderConstant:
 		if (vm.Active())
-			vm.AssignSymbol(action.key, action.value);
+			vm.AssignSymbol(action.key, action.value, action.iniNamespace);
 		return true;
 	default:
 		return false;
@@ -104,6 +104,7 @@ public:
 	public:
 		MigotoCommandVmUtils::State *state = nullptr;
 		size_t branchDepth = 0;
+		size_t postStart = 0;
 		bool flushPost = false;
 
 		CommandVmRunScope(MigotoCommandVmUtils::State *vmState, bool flushPostAssignments)
@@ -113,6 +114,7 @@ public:
 			if (!state)
 				return;
 			branchDepth = state->branches.size();
+			postStart = state->postAssignments.size();
 			state->PushLocalScope();
 		}
 
@@ -123,7 +125,7 @@ public:
 			if (state->branches.size() > branchDepth)
 				state->branches.resize(branchDepth);
 			if (flushPost)
-				state->FlushPostAssignments();
+				state->FlushPostAssignments(postStart);
 			state->PopLocalScope();
 		}
 	};
@@ -347,7 +349,7 @@ public:
 		auto args = std::to_array(action.args);
 		for (const auto &[index, text] : action.drawExpressions) {
 			using Parser = MigotoCommandVmUtils::ExpressionParser;
-			Parser parser(text, mVm.Context(), Parser::Mode::Validated);
+			Parser parser(text, mVm.Context(action.iniNamespace), Parser::Mode::Validated);
 			const double value = std::trunc(parser.Parse());
 			const bool baseVertex = action.argCount == 5 && index == 3;
 			if (!parser.ok || !std::isfinite(value) || value < (baseVertex ? INT32_MIN : 0) ||
@@ -684,7 +686,7 @@ public:
 			// $swapkey0 value, so "which mesh variant was actually replayed"
 			// is visible in d3d12_log.txt. Compiled out of Release builds.
 			if (mReplacement) {
-				MigotoCommandVmUtils::ExpressionContext context;
+				auto context = mVm.Context(config->iniNamespace);
 				const double swapkey0 = MigotoCommandVmUtils::LookupVariable(
 					context, L"$swapkey0");
 				for (size_t i = drawsBeforeAppend;

@@ -1328,6 +1328,7 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoTextureOverrideParser::ParseSections(iniLoad.document, &textureOverrides);
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
+	Bunny::DX12ConstantsVmUtils::Initialize(commandLists);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
 	// Custom shader elements are rebuilt from the parsed command lists (the
 	// same action stream the draw executor consumes) so the registry and the
@@ -1369,9 +1370,6 @@ bool DX12ModRuntimeLoad(
 			spec.stateLines.size());
 	}
 #endif
-	Bunny::DX12ConstantsVmUtils::Initialize(commandLists);
-
-
 	std::vector<DX12VertexLimitRaiseConfig> vertexLimitRaiseConfigs =
 		CollectVertexLimitRaiseConfigs(textureOverrides);
 	bool hasPreSkinTextureOverrideCandidates =

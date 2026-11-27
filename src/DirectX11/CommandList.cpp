@@ -2,6 +2,7 @@
 #include "PngColorSpace.h"
 #include "ExpressionFunctions.h"
 #include "IniExpressionNumbers.h"
+#include "IniVariableNames.h"
 #include "IniBitwise.h"
 #include "IniDrawArguments.h"
 #include "IaBufferElementCount.h"
@@ -5070,59 +5071,6 @@ static size_t FindIdentifierTokenEnd(std::wstring_view str, const size_t start =
 	return str.size();
 }
 
-class NamespaceScanner
-{
-public:
-	bool Consume(wchar_t c, std::wstring_view str, size_t pos)
-	{
-		if (!mStarted) {
-			if (c != L'\\')
-				return false;
-			mStarted = true;
-			// The first namespace segment is arbitrary, as in the original INI
-			// syntax. Further path segments may include Unicode, dots and hyphens.
-			mEnd = str.find(L'\\', pos + 1);
-			if (mEnd == std::wstring::npos)
-				return false;
-			for (size_t i = mEnd + 1; i < str.size(); ++i) {
-				const wchar_t next = str[i];
-				if (wcschr(L" \t[]()+*/%=<>!&|^~$@#", next))
-					break;
-				if (next == L'\\')
-					mEnd = i;
-			}
-		}
-		return mEnd != std::wstring::npos && pos <= mEnd;
-	}
-
-private:
-	bool mStarted = false;
-	size_t mEnd = std::wstring::npos;
-};
-
-static size_t FindVariableTokenEnd(std::wstring_view str, size_t start = 0)
-{
-	// Scans a variable token and returns the end position after performing minimal syntax validation:
-	// 1. Ensures identifier characters match `[a-z_0-9]+`.
-	// 2. Ensures an optional namespace is properly closed while allowing arbitrary characters in the parent namespace segment.
-	NamespaceScanner namespace_scanner;
-
-	for (size_t i = start; i < str.size(); ++i)
-	{
-		wchar_t c = str[i];
-
-		// Consume an optional leading namespace (e.g. "\namespace\" or "\path\like\namespace\").
-		if (namespace_scanner.Consume(c, str, i))
-			continue;
-
-		// The remaining characters must be valid identifier characters.
-		if (!is_identifier_char(c, OptionalChars::NONE))
-			return i;
-	}
-
-	return str.size();
-}
-
 static size_t FindResourceCopyTargetTokenEnd(std::wstring_view str, size_t start = 0)
 {
 	// Scans a resource copy target token and returns the end position after performing minimal syntax validation:
@@ -5141,7 +5089,7 @@ static size_t FindResourceCopyTargetTokenEnd(std::wstring_view str, size_t start
 	//   PoolFoo[$id]->ElementFormat(BLENDINDICES, 0)
 	std::vector<wchar_t> brackets;
 
-	NamespaceScanner namespace_scanner;
+	migoto::NamespaceScanner namespace_scanner;
 
 	for (size_t i = start; i < str.size(); ++i)
 	{
@@ -5291,7 +5239,7 @@ bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_sourc
 		return false;
 	}
 
-	if (is_source && FindVariableTokenEnd(token, 1) != token.size())
+	if (is_source && migoto::VariableTokenEnd(token, 1) != token.size())
 	{
 		SetError(L"Invalid variable: " + token, m_peek_start_pos);
 		return false;
@@ -5538,7 +5486,7 @@ bool CommandArgumentReader::GetTokenInternal(size_t pos, wstring* token, size_t*
 			if (!quoted) {
 				// Namespace paths are syntax, not string escapes. In particular,
 				// whitespace in their parent segment must not split a target.
-				NamespaceScanner scanner;
+				migoto::NamespaceScanner scanner;
 				size_t namespace_end = pos;
 				while (namespace_end < m_input.size() &&
 					scanner.Consume(m_input[namespace_end], m_input, namespace_end))
@@ -5818,7 +5766,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
                 }
             }
 
-			size_t len = FindVariableTokenEnd(remain, 1);
+			size_t len = migoto::VariableTokenEnd(remain, 1);
 
 			if (len)
 			{
@@ -6722,19 +6670,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope 
 
 bool valid_variable_name(const wstring &name)
 {
-	if (name.length() < 2)
-		return false;
-
-	// Variable names begin with a $
-	if (name[0] != L'$')
-		return false;
-
-	// First character must be a letter or underscore ($1, $2, etc reserved for future arguments):
-	if ((name[1] < L'a' || name[1] > L'z') && name[1] != L'_')
-		return false;
-
-	// Subsequent characters must be in this list:
-	return (name.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz_0123456789", 2) == wstring::npos);
+	return migoto::ValidVariableName(name);
 }
 
 bool parse_command_list_var_name(const wstring &name, const wstring *ini_namespace, CommandListVariable **target)
