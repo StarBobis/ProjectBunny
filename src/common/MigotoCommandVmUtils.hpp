@@ -447,6 +447,18 @@ public:
 		return parser.ok ? std::optional<float>{value} : std::nullopt;
 	}
 
+	static std::optional<int> ReadStaticIniInteger(const std::wstring &text, std::wstring_view iniNamespace = {})
+	{
+		int value;
+		if (migoto::ReadIniIntegerLiteral(text.c_str(), value))
+			return value;
+		if (const auto expression = ReadStaticIniExpression(text, iniNamespace)) {
+			migoto::ConvertExpressionToInt(*expression, value);
+			return value;
+		}
+		return {};
+	}
+
 	// The caller supplies trimmed, lowercase INI text, as in DX11 ParseBoolValue.
 	static std::optional<bool> ReadStaticIniBoolean(const std::wstring &text, std::wstring_view iniNamespace = {})
 	{

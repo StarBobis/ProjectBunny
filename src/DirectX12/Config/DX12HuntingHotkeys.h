@@ -131,15 +131,10 @@ public:
 		Bindings bindings;
 		std::wstring text;
 		if (ini.GetString(L"Hunting", L"repeat_rate", &text)) {
-			int rate;
-			if (migoto::ReadIniIntegerLiteral(text.c_str(), rate))
-				bindings.repeatRate = rate;
-			else if (const auto value = MigotoCommandVmUtils::ReadStaticIniExpression(text)) {
-				migoto::ConvertExpressionToInt(*value, rate);
-				bindings.repeatRate = rate;
-			} else {
+			if (const auto rate = MigotoCommandVmUtils::ReadStaticIniInteger(text))
+				bindings.repeatRate = *rate;
+			else
 				warnings.push_back(L"Invalid [Hunting] repeat_rate: " + text);
-			}
 		}
 		for (size_t i = 0; i < std::size(specs); ++i) {
 			const auto &spec = specs[i];

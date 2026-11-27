@@ -13,6 +13,7 @@
 #include "tests/IniXInputCases.h"
 #include "tests/IniKeyCycleCases.h"
 #include "tests/IniKeyTransitionCases.h"
+#include "tests/IniInputDelayCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -1430,6 +1431,50 @@ void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
 	auto &port = Source::hardware.slots[1];
 	port.connected = true;
 	Vm::State vm;
+	std::ofstream(root) << "[Constants]\n" << migoto::tests::inputDelayIni;
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::Initial, Source::Read),
+		"load key delays and production command lists");
+	migoto::tests::CheckInputDelayFrames([&](std::uint64_t tick, std::string_view keys, bool gate) {
+		Vm::SetGlobal(L"$gate", gate);
+		Bunny::MigotoKeyBindingUtils::ProcessBindings(gKeyBindings, gKeyFrame, [&](int vk) {
+			return vk >= 'A' && vk <= 'Z' && keys.find(static_cast<char>(vk)) != keys.npos;
+		}, {}, [](const std::wstring &name, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(name, post); },
+			[tick] { return tick; });
+	}, [&](int held, int presses, int releases, int step, const char *why) {
+		Require(vm.Evaluate(L"$held") == held && vm.Evaluate(L"$presses") == presses &&
+			vm.Evaluate(L"$releases") == releases && vm.Evaluate(L"$step") == step, why);
+	});
+	Require(vm.Evaluate(L"$invalid") == 1 && vm.Evaluate(L"$negative") == 0,
+		"invalid delay falls back to zero and negative delay stays pending");
+
+	std::ofstream(root) << "[Constants]\nglobal $held=2\n[KeyWait]\nkey=XB2_A\ntype=hold\n"
+		"$held=7\ndelay=16\nrelease_delay=16\n";
+	auto reloadDelay = [&] {
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload, Source::Read),
+			"reload timed controller binding");
+	};
+	reloadDelay();
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A;
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$held") == 2, "first controller sample only arms the press timer");
+	Sleep(32);
+	reloadDelay();
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$held") == 2, "reload cancels pending press, even if old deadline passed");
+	Sleep(32);
+	DXGI_PRESENT_PARAMETERS delayArgs{};
+	Check(chain->Present1(0, DXGI_PRESENT_TEST, &delayArgs));
+	Require(vm.Evaluate(L"$held") == 2, "test Present1 cannot deliver a matured press");
+	Check(chain->Present1(0, 0, &delayArgs));
+	Require(vm.Evaluate(L"$held") == 7, "non-test Present1 delivers the matured controller press");
+	port.connected = false;
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$held") == 7, "disconnect starts release delay");
+	Sleep(32);
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$held") == 2, "idle Present delivers the delayed restoration");
+	port.connected = true;
+	port.state.Gamepad.wButtons = 0;
 	std::ofstream(root) << "[Constants]\n" << migoto::tests::keyPhaseIni;
 	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::Initial, Source::Read),
 		"load transition phase callbacks on the WARP swap chain");

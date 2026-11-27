@@ -3,6 +3,7 @@
 #include "IniHandler.h"
 #include "HackerContext.h"
 #include "globals.h"
+#include "tests/IniInputDelayCases.h"
 
 #include <wrl/client.h>
 #include <cstdio>
@@ -160,7 +161,7 @@ public:
         if (owns_config) { DeleteFileW(config.c_str()); DeleteFileW(settings.c_str()); }
     }
 
-    void write(const char* toggle, bool disabled = true)
+    void write(const char* toggle, bool disabled = true, const char* extra = "")
     {
         std::ofstream out(config, std::ios::binary | std::ios::trunc);
         out << "[Logging]\ncalls=0\nshow_warnings=0\n"
@@ -168,7 +169,7 @@ public:
         if (toggle) out << "toggle_input=" << toggle << "\n";
         out << "[Include]\nuser_config=" << settings.filename().string() << "\n"
             "[Constants]\nglobal $input_hold_value=5\nglobal $input_hold_hits=0\n"
-            "global $input_hold_posts=0\nglobal locked $input_hold_locked=7\n"
+            "global $input_hold_posts=0\nglobal locked $input_hold_locked=7\n" << extra <<
             "[CommandListInputHoldCommands]\n$input_hold_hits=$input_hold_hits+1\n"
             "post $input_hold_posts=$input_hold_posts+1\n"
             "[KeyInputHold]\nkey=F18\ntype=hold\n$input_hold_value=9\nrun=CommandListInputHoldCommands\n"
@@ -276,6 +277,45 @@ void config_tests(InputFixture& fixture, InputDevice& device)
     ReloadConfig(device.device);
     check(G->disable_input, "reload preserves runtime disable despite initial input=on");
     ClearKeyBindings();
+}
+
+std::uint64_t recorded_tick;
+std::string_view recorded_keys;
+ULONGLONG WINAPI read_recorded_tick() { return recorded_tick; }
+SHORT WINAPI read_recorded_key(int vk)
+{
+    return vk >= 'A' && vk <= 'Z' && recorded_keys.find(static_cast<char>(vk)) != recorded_keys.npos
+        ? static_cast<SHORT>(0x8000) : 0;
+}
+
+void delay_tests(InputFixture& fixture, InputDevice& device)
+{
+    G->disable_input = false;
+    fixture.write(nullptr, false, migoto::tests::inputDelayIni);
+    ReloadConfig(device.device);
+    auto frame = [&](std::uint64_t tick, std::string_view keys, bool gate) {
+        recorded_tick = tick;
+        recorded_keys = keys;
+        command_list_globals.at(L"$gate").fval = gate;
+        DispatchRegisteredInputActions(device.device, read_recorded_key, read_recorded_tick);
+        CurrentTransition.UpdateTransitions(device.device);
+    };
+    auto value = [](const wchar_t* name) { return command_list_globals.at(name).fval; };
+    migoto::tests::CheckInputDelayFrames(frame, [&](int held, int presses, int releases, int step, const char* why) {
+        check(value(L"$held") == held && value(L"$presses") == presses &&
+            value(L"$releases") == releases && value(L"$step") == step, why);
+    });
+    check(value(L"$invalid") == 1 && value(L"$negative") == 0, "invalid delay falls back to zero and negative delay stays pending");
+    frame(100, "", true);
+    frame(106, "", true);
+    frame(107, "H", true);
+    ReloadConfig(device.device);
+    frame(115, "H", true);
+    check(value(L"$held") == 2, "reload discards a pending physical edge");
+    frame(123, "H", true);
+    check(value(L"$held") == 7, "held key starts a new timer after reload");
+    frame(124, "", true);
+    frame(130, "", true);
 }
 
 void hold_tests(InputDevice& device)
@@ -400,6 +440,7 @@ void test_dx11_input_toggle_hold_regression()
         config_tests(fixture, device);
         registry_tests(device);
         hold_tests(device);
+        delay_tests(fixture, device);
         std::fputs("PASS: real input registry/gate, config reload and HOLD/TOGGLE/preset/cycle behavior (memory button sampling)\n", stderr);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: input-toggle/HOLD regression: %s\n", error.what());

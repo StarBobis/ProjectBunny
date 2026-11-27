@@ -11,6 +11,7 @@
 #include "MigotoCommandVmUtils.hpp"
 #include "MigotoInputCombination.h"
 #include "IniKeyCycle.h"
+#include "IniInputDelay.h"
 #include "IniOverrideTransition.h"
 #include <map>
 
@@ -44,6 +45,7 @@ public:
 		bool reverse = false;
 		migoto::InputCombination combination;
 		bool wasDown = false;
+		migoto::InputDelayState delayState;
 	};
 
 	struct TransitionSettings
@@ -95,6 +97,7 @@ public:
 		migoto::KeyCycleCursor cycle;
 		std::vector<std::wstring> cycleConditions;
 		TransitionSettings press, release;
+		migoto::InputDelays delays;
 	};
 
 	// Optional per-press diagnostic sink. Registered by the DX12 runtime in
@@ -137,11 +140,24 @@ public:
 			if (ini.GetString(section.name.c_str(), L"type", &type))
 				binding.type = ParseBindingType(type);
 
+			bool havePressDelay = false, haveReleaseDelay = false;
 			for (const IniEntry &entry : section.entries) {
 				if (!entry.hasEquals)
 					continue;
 				std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
 				std::wstring value = IniDocumentText::Trim(entry.value);
+				if (key == L"delay" || key == L"release_delay") {
+					const bool press = key == L"delay";
+					bool &seen = press ? havePressDelay : haveReleaseDelay;
+					if (!seen) {
+						seen = true; // DX11 uses the first scalar setting in the section.
+						const auto delay = MigotoCommandVmUtils::ReadStaticIniInteger(IniDocumentText::ToLower(value), entry.iniNamespace);
+						if (!delay && warnings)
+							warnings->push_back(section.name + L": invalid " + key + L": " + value);
+						(press ? binding.delays.press : binding.delays.release) = delay.value_or(0);
+					}
+					continue;
+				}
 				if (key == L"transition" || key == L"release_transition" ||
 					key == L"transition_type" || key == L"release_transition_type") {
 					ReadTransitions(binding, key, value, entry.iniNamespace, warnings);
@@ -240,9 +256,8 @@ public:
 		for (Binding &binding : bindings) {
 			for (Trigger &trigger : binding.triggers) {
 				const bool down = trigger.combination.Active(downKey, controllers);
-				if (down == trigger.wasDown)
+				if (!trigger.delayState.EventDue(down, trigger.wasDown, binding.delays, clock))
 					continue;
-				trigger.wasDown = down;
 				if (!down && (binding.type != BindingType::Hold || !binding.active))
 					continue;
 				if (binding.type == BindingType::Cycle && !SelectCycleStep(binding, state, trigger.reverse))
@@ -357,11 +372,10 @@ public:
 					const long parsed = std::wcstol(value.c_str(), &end, 0);
 					valid = value.empty() || end != value.c_str();
 					duration = static_cast<int>(parsed);
-				} else if (!value.empty() && !migoto::ReadIniIntegerLiteral(value.c_str(), duration)) {
-					const auto number = MigotoCommandVmUtils::ReadStaticIniExpression(value, iniNamespace);
+				} else if (!value.empty()) {
+					const auto number = MigotoCommandVmUtils::ReadStaticIniInteger(value, iniNamespace);
 					valid = number.has_value();
-					if (number)
-						migoto::ConvertExpressionToInt(*number, duration);
+					duration = number.value_or(0);
 				}
 				settings.durations.push_back(duration);
 			}

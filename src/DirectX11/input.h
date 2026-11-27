@@ -4,6 +4,7 @@
 
 #include "HackerDevice.h"
 #include "IniXInput.h"
+#include "IniInputDelay.h"
 
 // The "input" files are a set of objects to handle user input for both gaming 
 // purposes and for tool purposes, like hunting for shaders.
@@ -148,9 +149,8 @@ public:
 // bindings.
 class DelayedInputAction : public virtual InputAction {
 private:
-	int delay_down, delay_up;
-	bool effective_state;
-	ULONGLONG state_change_time;
+	migoto::InputDelays delays;
+	migoto::InputDelayState delay_state;
 public:
 	DelayedInputAction(InputButton *button, shared_ptr<InputListener> listener, int delayDown, int delayUp);
 	bool Dispatch(HackerDevice *device) override;
@@ -183,7 +183,9 @@ InputDisableScope GetIniKeyBindingScope(const wchar_t* section);
 // Dispatches registered actions after backend polling/foreground checks. Kept
 // separate so backends that supply their own button state use the same gate.
 using VirtualKeyStateReader = SHORT (WINAPI*)(int);
-bool DispatchRegisteredInputActions(HackerDevice *device, VirtualKeyStateReader read_key = GetAsyncKeyState);
+using InputTickReader = ULONGLONG (WINAPI*)();
+bool DispatchRegisteredInputActions(HackerDevice *device, VirtualKeyStateReader read_key = GetAsyncKeyState,
+	InputTickReader read_tick = GetTickCount64);
 size_t CountRegisteredInputActions(InputDisableScope disable_scope);
 wstring user_friendly_ini_key_binding(LPCWSTR app, LPCWSTR iniKey);
 

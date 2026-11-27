@@ -23,6 +23,7 @@ namespace {
 // or combination that this dispatch pass has not yet observed.
 struct InputPollSnapshot {
 	VirtualKeyStateReader read_key;
+	InputTickReader read_tick;
 	bool reuse;
 	bool reject_inactive_presses;
 	std::vector<unsigned char>& combinations;
@@ -190,35 +191,20 @@ bool RepeatingInputAction::Dispatch(HackerDevice *device)
 }
 
 DelayedInputAction::DelayedInputAction(InputButton *button, shared_ptr<InputListener> listener, int delay_down, int delay_up) :
-	delay_down(delay_down),
-	delay_up(delay_up),
-	effective_state(false),
-	state_change_time(0),
-	InputAction(button, listener)
+	InputAction(button, listener), delays{delay_down, delay_up}
 {}
 
 bool DelayedInputAction::Dispatch(HackerDevice *device)
 {
-	ULONGLONG now = GetTickCount64();
-	bool state = CheckButtonState();
-
-	if (state != last_state)
-		state_change_time = now;
-	last_state = state;
-
-	if (state != effective_state) {
-		if (state && ((now - state_change_time) >= delay_down)) {
-			effective_state = state;
-			listener->DownEvent(device);
-			return true;
-		} else if (!state && ((now - state_change_time) >= delay_up)) {
-			effective_state = state;
-			listener->UpEvent(device);
-			return true;
-		}
-	}
-
-	return false;
+	const ULONGLONG now = input_poll_snapshot ? input_poll_snapshot->read_tick() : GetTickCount64();
+	const bool down = CheckButtonState();
+	if (!delay_state.EventDue(down, last_state, delays, [now] { return now; }))
+		return false;
+	if (down)
+		listener->DownEvent(device);
+	else
+		listener->UpEvent(device);
+	return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -493,18 +479,18 @@ static bool DispatchInputActions(HackerDevice *device)
 	return input_processed;
 }
 
-bool DispatchRegisteredInputActions(HackerDevice *device, VirtualKeyStateReader read_key)
+bool DispatchRegisteredInputActions(HackerDevice *device, VirtualKeyStateReader read_key, InputTickReader read_tick)
 {
 	const bool reuse = G->ModRuntimeOptimizationsEnabled() &&
 		G->optimize_hotkey_dispatch.load(std::memory_order_relaxed) && !G->analyse_frame && !gLogDebug;
-	if (!reuse && read_key == GetAsyncKeyState && !input_poll_snapshot)
+	if (!reuse && read_key == GetAsyncKeyState && read_tick == GetTickCount64 && !input_poll_snapshot)
 		return DispatchInputActions(device);
 
 	std::vector<unsigned char> nested_states;
 	auto& combinations = input_poll_snapshot ? nested_states : input_combination_states;
 	if (reuse)
 		combinations.assign(input_combination_indexes.size(), 0);
-	InputPollSnapshot snapshot{read_key, reuse, reuse && !Dx11LogEnabled(LogVerbosity::INFO), combinations};
+	InputPollSnapshot snapshot{read_key, read_tick, reuse, reuse && !Dx11LogEnabled(LogVerbosity::INFO), combinations};
 	InputPollScope scope(snapshot);
 	return DispatchInputActions(device);
 }
