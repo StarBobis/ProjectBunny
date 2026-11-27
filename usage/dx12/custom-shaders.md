@@ -56,10 +56,14 @@ draw = 3, 0
 | `dispatch` | X、Y、Z 线程组数 |
 | `draw = from_caller` | 沿用调用者绘制参数 |
 | `drawindexed = from_caller` | 沿用调用者索引绘制参数 |
-| `drawindexed = auto` | 从替换索引缓冲推导数量 |
+| `draw = auto` | 从当前 VB0 的视图大小和步长推导顶点数，绘制一个实例 |
+| `drawindexed = auto` | 从当前 R16/R32 索引视图推导索引数，绘制一个实例 |
+| `drawindexedinstanced = auto` | 推导索引数，沿用当前绘制调用的实例数和首实例 |
 
 在原绘制的替换命令列表内，两条实例绘制命令都接受整数和运行时数值表达式。例如 `drawindexedinstanced = 12, $copies, 0, -2, 4` 使用当前索引绑定，从实例 4 开始绘制。参数数量错误或数值越界会跳过该条命令。
 
 独立的 Present 图形元素可记录第一条非索引 `drawinstanced`。该路径尚缺索引缓冲绑定和间接绘制支持。
+
+三种 `auto` 写法适用于普通替换命令列表。数量按实际绑定的视图计算，游戏绑定和 Mod 替换绑定都可用。未绑定、步长为零、索引格式不支持或数据不足一个元素时，跳过该次绘制。旧版 DX12 的 `drawindexed = auto` 会继承调用者的实例范围，依赖这一行为的 Mod 请改用 `drawindexedinstanced = auto`。
 
 `dispatch` 作用于相应计算替换路径；它不使本页的图形元素自动创建独立计算 PSO。完整图形文件结构见[常用写法](./recipes)。

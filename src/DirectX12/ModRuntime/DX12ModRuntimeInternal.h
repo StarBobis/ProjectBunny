@@ -2272,6 +2272,10 @@ bool TextureOverridesHaveDrawSrvReplacement(
 
 
 
+bool AutomaticDrawsNeedIaState(const Bunny::CommandListMap &lists,
+	const Bunny::ShaderOverrideMap &shaders, const Bunny::TextureOverrideMap &textures,
+	const Bunny::ShaderRegexMap &regexes);
+
 bool CompiledShaderOverridePlansNeedResidentIaState(
 	const std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> &plans);
 

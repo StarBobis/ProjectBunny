@@ -558,6 +558,19 @@ void TestOverlay(ID3D12Device *device)
 // Capture the native draw arguments at the hook's callback boundary.
 std::vector<std::array<int64_t, 6>> recordedDraws;
 
+DX12IaReplacementExecutorCallbacks RecordingDrawCallbacks()
+{
+	DX12IaReplacementExecutorCallbacks callbacks;
+	callbacks.drawInstanced = [](ID3D12GraphicsCommandList*, UINT count, UINT instances, UINT start, UINT first) {
+		recordedDraws.push_back({0, count, instances, start, 0, first});
+	};
+	callbacks.drawIndexedInstanced = [](ID3D12GraphicsCommandList*, UINT count, UINT instances,
+		UINT start, INT base, UINT first) {
+		recordedDraws.push_back({1, count, instances, start, base, first});
+	};
+	return callbacks;
+}
+
 void TestInstancedDraws(ID3D12Device *device)
 {
 	Bunny::IniDocument ini;
@@ -593,19 +606,13 @@ void TestInstancedDraws(ID3D12Device *device)
 		executor.RunActions(lists.at(L"CommandListDynamic").actions, 0, false, nullptr);
 	}
 	Require(executor.observedDynamicCommandState, "expression draws bypass cross-draw caching");
-	DX12IaReplacementExecutorCallbacks callbacks;
-	callbacks.drawInstanced = [](ID3D12GraphicsCommandList*, UINT count, UINT instances, UINT start, UINT first) {
-		recordedDraws.push_back({0, count, instances, start, 0, first});
-	};
-	callbacks.drawIndexedInstanced = [](ID3D12GraphicsCommandList*, UINT count, UINT instances,
-		UINT start, INT base, UINT first) {
-		recordedDraws.push_back({1, count, instances, start, base, first});
-	};
+	const auto callbacks = RecordingDrawCallbacks();
 	DX12IaDrawInvocation original;
 	original.instanceCount = 13;
 	original.firstInstance = 21;
 	recordedDraws.clear();
-	DX12IaReplacementDrawExecutor(native.list.Get(), callbacks).ExecuteReplacementDraws(replacement, original);
+	const DX12ActiveIaState activeIa{};
+	DX12IaReplacementDrawExecutor(native.list.Get(), callbacks).ExecuteReplacementDraws(replacement, activeIa, &original);
 	const std::vector<std::array<int64_t, 6>> expected{
 		{0,9,2,3,0,4}, {1,8,5,2,-3,7}, {0,4,13,1,0,21}, {1,0,0,0,INT32_MIN,UINT32_MAX},
 		{1,6,3,2,-2,11}, {1,6,7,2,-2,11}};
@@ -625,6 +632,97 @@ void TestInstancedDraws(ID3D12Device *device)
 		records[1].drawFirstInstance == 0, "standalone element default quad");
 	Check(native.list->Close());
 	MigotoCommandVmUtils::ClearGlobals();
+}
+
+void TestAutomaticDraws(ID3D12Device *device)
+{
+	Bunny::IniDocument ini;
+	Require(ini.Parse(L"[Present]\nrun=CommandListAuto\n[CommandListAuto]\n"
+		L"draw=auto\ndrawindexed=auto\ndrawindexedinstanced=auto\n"), "automatic draw config");
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
+	const bool needsIa = AutomaticDrawsNeedIaState(lists, {}, {}, {});
+	Require(needsIa, "Present-only mod needs resident IA through a nested list");
+	lists.erase(L"Present");
+	Require(!AutomaticDrawsNeedIaState(lists, {}, {}, {}), "unused automatic draws leave IA tracking idle");
+	std::unordered_map<std::wstring, DX12CompiledCommandListPlan> plans;
+	BuildDx12CompiledCommandListPlans(lists, &plans);
+	const auto &plan = plans.at(L"CommandListAuto");
+	Require(!plan.unsupported, "automatic draws compile without freezing their counts");
+
+	const LONG previousIa = InterlockedExchange(&gHasIaResidentStateRequirements, needsIa);
+	const LONG previousPresent = InterlockedExchange(&gHasPresentRuntimeEffect, 1);
+	DX12HotPathState::Update();
+	List native(device, D3D12_COMMAND_LIST_TYPE_DIRECT);
+	ComPtr<ID3D12GraphicsCommandList> wrapped = native.list;
+	void *pointer = wrapped.Detach();
+	Require(DX12Wrapper::WrapD3D12DeviceResult(__uuidof(ID3D12GraphicsCommandList), &pointer), "auto draw wrapper");
+	wrapped.Attach(static_cast<ID3D12GraphicsCommandList*>(pointer));
+	auto *state = DX12CommandListRuntime::GetStatePtrFast(native.list.Get());
+	Require(state != nullptr, "auto draw wrapper state");
+	auto buffer = Buffer(device, D3D12_HEAP_TYPE_UPLOAD);
+	const auto address = buffer->GetGPUVirtualAddress();
+	D3D12_VERTEX_BUFFER_VIEW vb{address + 16, 35, 8};
+	D3D12_INDEX_BUFFER_VIEW ib{address + 32, 18, DXGI_FORMAT_R16_UINT};
+	wrapped->IASetVertexBuffers(0, 1, &vb);
+	wrapped->IASetIndexBuffer(&ib);
+
+	const DX12IaHashState hashes{};
+	DX12ModIaReplacement replacement;
+	DX12CommandListExecutor vm(device, native.list.Get(), hashes, 0, 0, 0, 0, 0, 0, &replacement);
+	vm.SetExecutionMode(true, true);
+	vm.ExecuteCompiledCommandListPlan(plan, 0, false);
+	auto callbacks = RecordingDrawCallbacks();
+	callbacks.setIndexBuffer = [](ID3D12GraphicsCommandList *list, const D3D12_INDEX_BUFFER_VIEW *view) {
+		list->IASetIndexBuffer(view);
+	};
+	callbacks.setVertexBuffers = [](ID3D12GraphicsCommandList *list, UINT start, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views) {
+		list->IASetVertexBuffers(start, count, views);
+	};
+	const DX12IaReplacementDrawExecutor draws(native.list.Get(), callbacks);
+	const auto caller = DX12IaDrawInvocation::ForDrawInstanced(7, 3, 0, 5);
+	const auto execute = [&](const DX12IaDrawInvocation *original) {
+		recordedDraws.clear();
+		draws.ExecuteReplacementDraws(replacement, state->ia, original);
+	};
+	using Draws = std::vector<std::array<int64_t, 6>>;
+	execute(&caller);
+	Require(recordedDraws == Draws{{0,4,1,0,0,0}, {1,9,1,0,0,0}, {1,9,3,0,0,5}},
+		"effective subviews supply truncated counts, only instanced auto inherits the caller");
+	execute(nullptr);
+	Require(recordedDraws == Draws{{0,4,1,0,0,0}, {1,9,1,0,0,0}}, "no calling draw for instanced auto");
+
+	replacement.vertexBuffers = {{}, {address, 40, 4}};
+	replacement.hasIndexBuffer = true;
+	replacement.indexBuffer = {address, 20, DXGI_FORMAT_R32_UINT};
+	DX12IaReplacementBindingExecutor binding(native.list.Get(), callbacks);
+	const DX12ActiveIaState originalIa = state->ia;
+	binding.Apply(replacement);
+	execute(&caller);
+	Require(recordedDraws == Draws{{0,4,1,0,0,0}, {1,5,1,0,0,0}, {1,5,3,0,0,5}},
+		"sparse VB replacement preserves slot zero and IB replacement changes count");
+	binding.Restore(replacement, originalIa);
+	replacement.vertexBuffers.clear();
+	replacement.hasIndexBuffer = false;
+	vb.StrideInBytes = 0;
+	wrapped->IASetVertexBuffers(0, 1, &vb);
+	wrapped->IASetIndexBuffer(nullptr);
+	execute(&caller);
+	Require(recordedDraws.empty(), "zero stride and unbound index buffer skip automatic draws");
+	replacement.hasIndexBuffer = true;
+	replacement.indexBuffer = {address, 20, DXGI_FORMAT_UNKNOWN};
+	replacement.vertexBuffers = {{address, 3, 4}};
+	execute(&caller);
+	Require(recordedDraws.empty(), "invalid index format and incomplete vertex skip automatic draws");
+	replacement.indexBuffer = {};
+	replacement.vertexBuffers = {{address, 24, 4}};
+	execute(&caller);
+	Require(recordedDraws == Draws{{0,6,1,0,0,0}}, "new slot-zero replacement restores automatic vertex count");
+
+	Check(wrapped->Close());
+	InterlockedExchange(&gHasPresentRuntimeEffect, previousPresent);
+	InterlockedExchange(&gHasIaResidentStateRequirements, previousIa);
+	DX12HotPathState::Update();
 }
 
 void TestDescriptors(ID3D12Device *device, bool benchmark)
@@ -700,6 +798,7 @@ int main(int argc, char **argv)
 		TestExpressionNumbers();
 		TestUnaryMath();
 		TestInstancedDraws(device.Get());
+		TestAutomaticDraws(device.Get());
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
 		TestQueueHandoff(device.Get());

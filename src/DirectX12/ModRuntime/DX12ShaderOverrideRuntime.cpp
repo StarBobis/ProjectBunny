@@ -180,7 +180,7 @@ UINT32 DX12ModGetHotPathFlags()
 
 	if (hasShaderOverrides)
 		flags |= DX12_MOD_HOT_SHADER_OVERRIDES;
-	if (hasDrawOverrideWork && gHasIaResidentStateRequirements != 0)
+	if ((hasDrawOverrideWork || gHasPresentRuntimeEffect != 0) && gHasIaResidentStateRequirements != 0)
 		flags |= DX12_MOD_HOT_IA_RESIDENT_STATE;
 	if (gHasPresentRuntimeEffect != 0)
 		flags |= DX12_MOD_HOT_PRESENT_REPLACEMENT;

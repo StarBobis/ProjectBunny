@@ -8,6 +8,7 @@
 #include "Nektra/NktHookLib.h"
 #include "util_min.h"
 #include "crc32c.h"
+#include "IaBufferElementCount.h"
 
 #include <d3dcompiler.h>
 
@@ -75,6 +76,15 @@ public:
 };
 
 
+class DX12IaBufferViewUtils
+{
+public:
+	static bool IsVertexBufferBound(const D3D12_VERTEX_BUFFER_VIEW &view)
+	{
+		return view.BufferLocation != 0 && view.SizeInBytes != 0;
+	}
+};
+
 class DX12IaReplacementDrawExecutor
 {
 public:
@@ -115,9 +125,26 @@ public:
 		}
 	}
 
+	UINT AutomaticDrawCount(bool indexed, const DX12ModIaReplacement &replacement,
+		const DX12ActiveIaState &activeIa) const
+	{
+		// A DX12 view's size already excludes its GPU address offset.
+		if (indexed) {
+			const D3D12_INDEX_BUFFER_VIEW *view = activeIa.hasIndexBuffer ? &activeIa.indexBuffer : nullptr;
+			if (replacement.hasIndexBuffer && callbacks->setIndexBuffer)
+				view = &replacement.indexBuffer;
+			return view && view->BufferLocation ? migoto::IndexCount(view->SizeInBytes, 0, view->Format) : 0;
+		}
+		const D3D12_VERTEX_BUFFER_VIEW *view = activeIa.hasVertexBuffer[0] ? &activeIa.vertexBuffers[0] : nullptr;
+		if (replacement.vertexBufferStartSlot == 0 && !replacement.vertexBuffers.empty() &&
+			callbacks->setVertexBuffers && DX12IaBufferViewUtils::IsVertexBufferBound(replacement.vertexBuffers.front()))
+			view = &replacement.vertexBuffers.front();
+		return view && view->BufferLocation ? migoto::BufferElementCount(view->SizeInBytes, 0, view->StrideInBytes) : 0;
+	}
+
 	void ExecuteReplacementDraws(
 		const DX12ModIaReplacement &replacement,
-		const DX12IaDrawInvocation &originalDraw) const
+		const DX12ActiveIaState &activeIa, const DX12IaDrawInvocation *originalDraw) const
 	{
 		if (!commandList || !callbacks)
 			return;
@@ -141,28 +168,22 @@ public:
 			INT baseVertex = draw.baseVertex;
 
 			if (draw.fromCaller) {
+				if (!originalDraw)
+					continue;
 				if (draw.indexed) {
-					count = originalDraw.indexCount;
-					start = originalDraw.firstIndex;
-					baseVertex = originalDraw.baseVertex;
+					count = originalDraw->indexCount;
+					start = originalDraw->firstIndex;
+					baseVertex = originalDraw->baseVertex;
 				} else {
-					count = originalDraw.vertexCount;
-					start = originalDraw.firstVertex;
+					count = originalDraw->vertexCount;
+					start = originalDraw->firstVertex;
 				}
 				if (!count)
 					continue;
 			} else if (draw.autoCount) {
-				// `drawindexed = auto`: recompute the index count from the
-				// replaced index buffer view, mirroring DX11's
-				// get_index_count_from_current_ib (ByteWidth - offset) / 2|4.
-				if (!draw.indexed || !replacement.hasIndexBuffer) {
+				if (!draw.explicitInstances && !originalDraw)
 					continue;
-				}
-				const UINT elementSize =
-					(replacement.indexBuffer.Format == DXGI_FORMAT_R16_UINT) ? 2u : 4u;
-				count = replacement.indexBuffer.SizeInBytes / elementSize;
-				start = 0;
-				baseVertex = 0;
+				count = AutomaticDrawCount(draw.indexed, replacement, activeIa);
 				if (!count)
 					continue;
 			} else {
@@ -171,8 +192,8 @@ public:
 			}
 
 			DX12IaReplacementDrawScope replacementDrawScope;
-			const UINT instanceCount = draw.explicitInstances ? draw.instanceCount : originalDraw.instanceCount;
-			const UINT firstInstance = draw.explicitInstances ? draw.firstInstance : originalDraw.firstInstance;
+			const UINT instanceCount = draw.explicitInstances ? draw.instanceCount : (originalDraw ? originalDraw->instanceCount : 0);
+			const UINT firstInstance = draw.explicitInstances ? draw.firstInstance : (originalDraw ? originalDraw->firstInstance : 0);
 			if (draw.indexed) {
 				if (callbacks->drawIndexedInstanced) {
 					if (callbacks->recordReplacementDraw)
@@ -187,16 +208,6 @@ public:
 					commandList, count, instanceCount, start, firstInstance);
 			}
 		}
-	}
-};
-
-
-class DX12IaBufferViewUtils
-{
-public:
-	static bool IsVertexBufferBound(const D3D12_VERTEX_BUFFER_VIEW &view)
-	{
-		return view.BufferLocation != 0 && view.SizeInBytes != 0;
 	}
 };
 
@@ -1222,8 +1233,7 @@ public:
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
 		bindingExecutor.Apply(replacement);
 		DX12ModApplyDrawSrvReplacement(commandList, &replacement, false);
-		DX12IaDrawInvocation noDraw = {};
-		drawExecutor.ExecuteReplacementDraws(replacement, noDraw);
+		drawExecutor.ExecuteReplacementDraws(replacement, originalIa, nullptr);
 		// Custom shader element draws recorded from the [Present] command
 		// list: parked for the Present-time overlay submission (the DX11
 		// [Present] semantic is "after the game's rendering, before
@@ -1355,7 +1365,7 @@ public:
 		if (!replacement->skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
 
-		drawExecutor.ExecuteReplacementDraws(*replacement, draw);
+		drawExecutor.ExecuteReplacementDraws(*replacement, *restoreIa, &draw);
 		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_execute_draws", draw.indexed ? 1u : 0u, 1,
 			DX12_DIAG_ELAPSED_US(applySegmentBegin));
@@ -1423,7 +1433,7 @@ public:
 		}
 		if (!replacement.skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
-		drawExecutor.ExecuteReplacementDraws(replacement, draw);
+		drawExecutor.ExecuteReplacementDraws(replacement, *restoreIa, &draw);
 		if (modifiesIaBindings) {
 			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 			bindingExecutor.Restore(replacement, *restoreIa);
@@ -1470,7 +1480,7 @@ public:
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
 		if (!replacement.skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
-		drawExecutor.ExecuteReplacementDraws(replacement, draw);
+		drawExecutor.ExecuteReplacementDraws(replacement, runtimeState->ia, &draw);
 		DX12_PROF_COUNT("IaApplied");
 		return true;
 	}

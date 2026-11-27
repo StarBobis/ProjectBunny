@@ -241,8 +241,7 @@ public:
 		UINT instanceCount = 0;
 		UINT firstInstance = 0;
 		bool fromCaller = false;
-		// `drawindexed = auto`: count is recomputed from the replaced index
-		// buffer view at execution time instead of using a literal value.
+		// Resolved from the effective buffer view at playback, including on cache hits.
 		bool autoCount = false;
 
 		static DrawCall FromAction(const Bunny::CommandListAction &action, const uint32_t *args)
@@ -250,9 +249,16 @@ public:
 			using Kind = Bunny::CommandListActionKind;
 			DrawCall draw;
 			draw.indexed = action.kind == Kind::DrawIndexed || action.kind == Kind::DrawIndexedAuto ||
+				action.kind == Kind::DrawIndexedInstancedAuto ||
 				action.kind == Kind::DrawIndexedFromCaller;
 			draw.fromCaller = action.kind == Kind::DrawFromCaller || action.kind == Kind::DrawIndexedFromCaller;
-			draw.autoCount = action.kind == Kind::DrawIndexedAuto;
+			draw.autoCount = Bunny::IsAutomaticDraw(action.kind);
+			if (draw.autoCount) {
+				// DX11 Draw and DrawIndexed issue one instance starting at zero.
+				draw.explicitInstances = action.kind != Kind::DrawIndexedInstancedAuto;
+				draw.instanceCount = 1;
+				return draw;
+			}
 			draw.explicitInstances = action.argCount >= 4;
 			draw.count = args[0];
 			if (draw.explicitInstances) {

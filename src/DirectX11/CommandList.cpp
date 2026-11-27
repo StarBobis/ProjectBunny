@@ -3,6 +3,7 @@
 #include "ExpressionFunctions.h"
 #include "IniExpressionNumbers.h"
 #include "IniDrawArguments.h"
+#include "IaBufferElementCount.h"
 #include "IniUnaryMath.h"
 // Include before util.h (or any header that includes util.h) to get pretty
 // version of LockResourceCreationMode:
@@ -2314,9 +2315,7 @@ static UINT get_vertex_count_from_current_vb(ID3D11DeviceContext* mOrigContext1)
 	vb->GetDesc(&desc);
 	vb->Release();
 
-	if (!stride || offset > desc.ByteWidth)
-		return 0;
-	return (desc.ByteWidth - offset) / stride;
+	return migoto::BufferElementCount(desc.ByteWidth, offset, stride);
 }
 
 static UINT get_index_count_from_current_ib(ID3D11DeviceContext *mOrigContext1)
@@ -2333,16 +2332,7 @@ static UINT get_index_count_from_current_ib(ID3D11DeviceContext *mOrigContext1)
 	ib->GetDesc(&desc);
 	ib->Release();
 
-	if (offset > desc.ByteWidth)
-		return 0;
-	switch(format) {
-		case DXGI_FORMAT_R16_UINT:
-			return (desc.ByteWidth - offset) / 2;
-		case DXGI_FORMAT_R32_UINT:
-			return (desc.ByteWidth - offset) / 4;
-	}
-
-	return 0;
+	return migoto::IndexCount(desc.ByteWidth, offset, format);
 }
 
 class McpDrawProbe {

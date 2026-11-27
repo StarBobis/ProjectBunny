@@ -898,6 +898,51 @@ bool TextureOverridesHaveDrawSrvReplacement(
 
 
 
+bool AutomaticDrawsNeedIaState(const Bunny::CommandListMap &lists,
+	const Bunny::ShaderOverrideMap &shaders, const Bunny::TextureOverrideMap &textures,
+	const Bunny::ShaderRegexMap &regexes)
+{
+	// Inspect reachable source actions at reload. An unsupported compiled plan may
+	// still execute an automatic draw through the VM when its condition is true.
+	std::vector<std::wstring> pending{L"Present"};
+	const auto scan = [&](const std::vector<Bunny::CommandListAction> &actions) {
+		for (const auto &action : actions) {
+			if (Bunny::IsAutomaticDraw(action.kind))
+				return true;
+			if (action.kind == Bunny::CommandListActionKind::Run)
+				pending.push_back(action.commandList);
+		}
+		return false;
+	};
+	const auto scanOverride = [&](const auto &config) {
+		for (const auto *links : {&config.commandLists.pre, &config.commandLists.main, &config.commandLists.post})
+			pending.insert(pending.end(), links->begin(), links->end());
+		return scan(config.actions);
+	};
+	for (const auto &[hash, shader] : shaders)
+		if (scanOverride(shader))
+			return true;
+	for (const auto &[hash, group] : textures)
+		for (const auto &texture : group)
+			if (scanOverride(texture))
+				return true;
+	for (const auto &[name, regex] : regexes)
+		if (!regex.hasPattern && scanOverride(regex))
+			return true;
+
+	std::unordered_set<std::wstring> visited;
+	while (!pending.empty()) {
+		auto name = std::move(pending.back());
+		pending.pop_back();
+		if (!visited.insert(name).second)
+			continue;
+		const auto list = lists.find(name);
+		if (list != lists.end() && scan(list->second.actions))
+			return true;
+	}
+	return false;
+}
+
 bool CompiledShaderOverridePlansNeedResidentIaState(
 	const std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> &plans)
 {
@@ -928,7 +973,9 @@ bool CommandListActionHasRuntimeEffect(
 	case Bunny::CommandListActionKind::SetUnorderedAccessView:
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
+	case Bunny::CommandListActionKind::DrawAuto:
 	case Bunny::CommandListActionKind::DrawIndexedAuto:
+	case Bunny::CommandListActionKind::DrawIndexedInstancedAuto:
 	case Bunny::CommandListActionKind::DrawFromCaller:
 	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 	case Bunny::CommandListActionKind::Dispatch:
@@ -983,7 +1030,9 @@ bool TextureOverrideActionsHaveRuntimeEffect(
 		case Bunny::CommandListActionKind::HandlingSkip:
 		case Bunny::CommandListActionKind::Draw:
 		case Bunny::CommandListActionKind::DrawIndexed:
+		case Bunny::CommandListActionKind::DrawAuto:
 		case Bunny::CommandListActionKind::DrawIndexedAuto:
+		case Bunny::CommandListActionKind::DrawIndexedInstancedAuto:
 		case Bunny::CommandListActionKind::DrawFromCaller:
 		case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 			if (executeDrawActions)
@@ -1073,7 +1122,9 @@ bool CommandListActionHasPhaseRuntimeEffect(
 	case Bunny::CommandListActionKind::SetUnorderedAccessView:
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
+	case Bunny::CommandListActionKind::DrawAuto:
 	case Bunny::CommandListActionKind::DrawIndexedAuto:
+	case Bunny::CommandListActionKind::DrawIndexedInstancedAuto:
 	case Bunny::CommandListActionKind::DrawFromCaller:
 	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 	case Bunny::CommandListActionKind::Dispatch:
@@ -1403,7 +1454,8 @@ bool DX12ModRuntimeLoad(
 		!iaMergedVertexTextureOverridePrefilterByVertexCount.empty();
 	bool hasIaResidentStateRequirements =
 		hasShaderIaTextureOverrideTriggers ||
-		CompiledShaderOverridePlansNeedResidentIaState(compiledShaderOverridePlans);
+		CompiledShaderOverridePlansNeedResidentIaState(compiledShaderOverridePlans) ||
+		AutomaticDrawsNeedIaState(commandLists, shaderOverrides, textureOverrides, shaderRegexes);
 	commandExecutionRuntimeSnapshot = BuildDx12CommandExecutionRuntimeSnapshot(
 		commandLists,
 		commandListRuntimeEffect,
@@ -1877,7 +1929,9 @@ bool AppendActionToCompiledPlan(
 	}
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
+	case Bunny::CommandListActionKind::DrawAuto:
 	case Bunny::CommandListActionKind::DrawIndexedAuto:
+	case Bunny::CommandListActionKind::DrawIndexedInstancedAuto:
 	case Bunny::CommandListActionKind::DrawFromCaller:
 	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 	{

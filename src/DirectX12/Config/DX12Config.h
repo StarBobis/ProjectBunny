@@ -462,7 +462,9 @@ enum class CommandListActionKind
 	SetVertexBuffer,
 	Draw,
 	DrawIndexed,
+	DrawAuto,
 	DrawIndexedAuto,
+	DrawIndexedInstancedAuto,
 	DrawFromCaller,
 	DrawIndexedFromCaller,
 	Dispatch,
@@ -483,6 +485,12 @@ enum class CommandListActionKind
 	// time (see MigotoTextureOverrideParser::ParseSections).
 	SetThisResource
 };
+
+inline bool IsAutomaticDraw(CommandListActionKind kind)
+{
+	return kind == CommandListActionKind::DrawAuto || kind == CommandListActionKind::DrawIndexedAuto ||
+		kind == CommandListActionKind::DrawIndexedInstancedAuto;
+}
 
 class CommandListAction
 {
@@ -849,10 +857,18 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 
 	if (key == L"drawinstanced" || key == L"drawindexedinstanced") {
 		const bool indexed = key == L"drawindexedinstanced";
+		if (indexed && IniDocumentText::ToLower(value) == L"auto") {
+			action->kind = CommandListActionKind::DrawIndexedInstancedAuto;
+			return true;
+		}
 		action->kind = indexed ? CommandListActionKind::DrawIndexed : CommandListActionKind::Draw;
 		return MigotoCommandListParserText::ParseDrawArgs(value, indexed ? 5 : 4, action);
 	}
 	if (key == L"draw") {
+		if (IniDocumentText::ToLower(value) == L"auto") {
+			action->kind = CommandListActionKind::DrawAuto;
+			return true;
+		}
 		if (IniDocumentText::ToLower(value) == L"from_caller") {
 			action->kind = CommandListActionKind::DrawFromCaller;
 			return true;
@@ -866,8 +882,6 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 			action->kind = CommandListActionKind::DrawIndexedFromCaller;
 			return true;
 		}
-		// `drawindexed = auto` recomputes the index count from the replaced
-		// index buffer at draw time (mirrors DX11 get_index_count_from_current_ib).
 		if (IniDocumentText::ToLower(value) == L"auto") {
 			action->kind = CommandListActionKind::DrawIndexedAuto;
 			return true;

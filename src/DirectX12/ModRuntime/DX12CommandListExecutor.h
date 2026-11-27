@@ -1472,6 +1472,8 @@ public:
 				// The standalone graph has no index binding. Never replay an
 				// explicit indexed instance request as the default overlay quad.
 				for (const Bunny::CommandListAction &action : commandList.actions) {
+					if (Bunny::IsAutomaticDraw(action.kind))
+						return;
 					if (action.kind == Bunny::CommandListActionKind::DrawIndexed && action.argCount == 5)
 						return;
 					if (action.kind == Bunny::CommandListActionKind::Draw &&
@@ -1571,7 +1573,9 @@ public:
 				break;
 			case Bunny::CommandListActionKind::Draw:
 			case Bunny::CommandListActionKind::DrawIndexed:
+			case Bunny::CommandListActionKind::DrawAuto:
 			case Bunny::CommandListActionKind::DrawIndexedAuto:
+			case Bunny::CommandListActionKind::DrawIndexedInstancedAuto:
 			case Bunny::CommandListActionKind::DrawFromCaller:
 			case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 				if (mReplacement)
@@ -1659,7 +1663,9 @@ public:
 				break;
 			case Bunny::CommandListActionKind::Draw:
 			case Bunny::CommandListActionKind::DrawIndexed:
+			case Bunny::CommandListActionKind::DrawAuto:
 			case Bunny::CommandListActionKind::DrawIndexedAuto:
+			case Bunny::CommandListActionKind::DrawIndexedInstancedAuto:
 			case Bunny::CommandListActionKind::DrawFromCaller:
 			case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 				if (executeActions)

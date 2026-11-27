@@ -132,7 +132,9 @@ run → checktextureoverride → handling(skip) → draw → drawindexed → dis
 | `drawindexed = 索引数, 起始索引, 基顶点` | 3 个无符号整数 | 索引绘制。基顶点在 DX12 中按有符号使用。 |
 | `drawinstanced = 顶点数, 实例数, 首顶点, 首实例` | 4 个数值 | 每实例顶点数和实例范围均由该命令指定。 |
 | `drawindexedinstanced = 索引数, 实例数, 首索引, 基顶点, 首实例` | 5 个数值 | 基顶点接受有符号 32 位整数，其余参数取无符号 32 位整数。 |
-| `drawindexed = auto` | — | 索引数在绘制时按**被替换后的索引缓冲**重算。 |
+| `draw = auto` | — | 顶点数取当前 VB0 视图字节数除以步长，绘制一个实例。 |
+| `drawindexed = auto` | — | 索引数按当前索引视图的格式和字节数计算，绘制一个实例。 |
+| `drawindexedinstanced = auto` | — | 同上，实例数及首实例取自被拦截的绘制。缺少原调用时跳过。 |
 | `draw = from_caller` | — | 顶点数与起始顶点取自被拦截的原始绘制。 |
 | `drawindexed = from_caller` | — | 索引数、起始索引、基顶点取自被拦截的原始绘制。 |
 | `dispatch = X组, Y组, Z组` | 3 个无符号整数 | 计算派发。 |
@@ -141,9 +143,9 @@ run → checktextureoverride → handling(skip) → draw → drawindexed → dis
 
 执行语义（`src/DirectX12/Hooks/DX12IaReplacement.h:118`，`ExecuteReplacementDraws`）：
 
-- 普通绘制继承原调用的实例数与首实例；显式实例绘制将配置的值直接传给 DX12，包括零计数。
+- 整数参数形式的 `draw` 与 `drawindexed` 继承原调用的实例数与首实例。显式实例绘制将配置的值传给 DX12，包括零计数。
 - `from_caller`：沿用原始绘制的顶点/索引数与起点；得到的计数为 0 时该次绘制被跳过。
-- `auto`：要求本次替换确实替换了索引缓冲（`replacement.hasIndexBuffer`），否则跳过；索引数 = 索引缓冲字节数 ÷ 元素宽度（`R16_UINT` 为 2 字节，其余按 4 字节），起始索引与基顶点强制为 0。
+- 自动数量使用绘制回放时实际绑定的视图。索引视图只接受 R16_UINT 和 R32_UINT。DX12 视图字节数已计入绑定偏移，除法只保留完整元素。零步长、空视图和零元素均跳过。自动绘制从顶点或索引 0 开始，基顶点为 0。
 - 普通绘制：顶点数为 0 时跳过。
 - `dispatch`：`X/Y/Z` 任一为 0 时该次派发被跳过（`DX12IaReplacement.h:131`）。
 

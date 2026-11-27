@@ -30,6 +30,8 @@ run = CommandListApply
 | `handling = skip` | 跳过原始 draw/dispatch |
 | `drawinstanced = 顶点数, 实例数, 首顶点, 首实例` | 以给定实例范围绘制 |
 | `drawindexedinstanced = 索引数, 实例数, 首索引, 基顶点, 首实例` | 使用当前索引绑定绘制，基顶点可为负数 |
+| `draw = auto`、`drawindexed = auto` | 按 VB0 或索引视图的容量绘制一个实例 |
+| `drawindexedinstanced = auto` | 按索引视图容量绘制，保留调用者实例范围 |
 | `ib/vbN = Resource名称` | 模型缓冲绑定 |
 | `ps-tN/vs-tN/cs-tN` | SRV 绑定 |
 | `阶段-cbN`、`ps-uN/cs-uN` | 受相应执行路径支持的 CB/UAV 绑定 |

@@ -183,7 +183,9 @@ public:
 				break;
 			case CommandListActionKind::Draw:
 			case CommandListActionKind::DrawIndexed:
+			case CommandListActionKind::DrawAuto:
 			case CommandListActionKind::DrawIndexedAuto:
+			case CommandListActionKind::DrawIndexedInstancedAuto:
 			case CommandListActionKind::DrawFromCaller:
 			case CommandListActionKind::DrawIndexedFromCaller:
 				out->hasDrawCommand = true;
