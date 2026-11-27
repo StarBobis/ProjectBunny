@@ -766,7 +766,7 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
 	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	heapDesc.NumDescriptors = 1;
-	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 	ID3D12DescriptorHeap *createdHeap = nullptr;
 	HRESULT heapHr = device->CreateDescriptorHeap(
 		&heapDesc, IID_PPV_ARGS(&createdHeap));
@@ -3606,48 +3606,20 @@ static const DX12PreSkinSrvReplacementBinding *FindPreSkinSrvReplacement(
 	return nullptr;
 }
 
-
-// Batch every table-mirror copy into one CopyDescriptors call: destinations
-// are disjoint slots in the fresh ring range, sources live in other heaps.
-static void MirrorPreSkinTablesIntoRing(
-	ID3D12Device *device,
+static bool CopyPreSkinTables(
 	const std::vector<DX12PreSkinTableCopy> &tables,
-	D3D12_CPU_DESCRIPTOR_HANDLE tempCpuBase, UINT tempIncrement)
+	D3D12_CPU_DESCRIPTOR_HANDLE dest, UINT increment)
 {
-	if (!device || tables.empty() || !tempCpuBase.ptr)
-		return;
-	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsDestStarts;
-	static thread_local std::vector<UINT> tlsDestSizes;
-	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsSrcStarts;
-	static thread_local std::vector<UINT> tlsSrcSizes;
-	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &destStarts = tlsDestStarts;
-	std::vector<UINT> &destSizes = tlsDestSizes;
-	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &srcStarts = tlsSrcStarts;
-	std::vector<UINT> &srcSizes = tlsSrcSizes;
-	destStarts.clear();
-	destSizes.clear();
-	srcStarts.clear();
-	srcSizes.clear();
-	for (const DX12PreSkinTableCopy &table : tables)
-	{
-		D3D12_CPU_DESCRIPTOR_HANDLE src = {};
-		src.ptr = table.cpuStart;
-		D3D12_CPU_DESCRIPTOR_HANDLE dst = tempCpuBase;
-		dst.ptr += static_cast<SIZE_T>(table.tempOffset) * tempIncrement;
-		destStarts.push_back(dst);
-		destSizes.push_back(table.count);
-		srcStarts.push_back(src);
-		srcSizes.push_back(table.count);
+	for (const auto &table : tables) {
+		DX12DescriptorHeapShadowUtils::ResolvedHeapSlot source;
+		if (!DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(table.cpuStart,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &source) ||
+			source.heap->heap != table.heap || !source.heap->readable ||
+			!source.heap->readable->CopyTo(source.slot, table.count,
+				{dest.ptr + SIZE_T(table.tempOffset) * increment}))
+			return false;
 	}
-	if (!destStarts.empty())
-	{
-		device->CopyDescriptors(
-			static_cast<UINT>(destStarts.size()), destStarts.data(),
-			destSizes.data(),
-			static_cast<UINT>(srcStarts.size()), srcStarts.data(),
-			srcSizes.data(),
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-	}
+	return true;
 }
 
 bool ApplyPreSkinDescriptorTablePatchLocked(
@@ -3922,19 +3894,28 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	D3D12_GPU_DESCRIPTOR_HANDLE tempGpuBase = {};
 	UINT tempIncrement = 0;
 	ID3D12DescriptorHeap *tempHeap = nullptr;
+	// Fill a cacheable table directly in its final heap. The transient ring
+	// and the cache heap are both shader-visible and cannot be copy sources.
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dedicatedHeap;
 	DX12_PROF_STAGE_BEGIN(PreSkinRingAlloc);
-	const bool ringAllocated = EnsurePreSkinDescriptorRingLocked(
-		device, commandList, totalDescriptors, &tempCpuBase, &tempGpuBase, &tempIncrement,
-		&tempHeap);
-	DX12_PROF_STAGE_END(PreSkinRingAlloc);
-	if (!ringAllocated)
-	{
-		return false;
+	if (!requiresCountPatch && bindingFingerprint) {
+		const D3D12_DESCRIPTOR_HEAP_DESC desc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			totalDescriptors, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+		device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&dedicatedHeap));
 	}
-	MirrorPreSkinTablesIntoRing(device, tables, tempCpuBase, tempIncrement);
-	// SRV patches are collected into their own batch below, so their staging
-	// vectors must start empty. The table mirror above owns different TLS
-	// vectors, so this clear is the only reset this batch needs.
+	if (dedicatedHeap) {
+		tempHeap = dedicatedHeap.Get();
+		tempCpuBase = tempHeap->GetCPUDescriptorHandleForHeapStart();
+		tempGpuBase = tempHeap->GetGPUDescriptorHandleForHeapStart();
+		tempIncrement = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	} else {
+		EnsurePreSkinDescriptorRingLocked(device, commandList, totalDescriptors,
+			&tempCpuBase, &tempGpuBase, &tempIncrement, &tempHeap);
+	}
+	DX12_PROF_STAGE_END(PreSkinRingAlloc);
+	if (!tempHeap || !CopyPreSkinTables(tables, tempCpuBase, tempIncrement))
+		return false;
+	// Reuse the staging arrays for this dispatch's SRV patch batch.
 	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsPreSkinSrvPatchDestStarts;
 	static thread_local std::vector<UINT> tlsPreSkinSrvPatchDestSizes;
 	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsPreSkinSrvPatchSrcStarts;
@@ -4202,50 +4183,21 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		restore.originalTable = table.gpuStart;
 		state.tableRestores.push_back(restore);
 	}
-	if (!requiresCountPatch && !outputUavResized && bindingFingerprint)
-	{
-		// Migrate the mirror into a cache-owned heap. The descriptor ring is
-		// transient now - its offsets are rewound once every GPU reference
-		// drains - so a cross-frame cache must not point into it. One heap
-		// creation plus one full-range copy per cache fill; cache hits only
-		// rebind the dedicated heap afterwards.
-		D3D12_DESCRIPTOR_HEAP_DESC dedicatedDesc = {};
-		dedicatedDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		dedicatedDesc.NumDescriptors = totalDescriptors;
-		dedicatedDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-		ID3D12DescriptorHeap *dedicatedHeap = nullptr;
-		if (SUCCEEDED(device->CreateDescriptorHeap(
-				&dedicatedDesc, IID_PPV_ARGS(&dedicatedHeap))) && dedicatedHeap)
-		{
-			device->CopyDescriptorsSimple(
-				totalDescriptors,
-				dedicatedHeap->GetCPUDescriptorHandleForHeapStart(),
-				tempCpuBase,
-				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-			const D3D12_GPU_DESCRIPTOR_HANDLE dedicatedGpuBase =
-				dedicatedHeap->GetGPUDescriptorHandleForHeapStart();
+	if (dedicatedHeap) {
+		RetainPreSkinDescriptorHeapForCommandList(commandList, dedicatedHeap.Get());
+		if (!outputUavResized) {
 			tlsCloneCache.Clear();
-			dedicatedHeap->AddRef();
+			dedicatedHeap.CopyTo(&tlsCloneCache.heap);
 			tlsCloneCache.commandList = commandList;
 			tlsCloneCache.reloadGeneration = reloadGeneration;
 			tlsCloneCache.bindingFingerprint = bindingFingerprint;
 			tlsCloneCache.triggerHash = triggerHash;
-			tlsCloneCache.heap = dedicatedHeap;
 			tlsCloneCache.tableRestores = state.tableRestores;
 			tlsCloneCache.patchedTables.reserve(tables.size());
-			for (const DX12PreSkinTableCopy &table : tables)
-			{
-				D3D12_GPU_DESCRIPTOR_HANDLE gpu = dedicatedGpuBase;
-				gpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
-				tlsCloneCache.patchedTables.push_back(gpu);
-			}
-			StorePersistentPreSkinDescriptorPatchLocked(
-				reloadGeneration,
-				bindingFingerprint,
-				triggerHash,
-				dedicatedHeap,
-				tlsCloneCache.patchedTables);
-			dedicatedHeap->Release();
+			for (const auto &table : tables)
+				tlsCloneCache.patchedTables.push_back({tempGpuBase.ptr + UINT64(table.tempOffset) * tempIncrement});
+			StorePersistentPreSkinDescriptorPatchLocked(reloadGeneration, bindingFingerprint,
+				triggerHash, dedicatedHeap.Get(), tlsCloneCache.patchedTables);
 		}
 	}
 	// END must fire unconditionally: the positional scope stack pairs every
@@ -4318,17 +4270,14 @@ void FillPreSkinDispatchOverrideFromConfig(
 // dispatch= / cs-tN and silently dropped these assignments, leaving every
 // key condition that depends on them permanently false.
 #if DX12_TIMING_BUILD
-// TIMING-build trace: dump the post-match value of every variable the
-// matched pre-skin section assigns (e.g. "$active0 = 1") so the log shows
-// exactly when the "mesh is being replaced this frame" flag flips. Compiled
-// out of regular Release builds.
-static void TracePreSkinMatchVmValues(const Bunny::TextureOverrideConfig &config)
+// Trace pre-dispatch assignments while their local scope is still live.
+static void TracePreSkinMatchVmValues(const Bunny::TextureOverrideConfig &config,
+	MigotoCommandVmUtils::ExpressionContext context)
 {
 	std::vector<std::wstring> names;
 	names.reserve(8);
 	for (const Bunny::CommandListAction &action : config.actions) {
 		if (action.kind != Bunny::CommandListActionKind::VariableAssignment &&
-		    action.kind != Bunny::CommandListActionKind::PostVariableAssignment &&
 		    action.kind != Bunny::CommandListActionKind::LocalVariableAssignment)
 			continue;
 		const std::wstring name =
@@ -4350,18 +4299,17 @@ static void TracePreSkinMatchVmValues(const Bunny::TextureOverrideConfig &config
 	char buffer[1024];
 	size_t used = 0;
 	buffer[0] = '\0';
-	MigotoCommandVmUtils::ExpressionContext context;
 	for (const std::wstring &name : names) {
 		const double value =
 			MigotoCommandVmUtils::LookupVariable(context, name);
 		const int written = snprintf(
 			buffer + used, sizeof(buffer) - used, "%s%ls=%g",
 			used ? " " : "", name.c_str(), value);
-		if (written <= 0)
+		if (written <= 0 || static_cast<size_t>(written) >= sizeof(buffer) - used)
 			break;
 		used += static_cast<size_t>(written);
 	}
-	if (used)
+	if (buffer[0])
 		DX12_LOG("DX12PreSkinVmDiag",
 			"event=match_vm_values section=%S values=%s",
 			config.section.c_str(), buffer);
@@ -4369,38 +4317,12 @@ static void TracePreSkinMatchVmValues(const Bunny::TextureOverrideConfig &config
 #endif
 
 void RunPreSkinMatchVmActions(
-	const Bunny::TextureOverrideConfig &config)
+	const Bunny::TextureOverrideConfig &config, MigotoCommandVmUtils::State &vm)
 {
-	MigotoCommandVmUtils::State state;
-	for (const Bunny::CommandListAction &action : config.actions)
-	{
-		switch (action.kind)
-		{
-		case Bunny::CommandListActionKind::ControlFlow:
-			state.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
-			break;
-		case Bunny::CommandListActionKind::VariableAssignment:
-			if (state.Active())
-				state.Assign(action.key, action.value);
-			break;
-		case Bunny::CommandListActionKind::PostVariableAssignment:
-			if (state.Active())
-				state.QueuePostAssign(action.key, action.value);
-			break;
-		case Bunny::CommandListActionKind::LocalVariableAssignment:
-			if (state.Active())
-				state.DeclareLocal(action.key, action.value);
-			break;
-		default:
-			break;
-		}
-	}
-	// The section's dispatch is issued by the game immediately after the
-	// match, so queued post assignments flush here, mirroring DX11 running
-	// the post command list right after the API call returns.
-	state.FlushPostAssignments();
+	for (const auto &action : config.actions)
+		ApplyDx12CommandVmAction(vm, action, true);
 #if DX12_TIMING_BUILD
-	TracePreSkinMatchVmValues(config);
+	TracePreSkinMatchVmValues(config, vm.Context());
 #endif
 }
 
@@ -4470,7 +4392,8 @@ bool ApplyPreSkinBindingPatchLocked(
 	{
 		return false;
 	}
-	MirrorPreSkinTablesIntoRing(device, tables, tempCpuBase, tempIncrement);
+	if (!CopyPreSkinTables(tables, tempCpuBase, tempIncrement))
+		return false;
 	
 	const DX12PreSkinTableCopy *uavTable = FindPreSkinTableCopy(tables, binding);
 	if (!uavTable)
@@ -4628,6 +4551,7 @@ public:
 bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
+	MigotoCommandVmUtils::State &vm,
 	const std::vector<DX12CurrentComputeUavBinding> &uavs,
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
@@ -4831,7 +4755,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		// Replay the section's VM actions here so those conditions can ever
 		// become true; without this the cycle key is permanently dead.
 		if (hashMatch.config)
-			RunPreSkinMatchVmActions(*hashMatch.config);
+			RunPreSkinMatchVmActions(*hashMatch.config, vm);
 		// DX11 BeforeDispatch semantics: a match_cs command list runs
 		// unconditionally, so cs-tN replacements apply with or without an
 		// explicit handling=skip + dispatch= override. Gating the table patch

@@ -61,13 +61,15 @@ public:
 		}
 
 		PreSkinProbe &probe = ScratchProbe();
-		PreparePreSkinProbe(commandList, &probe);
+		MigotoCommandVmUtils::State vm;
+		PreparePreSkinProbe(commandList, &probe, vm);
 
 		if (originalExecuteIndirect) {
 			originalExecuteIndirect(commandList, commandSignature, maxCommandCount,
 				argumentBuffer, argumentBufferOffset, countBuffer, countBufferOffset);
 		}
 
+		vm.FlushPostAssignments();
 		FinishPreSkinProbe(commandList, probe);
 	}
 
@@ -89,7 +91,7 @@ public:
 
 	static void PreparePreSkinProbe(
 		ID3D12GraphicsCommandList *commandList,
-		PreSkinProbe *probe)
+		PreSkinProbe *probe, MigotoCommandVmUtils::State &vm)
 	{
 		if (!probe || !DX12ModNeedsPreSkinningUavProbe())
 			return;
@@ -131,7 +133,7 @@ public:
 			"DX12ExecuteIndirectRuntime: bindings found uavs=%zu srvs=%zu cbvs=%zu\n",
 			probe->uavs.size(), probe->srvs.size(), probe->cbvs.size());
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
-			commandList, probe->computeShaderHash,
+			commandList, probe->computeShaderHash, vm,
 			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride);

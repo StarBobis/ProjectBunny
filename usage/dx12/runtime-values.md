@@ -6,7 +6,8 @@
 | `frame_number` | 帧号从 0 开始，每次主交换链正式 Present 返回后加 1 |
 | `frame_time` | 相邻两次正式 Present 入口之间的秒数，第一次从 DLL 启动起算 |
 | `fps` | 按 DX11 算法平滑后的帧率，收到两个有效时间点后开始有值 |
-| `draw_type` | 当前直接绘制的类型。`DrawInstanced` 为 3，`DrawIndexedInstanced` 为 4 |
+| `draw_type` | `DrawInstanced` 为 3，`DrawIndexedInstanced` 为 4，直接 `Dispatch` 命中的计算蒙皮覆盖为 8 |
+| `thread_group_count_x`、`thread_group_count_y`、`thread_group_count_z` | 当前直接派发在三个方向上的原始线程组数 |
 | `vertex_count`、`index_count` | 当前绘制每个实例的顶点数或索引数，另一项为 0 |
 | `instance_count`、`first_instance` | 当前绘制的实例数和起始实例 |
 | `first_vertex`、`first_index` | 普通绘制的起始顶点，或索引绘制的基顶点与起始索引 |
@@ -33,7 +34,9 @@
 
 直接绘制的 ShaderOverride 和它调用的命令列表在 pre、post 阶段都能读到原绘制参数。即使顶点数或实例数为 0，`draw_type` 仍按实际入口取值。在 Constants、Present 和 Key 中，上表的绘制参数均为 0。和 DX11 一样，索引绘制的 `first_vertex` 先按 32 位无符号数解释，再转换成 float32，例如基顶点 −1 在表达式中读作 4294967296。
 
-计算派发参数、间接命令参数，以及 `draw_number` 和 `dispatch_number` 的逐调用计数仍待实现。
+在通过 `cs_hash` 和 `match_cs_tN_hash` 命中的蒙皮覆盖段内，三个线程组参数始终取自游戏的原始 `Dispatch`。即使覆盖段用 `dispatch` 改写实际组数，`post` 赋值也能在派发返回后读到原始组数。其他上下文中的线程组数为 0。
+
+普通计算 ShaderOverride 的命令列表、间接命令参数，以及 `draw_number` 和 `dispatch_number` 的逐调用计数仍待对齐。
 
 ```ini
 [Constants]

@@ -836,6 +836,194 @@ void TestDrawCallParameters(ID3D12Device *device)
 	Check(wrapped->Close());
 }
 
+void TestPreSkinDispatchParameters(ID3D12Device *device)
+{
+	ComPtr<ID3D12Device> wrappedDevice = device;
+	void *pointer = wrappedDevice.Detach();
+	Require(DX12Wrapper::WrapD3D12DeviceResult(__uuidof(ID3D12Device), &pointer), "compute device wrapper");
+	wrappedDevice.Attach(static_cast<ID3D12Device*>(pointer));
+
+	D3D12_DESCRIPTOR_RANGE ranges[] = {
+		{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0},
+		{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 1}};
+	D3D12_ROOT_PARAMETER table{};
+	table.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	table.DescriptorTable = {2, ranges};
+	D3D12_ROOT_SIGNATURE_DESC rootDesc{1, &table};
+	ComPtr<ID3DBlob> blob;
+	Check(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr));
+	ComPtr<ID3D12RootSignature> root;
+	Check(wrappedDevice->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
+	constexpr char shader[] =
+		"StructuredBuffer<uint> src : register(t0); RWStructuredBuffer<uint> dst : register(u0);"
+		"[numthreads(1,1,1)] void main(uint3 id : SV_DispatchThreadID) { if (all(id == 0)) dst[0] = src[0]; }";
+	ComPtr<ID3DBlob> cs;
+	Check(D3DCompile(shader, sizeof(shader)-1, nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &cs, nullptr));
+	D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+	desc.pRootSignature = root.Get();
+	desc.CS = {cs->GetBufferPointer(), cs->GetBufferSize()};
+	ComPtr<ID3D12PipelineState> pso;
+	Check(wrappedDevice->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
+	DX12PsoShaderInfo shaderInfo{};
+	Require(DX12GetPipelineStateShaderInfo(DX12WrapperRuntimeUtils::UnwrapPipelineState(pso.Get()), &shaderInfo)
+		&& shaderInfo.hasCS, "registered compute pipeline");
+
+	const auto stem = L"dispatch-context-" + std::to_wstring(GetCurrentProcessId());
+	const auto iniPath = std::filesystem::current_path() / (stem + L".ini");
+	const auto dataPath = std::filesystem::current_path() / (stem + L".buf");
+	auto load = [&](uint32_t viewHash, bool supplyResource) {
+		std::ofstream ini(iniPath);
+		ini << "[Constants]\nglobal $after = -1\n[ShaderOverrideCompute]\nhash=" << std::hex << shaderInfo.cs
+			<< "\nchecktextureoverride=cs-t0\n[TextureOverrideSkin]\nhash=01234567\ncs_hash="
+			<< shaderInfo.cs << "\nmatch_cs_t0_hash=" << viewHash
+			<< "\ncs-t0=ResourceInput\nhandling=skip\ndispatch=2,3,4\n"
+			"$visits=$visits+1\n$kind=draw_type\n$x=thread_group_count_x\n"
+			"local $y=thread_group_count_y\nif draw_type == 8\nx87=$y\nendif\n"
+			"post $after=$y + thread_group_count_z + $boundary\n";
+		if (supplyResource) {
+			std::array<UINT, 64> contents{77};
+			std::ofstream data(dataPath, std::ios::binary);
+			data.write(reinterpret_cast<const char*>(contents.data()), sizeof(contents));
+			ini << "[ResourceInput]\ntype=Buffer\nstride=4\nfilename=" << dataPath.filename().string() << '\n';
+		}
+		ini.close();
+		const bool loaded = DX12ModRuntimeLoad(iniPath.c_str());
+		std::filesystem::remove(iniPath);
+		Require(loaded && DX12ModNeedsPreSkinningUavProbe(), "loaded compute texture override");
+		DX12ModRefreshRuntimeStateAfterReload();
+	};
+	load(1, false);
+	auto input = Buffer(wrappedDevice.Get(), D3D12_HEAP_TYPE_UPLOAD);
+	Write(input.Get(), 11);
+	auto readback = Buffer(device, D3D12_HEAP_TYPE_READBACK);
+	D3D12_RESOURCE_DESC outputDesc = input->GetDesc();
+	outputDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	D3D12_HEAP_PROPERTIES properties{};
+	properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+	ComPtr<ID3D12Resource> output, initialOutput;
+	Check(wrappedDevice->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &outputDesc,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&initialOutput)));
+	Check(wrappedDevice->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &outputDesc,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&output)));
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 257,
+		D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+	ComPtr<ID3D12DescriptorHeap> heap;
+	Check(wrappedDevice->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap)));
+	const UINT stride = wrappedDevice->GetDescriptorHandleIncrementSize(heapDesc.Type);
+	auto cpu = heap->GetCPUDescriptorHandleForHeapStart();
+	cpu.ptr += 255 * SIZE_T(stride);
+	auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
+	gpu.ptr += 255 * UINT64(stride);
+	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+	heapDesc.NumDescriptors = 3;
+	ComPtr<ID3D12DescriptorHeap> staging;
+	Check(wrappedDevice->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&staging)));
+	auto stagingSrv = staging->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE stagingUav{stagingSrv.ptr + 2 * stride};
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	srv.Buffer.StructureByteStride = 4;
+	srv.Buffer.NumElements = 64;
+	wrappedDevice->CreateShaderResourceView(input.Get(), &srv, cpu);
+	wrappedDevice->CreateShaderResourceView(input.Get(), &srv, stagingSrv);
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+	uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+	uav.Buffer.StructureByteStride = 4;
+	uav.Buffer.NumElements = 64;
+	D3D12_CPU_DESCRIPTOR_HANDLE liveUav{cpu.ptr + stride}, stagingOutput{stagingSrv.ptr + stride};
+	wrappedDevice->CreateUnorderedAccessView(initialOutput.Get(), nullptr, &uav, stagingOutput);
+	wrappedDevice->CreateUnorderedAccessView(nullptr, nullptr, &uav, stagingUav);
+	D3D12_CPU_DESCRIPTOR_HANDLE sources[]{stagingSrv, stagingUav};
+	UINT count = 2;
+	wrappedDevice->CopyDescriptors(1, &cpu, &count, 2, sources, nullptr, heapDesc.Type);
+	wrappedDevice->CopyDescriptorsSimple(1, stagingUav, stagingOutput, heapDesc.Type);
+	wrappedDevice->CopyDescriptorsSimple(1, liveUav, stagingUav, heapDesc.Type);
+	// An interop producer can write the CPU slot through a native device. The
+	// repeated copy must observe its actual contents even with unchanged logical metadata.
+	device->CreateUnorderedAccessView(DX12WrapperRuntimeUtils::UnwrapResource(output.Get()), nullptr, &uav, stagingUav);
+	wrappedDevice->CopyDescriptorsSimple(1, liveUav, stagingUav, heapDesc.Type);
+	wrappedDevice->CreateShaderResourceView(nullptr, &srv, cpu);
+	wrappedDevice->CopyDescriptorsSimple(1, cpu, stagingSrv, heapDesc.Type);
+	// Reusing the CPU sources must not change either live table descriptor.
+	wrappedDevice->CreateShaderResourceView(nullptr, &srv, stagingSrv);
+	wrappedDevice->CreateUnorderedAccessView(nullptr, nullptr, &uav, stagingUav);
+
+	List recording(wrappedDevice.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
+	auto *native = static_cast<ID3D12GraphicsCommandList*>(DX12WrapperRuntimeUtils::UnwrapCommandList(recording.list.Get()));
+	auto bind = [&] {
+		recording.list->SetPipelineState(pso.Get());
+		recording.list->SetComputeRootSignature(root.Get());
+		ID3D12DescriptorHeap *heaps[]{heap.Get()};
+		recording.list->SetDescriptorHeaps(1, heaps);
+		recording.list->SetComputeRootDescriptorTable(0, gpu);
+	};
+	bind();
+	std::vector<DX12CurrentComputeUavBinding> uavs, srvs, cbvs;
+	std::vector<DX12CurrentRootConstants> constants;
+	Require(DX12BindingTracker::GetCurrentComputeAll(native, &uavs, &srvs, &cbvs, &constants)
+		&& uavs.size() == 1 && srvs.size() == 1, "collect real compute views");
+	const uint32_t viewHash = HashComputeBufferBinding(srvs.front());
+	Require(viewHash != 0 && viewHash != 1, "resolved live SRV hash");
+	const auto value = [](const wchar_t *name) { return MigotoCommandVmUtils::LookupVariable({}, name); };
+	const auto dispatch = [](ID3D12GraphicsCommandList *list, UINT x, UINT y, UINT z) {
+		recordedDraws.push_back({x, y, z, static_cast<int64_t>(MigotoCommandVmUtils::LookupVariable({}, L"$after"))});
+		MigotoCommandVmUtils::SetGlobal(L"$boundary", 10);
+		list->Dispatch(x, y, z);
+	};
+	auto captureOutput = [&](UINT offset) {
+		D3D12_RESOURCE_BARRIER barrier{};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition = {DX12WrapperRuntimeUtils::UnwrapResource(output.Get()), 0,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE};
+		native->ResourceBarrier(1, &barrier);
+		native->CopyBufferRegion(readback.Get(), offset, barrier.Transition.pResource, 0, sizeof(UINT));
+		std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+		native->ResourceBarrier(1, &barrier);
+	};
+	recordedDraws.clear();
+	DX12WrapperRuntimeUtils::Dispatch(native, 1, 1, 1, dispatch);
+	Require(value(L"$visits") == 0 && value(L"$after") == -1, "SRV mismatch bypasses the script");
+	captureOutput(0);
+	load(viewHash, false);
+	bind();
+	for (UINT y : {3u, 3u, 7u}) {
+		MigotoCommandVmUtils::SetGlobal(L"$boundary", 0);
+		const auto previous = value(L"$after");
+		DX12WrapperRuntimeUtils::Dispatch(native, 0, y, 5, dispatch);
+		Require(value(L"$kind") == 8 && value(L"$x") == 0 && value(L"x87") == y &&
+			value(L"$after") == y + 15 && recordedDraws.back()[3] == previous,
+			"pre and post resolve original groups across the native call on failed replacement");
+	}
+	Require(value(L"$visits") == 3 && recordedDraws.size() == 4 && recordedDraws.back()[1] == 7,
+		"failed patch retries the matched script on identical bindings and arguments");
+	load(viewHash, true);
+	bind();
+	DX12WrapperRuntimeUtils::Dispatch(native, 6, 8, 9, dispatch);
+	Require(recordedDraws.back() == std::array<int64_t, 6>{2, 3, 4, -1, 0, 0} &&
+		value(L"$x") == 6 && value(L"x87") == 8 && value(L"$after") == 27,
+		"successful patch forwards replacement groups and exposes original groups in post");
+	captureOutput(sizeof(UINT));
+	DX12WrapperRuntimeUtils::Dispatch(native, 2, 5, 1, dispatch);
+	Require(value(L"$visits") == 2 && value(L"$x") == 2 && value(L"x87") == 5 && value(L"$after") == 16,
+		"cached replacement executes commands with this dispatch's parameters");
+	captureOutput(2 * sizeof(UINT));
+	Check(recording.list->Close());
+	auto queue = Queue(device, D3D12_COMMAND_LIST_TYPE_DIRECT);
+	ID3D12CommandList *batch[]{native};
+	queue->ExecuteCommandLists(1, batch);
+	Drain(device, queue.Get());
+	void *mapped = nullptr;
+	D3D12_RANGE reads{0, 3 * sizeof(UINT)};
+	Check(readback->Map(0, &reads, &mapped));
+	const auto *values = static_cast<const UINT*>(mapped);
+	const bool correct = values[0] == 11 && values[1] == 77 && values[2] == 77;
+	D3D12_RANGE noWrites{};
+	readback->Unmap(0, &noWrites);
+	std::filesystem::remove(dataPath);
+	Require(correct, "native CS reads original then replacement SRVs and preserves the live UAV across staging reuse");
+}
+
 void TestAutomaticDraws(ID3D12Device *device)
 {
 	Bunny::IniDocument ini;
@@ -1016,6 +1204,7 @@ int main(int argc, char **argv)
 		TestSwapChain(factory.Get(), device.Get());
 		TestOverlay(device.Get());
 		TestDrawCallParameters(device.Get());
+		TestPreSkinDispatchParameters(device.Get());
 		if (debug) {
 			ComPtr<ID3D12InfoQueue> info;
 			Check(device.As(&info));

@@ -3139,6 +3139,7 @@ bool ApplyPreSkinBindingPatchLocked(
 bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
+	MigotoCommandVmUtils::State &vm,
 	const std::vector<DX12CurrentComputeUavBinding> &uavs,
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs,

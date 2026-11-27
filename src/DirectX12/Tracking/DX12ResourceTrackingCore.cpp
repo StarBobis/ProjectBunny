@@ -249,6 +249,7 @@ static void ClearDescriptorHeapLocked(DescriptorHeapRecord *heap)
 			ReleaseDescriptorRecordResources(&record);
 		});
 	heap->chunkedSlots.Reset();
+	heap->readable.reset();
 	heap->slotHistory.clear();
 	heap->slotHistoryEpochs.clear();
 	DX12DescriptorSlotArrayUtils::SetLiveSlots(heap, 0);

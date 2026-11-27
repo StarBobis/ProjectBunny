@@ -4,6 +4,34 @@
 // Not meant to be included directly.
 
 
+inline bool ApplyDx12CommandVmAction(MigotoCommandVmUtils::State &vm,
+	const Bunny::CommandListAction &action, bool includePost)
+{
+	switch (action.kind) {
+	case Bunny::CommandListActionKind::ControlFlow:
+		vm.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
+		return true;
+	case Bunny::CommandListActionKind::VariableAssignment:
+		if (vm.Active())
+			vm.Assign(action.key, action.value);
+		return true;
+	case Bunny::CommandListActionKind::PostVariableAssignment:
+		if (includePost && vm.Active())
+			vm.QueuePostAssign(action.key, action.value);
+		return true;
+	case Bunny::CommandListActionKind::LocalVariableAssignment:
+		if (vm.Active())
+			vm.DeclareLocal(action.key, action.value);
+		return true;
+	case Bunny::CommandListActionKind::SetShaderConstant:
+		if (vm.Active())
+			vm.AssignSymbol(action.key, action.value);
+		return true;
+	default:
+		return false;
+	}
+}
+
 class DX12CommandListExecutorScratch
 {
 public:
@@ -1684,34 +1712,10 @@ public:
 
 	bool ApplyVmAction(const Bunny::CommandListAction &action, bool includePost)
 	{
-		switch (action.kind) {
-		case Bunny::CommandListActionKind::ControlFlow:
-			observedDynamicCommandState = true;
-			mVm.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
-			return true;
-		case Bunny::CommandListActionKind::VariableAssignment:
-			observedDynamicCommandState = true;
-			if (mVm.Active())
-				mVm.Assign(action.key, action.value);
-			return true;
-		case Bunny::CommandListActionKind::PostVariableAssignment:
-			observedDynamicCommandState = true;
-			if (includePost && mVm.Active())
-				mVm.QueuePostAssign(action.key, action.value);
-			return true;
-		case Bunny::CommandListActionKind::LocalVariableAssignment:
-			observedDynamicCommandState = true;
-			if (mVm.Active())
-				mVm.DeclareLocal(action.key, action.value);
-			return true;
-		case Bunny::CommandListActionKind::SetShaderConstant:
-			observedDynamicCommandState = true;
-			if (mVm.Active())
-				mVm.AssignSymbol(action.key, action.value);
-			return true;
-		default:
+		if (!ApplyDx12CommandVmAction(mVm, action, includePost))
 			return false;
-		}
+		observedDynamicCommandState = true;
+		return true;
 	}
 
 	void RunCommandListLinks(

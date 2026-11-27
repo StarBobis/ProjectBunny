@@ -3,6 +3,7 @@
 #pragma once
 
 #include "DX12DescriptorHeapShard.h"
+#include "DX12CpuDescriptorPages.h"
 
 struct RootSignatureRecord
 {
@@ -135,6 +136,14 @@ public:
 		return Finish(hash);
 	}
 
+	static UINT64 HashSamplerFeedback(ID3D12Resource *target, ID3D12Resource *feedback)
+	{
+		UINT64 hash = 0x53414d5046454544ull;
+		Append(&hash, &target, sizeof(target));
+		Append(&hash, &feedback, sizeof(feedback));
+		return Finish(hash);
+	}
+
 	static UINT64 HashConstantBufferView(
 		const D3D12_CONSTANT_BUFFER_VIEW_DESC &desc)
 	{
@@ -164,6 +173,7 @@ struct DescriptorHeapRecord
 	// Lock striping follows the heap record when gDescriptorHeaps grows or
 	// reuses a slot. Sequential descriptor slots land in different shards.
 	std::unique_ptr<StateLocks> stateLocks;
+	std::unique_ptr<DX12CpuDescriptorPages> readable;
 	// Chunked dense current-value storage: the primary store in normal Mod
 	// mode. Chunk bodies are allocated lazily, so multi-million-slot heaps
 	// only pay for the regions the game actually writes.

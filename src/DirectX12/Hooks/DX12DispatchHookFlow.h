@@ -526,7 +526,12 @@ public:
 		DX12ExecVerdictDiag::Report(blockReason, effectiveState,
 			dispatchDecision->computeShaderHash);
 		DX12_DIAG_QPC(prepareProbeBegin);
-		PreparePreSkinProbe(commandList, effectiveState, &probe);
+		MigotoCommandVmUtils::State vm;
+		vm.call.type = DrawCall::Dispatch;
+		vm.call.ThreadGroupCountX = threadGroupCountX;
+		vm.call.ThreadGroupCountY = threadGroupCountY;
+		vm.call.ThreadGroupCountZ = threadGroupCountZ;
+		PreparePreSkinProbe(commandList, effectiveState, &probe, vm);
 		const std::vector<DX12CurrentComputeUavBinding> &probeUavs =
 			probe.cachedUavs ? *probe.cachedUavs : probe.uavs;
 		const std::vector<DX12CurrentComputeUavBinding> &probeSrvs =
@@ -571,7 +576,7 @@ public:
 				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			}
 			DX12_DIAG_QPC(finishBegin);
-			FinishPreSkinProbe(commandList);
+			FinishPreSkinProbe(commandList, vm);
 			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"dispatch_finish_probe",
@@ -591,7 +596,7 @@ public:
 			1,
 			DX12_DIAG_ELAPSED_US(dispatchOriginalBegin));
 		DX12_DIAG_QPC(finishOriginalBegin);
-		FinishPreSkinProbe(commandList);
+		FinishPreSkinProbe(commandList, vm);
 		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"dispatch_finish_probe",
@@ -785,7 +790,8 @@ public:
 	static void PreparePreSkinProbe(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
-		DX12DispatchPreSkinProbe *probe)
+		DX12DispatchPreSkinProbe *probe,
+		MigotoCommandVmUtils::State &vm)
 	{
 		if (!probe || !(DX12HotPathState::HookWorkFlags &
 			DX12HotPathState::FLAG_PRE_SKIN_PROBE)) {
@@ -1322,7 +1328,7 @@ public:
 		DX12_PROF_STAGE_SCOPE(PreSkinApply);
 		DX12_DIAG_QPC(applyBegin);
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
-			commandList, probe->computeShaderHash,
+			commandList, probe->computeShaderHash, vm,
 			probe->uavsFound ? uavs : kEmptyComputeBindings,
 			srvs,
 			probe->cbvsFound ? cbvs : kEmptyComputeBindings,
@@ -1342,6 +1348,10 @@ public:
 		// Only match-phase misses go to the geometry cache: they depend solely
 		// on the inputs folded into negativeMatchKey. A positive that failed
 		// its descriptor patch is content-dependent and must keep re-probing.
+		// A matched section ran its commands even if its replacement could not
+		// be applied. Only a proven match miss may suppress the next dispatch.
+		if (!probe->applied && !matchPhaseMiss)
+			return;
 		if (matchPhaseMiss && negativeMatchKey)
 			DX12ModStorePreSkinNegativeMatch(negativeMatchKey);
 		if (positiveCacheHit && probe->applied && !probe->dispatchOverride.hasDispatch &&
@@ -1377,8 +1387,9 @@ public:
 			static_cast<long long>(DX12_DIAG_ELAPSED_US(t0)));
 	}
 
-	static void FinishPreSkinProbe(ID3D12GraphicsCommandList *commandList)
+	static void FinishPreSkinProbe(ID3D12GraphicsCommandList *commandList, MigotoCommandVmUtils::State &vm)
 	{
+		vm.FlushPostAssignments();
 		// Keep PreSkin descriptor/table mutations scoped to the current
 		// dispatch. Deferred reuse is a CPU optimization, but if our tracked
 		// command-list state drifts from the actual restored bindings it can

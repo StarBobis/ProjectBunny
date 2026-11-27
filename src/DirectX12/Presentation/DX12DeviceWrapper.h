@@ -675,8 +675,8 @@ class DeviceWrapper
 			}
 			{
 				DX12_PROF_CREATE_SCOPE(DescriptorCbvWrapper, Record);
-				DX12DescriptorHeapShadowUtils::RecordCreatedConstantBufferViewIfChanged(
-					pDesc, DestDescriptor);
+				DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
+					mDevice, pDesc, DestDescriptor);
 			}
 		}
 
@@ -1731,10 +1731,11 @@ class DeviceWrapper
 			DX12_PROF_CREATE_SCOPE(DescriptorUavWrapper, Original);
 			ID3D12Device8 *device8 = nullptr;
 			if (SUCCEEDED(QueryDevice8(&device8))) {
-				device8->CreateSamplerFeedbackUnorderedAccessView(
-					DX12WrapperRuntimeUtils::UnwrapResource(pTargetedResource),
-					DX12WrapperRuntimeUtils::UnwrapResource(pFeedbackResource),
-					DestDescriptor);
+				auto *target = DX12WrapperRuntimeUtils::UnwrapResource(pTargetedResource);
+				auto *feedback = DX12WrapperRuntimeUtils::UnwrapResource(pFeedbackResource);
+				device8->CreateSamplerFeedbackUnorderedAccessView(target, feedback, DestDescriptor);
+				DX12ResourceTrackerHookRuntime::RecordCreatedSamplerFeedbackView(
+					device8, target, feedback, DestDescriptor);
 				device8->Release();
 			}
 		}

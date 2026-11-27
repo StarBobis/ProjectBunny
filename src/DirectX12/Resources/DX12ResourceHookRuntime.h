@@ -36,6 +36,10 @@ public:
 		HRESULT hr, ID3D12Device *device, const D3D12_DESCRIPTOR_HEAP_DESC *desc, void **heap);
 	static void RecordCreatedRootSignature(
 		HRESULT hr, UINT nodeMask, const void *blob, SIZE_T blobLength, void **rootSignature);
+	static void RecordCreatedConstantBufferView(ID3D12Device *device,
+		const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE dest);
+	static void RecordCreatedSamplerFeedbackView(ID3D12Device8 *device,
+		ID3D12Resource *target, ID3D12Resource *feedback, D3D12_CPU_DESCRIPTOR_HANDLE dest);
 	static void RecordCreatedShaderResourceView(
 		ID3D12Device *device,
 		ID3D12Resource *resource,

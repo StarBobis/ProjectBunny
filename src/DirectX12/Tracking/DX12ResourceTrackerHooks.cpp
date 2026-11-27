@@ -83,6 +83,9 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 	record.increment = device->GetDescriptorHandleIncrementSize(desc->Type);
 	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
 		desc->Type, record.increment);
+	if (record.gpuStart && desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && desc->NumDescriptors)
+		record.readable = std::make_unique<DX12CpuDescriptorPages>(
+			device, record.increment, desc->NumDescriptors, desc->NodeMask);
 	InitializeDescriptorHeapRecord(&record);
 	DX12ObjectLifetimeTrackerUtils::InstallDescriptorHeapReleaseTracker(descriptorHeap);
 	descriptorHeap->Release();
@@ -131,6 +134,36 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 		blobLength);
 }
 
+template<class Writer>
+static void WriteReadableView(D3D12_CPU_DESCRIPTOR_HANDLE dest, Writer write)
+{
+	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot slot;
+	if (!DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
+			dest.ptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &slot))
+		return;
+	if (slot.heap->readable)
+		slot.heap->readable->Write(slot.slot, 1, [&](auto cpu, UINT, UINT) { write(cpu); });
+}
+
+void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(ID3D12Device *device,
+	const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE dest)
+{
+	WriteReadableView(dest, [&](auto cpu) { device->CreateConstantBufferView(desc, cpu); });
+	DX12DescriptorHeapShadowUtils::RecordCreatedConstantBufferViewIfChanged(desc, dest);
+}
+
+void DX12ResourceTrackerHookRuntime::RecordCreatedSamplerFeedbackView(
+	ID3D12Device8 *device, ID3D12Resource *target, ID3D12Resource *feedback, D3D12_CPU_DESCRIPTOR_HANDLE dest)
+{
+	WriteReadableView(dest, [&](auto cpu) { device->CreateSamplerFeedbackUnorderedAccessView(target, feedback, cpu); });
+	DescriptorRecord record;
+	SetDescriptorKind(&record, DescriptorKind::UAV_ID);
+	record.cpuHandle = dest.ptr;
+	CaptureDescriptorResourcePointer(&record, feedback);
+	record.valueId = DX12DescriptorValueHashUtils::HashSamplerFeedback(target, feedback);
+	DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged(std::move(record));
+}
+
 static void ApplyStaticReplacementToRecordedSrv(
 	ID3D12Device *device, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
 
@@ -141,6 +174,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
 	DescriptorRecord record;
+	WriteReadableView(destDescriptor, [&](auto cpu) { device->CreateShaderResourceView(resource, desc, cpu); });
 	SetDescriptorKind(&record, DescriptorKind::SRV_ID);
 	record.cpuHandle = destDescriptor.ptr;
 	CaptureDescriptorResourcePointer(&record, resource);
@@ -220,6 +254,9 @@ static void ApplyStaticReplacementToRecordedSrv(
 		nullptr, "ID3D12Device::CopyDescriptorsSimple");
 	if (!originalSimple)
 		return;
+	WriteReadableView(destDescriptor, [&](auto cpu) {
+		originalSimple(device, 1, cpu, replacementSrv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	});
 	originalSimple(device, 1, destDescriptor, replacementSrv,
 		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	DX12_LOG("DX12StaticTextureReplacement",
@@ -246,6 +283,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
 	DescriptorRecord record;
+	WriteReadableView(destDescriptor, [&](auto cpu) { device->CreateUnorderedAccessView(resource, counterResource, desc, cpu); });
 	SetDescriptorKind(&record, DescriptorKind::UAV_ID);
 	record.cpuHandle = destDescriptor.ptr;
 	record.counterResource = counterResource;
@@ -366,10 +404,44 @@ struct DescriptorCopyHeapMemo
 	}
 };
 
+// A game copy can scatter into multiple sparse CPU pages. Submit the same
+// ranges to the driver together, with a bounded stack buffer.
+struct ReadableDescriptorCopies
+{
+	static constexpr UINT Capacity = 32;
+	D3D12_CPU_DESCRIPTOR_HANDLE destinations[Capacity], sources[Capacity];
+	UINT sizes[Capacity];
+	UINT count = 0;
+	ID3D12Device *device = nullptr;
+
+	void Flush()
+	{
+		if (count == 1)
+			device->CopyDescriptorsSimple(sizes[0], destinations[0], sources[0],
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		else if (count)
+			device->CopyDescriptors(count, destinations, sizes, count, sources, sizes,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		count = 0;
+	}
+
+	void Add(ID3D12Device *owner, D3D12_CPU_DESCRIPTOR_HANDLE dest,
+		D3D12_CPU_DESCRIPTOR_HANDLE source, UINT size)
+	{
+		if (count == Capacity || (count && device != owner))
+			Flush();
+		device = owner;
+		destinations[count] = dest;
+		sources[count] = source;
+		sizes[count++] = size;
+	}
+};
+
 struct DescriptorCopyCallScope
 {
 	D3D12_DESCRIPTOR_HEAP_TYPE heapType = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
 	UINT increment = 0;
+	ReadableDescriptorCopies readableCopies;
 	// Multi-range copies reuse the thread-local destination bounds.
 	DescriptorCopyHeapMemo *destinationMemo = nullptr;
 	// NeedsDumpOrHuntingTracking() is two out-of-line policy calls; it is
@@ -422,6 +494,7 @@ static void FinishCopiedDescriptorCall(DescriptorCopyCallScope &scope)
 		DX12DiagProf::AddCalls("Rm.DescCopyLockedPath", scope.lockedPathCalls);
 		DX12DiagProf::AddCalls("Rm.DescCopyLedgerFallback", scope.ledgerFallbackCalls);
 	}
+	scope.readableCopies.Flush();
 	scope.commitSet.CommitAll();
 }
 
@@ -445,13 +518,18 @@ static void RecordCopiedDescriptorBlock(
 
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot source;
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot destination;
-	const bool resolvedBoth =
-		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
-			srcDescriptorRangeStart.ptr, scope.heapType, &source) &&
-		(scope.destinationMemo ?
-			scope.destinationMemo->Resolve(destDescriptorRangeStart.ptr, scope.heapType, &destination) :
-			DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
-				destDescriptorRangeStart.ptr, scope.heapType, &destination));
+	const bool destKnown = scope.destinationMemo ?
+		scope.destinationMemo->Resolve(destDescriptorRangeStart.ptr, scope.heapType, &destination) :
+		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(destDescriptorRangeStart.ptr, scope.heapType, &destination);
+	const bool resolvedBoth = DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
+		srcDescriptorRangeStart.ptr, scope.heapType, &source) && destKnown;
+	if (destKnown && destination.heap->readable) {
+		destination.heap->readable->Write(destination.slot, numDescriptors,
+			[&](D3D12_CPU_DESCRIPTOR_HANDLE dest, UINT offset, UINT count) {
+				scope.readableCopies.Add(destination.heap->readable->Device(), dest,
+					{srcDescriptorRangeStart.ptr + SIZE_T(offset) * increment}, count);
+			});
+	}
 	// A failed resolve leaves that side at the default nullptr heap, so every
 	// heap access below is guarded: the stateLocks test precedes its own
 	// dereference, and the materialization flags are only read through a present
