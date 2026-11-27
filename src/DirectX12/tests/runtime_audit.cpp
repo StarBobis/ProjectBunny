@@ -8,6 +8,7 @@
 #include "ModRuntime/DX12ModRuntimeInternal.h"
 #include "Presentation/DX12SwapChainQueues.h"
 #include "tests/IniUnaryMathCases.h"
+#include "tests/IniArithmeticCases.h"
 #include "tests/IniBitwiseCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
@@ -66,7 +67,10 @@ void TestExpressionNumbers()
 	Require(ini.Parse(L"[Constants]\nglobal $mask = 0b101 + 0B11 * 2\n"
 		L"global $power = 2**3**2\nglobal $neg = -2**2 + 4**-1\n"
 		L"global $signed = 0 !== -0\nglobal $equal = $mask === 11\n"
-		L"global $shift = 1 << 2\nglobal $flagged = ($mask ^ $shift) & 15\n"),
+		L"global $shift = 1 << 2\nglobal $flagged = ($mask ^ $shift) & 15\n"
+		L"global $large = 16777216\nlocal $next = $large + 1\n"
+		L"global $tiny = 0.00000025\nif $tiny\nx7 = 1 / $tiny\nendif\n"
+		L"if $large == $next\nglobal $delta = $next - $large\nelse\nglobal $delta = -1\nendif\n"),
 		"parse numeric expressions");
 	Bunny::CommandListMap lists;
 	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
@@ -85,10 +89,22 @@ void TestExpressionNumbers()
 			std::fprintf(stderr, "DX12 bitwise %ls produced %.9g, expected %.9g\n", test.expression, actual, test.expected);
 		Require(parser.ok && actual == test.expected, "bitwise precedence, chaining, rounding and boundaries");
 	}
-	Require(vm.Evaluate(L"0 == -0") == 1 && vm.Evaluate(L"1 == 1.0000001") == 1,
-		"ordinary DX12 equality retains its tolerance");
+	for (const auto &test : migoto::test::ArithmeticCases) {
+		const std::wstring expression(test.expression);
+		MigotoCommandVmUtils::ExpressionParser parser(expression, vm.Context());
+		const double actual = parser.Parse();
+		if (!parser.ok || !test.Matches(actual))
+			std::fprintf(stderr, "DX12 %ls produced %.17g, expected %.9g\n", test.expression, actual, test.expected);
+		Require(parser.ok && test.Matches(actual), "float32 arithmetic, comparison and truth values");
+	}
+	Require(vm.Evaluate(L"$delta") == 0 && vm.Evaluate(L"x7") == 4000000,
+		"Constants locals, conditions and shader constants use single-precision expressions");
+	MigotoCommandVmUtils::SetGlobal(L"$external", 16777217.0);
+	vm.Assign(L"$rounded", L"$external");
+	Require(MigotoCommandVmUtils::LookupVariable({}, L"$rounded") == 16777216.0,
+		"externally published operands round on entry to the expression");
 	const std::wstring maximum = L"0b" + std::wstring(64, L'1');
-	Require(vm.Evaluate(maximum) == static_cast<double>(UINT64_MAX), "maximum binary literal");
+	Require(vm.Evaluate(maximum) == static_cast<float>(UINT64_MAX), "maximum binary literal");
 	for (const std::wstring &invalid : {maximum + L"1", std::wstring(L"0b"),
 		std::wstring(L"0b102"), std::wstring(L"2**"), std::wstring(L"1 & & 2"),
 		std::wstring(L"1 ||| 2"), std::wstring(L"1 <<"), std::wstring(L"~")}) {

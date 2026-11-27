@@ -5203,39 +5203,6 @@ static size_t FindResourceCopyTargetTokenEnd(std::wstring_view str, size_t start
 	return str.size();
 }
 
-// `input` must be backed by a string that is NUL-terminated at input.data() +
-// input.size(), because std::wcstof() has no length-bounded variant.
-inline bool ParseFloatToken(std::wstring_view input, float& out, size_t& length)
-{
-	// Binary literal.
-	if (input.size() >= 3 && input[0] == L'0' && input[1] == L'b')
-	{
-		std::uint64_t value;
-
-		if (!migoto::ReadBinaryDigits(input, 2, value, length))
-			return false;
-
-		out = static_cast<float>(value);
-		length += 2; // Include the "0b" prefix.
-		return true;
-	}
-
-	wchar_t* end = nullptr;
-
-	errno = 0;
-	const wchar_t* begin = input.empty() ? L"" : input.data();
-	out = std::wcstof(begin, &end);
-
-	if (end == begin)
-		return false;
-
-	length = static_cast<std::size_t>(end - begin);
-
-	// Preserve wcstof overflow, underflow and signed zero.
-
-	return true;
-}
-
 // Defined below, next to the other operand context helpers.
 static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope* scope);
 
@@ -5243,7 +5210,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope*
 // straight from the remaining expression instead of materialising a wstring.
 static bool parse_float_token(CommandListOperand* operand, std::wstring_view text, CommandListScope* scope, size_t& out_length)
 {
-	if (!ParseFloatToken(text, operand->val, out_length))
+	if (!migoto::ReadExpressionNumber(text, operand->val, out_length))
 		return false;
 
 	operand->type = ParamOverrideType::VALUE;
@@ -5385,7 +5352,7 @@ bool CommandArgumentReader::GetFloat(float* out)
 
 	size_t len;
 
-	if (!ParseFloatToken(token, *out, len) || len != token.size())
+	if (!migoto::ReadExpressionNumber(token, *out, len) || len != token.size())
 	{
 		SetError(L"Invalid float: " + token, m_peek_start_pos);
 		return false;
@@ -6076,15 +6043,15 @@ static CommandListOperatorFactory<random_operatorT> random_operator;
 
 // High level of precedence, right-associative. Lower than unary operators, so
 // that 4**-2 works for square root
-DEFINE_OPERATOR(exponent_operator,      "**", (pow(lhs, rhs)));
+DEFINE_OPERATOR(exponent_operator,      "**", migoto::arithmetic::Power(lhs, rhs));
 
-DEFINE_OPERATOR(multiplication_operator,"*",  (lhs * rhs));
-DEFINE_OPERATOR(division_operator,      "/",  (lhs / rhs));
-DEFINE_OPERATOR(floor_division_operator,"//", (floor(lhs / rhs)));
-DEFINE_OPERATOR(modulus_operator,       "%",  (fmod(lhs, rhs)));
+DEFINE_OPERATOR(multiplication_operator,"*",  migoto::arithmetic::Multiply(lhs, rhs));
+DEFINE_OPERATOR(division_operator,      "/",  migoto::arithmetic::Divide(lhs, rhs));
+DEFINE_OPERATOR(floor_division_operator,"//", migoto::arithmetic::FloorDivide(lhs, rhs));
+DEFINE_OPERATOR(modulus_operator,       "%",  migoto::arithmetic::Remainder(lhs, rhs));
 
-DEFINE_OPERATOR(addition_operator,      "+",  (lhs + rhs));
-DEFINE_OPERATOR(subtraction_operator,   "-",  (lhs - rhs));
+DEFINE_OPERATOR(addition_operator,      "+",  migoto::arithmetic::Add(lhs, rhs));
+DEFINE_OPERATOR(subtraction_operator,   "-",  migoto::arithmetic::Subtract(lhs, rhs));
 
 DEFINE_OPERATOR(left_shift_operator,    "<<", migoto::bitwise::ShiftLeft(lhs, rhs));
 DEFINE_OPERATOR(right_shift_operator,   ">>", migoto::bitwise::ShiftRight(lhs, rhs));

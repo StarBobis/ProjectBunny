@@ -327,7 +327,7 @@ spec 的默认值是 `fill=solid` / `cull=back` / `topology=triangle_list` / `fr
 
 ## 4. 表达式
 
-表达式求值器在 `src/common/MigotoCommandVmUtils.hpp:72`（`ExpressionParser`）。
+表达式由 `src/common/MigotoCommandVmUtils.hpp` 中的 `ExpressionParser` 求值。
 
 ### 4.1 优先级（高 → 低）
 
@@ -347,13 +347,12 @@ spec 的默认值是 `fill=solid` / `cull=back` / `topology=triangle_list` / `fr
 
 | 规则 | 取值 | 源码 |
 | --- | --- | --- |
-| 相等判定容差 | `\|a-b\| < 1e-6` 判等，否则不等 | `:123` |
-| 真值判定 | `\|v\| > 1e-6` 为真 | `:458` |
-| 除法 / 整除 / 取模的除数 | `\|rhs\| < 1e-6` 时结果为 **0**（不是错误、不是无穷） | `:170`、`:175`、`:178` |
-| `//` | 向下取整的除法 | `:170` |
-| `%` | `fmod` | `:178` |
-| `&&` / `\|\|` | **两侧都求值**，不短路 | `:94`、`:108` |
-| 数字字面量 | `0b` 或 `0B` 后可接 1–64 个二进制位；其他数字由 `wcstod` 解析 | `ParseNumber` |
+| 算术精度 | 操作数与各步结果均为 float32 | `src/common/IniExpressionNumbers.h` |
+| 数值相等 | 精确比较 float32 数值。正负零相等，NaN 与自身不相等 | `ParseEquality` |
+| 真值判定 | 正负零为假，其余数值和 NaN 为真 | `Truthy` |
+| 除法 / 整除 / 取模 | 非零除数正常参与运算。`//` 对商向下取整，`%` 使用 `fmod`。非零有限数除以零得到有符号无穷，零除以零或对零取模得到 NaN | `src/common/IniExpressionNumbers.h` |
+| `&&` / `\|\|` | 两侧都求值 | `ParseAnd`、`ParseOr` |
+| 数字字面量 | `0b` 或 `0B` 后可接 1–64 个二进制位，读入时舍入到 float32。其他数值使用 `wcstof` 解析 | `ReadExpressionNumber` |
 | 一元数学函数 | 21 个纯数值函数与 DX11 共享实现和回归用例，函数的参数与结果使用 float32 | `src/common/IniUnaryMath.h` |
 | `random(max)` | 两端共用有界采样器。正上限取 [0, max)，负上限取 (max, 0]。换帧更新种子并保留采样序号。语法错误、零或非有限上限均不消耗样本 | `src/common/ExpressionFunctions.cpp` |
 | 位运算与移位 | `~ & ^ \| << >>` 与 DX11 共用操作数转换、算术右移和 float32 结果舍入规则。移位数取低 5 位 | `src/common/IniBitwise.h` |
@@ -588,7 +587,7 @@ DDS 纹理的像素上传走一条**私有队列 + 围栏**通道（`src/DirectX
 
 | 主题 | DX11 | DX12 |
 | --- | --- | --- |
-| 表达式数值 | float32 位操作、数学函数、`**`、`===`、二进制字面量 | 基础算术使用 double。位运算、移位和一元数学函数与 DX11 共享数值实现。`===`、`!==` 比较转换后的 float32 位模式 |
+| 表达式数值 | float32 算术、比较、位操作、数学函数、`**`、`===`、二进制字面量 | 数字解析、算术、位运算、移位和一元数学函数与 DX11 共享实现。`===`、`!==` 比较 float32 位模式 |
 | 逻辑求值 | — | `&&` / `\|\|` **两侧都求值**（不短路） |
 | 除零 | — | 结果为 0，不报错 |
 | `global` 前缀 | 显式写全局变量 | 与 `$x` 同路径；作用域链上有同名 local 时写 local |

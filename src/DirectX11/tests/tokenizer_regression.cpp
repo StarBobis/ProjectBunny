@@ -1,4 +1,5 @@
 #include "CommandList.h"
+#include "tests/IniArithmeticCases.h"
 #include "tests/IniBitwiseCases.h"
 #include "IniHandler.h"
 #include "globals.h"
@@ -259,6 +260,21 @@ void run_tokenizer_regression()
     fixture.initialize();
     const std::wstring empty_namespace;
     test_binary_scanner();
+    for (const auto& test : migoto::test::ArithmeticCases) {
+        CommandListScope scope;
+        CommandListState state;
+        CommandListExpression expression;
+        const std::wstring text(test.expression);
+        check(expression.parse(&text, &empty_namespace, &scope), "parse DX11 arithmetic expression");
+        float folded;
+        const float actual = expression.evaluate(&state);
+        if (!test.Matches(actual))
+            std::fprintf(stderr, "DX11 %ls produced %.9g, expected %.9g\n", test.expression, actual, test.expected);
+        check(test.Matches(actual) && expression.static_evaluate(&folded) && test.Matches(folded),
+            "DX11 runtime and static arithmetic");
+        expression.optimise(nullptr);
+        check(test.Matches(expression.evaluate(&state)), "DX11 optimized arithmetic");
+    }
     for (const auto& test : migoto::test::BitwiseCases) {
         const float actual = evaluate(test.expression, empty_namespace);
         if (actual != test.expected)

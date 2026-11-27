@@ -120,102 +120,102 @@ public:
 			return syntax.ok;
 		}
 
-		double Parse()
+		float Parse()
 		{
-			double value = ParseOr();
+			float value = ParseOr();
 			SkipSpaces();
 			if (pos < text->size())
 				ok = false;
-			return ok ? value : 0.0;
+			return ok ? value : 0.0f;
 		}
 
-		double ParseOr()
+		float ParseOr()
 		{
-			double lhs = ParseAnd();
+			float lhs = ParseAnd();
 			while (Match(L"||")) {
 				// Parse the right operand unconditionally: a C++ short-circuit
 				// ("Truthy(lhs) || Truthy(ParseAnd())") would leave the tokens
 				// unconsumed, and Parse()'s end-of-text check would then fail
 				// the whole expression to 0 - turning "1 || 0" into false.
-				const double rhs = ParseAnd();
-				lhs = (Truthy(lhs) || Truthy(rhs)) ? 1.0 : 0.0;
+				const float rhs = ParseAnd();
+				lhs = Truthy(lhs) || Truthy(rhs);
 			}
 			return lhs;
 		}
 
-		double ParseAnd()
+		float ParseAnd()
 		{
-			double lhs = ParseBitwiseOr();
+			float lhs = ParseBitwiseOr();
 			while (Match(L"&&")) {
-				const double rhs = ParseBitwiseOr();
-				lhs = (Truthy(lhs) && Truthy(rhs)) ? 1.0 : 0.0;
+				const float rhs = ParseBitwiseOr();
+				lhs = Truthy(lhs) && Truthy(rhs);
 			}
 			return lhs;
 		}
 
-		double ParseBitwiseOr()
+		float ParseBitwiseOr()
 		{
-			double lhs = ParseBitwiseXor();
+			float lhs = ParseBitwiseXor();
 			while (MatchSingleBitOperator(L'|'))
 				lhs = migoto::bitwise::Or(lhs, ParseBitwiseXor());
 			return lhs;
 		}
 
-		double ParseBitwiseXor()
+		float ParseBitwiseXor()
 		{
-			double lhs = ParseBitwiseAnd();
+			float lhs = ParseBitwiseAnd();
 			while (Match(L"^"))
 				lhs = migoto::bitwise::Xor(lhs, ParseBitwiseAnd());
 			return lhs;
 		}
 
-		double ParseBitwiseAnd()
+		float ParseBitwiseAnd()
 		{
-			double lhs = ParseEquality();
+			float lhs = ParseEquality();
 			while (MatchSingleBitOperator(L'&'))
 				lhs = migoto::bitwise::And(lhs, ParseEquality());
 			return lhs;
 		}
 
-		double ParseEquality()
+		float ParseEquality()
 		{
-			double lhs = ParseRelational();
+			float lhs = ParseRelational();
 			for (;;) {
 				if (Match(L"===")) {
-					lhs = migoto::EqualFloatBits(static_cast<float>(lhs), static_cast<float>(ParseRelational()));
+					lhs = migoto::EqualFloatBits(lhs, ParseRelational());
 				} else if (Match(L"!==")) {
-					lhs = !migoto::EqualFloatBits(static_cast<float>(lhs), static_cast<float>(ParseRelational()));
+					lhs = !migoto::EqualFloatBits(lhs, ParseRelational());
 				} else if (Match(L"==")) {
-					lhs = fabs(lhs - ParseRelational()) < 0.000001 ? 1.0 : 0.0;
+					lhs = lhs == ParseRelational();
 				} else if (Match(L"!=")) {
-					lhs = fabs(lhs - ParseRelational()) >= 0.000001 ? 1.0 : 0.0;
+					lhs = lhs != ParseRelational();
 				} else {
 					return lhs;
 				}
 			}
 		}
 
-		double ParseRelational()
+		float ParseRelational()
 		{
-			double lhs = ParseShift();
+			float lhs = ParseShift();
 			for (;;) {
 				if (Match(L">=")) {
-					lhs = lhs >= ParseShift() ? 1.0 : 0.0;
+					lhs = lhs >= ParseShift();
 				} else if (Match(L"<=")) {
-					lhs = lhs <= ParseShift() ? 1.0 : 0.0;
+					lhs = lhs <= ParseShift();
 				} else if (Match(L">")) {
-					lhs = lhs > ParseShift() ? 1.0 : 0.0;
+					lhs = lhs > ParseShift();
 				} else if (Match(L"<")) {
-					lhs = lhs < ParseShift() ? 1.0 : 0.0;
+					lhs = lhs < ParseShift();
 				} else {
 					return lhs;
 				}
 			}
 		}
 
-		double ParseShift()
+		float ParseShift()
 		{
-			double lhs = ParseAdditive();
+			float lhs = ParseAdditive();
 			for (;;) {
 				if (Match(L"<<"))
 					lhs = migoto::bitwise::ShiftLeft(lhs, ParseAdditive());
@@ -226,35 +226,38 @@ public:
 			}
 		}
 
-		double ParseAdditive()
+		float ParseAdditive()
 		{
-			double lhs = ParseMultiplicative();
+			float lhs = ParseMultiplicative();
 			for (;;) {
 				if (Match(L"+")) {
-					lhs += ParseMultiplicative();
+					lhs = migoto::arithmetic::Add(lhs, ParseMultiplicative());
 				} else if (Match(L"-")) {
-					lhs -= ParseMultiplicative();
+					lhs = migoto::arithmetic::Subtract(lhs, ParseMultiplicative());
 				} else {
 					return lhs;
 				}
 			}
 		}
 
-		double ParseMultiplicative()
+		float ParseMultiplicative()
 		{
-			double lhs = ParsePower();
+			float lhs = ParsePower();
 			for (;;) {
 				if (Match(L"//")) {
-					double rhs = ParsePower();
-					lhs = fabs(rhs) < 0.000001 ? 0.0 : floor(lhs / rhs);
+					const float rhs = ParsePower();
+					if (mode != Mode::Validate)
+						lhs = migoto::arithmetic::FloorDivide(lhs, rhs);
 				} else if (Match(L"*")) {
-					lhs *= ParsePower();
+					lhs = migoto::arithmetic::Multiply(lhs, ParsePower());
 				} else if (Match(L"/")) {
-					double rhs = ParsePower();
-					lhs = fabs(rhs) < 0.000001 ? 0.0 : lhs / rhs;
+					const float rhs = ParsePower();
+					if (mode != Mode::Validate)
+						lhs = migoto::arithmetic::Divide(lhs, rhs);
 				} else if (Match(L"%")) {
-					double rhs = ParsePower();
-					lhs = fabs(rhs) < 0.000001 ? 0.0 : fmod(lhs, rhs);
+					const float rhs = ParsePower();
+					if (mode != Mode::Validate)
+						lhs = migoto::arithmetic::Remainder(lhs, rhs);
 				} else {
 					return lhs;
 				}
@@ -263,27 +266,29 @@ public:
 
 		// Unary signs bind more tightly than ** in the DX11 grammar.
 		// Fold from the right without recursing once per exponent.
-		double ParsePower()
+		float ParsePower()
 		{
-			double value = ParseUnary();
+			float value = ParseUnary();
 			if (!Match(L"**"))
 				return value;
-			std::vector<double> bases;
+			std::vector<float> bases;
 			do {
 				bases.push_back(value);
 				value = ParseUnary();
 			} while (Match(L"**"));
+			if (mode == Mode::Validate)
+				return 0.0f;
 			for (auto it = bases.rbegin(); it != bases.rend(); ++it)
-				value = pow(*it, value);
+				value = migoto::arithmetic::Power(*it, value);
 			return value;
 		}
 
-		double ParseUnary()
+		float ParseUnary()
 		{
 			if (Match(L"~"))
 				return migoto::bitwise::Not(ParseUnary());
 			if (Match(L"!"))
-				return Truthy(ParseUnary()) ? 0.0 : 1.0;
+				return !Truthy(ParseUnary());
 			if (Match(L"-"))
 				return -ParseUnary();
 			if (Match(L"+"))
@@ -291,11 +296,11 @@ public:
 			return ParsePrimary();
 		}
 
-		double ParsePrimary()
+		float ParsePrimary()
 		{
 			SkipSpaces();
 			if (Match(L"(")) {
-				double value = ParseOr();
+				float value = ParseOr();
 				if (!Match(L")"))
 					ok = false;
 				return value;
@@ -307,38 +312,38 @@ public:
 				if (!Match(L"(")) {
 					if (name.size() == 6 && _wcsicmp(name.c_str(), L"random") == 0) {
 						ok = false;
-						return 0.0;
+						return 0.0f;
 					}
-					return mode == Mode::Validate ? 0.0 : LookupIdentifier(name);
+					return mode == Mode::Validate ? 0.0f : LookupIdentifier(name);
 				}
 				const auto normalized = MigotoIniCommandListUtils::ToLower(name);
 				const bool random = normalized == L"random";
 				const auto *function = random ? nullptr : migoto::unary::Find(normalized);
 				if (!random && !function) {
 					ok = false;
-					return 0.0;
+					return 0.0f;
 				}
-				const double argument = ParseOr();
+				const float argument = ParseOr();
 				if (!Match(L")"))
 					ok = false;
 				if (!ok || mode == Mode::Validate)
-					return 0.0;
+					return 0.0f;
 				if (!random)
-					return function->evaluate(static_cast<float>(argument));
+					return function->evaluate(argument);
 
 				// A malformed expression must not advance the shared random stream.
 				// Validate the entire expression once, before its first sample.
 				if (mode == Mode::Evaluate) {
 					if (!ValidSyntax(*text)) {
 						ok = false;
-						return 0.0;
+						return 0.0f;
 					}
 					mode = Mode::Validated;
 				}
-				return RandomExpressionValue(static_cast<float>(argument));
+				return RandomExpressionValue(argument);
 			}
 			ok = false;
-			return 0.0;
+			return 0.0f;
 		}
 
 		bool MatchSingleBitOperator(wchar_t op)
@@ -390,27 +395,16 @@ public:
 				(ch >= L'0' && ch <= L'9');
 		}
 
-		double ParseNumber()
+		float ParseNumber()
 		{
-			if (text->compare(pos, 2, L"0b") == 0 || text->compare(pos, 2, L"0B") == 0) {
-				uint64_t value;
-				size_t length;
-				if (!migoto::ReadBinaryDigits(*text, pos + 2, value, length)) {
-					ok = false;
-					return 0.0;
-				}
-				pos += length + 2;
-				return static_cast<double>(value);
-			}
-			const wchar_t *start = text->c_str() + pos;
-			wchar_t *end = nullptr;
-			double value = wcstod(start, &end);
-			if (!end || end == start) {
+			float value;
+			size_t length;
+			if (!migoto::ReadExpressionNumber(std::wstring_view(*text).substr(pos), value, length, true)) {
 				ok = false;
-				return 0.0;
+				return 0.0f;
 			}
-			pos += static_cast<size_t>(end - start);
-			return value;
+			pos += length;
+			return mode == Mode::Validate ? 0.0f : value;
 		}
 
 		std::wstring ParseIdentifier()
@@ -421,9 +415,9 @@ public:
 			return text->substr(start, pos - start);
 		}
 
-		double LookupIdentifier(const std::wstring &name)
+		float LookupIdentifier(const std::wstring &name)
 		{
-			return MigotoCommandVmUtils::LookupVariable(context, name, &timingSample);
+			return static_cast<float>(MigotoCommandVmUtils::LookupVariable(context, name, &timingSample));
 		}
 	};
 
@@ -610,7 +604,7 @@ public:
 
 	static bool Truthy(double value)
 	{
-		return fabs(value) > 0.000001;
+		return value != 0.0;
 	}
 
 	static double EvaluateExpression(ExpressionContext context, const std::wstring &expression)
