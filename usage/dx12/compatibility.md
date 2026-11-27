@@ -15,7 +15,8 @@
 | ShaderRegex PCRE2 Pattern/Replace/InsertDeclarations | 不支持 |
 | Pool、Region、动态槽与槽范围 | 不支持 DX11 扩展语法 |
 | `@/#/->`、资源 getter、dHash | 不支持 DX11 表达式接口 |
-| 位运算、位移、数学函数、random、locked | 不支持 DX11 扩展语法 |
+| 一元数学函数、二进制字面量、幂、float32 位模式比较 | 可用，见[表达式](./expressions) |
+| 位运算、位移、random、locked | 不支持 DX11 扩展语法 |
 | store、dump、clear、analyse_options | 无同等通用命令，抓取用 F8/F9 |
 | Preset、输入暂停模式、DX11 全局 Device/Rendering/Logging | 不按 DX11 语义执行 |
 | 完整显式 instanced/indirect 命令集合 | 未完整提供 |

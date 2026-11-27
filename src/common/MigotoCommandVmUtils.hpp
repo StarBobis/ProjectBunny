@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cwchar>
 #include <initializer_list>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,7 @@
 
 #include "MigotoIniCommandListUtils.hpp"
 #include "IniExpressionNumbers.h"
+#include "IniUnaryMath.h"
 
 class MigotoCommandVmUtils
 {
@@ -226,8 +228,20 @@ public:
 			}
 			if (pos < text->size() && IsNumberStart((*text)[pos]))
 				return ParseNumber();
-			if (pos < text->size() && IsIdentifierStart((*text)[pos]))
-				return LookupIdentifier(ParseIdentifier());
+			if (pos < text->size() && IsIdentifierStart((*text)[pos])) {
+				const std::wstring name = ParseIdentifier();
+				if (!Match(L"("))
+					return LookupIdentifier(name);
+				const auto *function = migoto::unary::Find(MigotoIniCommandListUtils::ToLower(name));
+				if (!function) {
+					ok = false;
+					return 0.0;
+				}
+				const double argument = ParseOr();
+				if (!Match(L")"))
+					ok = false;
+				return ok ? function->evaluate(static_cast<float>(argument)) : 0.0;
+			}
 			ok = false;
 			return 0.0;
 		}
@@ -575,6 +589,10 @@ public:
 		}
 		if (normalized == L"draw_type")
 			return 1.0;
+		if (normalized == L"inf" || normalized == L"infinity")
+			return std::numeric_limits<double>::infinity();
+		if (normalized == L"nan")
+			return std::numeric_limits<double>::quiet_NaN();
 
 		MarkFrameVariableReferenced(normalized);
 

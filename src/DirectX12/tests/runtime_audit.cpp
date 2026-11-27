@@ -7,6 +7,7 @@
 #include "DX12Presentation.h"
 #include "ModRuntime/DX12ModRuntimeInternal.h"
 #include "Presentation/DX12SwapChainQueues.h"
+#include "tests/IniUnaryMathCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -88,6 +89,26 @@ void Check(HRESULT hr)
 	if (FAILED(hr)) {
 		fprintf(stderr, "HRESULT 0x%08lx\n", hr);
 		throw std::runtime_error("D3D12 call failed");
+	}
+}
+
+void TestUnaryMath()
+{
+	MigotoCommandVmUtils::State vm;
+	for (const auto &test : migoto::test::UnaryMathCases) {
+		const double result = vm.Evaluate(test.expression);
+		Require(std::isfinite(result) &&
+			std::abs(result - test.expected) <= 1e-5 * (1 + std::abs(test.expected)),
+			"shared DX11 unary math case");
+	}
+	Require(std::isnan(vm.Evaluate(L"sin(inf)")) && std::isnan(vm.Evaluate(L"sqrt(-1)")) &&
+		std::isinf(vm.Evaluate(L"rsqrt(0)")), "IEEE math domain and pole results");
+	vm.PushLocalScope();
+	vm.DeclareLocal(L"local $input", L"-3");
+	Require(vm.Evaluate(L"ABS($input) + SQRT(4)") == 5, "case insensitive names and VM variables");
+	for (std::wstring invalid : {L"sqrt()", L"sin(1, 2)", L"unknown(2)", L"abs(-2"}) {
+		MigotoCommandVmUtils::ExpressionParser parser(invalid, vm.Context());
+		Require(parser.Parse() == 0 && !parser.ok, "invalid unary call rejected");
 	}
 }
 
@@ -605,6 +626,7 @@ int main(int argc, char **argv)
 			return 0;
 		TestShaderRegexExclusions();
 		TestExpressionNumbers();
+		TestUnaryMath();
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
 		TestQueueHandoff(device.Get());

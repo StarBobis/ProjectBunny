@@ -31,7 +31,16 @@ $variant = $next
 
 `0b101` 表示 5，最多可写 64 个二进制位，结果按 DX12 的 double 精度保存。`===` 和 `!==` 将两侧转换为 float32 后比较位模式，例如 `0 !== -0` 为真。`2**3**2` 的结果是 512，`-2**2` 的结果是 4。
 
-当前仍缺少位运算、位移、数学函数、`random`、`@/#/->` 和 Pool 访问。
+函数接受一个表达式作为参数，可嵌套调用。例如 `$pulse = (sin(time) + 1) / 2`，`frac(-1.25)` 返回 0.75。函数的输入和结果使用 DX11 的 float32 精度。
+
+| 用途 | 函数 |
+| --- | --- |
+| 三角与反三角 | `sin cos tan asin acos atan` |
+| 符号、取整与小数部分 | `abs sign ceil floor trunc round frac` |
+| 平方根、指数与对数 | `sqrt rsqrt exp exp2 log log2` |
+| 限幅与计数 | `saturate` 限制到 0–1，`countbits` 统计转换后的 32 位整数中的置位数 |
+
+`sqrt(-1)` 得到 NaN，`rsqrt(0)` 得到正无穷。当前仍缺少位运算、位移、`random`、`@/#/->` 和 Pool 访问。
 
 ## 分支
 

@@ -1,4 +1,5 @@
 #include "ExpressionFunctions.h"
+#include "IniUnaryMath.h"
 
 #include <atomic>
 #include <cmath>
@@ -20,20 +21,7 @@ uint32_t HashExpressionRandom(uint32_t value)
 
 uint32_t CountExpressionBits(float value)
 {
-    if (!std::isfinite(value))
-        return 0;
-    // Define the formerly undefined float-to-unsigned cases as truncation and
-    // modulo 2^32, including the usual two's-complement result for negatives.
-    double wrapped = std::fmod(std::trunc(static_cast<double>(value)), 4294967296.0);
-    if (wrapped < 0)
-        wrapped += 4294967296.0;
-    uint32_t bits = static_cast<uint32_t>(wrapped);
-    uint32_t count = 0;
-    while (bits) {
-        bits &= bits - 1;
-        ++count;
-    }
-    return count;
+    return migoto::unary::CountSetBits(value);
 }
 
 void SeedExpressionRandom(uint32_t frame, uint32_t ticks)
