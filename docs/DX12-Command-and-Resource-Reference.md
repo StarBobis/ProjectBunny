@@ -401,7 +401,9 @@ spec 的默认值是 `fill=solid` / `cull=back` / `topology=triangle_list` / `fr
 | `frame_time` | 帧间隔秒数 | 与上一次正式 Present 入口比较，第一次从 DLL 启动起算。回退的时钟间隔记为 0。 |
 | `fps` | 平滑帧率 | 使用共享的 DX11 FPSCounter，以 0.1 为平滑系数；零间隔和长于一秒的间隔保持上次帧率。 |
 | `frame_number` | 帧号 | 正式 Present 返回后递增。四个帧参数都按 float32 发布，同一条表达式读到同一份帧数据。 |
-| `draw_type` | 恒为 `1` | 硬编码常量（`:544`）。 |
+| `draw_type` | 直接绘制类型 | DrawInstanced 为 3，DrawIndexedInstanced 为 4，无绘制上下文时为 0。 |
+| `vertex_count`、`index_count`、`instance_count` | 当前直接绘制的数量 | 每实例的顶点数或索引数及实例数。 |
+| `first_vertex`、`first_index`、`first_instance` | 当前直接绘制的起点 | 索引绘制的基顶点按 DX11 的 UINT 转 float32 规则取值。 |
 
 以下名称有兼容写入但**恒为 0**，不能用于判断实际状态（`DX12VmFrameVariablesUtils.h:115`）：
 

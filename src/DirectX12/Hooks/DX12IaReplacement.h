@@ -1382,9 +1382,7 @@ public:
 		DX12_PROF_COUNT("IaApplied");
 		DX12_DIAG_QPC_RESET(applySegmentBegin);
 		DX12ModRunPostShaderOverrideReplacement(
-			commandList, runtimeState.pipelineState, iaState,
-			draw.vertexCount, draw.indexCount, draw.instanceCount,
-			draw.firstVertex, draw.firstIndex, draw.firstInstance, replacement);
+			commandList, runtimeState.pipelineState, iaState, draw.Parameters(), replacement);
 		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_post_override", draw.indexed ? 1u : 0u, 1,
 			DX12_DIAG_ELAPSED_US(applySegmentBegin));
@@ -1959,15 +1957,6 @@ public:
 		// before the prepare/apply block that actually uses it.
 		DX12IaHashState iaState;
 		const DX12IaHashState *activeIaState = &iaState;
-		const uint32_t vertexCount = draw.indexed ? 0 : draw.vertexCount;
-		const uint32_t indexCount = draw.indexed ? draw.indexCount : 0;
-		// DX11 reports FirstVertex = BaseVertexLocation for indexed draws
-		// (HackerContext::DrawContext), so match_first_vertex applies to the
-		// base vertex there. Mirror that semantic instead of pinning it to 0.
-		const uint32_t firstVertex = draw.indexed ?
-			static_cast<uint32_t>(draw.baseVertex) : draw.firstVertex;
-		const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
-
 		// Cheap negative cache lookup uses PSO, IA view identity, and draw args
 		// before falling back to stable IA content hashing.
 		const DX12IaHashTargetPlan &targetPlan = drawDecision->targetPlan;
@@ -2106,7 +2095,7 @@ public:
 		// resident-cache probe, and its miss path ends the draw before hashing.
 		{
 			DX12_PROF_STAGE_SCOPE(DrawOvDirectCheckTarget);
-		if (drawDecision->directTargetPlanResolved &&
+		if (drawDecision->directTextureChecksOnly && drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    !DX12IaReplacementExecutor::HasCachedIaTextureOverrideCheckTarget(
 			    mutableRuntimeState, directTargetPlan, draw.indexed, true)) {
@@ -2631,7 +2620,7 @@ public:
 			else
 				DX12_PROF_COUNT("IaHashStateMiss");
 		}
-		if (hasIaHashState || !targetPlanHasIaTargets ||
+		if (!drawDecision->directTextureChecksOnly || hasIaHashState || !targetPlanHasIaTargets ||
 		    drawDecision->targetPlanHasDescriptorTargets) {
 			const bool canUsePsoIaNegativeCache =
 				psoIaNegativeCacheSafe && (!targetPlanHasIaTargets || hasIaHashState);
@@ -2692,13 +2681,12 @@ public:
 			DX12ModIaReplacement &iaReplacement =
 				DX12IaReplacementExecutor::DrawReplacementScratch();
 			std::shared_ptr<const DX12ModIaReplacement> generatedStaticReplacement;
+			bool evaluatedDynamicCommands;
 			const bool preparedReplacement = DX12ModPrepareShaderOverrideReplacement(
 				commandList, runtimeState.pipelineState, activeShaderOverrides,
-				*activeIaState,
-				vertexCount, indexCount, draw.instanceCount,
-				firstVertex, firstIndex, draw.firstInstance,
+				*activeIaState, draw.Parameters(),
 				drawDecision->targetDrawMatchUsage,
-				&iaReplacement,
+				&iaReplacement, evaluatedDynamicCommands,
 				shaderOverrideNegativeCacheAllowed,
 				runtimeState.device,
 				skipDirectDescriptorTargets,
@@ -2747,6 +2735,12 @@ public:
 				DX12_PROF_STAGE_END(DrawModPrepareOverride);
 			}
 
+			// A branch or assignment must run again even with identical bindings
+			// and arguments (it can read globals or have per-draw side effects).
+			if (evaluatedDynamicCommands) {
+				DX12_PROF_STAGE_END(DrawOverride);
+				return false;
+			}
 			if (canUsePsoIaNegativeCache) {
 				// No match: store both the full negative key and cheap-to-full map.
 				DX12_DIAG_QPC(negStoreBegin);

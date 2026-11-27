@@ -4616,7 +4616,7 @@ BuildStaticReplacementSnapshotFromCompiledPlans(
 	DX12ModIaReplacement replacement;
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	DX12CommandListExecutor executor(
-		nullptr, nullptr, emptyIa, 0, 0, 0, 0, 0, 0, &replacement, nullptr);
+		nullptr, nullptr, emptyIa, {}, &replacement, nullptr);
 	executor.SetExecutionMode(true, true);
 	for (const DX12CompiledShaderOverridePlan &plan : plans)
 		executor.RunCompiledShaderOverridePlan(plan);
@@ -4725,10 +4725,10 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	bool hasActiveShaderOverrides,
 	const DX12IaHashState &iaState,
-	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
+	const DrawCallParameters &call,
 	const DX12DrawMatchUsage &drawMatchUsage,
 	DX12ModIaReplacement *replacement,
+	bool &evaluatedDynamicCommands,
 	bool allowDescriptorIndependentNegativeCache,
 	ID3D12Device *cachedDevice,
 	bool skipDirectDescriptorTargets,
@@ -4738,8 +4738,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
-	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
+	const DrawCallParameters &call,
 	DX12ModIaReplacement *replacement);
 
 

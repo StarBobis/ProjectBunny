@@ -1612,15 +1612,16 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	bool hasActiveShaderOverrides,
 	const DX12IaHashState &iaState,
-	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
+	const DrawCallParameters &call,
 	const DX12DrawMatchUsage &drawMatchUsage,
 	DX12ModIaReplacement *replacement,
+	bool &evaluatedDynamicCommands,
 	bool allowDescriptorIndependentNegativeCache,
 	ID3D12Device *cachedDevice,
 	bool skipDirectDescriptorTargets,
 	std::shared_ptr<const DX12ModIaReplacement> *generatedStaticReplacement)
 {
+	evaluatedDynamicCommands = false;
 	if (!replacement)
 		return false;
 	if (generatedStaticReplacement)
@@ -1636,8 +1637,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (negativeCacheEnabled) {
 		negativeCacheKey = MakeShaderOverrideNegativeCacheKey(
 			pipelineState, iaState,
-			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance,
+			call.VertexCount, call.IndexCount, call.InstanceCount,
+			call.FirstVertex, call.FirstIndex, call.FirstInstance,
 			drawMatchUsage);
 		if (TryFindShaderOverrideNegativeCache(negativeCacheKey)) {
 			return false;
@@ -1698,9 +1699,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		return false;
 	std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
 	DX12CommandListExecutor executor(
-		device, commandList, iaState,
-		vertexCount, indexCount, instanceCount,
-		firstVertex, firstIndex, firstInstance,
+		device, commandList, iaState, call,
 		replacement, &pendingResourceViews);
 	executor.SetExecutionMode(true, true);
 	executor.SetSkipDirectDescriptorTargets(skipDirectDescriptorTargets);
@@ -1722,7 +1721,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		device, commandList, iaState, pendingResourceViews, replacement);
 	if (resourcesChanged)
 		executor.MarkExternalChange();
-		const bool changed = executor.Changed() || ReplacementHasAnyEffect(*replacement);
+	evaluatedDynamicCommands = executor.observedDynamicCommandState;
+	const bool changed = executor.Changed() || ReplacementHasAnyEffect(*replacement);
 	if (!deviceFromCache)
 		device->Release();
 
@@ -1757,8 +1757,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
-	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
+	const DrawCallParameters &call,
 	DX12ModIaReplacement *replacement)
 {
 	if (!replacement || !commandList || !pipelineState || !DX12ModHasActiveShaderOverrides())
@@ -1773,9 +1772,7 @@ void DX12ModRunPostShaderOverrideReplacement(
 
 	std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
 	DX12CommandListExecutor executor(
-		device, commandList, iaState,
-		vertexCount, indexCount, instanceCount,
-		firstVertex, firstIndex, firstInstance,
+		device, commandList, iaState, call,
 		replacement, &pendingResourceViews);
 	executor.SetExecutionMode(true, true);
 	for (const std::wstring &list : replacement->postCommandLists)

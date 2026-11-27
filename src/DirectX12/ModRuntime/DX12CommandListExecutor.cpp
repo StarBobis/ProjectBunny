@@ -1437,7 +1437,7 @@ bool RunNamedCommandList(
 	DX12MarkStage("run_named_list");
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	DX12CommandListExecutor executor(
-		device, commandList, emptyIa, 0, 0, 0, 0, 0, 0,
+		device, commandList, emptyIa, {},
 		replacement, pendingResourceViews);
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, true);
 #if DX12_TIMING_BUILD
@@ -1462,7 +1462,7 @@ bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
 
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	DX12CommandListExecutor executor(
-		nullptr, nullptr, emptyIa, 0, 0, 0, 0, 0, 0, nullptr, nullptr);
+		nullptr, nullptr, emptyIa, {}, nullptr, nullptr);
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, includePost);
 	return true;
 }

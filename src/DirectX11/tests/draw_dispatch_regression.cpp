@@ -249,6 +249,31 @@ static void test_draw_indexed_literal_args(CallCounterDevice& fixture)
         "indexed literals: real draw order, count, first index, signed base vertex and dynamic values are preserved");
 }
 
+static void test_call_parameters(CommandListState& state)
+{
+    CommandListScope scope;
+    const std::wstring ns;
+    auto read = [&](const std::wstring& text) {
+        CommandListExpression expr;
+        require_call_counter(expr.parse(&text, &ns, &scope), "parse draw parameter");
+        return expr.evaluate(&state);
+    };
+    state.call_info = nullptr;
+    require_call_counter(read(L"draw_type + vertex_count + first_vertex") == 0, "no active call");
+    DrawCallInfo indexed(DrawCall::DrawIndexedInstanced, 0, 16777217, 3,
+        static_cast<UINT>(-3), 4, 7, nullptr, 0);
+    state.call_info = &indexed;
+    require_call_counter(read(L"draw_type") == 4 && read(L"index_count") == 16777216.0f &&
+        read(L"instance_count") == 3 && read(L"first_vertex") == 4294967296.0f &&
+        read(L"first_index") == 4 && read(L"first_instance") == 7, "indexed arguments preserve DX11 numeric semantics");
+    DrawCallInfo compute(DrawCall::Dispatch, 0, 0, 0, 0, 0, 0, nullptr, 0, 11, 2, 5);
+    state.call_info = &compute;
+    require_call_counter(read(L"draw_type") == 8 && read(L"thread_group_count_x") == 11 &&
+        read(L"thread_group_count_y") == 2 && read(L"thread_group_count_z") == 5 &&
+        read(L"first_instance") == 0, "dispatch keeps its independent arguments");
+    state.call_info = nullptr;
+}
+
 void test_dx11_draw_dispatch_regression()
 {
     std::fputs("Testing real WARP draw and dispatch counters\n", stderr);
@@ -293,6 +318,7 @@ void test_dx11_draw_dispatch_regression()
         }
         CommandListState state;
         state.mHackerContext = &context;
+        test_call_parameters(state);
         require_call_counter(sum.evaluate(&state) == 0.0f, "initial runtime expression is zero");
         context.Draw(3, 0);
         context.DrawInstanced(3, 1, 0, 0);

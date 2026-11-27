@@ -5,6 +5,7 @@
 #include "../DX12Diagnostics.h"
 #include "DX12IaDecisionState.h"
 #include <bit>
+#include "DrawCallParameters.h"
 
 class DX12CommandListTrackingState
 {
@@ -71,6 +72,14 @@ public:
 	uint32_t firstIndex = 0;
 	INT baseVertex = 0;
 	uint32_t firstInstance = 0;
+
+	DrawCallParameters Parameters() const
+	{
+		// DX11's INI exposes the indexed base vertex as a UINT.
+		return {indexed ? DrawCall::DrawIndexedInstanced : DrawCall::DrawInstanced,
+			vertexCount, indexCount, instanceCount,
+			indexed ? static_cast<uint32_t>(baseVertex) : firstVertex, firstIndex, firstInstance};
+	}
 
 	static DX12IaDrawInvocation ForDrawInstanced(
 		uint32_t vertexCount, uint32_t instanceCount,

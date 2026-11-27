@@ -537,7 +537,7 @@ public:
 		shaderOverrideNegativeCacheAllowed =
 			negativeCacheSafe || targetPlan.hasTextureOverrideChecks;
 
-		if (!hasShaderOverrideSkip &&
+		if (!hasShaderOverrideSkip && (!shaderOverrides || directChecksOnly) &&
 			!targetPlanHasIaTargets &&
 			!targetPlanHasDescriptorTargets) {
 			kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;

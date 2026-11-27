@@ -134,6 +134,9 @@ public:
 		bool includePostLinks,
 		bool *hasDirectNonTextureEffect)
 	{
+		// A queued post list is itself a draw-time effect, even with no pre targets.
+		if (hasDirectNonTextureEffect && !config.commandLists.post.empty())
+			*hasDirectNonTextureEffect = true;
 		CollectCommandListLinksLocked(
 			config.commandLists, includePostLinks, 0, commandListStack, targetPlan,
 			textureOverrideTargetsCollected, collectTextureOverrideTargets,

@@ -6,6 +6,10 @@
 | `frame_number` | 帧号从 0 开始，每次主交换链正式 Present 返回后加 1 |
 | `frame_time` | 相邻两次正式 Present 入口之间的秒数，第一次从 DLL 启动起算 |
 | `fps` | 按 DX11 算法平滑后的帧率，收到两个有效时间点后开始有值 |
+| `draw_type` | 当前直接绘制的类型。`DrawInstanced` 为 3，`DrawIndexedInstanced` 为 4 |
+| `vertex_count`、`index_count` | 当前绘制每个实例的顶点数或索引数，另一项为 0 |
+| `instance_count`、`first_instance` | 当前绘制的实例数和起始实例 |
+| `first_vertex`、`first_index` | 普通绘制的起始顶点，或索引绘制的基顶点与起始索引 |
 | `window_width/window_height` | 窗口尺寸 |
 | `res_width/res_height` | 后备缓冲尺寸，必要时回退窗口尺寸 |
 | `rt_width/rt_height` | 帧快照中的后备缓冲/窗口尺寸，并非每次 draw 的真实目标 |
@@ -22,13 +26,14 @@
 
 | 名称 | 当前返回 |
 | --- | --- |
-| `draw_type` | 固定为 1 |
 | `hunting/frame_analysis` | 固定为 0 |
 | `sli/stereo_active/stereo_available` | 固定为 0 |
 
 四个帧参数在第一次正式 Present 前均为 0。读同一条表达式时使用同一份帧数据，重载 INI 后继续计数。`time` 已改为按帧采样，同一帧内反复读取会得到相同结果。`fps` 忽略零间隔和超过一秒的间隔，`frame_time` 仍反映长帧。
 
-`draw_number` 和 `dispatch_number` 的逐绘制计数仍待实现。
+直接绘制的 ShaderOverride 和它调用的命令列表在 pre、post 阶段都能读到原绘制参数。即使顶点数或实例数为 0，`draw_type` 仍按实际入口取值。在 Constants、Present 和 Key 中，上表的绘制参数均为 0。和 DX11 一样，索引绘制的 `first_vertex` 先按 32 位无符号数解释，再转换成 float32，例如基顶点 −1 在表达式中读作 4294967296。
+
+计算派发参数、间接命令参数，以及 `draw_number` 和 `dispatch_number` 的逐调用计数仍待实现。
 
 ```ini
 [Constants]

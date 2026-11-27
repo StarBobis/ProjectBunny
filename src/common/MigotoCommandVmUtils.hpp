@@ -21,6 +21,7 @@
 #include "IniBitwise.h"
 #include "IniUnaryMath.h"
 #include "ExpressionFunctions.h"
+#include "DrawCallParameters.h"
 
 class MigotoCommandVmUtils
 {
@@ -93,6 +94,7 @@ public:
 	{
 	public:
 		std::vector<std::unordered_map<std::wstring, double>> *localScopes = nullptr;
+		const DrawCallParameters *call = nullptr;
 	};
 
 	class ExpressionParser
@@ -450,6 +452,7 @@ public:
 	{
 	public:
 		std::vector<std::unordered_map<std::wstring, double>> localScopes;
+		DrawCallParameters call;
 		std::vector<BranchFrame> branches;
 		std::vector<PostAssignment> postAssignments;
 
@@ -473,6 +476,7 @@ public:
 		{
 			ExpressionContext context;
 			context.localScopes = &localScopes;
+			context.call = &call;
 			return context;
 		}
 
@@ -695,8 +699,20 @@ public:
 				return (**timingSample).*field;
 			}
 		}
-		if (normalized == L"draw_type")
-			return 1.0;
+		if (!normalized.empty() && normalized.front() != L'$') {
+			static constexpr DrawCallParameters noCall{};
+			const auto &call = context.call ? *context.call : noCall;
+			if (normalized == L"draw_type") return static_cast<float>(call.type);
+			if (normalized == L"vertex_count") return static_cast<float>(call.VertexCount);
+			if (normalized == L"index_count") return static_cast<float>(call.IndexCount);
+			if (normalized == L"instance_count") return static_cast<float>(call.InstanceCount);
+			if (normalized == L"first_vertex") return static_cast<float>(call.FirstVertex);
+			if (normalized == L"first_index") return static_cast<float>(call.FirstIndex);
+			if (normalized == L"first_instance") return static_cast<float>(call.FirstInstance);
+			if (normalized == L"thread_group_count_x") return static_cast<float>(call.ThreadGroupCountX);
+			if (normalized == L"thread_group_count_y") return static_cast<float>(call.ThreadGroupCountY);
+			if (normalized == L"thread_group_count_z") return static_cast<float>(call.ThreadGroupCountZ);
+		}
 		if (normalized == L"inf" || normalized == L"infinity")
 			return std::numeric_limits<double>::infinity();
 		if (normalized == L"nan")

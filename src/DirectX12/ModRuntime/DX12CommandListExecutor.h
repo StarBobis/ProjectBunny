@@ -126,19 +126,12 @@ public:
 		ID3D12Device *device,
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaHashState &iaState,
-		uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-		uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
+		const DrawCallParameters &call,
 		DX12ModIaReplacement *replacement,
 		std::vector<DX12PendingResourceViewRequest> *pendingResourceViews = nullptr)
 		: mDevice(device),
 		  mCommandList(commandList),
 		  mIaState(iaState),
-		  mVertexCount(vertexCount),
-		  mIndexCount(indexCount),
-		  mInstanceCount(instanceCount),
-		  mFirstVertex(firstVertex),
-		  mFirstIndex(firstIndex),
-		  mFirstInstance(firstInstance),
 		  mReplacement(replacement),
 		  mPendingResourceViews(pendingResourceViews),
 		  mScratch(AcquireScratch(&mScratchPooled, &mFallbackScratch)),
@@ -153,6 +146,7 @@ public:
 		  mShaderResourceOverrideBindingsByTarget(mScratch->shaderResourceOverrideBindingsByTarget),
 		  mTargetTextureOverrideCache(mScratch->targetTextureOverrideCache)
 	{
+		mVm.call = call;
 		mCurrentIaState = iaState;
 		mCommandListStack.reserve(8);
 		mCommandListStackSet.reserve(8);
@@ -190,12 +184,12 @@ public:
 		if (!tlsDirectDescriptorPrefilterCache.MatchesInvocation(
 				reloadGeneration,
 				mCommandList,
-				mVertexCount,
-				mIndexCount,
-				mInstanceCount,
-				mFirstVertex,
-				mFirstIndex,
-				mFirstInstance)) {
+				mVm.call.VertexCount,
+				mVm.call.IndexCount,
+				mVm.call.InstanceCount,
+				mVm.call.FirstVertex,
+				mVm.call.FirstIndex,
+				mVm.call.FirstInstance)) {
 			return;
 		}
 		for (const auto &entry : tlsDirectDescriptorPrefilterCache.matchesByTarget)
@@ -585,8 +579,8 @@ public:
 			return false;
 		}
 		const bool found = ::FindTargetTextureOverride(
-			mCommandList, mCurrentIaState, target, mVertexCount, mIndexCount, mInstanceCount,
-			mFirstVertex, mFirstIndex, mFirstInstance, matches,
+			mCommandList, mCurrentIaState, target, mVm.call.VertexCount, mVm.call.IndexCount, mVm.call.InstanceCount,
+			mVm.call.FirstVertex, mVm.call.FirstIndex, mVm.call.FirstInstance, matches,
 			nullptr);
 		mTargetTextureOverrideCache.emplace(
 			cacheKey,
@@ -791,15 +785,15 @@ public:
 			return;
 		if (!HasPotentialResolvedDescriptorPrefilterCandidates(
 				*snapshot,
-				mVertexCount,
-				mIndexCount))
+				mVm.call.VertexCount,
+				mVm.call.IndexCount))
 			return;
 
 		static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
 		CollectResolvedDescriptorPrefilterSectionIds(
 			*snapshot,
-			mVertexCount,
-			mIndexCount,
+			mVm.call.VertexCount,
+			mVm.call.IndexCount,
 			&tlsAllowedSectionIds);
 		if (tlsAllowedSectionIds.empty())
 			return;
@@ -845,12 +839,12 @@ public:
 				snapshot.get(),
 				target,
 				*resolvedBindingsView,
-				mVertexCount,
-				mIndexCount,
-				mInstanceCount,
-				mFirstVertex,
-				mFirstIndex,
-				mFirstInstance,
+				mVm.call.VertexCount,
+				mVm.call.IndexCount,
+				mVm.call.InstanceCount,
+				mVm.call.FirstVertex,
+				mVm.call.FirstIndex,
+				mVm.call.FirstInstance,
 				&resolvedMatches);
 			if (!resolvedMatches.empty())
 				mGraphicsSrvTextureOverrideCache[cacheKey] = std::move(resolvedMatches);
@@ -1222,16 +1216,16 @@ public:
 			return;
 		if (!HasPotentialResolvedDescriptorPrefilterCandidates(
 				*snapshot,
-				mVertexCount,
-				mIndexCount)) {
+				mVm.call.VertexCount,
+				mVm.call.IndexCount)) {
 			return;
 		}
 
 		static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
 		CollectResolvedDescriptorPrefilterSectionIds(
 			*snapshot,
-			mVertexCount,
-			mIndexCount,
+			mVm.call.VertexCount,
+			mVm.call.IndexCount,
 			&tlsAllowedSectionIds);
 		if (tlsAllowedSectionIds.empty())
 			return;
@@ -1317,12 +1311,12 @@ public:
 					snapshot.get(),
 					target,
 					overrideEntry.second,
-					mVertexCount,
-					mIndexCount,
-					mInstanceCount,
-					mFirstVertex,
-					mFirstIndex,
-					mFirstInstance,
+					mVm.call.VertexCount,
+					mVm.call.IndexCount,
+					mVm.call.InstanceCount,
+					mVm.call.FirstVertex,
+					mVm.call.FirstIndex,
+					mVm.call.FirstInstance,
 					&resolvedMatches);
 			}
 			if (resolvedMatches.empty()) {
@@ -1786,12 +1780,6 @@ public:
 	ID3D12GraphicsCommandList *mCommandList = nullptr;
 	const DX12IaHashState &mIaState;
 	DX12IaHashState mCurrentIaState;
-	uint32_t mVertexCount = 0;
-	uint32_t mIndexCount = 0;
-	uint32_t mInstanceCount = 0;
-	uint32_t mFirstVertex = 0;
-	uint32_t mFirstIndex = 0;
-	uint32_t mFirstInstance = 0;
 	DX12ModIaReplacement *mReplacement = nullptr;
 	std::vector<DX12PendingResourceViewRequest> *mPendingResourceViews = nullptr;
 	bool mChanged = false;

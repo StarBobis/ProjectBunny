@@ -1019,6 +1019,10 @@ bool TextureOverrideActionsHaveRuntimeEffect(
 				return true;
 			break;
 		case Bunny::CommandListActionKind::CheckTextureOverride:
+		case Bunny::CommandListActionKind::ControlFlow:
+		case Bunny::CommandListActionKind::VariableAssignment:
+		case Bunny::CommandListActionKind::LocalVariableAssignment:
+		case Bunny::CommandListActionKind::SetShaderConstant:
 		case Bunny::CommandListActionKind::SetIndexBuffer:
 		case Bunny::CommandListActionKind::SetVertexBuffer:
 		case Bunny::CommandListActionKind::SetShaderResource:
@@ -1110,10 +1114,16 @@ bool CommandListActionHasPhaseRuntimeEffect(
 		return CommandListHasPhaseRuntimeEffect(
 			action.commandList, includePost, commandLists, effectCache, visiting,
 			anyTextureOverridePreEffect, anyTextureOverridePostEffect);
+	case Bunny::CommandListActionKind::PostVariableAssignment:
+		return includePost;
 	case Bunny::CommandListActionKind::CheckTextureOverride:
 		return includePost ? anyTextureOverridePostEffect :
 			anyTextureOverridePreEffect;
 	case Bunny::CommandListActionKind::HandlingSkip:
+	case Bunny::CommandListActionKind::ControlFlow:
+	case Bunny::CommandListActionKind::VariableAssignment:
+	case Bunny::CommandListActionKind::LocalVariableAssignment:
+	case Bunny::CommandListActionKind::SetShaderConstant:
 	case Bunny::CommandListActionKind::SetIndexBuffer:
 	case Bunny::CommandListActionKind::SetVertexBuffer:
 	case Bunny::CommandListActionKind::SetShaderResource:

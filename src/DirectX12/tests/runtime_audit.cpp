@@ -12,6 +12,8 @@
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
+#include <filesystem>
+#include <fstream>
 #include <chrono>
 #include <stdexcept>
 
@@ -717,7 +719,8 @@ void TestInstancedDraws(ID3D12Device *device)
 	List native(device, D3D12_COMMAND_LIST_TYPE_DIRECT);
 	const DX12IaHashState ia{};
 	DX12ModIaReplacement replacement;
-	DX12CommandListExecutor executor(device, native.list.Get(), ia, 0, 0, 13, 0, 0, 21, &replacement);
+	const auto original = DX12IaDrawInvocation::ForDrawInstanced(0, 13, 0, 21);
+	DX12CommandListExecutor executor(device, native.list.Get(), ia, original.Parameters(), &replacement);
 	executor.SetExecutionMode(true, true);
 	executor.ExecuteCompiledCommandListPlan(plans.at(L"CommandListLiteral"), 0, false);
 	for (int instances : {2, 6}) {
@@ -726,9 +729,6 @@ void TestInstancedDraws(ID3D12Device *device)
 	}
 	Require(executor.observedDynamicCommandState, "expression draws bypass cross-draw caching");
 	const auto callbacks = RecordingDrawCallbacks();
-	DX12IaDrawInvocation original;
-	original.instanceCount = 13;
-	original.firstInstance = 21;
 	recordedDraws.clear();
 	const DX12ActiveIaState activeIa{};
 	DX12IaReplacementDrawExecutor(native.list.Get(), callbacks).ExecuteReplacementDraws(replacement, activeIa, &original);
@@ -751,6 +751,89 @@ void TestInstancedDraws(ID3D12Device *device)
 		records[1].drawFirstInstance == 0, "standalone element default quad");
 	Check(native.list->Close());
 	MigotoCommandVmUtils::ClearGlobals();
+}
+
+void TestDrawCallParameters(ID3D12Device *device)
+{
+	constexpr char shader[] = "float4 main(uint id:SV_VertexID):SV_Position{return float4(id,0,0,1);}";
+	ComPtr<ID3DBlob> vs;
+	Check(D3DCompile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0",
+		0, 0, &vs, nullptr));
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+	Bunny::DX12CustomShaderPipelineAssembler::FillGraphicsPipelineDesc(
+		{}, DXGI_FORMAT_R8G8B8A8_UNORM, nullptr, nullptr, &desc);
+	desc.pRootSignature = Bunny::DX12CustomShaderPipelineCache::EnsureRootSignature(device);
+	desc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+	desc.NumRenderTargets = 0;
+	desc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
+	ComPtr<ID3D12PipelineState> pipeline;
+	Check(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline)));
+	DX12RecordGraphicsPipelineState(pipeline.Get(), &desc);
+	DX12PsoShaderInfo shaderInfo{};
+	Require(DX12GetPipelineStateShaderInfo(pipeline.Get(), &shaderInfo) && shaderInfo.hasVS,
+		"registered vertex shader");
+	const auto path = std::filesystem::current_path() /
+		(L"draw-context-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
+	auto load = [&](const char *links) {
+		std::ofstream ini(path);
+		ini << "[Constants]\nglobal $outside = draw_type + vertex_count + first_vertex\n"
+			"[ShaderOverrideContext]\nhash=" << std::hex << shaderInfo.vs << '\n' << links
+			<< "[CommandListMixed]\nchecktextureoverride=vb0\nrun=CommandListCapture\n"
+			"[CommandListCapture]\n$visits = $visits + 1\n"
+			"if instance_count > 0\n$nonempty = $nonempty + 1\nendif\n"
+			"$kind = draw_type\n$vertices = vertex_count\n$indices = index_count\n"
+			"$instances = instance_count\n$base = first_vertex\n$start = first_index\n$first = first_instance\n"
+			"[CommandListAfter]\n$after = first_vertex\n$after_kind = draw_type\n";
+		ini.close();
+		const bool loaded = DX12ModRuntimeLoad(path.c_str());
+		std::filesystem::remove(path);
+		Require(loaded && DX12ModHasActiveShaderOverrides(), "loaded draw parameter shader override");
+		DX12ModRefreshRuntimeStateAfterReload();
+	};
+	load("run=CommandListCapture\n");
+	List native(device, D3D12_COMMAND_LIST_TYPE_DIRECT);
+	ComPtr<ID3D12GraphicsCommandList> wrapped = native.list;
+	void *pointer = wrapped.Detach();
+	Require(DX12Wrapper::WrapD3D12DeviceResult(__uuidof(ID3D12GraphicsCommandList), &pointer),
+		"draw context command list wrapper");
+	wrapped.Attach(static_cast<ID3D12GraphicsCommandList*>(pointer));
+	wrapped->SetPipelineState(pipeline.Get());
+	auto *state = DX12CommandListRuntime::GetStatePtrFast(native.list.Get());
+	Require(state != nullptr, "draw context command list state");
+	const auto value = [](const wchar_t *name) { return MigotoCommandVmUtils::LookupVariable({}, name); };
+	auto flags = DX12HotPathState::SourceState::Capture().BuildHookWorkFlags();
+	auto callbacks = RecordingDrawCallbacks();
+	recordedDraws.clear();
+	DX12WrapperRuntimeUtils::DrawInstanced(native.list.Get(), state, 16777217, 0, 11, 2,
+		callbacks.drawInstanced, flags);
+	Require(value(L"$outside") == 0 && value(L"$visits") == 1 && value(L"$kind") == 3 &&
+		value(L"$vertices") == 16777216 && value(L"$indices") == 0 && value(L"$instances") == 0 &&
+		value(L"$base") == 11 && value(L"$start") == 0 && value(L"$first") == 2 &&
+		value(L"$nonempty") == 0, "non-indexed zero-instance draw and float32 vertex count");
+	for (int i = 0; i < 2; ++i)
+		DX12WrapperRuntimeUtils::DrawIndexedInstanced(native.list.Get(), state, 0, 3, 4, -3, 7,
+			callbacks.drawIndexedInstanced, flags);
+	Require(value(L"$visits") == 3 && value(L"$nonempty") == 2 && value(L"$kind") == 4 &&
+		value(L"$vertices") == 0 && value(L"$indices") == 0 && value(L"$instances") == 3 &&
+		value(L"$base") == 4294967296.0 && value(L"$start") == 4 && value(L"$first") == 7 &&
+		recordedDraws.size() == 3, "identical draws re-evaluate script and keep signed native base");
+	Require(recordedDraws.back()[4] == -3 && value(L"draw_type") == 0 && value(L"first_vertex") == 0,
+		"draw context lifetime and native base");
+	load("run=CommandListMixed\npost=CommandListAfter\n");
+	wrapped->SetPipelineState(pipeline.Get());
+	flags = DX12HotPathState::SourceState::Capture().BuildHookWorkFlags();
+	DX12WrapperRuntimeUtils::DrawIndexedInstanced(native.list.Get(), state, 6, 1, 2, -1, 3,
+		callbacks.drawIndexedInstanced, flags);
+	Require(value(L"$indices") == 6 && value(L"$after") == 4294967296.0 && value(L"$after_kind") == 4,
+		"unbound optional target preserves pre actions and post uses the same indexed draw");
+	load("post=CommandListAfter\n");
+	wrapped->SetPipelineState(pipeline.Get());
+	flags = DX12HotPathState::SourceState::Capture().BuildHookWorkFlags();
+	DX12WrapperRuntimeUtils::DrawInstanced(native.list.Get(), state, 0, 0, 17, 0,
+		callbacks.drawInstanced, flags);
+	Require(value(L"$after") == 17 && value(L"$after_kind") == 3,
+		"post-only shader override observes a zero-count draw");
+	Check(wrapped->Close());
 }
 
 void TestAutomaticDraws(ID3D12Device *device)
@@ -788,7 +871,7 @@ void TestAutomaticDraws(ID3D12Device *device)
 
 	const DX12IaHashState hashes{};
 	DX12ModIaReplacement replacement;
-	DX12CommandListExecutor vm(device, native.list.Get(), hashes, 0, 0, 0, 0, 0, 0, &replacement);
+	DX12CommandListExecutor vm(device, native.list.Get(), hashes, {}, &replacement);
 	vm.SetExecutionMode(true, true);
 	vm.ExecuteCompiledCommandListPlan(plan, 0, false);
 	auto callbacks = RecordingDrawCallbacks();
@@ -932,6 +1015,7 @@ int main(int argc, char **argv)
 		TestRenderPass(device.Get());
 		TestSwapChain(factory.Get(), device.Get());
 		TestOverlay(device.Get());
+		TestDrawCallParameters(device.Get());
 		if (debug) {
 			ComPtr<ID3D12InfoQueue> info;
 			Check(device.As(&info));
