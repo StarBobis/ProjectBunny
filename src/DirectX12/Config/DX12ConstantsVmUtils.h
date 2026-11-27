@@ -23,9 +23,11 @@ class DX12ConstantsVmUtils
 public:
 	using Vm = MigotoCommandVmUtils;
 
-	static void Initialize(const CommandListMap &commandLists)
+	static void Initialize(const CommandListMap &commandLists, const std::wstring &userConfigPath = {})
 	{
 		Vm::GlobalVariables globals;
+		globals.savePath = userConfigPath;
+		globals.saveOwner = migoto::NormalizePersistentConfigPath(userConfigPath);
 		if (const auto *constants = FindConstants(commandLists)) {
 			Vm::State state;
 			state.initializing = &globals;
@@ -34,8 +36,16 @@ public:
 				if (action.kind == CommandListActionKind::VariableAssignment)
 					RegisterDeclaration(state, action);
 			}
-			for (const auto &action : constants->actions)
-				ApplyAction(state, action);
+			std::wstring_view previousNamespace;
+			bool fromUserConfig = false;
+			for (const auto &action : constants->actions) {
+				if (action.iniNamespace != previousNamespace) {
+					previousNamespace = action.iniNamespace;
+					fromUserConfig = !globals.saveOwner.empty() && !previousNamespace.empty() &&
+						migoto::NormalizePersistentConfigPath(action.iniNamespace) == globals.saveOwner;
+				}
+				ApplyAction(state, action, fromUserConfig);
+			}
 			state.FlushPostAssignments();
 		}
 		Vm::PublishGlobals(std::move(globals));
@@ -96,12 +106,9 @@ private:
 	static bool RestoreLegacyValue(Vm::State &state, const CommandListAction &action)
 	{
 		const auto &key = action.key;
-		if (key.size() < 2 || key[0] != L'$' || key[1] == L'\\' || Vm::userConfigPath.empty() ||
-			_wcsicmp(action.iniNamespace.c_str(), Vm::userConfigPath.c_str()) != 0)
+		if (key.size() < 2 || key[0] != L'$' || key[1] == L'\\')
 			return false;
 		auto &globals = *state.initializing;
-		if (Vm::FindGlobal(globals, key, action.iniNamespace) != globals.values.end())
-			return false;
 		const std::wstring_view leaf = std::wstring_view(key).substr(1);
 		std::optional<double> value;
 		for (const auto &name : globals.persistentNames) {
@@ -122,7 +129,28 @@ private:
 		return false;
 	}
 
-	static void ApplyAction(Vm::State &state, const CommandListAction &action)
+	// Preserve only literal settings owned by this user_config. Neither an absent
+	// declaration nor an active non-persistent variable is a writable save target.
+	static void RestoreSavedValue(Vm::State &state, const CommandListAction &action)
+	{
+		auto &globals = *state.initializing;
+		const auto found = Vm::FindGlobal(globals, action.key, action.iniNamespace);
+		if (found != globals.values.end() && globals.locked.count(found->first))
+			return;
+		if (found != globals.values.end() && globals.persistentKeys.count(found->first)) {
+			state.Assign(action.key, action.value, action.iniNamespace);
+			return;
+		}
+		if (found == globals.values.end() && RestoreLegacyValue(state, action))
+			return;
+		auto name = action.key;
+		float value;
+		if (migoto::NormalizeSavedVariableName(name) &&
+			migoto::ReadSavedLiteral(IniDocumentText::ToLower(action.value), value))
+			globals.savedUnknowns[name] = value;
+	}
+
+	static void ApplyAction(Vm::State &state, const CommandListAction &action, bool fromUserConfig)
 	{
 		const auto &ns = action.iniNamespace;
 		if (action.kind == CommandListActionKind::ControlFlow) {
@@ -133,8 +161,11 @@ private:
 			return;
 		switch (action.kind) {
 		case CommandListActionKind::VariableAssignment:
-			if (!migoto::VariableDeclaration::Parse(action.key).IsDx12Declaration() &&
-				!RestoreLegacyValue(state, action))
+			if (migoto::VariableDeclaration::Parse(action.key).IsDx12Declaration())
+				break;
+			if (fromUserConfig)
+				RestoreSavedValue(state, action);
+			else
 				state.Assign(action.key, action.value, ns);
 			break;
 		case CommandListActionKind::PostVariableAssignment:

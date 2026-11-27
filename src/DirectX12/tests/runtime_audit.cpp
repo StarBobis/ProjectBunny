@@ -94,13 +94,12 @@ void TestLockedVariables()
 	write(L"saved.ini", "[Constants]\n$variant=40\n$only_locked=random(99)\n$root=50\n");
 	Bunny::CommandListMap lists;
 	std::vector<Keys::Binding> bindings;
-	const std::wstring oldUserConfig = Vm::userConfigPath;
 	auto reload = [&] {
 		Bunny::MigotoIniLoadResult config;
 		Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &config) &&
 			config.errors.empty() && config.warnings.empty(), "load included variable configs and user save");
 		Bunny::MigotoCommandListParser::ParseSections(config.document, &lists);
-		Bunny::DX12ConstantsVmUtils::Initialize(lists);
+		Bunny::DX12ConstantsVmUtils::Initialize(lists, config.userConfigPath);
 		Keys::ParseSections(config.document, &bindings);
 	};
 	const auto before = GetExpressionRandomSampleCount();
@@ -149,10 +148,96 @@ void TestLockedVariables()
 	vm.Assign(L"$variant", L"13", L"Mod A");
 	Require(vm.Evaluate(L"$variant", L"Mod A") == 13 && Vm::PersistDirty(), "reloaded declaration is writable");
 	Vm::ClearGlobals();
-	Vm::userConfigPath = oldUserConfig;
 	for (const auto *file : {L"main.ini", L"a.ini", L"b.ini", L"c.ini", L"saved.ini"})
 		std::filesystem::remove(dir / file);
 	std::filesystem::remove(dir);
+}
+
+void TestInactiveUserSettings()
+{
+	using Vm = MigotoCommandVmUtils;
+	const auto dir = std::filesystem::current_path() /
+		(L"inactive-settings-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create inactive settings fixture");
+	const auto root = dir / L"main.ini";
+	const auto settings = dir / L"saved.ini";
+	const auto second = dir / L"second.ini";
+	const auto mod = dir / L"mod.ini";
+	auto configure = [&](bool enabled, bool switchOwner = false) {
+		std::ofstream ini(root);
+		ini << "[Include]\nuser_config=" << (switchOwner ? "second.ini" : "saved.ini") << "\n";
+		if (enabled)
+			ini << "include=mod.ini\n";
+		ini << "[System]\nclear_unknown_settings=0\n[Constants]\n"
+			"global persist $active=3\nglobal locked $fixed=17\nglobal $ordinary=8\n"
+			"$from_mod=23\n";
+		Require(ini.good(), "write inactive settings config");
+	};
+	auto fileText = [](const std::filesystem::path &path) {
+		std::ifstream input(path, std::ios::binary);
+		Require(input.good(), "read saved configuration");
+		return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+	};
+	std::ofstream(mod) << "namespace=Mod X\n[Constants]\nglobal persist $choice=7\n";
+	std::ofstream(settings) << "[Constants]\n$active=4\n$fixed=91\n$ordinary=2\n"
+		"$\\Mod X\\choice = -0B101\n$infinity=+inf\n$bad=3+4\n$side_effect=random(9)\n"
+		"$invalid-name=5\n$poolabsent[02]=21\n$poolabsent[4x]=12\n";
+	configure(false);
+	const auto randomBefore = GetExpressionRandomSampleCount();
+	Require(DX12ModRuntimeLoad(root.c_str()), "initial load with inactive mod");
+	Vm::State vm;
+	Require(vm.Evaluate(L"$active") == 4 && vm.Evaluate(L"$ordinary") == 8 &&
+		vm.Evaluate(L"$fixed") == 17 && vm.Evaluate(L"$\\mod x\\choice") == 0 &&
+		GetExpressionRandomSampleCount() == randomBefore, "inactive settings have no live VM effects");
+	vm.Assign(L"$active", L"11");
+	const auto original = fileText(settings);
+	HANDLE blocked = CreateFileW(settings.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	Require(blocked != INVALID_HANDLE_VALUE, "lock settings against replacement");
+	const bool reloadFailed = !DX12ModRuntimeReload();
+	CloseHandle(blocked);
+	Require(reloadFailed && Vm::PersistDirty() && vm.Evaluate(L"$active") == 11 &&
+		fileText(settings) == original, "replacement failure retains original file and live values for reload retry");
+	Require(DX12ModRuntimeReload() && !Vm::PersistDirty(), "successful retry saves before rebuilding");
+	const auto saved = fileText(settings);
+	Require(saved.find("$\\mod x\\choice = -5") != saved.npos &&
+		saved.find("$poolabsent[2] = 21") != saved.npos && saved.find("$ordinary = 2") != saved.npos &&
+		saved.find("$infinity = inf") != saved.npos && saved.find("$active = 11") != saved.npos &&
+		saved.find("$fixed") == saved.npos && saved.find("$from_mod") == saved.npos &&
+		saved.find("$side_effect") == saved.npos && saved.find("$bad") == saved.npos &&
+		saved.find("invalid-name") == saved.npos && saved.find("[4x]") == saved.npos,
+		"save keeps only valid numeric user-file settings and current persistent variables");
+	configure(true);
+	Require(DX12ModRuntimeReload() && vm.Evaluate(L"$\\mod x\\choice") == -5,
+		"re-enabled mod recovers its saved value");
+	std::ofstream(second) << "[Constants]\n$active=6\n$second_only=31\n";
+	configure(false, true);
+	blocked = CreateFileW(second.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	Require(blocked != INVALID_HANDLE_VALUE, "deny reads of new settings owner");
+	const bool readFailed = !DX12ModRuntimeReload();
+	CloseHandle(blocked);
+	Require(readFailed && vm.Evaluate(L"$\\mod x\\choice") == -5,
+		"unreadable settings keep previous configuration");
+	vm.Assign(L"$active", L"13");
+	DX12ModSavePersistStateOnExit();
+	const auto previousOwner = fileText(settings);
+	Require(previousOwner.find("$active = 13") != previousOwner.npos &&
+		fileText(second).find("$active=6") != std::string::npos, "failed load retains previous save owner");
+	Require(DX12ModRuntimeReload() && vm.Evaluate(L"$active") == 6, "read new owner after retry");
+	vm.Assign(L"$active", L"12");
+	DX12ModSavePersistStateOnExit();
+	const auto other = fileText(second);
+	Require(other.find("$second_only = 31") != other.npos && other.find("$active = 12") != other.npos &&
+		other.find("choice") == other.npos && other.find("$ordinary") == other.npos &&
+		fileText(settings) == previousOwner, "owner switch isolates saved unknowns");
+	std::ofstream(second) << "[Constants]\n$active=22\n";
+	DX12ModSavePersistStateOnExit();
+	Require(DX12ModRuntimeReload() && vm.Evaluate(L"$active") == 22,
+		"clean exit and reload preserve externally edited user_config");
+	for (const auto &path : {mod, settings, second, root})
+		std::filesystem::remove(path);
+	std::filesystem::remove(dir);
+	Vm::ClearGlobals();
 }
 
 void TestExpressionNumbers()
@@ -1296,6 +1381,7 @@ int main(int argc, char **argv)
 			return 0;
 		TestShaderRegexExclusions();
 		TestLockedVariables();
+		TestInactiveUserSettings();
 		TestExpressionNumbers();
 		TestUnaryMath();
 		TestFrameTiming();

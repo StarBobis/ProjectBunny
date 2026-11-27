@@ -1,4 +1,4 @@
-#include "IniVariableNames.h"
+#include "IniSavedSettings.h"
 #include "IniHandler.h"
 #include "IniExpressionNumbers.h"
 #include "User32Hooks.h"
@@ -48,20 +48,7 @@ static PersistentVariablePreservation persistent_preservation;
 static bool DetectUnknownPersistentSettings(bool handle_cleanup);
 static bool SavePersistentSettingsInternal(bool force, const std::unordered_set<std::wstring>* excluded = nullptr);
 
-static std::wstring NormalizePersistentConfigPath(std::wstring path)
-{
-	if (path.empty())
-		return path;
-	std::replace(path.begin(), path.end(), L'/', L'\\');
-	const DWORD required = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
-	if (required) {
-		std::vector<wchar_t> absolute(required);
-		if (GetFullPathNameW(path.c_str(), required, absolute.data(), nullptr))
-			path.assign(absolute.data());
-	}
-	std::transform(path.begin(), path.end(), path.begin(), ::towlower);
-	return path;
-}
+using migoto::NormalizePersistentConfigPath;
 
 static void SnapshotPersistentVariables()
 {
@@ -1256,59 +1243,14 @@ bool PreserveUserConfigVariable(const wchar_t* section, const std::wstring& name
 	if (!IsUserConfigPersistentAssignment(section, ini_namespace))
 		return false;
 	std::wstring normalized = NormalizeString(name);
-	if (normalized.size() < 2 || normalized[0] != L'$' || normalized.find_first_of(L"\r\n") != std::wstring::npos)
+	if (!migoto::NormalizeSavedVariableName(normalized))
 		return false;
-	std::wstring base_name = normalized;
-	const size_t bracket = normalized.find(L'[');
-	if (bracket != std::wstring::npos) {
-		if (bracket <= 5 || normalized.compare(0, 5, L"$pool") != 0)
-			return false;
-		if (normalized.back() != L']' || bracket + 2 >= normalized.size())
-			return false;
-		const std::wstring slot = normalized.substr(bracket + 1, normalized.size() - bracket - 2);
-		if (slot.find_first_not_of(L"0123456789") != std::wstring::npos)
-			return false;
-		errno = 0;
-		wchar_t* slot_end = nullptr;
-		const unsigned long long index = wcstoull(slot.c_str(), &slot_end, 10);
-		if (errno == ERANGE || !slot_end || *slot_end || index > SIZE_MAX)
-			return false;
-		base_name.resize(bracket);
-		normalized = base_name + L"[" + std::to_wstring(index) + L"]";
-	}
-	if (base_name.size() < 2)
-		return false;
-	if (base_name[1] == L'\\' || (bracket != std::wstring::npos && base_name.find(L'\\') != std::wstring::npos)) {
-		const size_t leaf = base_name.find_last_of(L'\\');
-		if (leaf <= 2 || !valid_variable_name(L"$" + base_name.substr(leaf + 1)))
-			return false;
-	} else if (!valid_variable_name(base_name)) {
-		return false;
-	}
 	const auto known = command_list_globals.find(normalized);
 	if (known != command_list_globals.end() && (known->second.flags & VariableFlags::LOCKED))
 		return false;
-	std::wstring literal = NormalizeString(value);
-	const size_t first = literal.find_first_not_of(L" \t\r\n");
-	if (first == std::wstring::npos)
-		return false;
-	literal = literal.substr(first, literal.find_last_not_of(L" \t\r\n") - first + 1);
 	float parsed;
-	size_t prefix = literal[0] == L'-' || literal[0] == L'+' ? 1 : 0;
-	if (literal.size() > prefix + 2 && literal[prefix] == L'0' && literal[prefix + 1] == L'b') {
-		uint64_t binary;
-		size_t length;
-		if (!ParseBinaryLiterals(literal, prefix + 2, binary, length) || length + prefix + 2 != literal.size())
-			return false;
-		parsed = static_cast<float>(binary);
-		if (literal[0] == L'-')
-			parsed = -parsed;
-	} else {
-		wchar_t* end = nullptr;
-		parsed = wcstof(literal.c_str(), &end);
-		if (end == literal.c_str() || *end)
-			return false;
-	}
+	if (!migoto::ReadSavedLiteral(NormalizeString(value), parsed))
+		return false;
 	persistent_preservation.values[normalized] = parsed;
 	return true;
 }
@@ -5624,16 +5566,8 @@ static bool SavePersistentSettingsInternal(bool force, const std::unordered_set<
 		return true;
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
-	// The shared helper keeps the existing security attributes and CREATE_NEW
-	// guarantees that even predictable candidate names cannot overwrite a file.
-	static std::atomic<unsigned long long> temporary_sequence{0};
-	std::wstring temporary;
-	int opened = EEXIST;
-	for (unsigned attempt = 0; attempt < 32 && opened == EEXIST; ++attempt) {
-		temporary = G->user_config + L".tmp." + std::to_wstring(GetCurrentProcessId()) + L"." +
-			std::to_wstring(temporary_sequence.fetch_add(1, std::memory_order_relaxed));
-		opened = wfopen_exclusive_ensuring_access(&f, temporary.c_str(), L"w");
-	}
+	migoto::StagedSettingsFile staged;
+	const auto opened = staged.Open(&f, G->user_config, wfopen_exclusive_ensuring_access);
 	if (opened || !f) {
 		LogWarning("Unable to stage settings in %S\n", G->user_config.c_str());
 		setlocale(LC_CTYPE, G->gDefaultLocale.c_str());
@@ -5657,9 +5591,7 @@ static bool SavePersistentSettingsInternal(bool force, const std::unordered_set<
 	const bool write_failed = ferror(f) != 0;
 	const int close_result = fclose(f);
 	const bool saved = !write_failed && close_result == 0 &&
-		MoveFileExW(temporary.c_str(), G->user_config.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-	if (!saved)
-		DeleteFileW(temporary.c_str());
+		staged.Replace(G->user_config) == ERROR_SUCCESS;
 	if (saved) {
 		G->user_config_dirty = 0;
 		if (owns_path)

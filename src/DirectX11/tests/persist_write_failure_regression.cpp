@@ -305,8 +305,8 @@ void expect_fopen_failure(PersistAuditFixture &fixture)
 void expect_fault(PersistAuditFixture &fixture, SaveFault fault, const char *stage)
 {
     install_store({{L"$alpha", 1.0}, {L"$beta", -2.5}});
-    std::error_code ignored;
-    std::filesystem::remove(fixture.targetPath, ignored);
+    const std::string original = "[Constants]\r\n$previous = 17\r\n";
+    std::ofstream(fixture.targetPath, std::ios::binary) << original;
     g_fault = fault;
     g_faultConsumed = false;
     g_failure = FailureLog{};
@@ -320,6 +320,9 @@ void expect_fault(PersistAuditFixture &fixture, SaveFault fault, const char *sta
     require(g_failure.stage == stage,
         std::string("F003b: expected failure stage ") + stage +
             ", got " + g_failure.stage);
+    require(read_file(fixture.targetPath) == original, "failed save keeps previous file byte-for-byte");
+    require(std::distance(std::filesystem::directory_iterator(fixture.root),
+        std::filesystem::directory_iterator{}) == 1, "failed save removes its staging file");
     require(g_failure.path == fixture.targetPath.wstring(),
         "F003b: failure log must name the persist file");
 }

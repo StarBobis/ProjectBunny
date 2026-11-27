@@ -2500,31 +2500,15 @@ public:
 			stage ? stage : "", error, path ? path : L"");
 	}
 
-	// Arms the save path from the path the loader resolved. Called after every
-	// config load, so a config that moves its user_config takes effect on the
-	// next reload without restarting the game; the path is empty until a load
-	// has succeeded, which also keeps the exit save from writing anything.
-	static void RefreshTarget()
+	static bool SavePending(const char *reason)
 	{
 		MigotoCommandVmUtils::SetPersistFailureSink(&LogFailure);
-		mTargetValid = UserConfigPathActive(&mTarget);
-	}
-
-	// DX12ConstantsVmUtils::Initialize() has already registered the persist
-	// declarations of the live generation by the time anything can be saved, so
-	// the store itself is the single source of truth for what goes in the file.
-	static bool Save(const char *reason)
-	{
-		if (!mTargetValid)
+		std::wstring savedPath;
+		if (!MigotoCommandVmUtils::SaveCurrentIfDirty(savedPath))
 			return false;
-		if (!MigotoCommandVmUtils::SavePersistedVariables(mTarget))
-			return false;
-		DX12_LOG("DX12UserConfig",
-			"\"status\":\"saved\",\"reason\":\"%s\",\"path\":\"%ls%ls%ls\"",
-			reason ? reason : "",
-			mTarget.directory.c_str(),
-			mTarget.directory.empty() ? L"" : L"\\",
-			mTarget.fileName.c_str());
+		if (!savedPath.empty())
+			DX12_LOG("DX12UserConfig", "\"status\":\"saved\",\"reason\":\"%s\",\"path\":\"%ls\"",
+				reason, savedPath.c_str());
 		return true;
 	}
 
@@ -2537,7 +2521,7 @@ public:
 			return;
 		if (!TryAcquireSRWLockExclusive(&gModLock))
 			return;
-		(void)Save("autosave");
+		(void)SavePending("autosave");
 		ReleaseSRWLockExclusive(&gModLock);
 		// DX11 records gSettingsSaveTime at the start of the attempt. Do the
 		// same here: keeping persistDirty armed on a failed save must retry on
@@ -2571,20 +2555,6 @@ private:
 			static_cast<ULONGLONG>(AutoSaveIntervalSeconds) * 1000ull;
 	}
 
-	// Path of the persist file, split for the writer. Empty until a config load
-	// has published it through MigotoCommandVmUtils::userConfigPath, which is
-	// also what keeps the exit save silent when no mod config was ever loaded.
-	static bool UserConfigPathActive(MigotoCommandVmUtils::PersistTarget *target)
-	{
-		if (!target)
-			return false;
-		*target = MigotoCommandVmUtils::MakePersistTarget(
-			MigotoCommandVmUtils::userConfigPath);
-		return !target->fileName.empty();
-	}
-
-	inline static MigotoCommandVmUtils::PersistTarget mTarget;
-	inline static bool mTargetValid = false;
 	inline static ULONGLONG mLastSaveTick = 0;
 };
 

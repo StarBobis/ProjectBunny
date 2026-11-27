@@ -18,7 +18,7 @@
 
 #include "MigotoIniCommandListUtils.hpp"
 #include "IniExpressionNumbers.h"
-#include "IniVariableNames.h"
+#include "IniSavedSettings.h"
 #include "IniBitwise.h"
 #include "IniUnaryMath.h"
 #include "ExpressionFunctions.h"
@@ -34,6 +34,9 @@ public:
 		std::unordered_set<std::wstring> locked;
 		std::vector<std::wstring> persistentNames;
 		std::unordered_set<std::wstring> persistentKeys;
+		std::unordered_map<std::wstring, float> savedUnknowns;
+		std::wstring savePath;
+		std::wstring saveOwner;
 		bool referencedFrameVariable = false;
 	};
 
@@ -803,14 +806,6 @@ public:
 		std::wstring fileName;
 	};
 
-	// Full path of the persist file the last config load resolved
-	// ([Include] user_config, else d3dx_user.ini next to the root ini). It
-	// lives here rather than in the loader because the runtime's save path must
-	// not depend on the loader header being the first file to include it, and
-	// because the VM utils are the one header every mod-runtime unit already
-	// shares.
-	inline static std::wstring userConfigPath;
-
 	// Splits a resolved user-config path into the directory and file name the
 	// save side needs.
 	static PersistTarget MakePersistTarget(const std::wstring &path)
@@ -831,7 +826,7 @@ public:
 	// to d3d12_log.txt. Without one (tests, early startup) the failure still
 	// goes to stderr instead of being silent.
 	using PersistFailureSink = void (*)(const char *stage, const wchar_t *path, int error);
-	inline static PersistFailureSink persistFailureSink = nullptr;
+	inline static std::atomic<PersistFailureSink> persistFailureSink{nullptr};
 
 	static void SetPersistFailureSink(PersistFailureSink sink)
 	{
@@ -840,38 +835,57 @@ public:
 
 	static void ReportPersistFailure(const char *stage, const std::wstring &path, int error)
 	{
-		if (persistFailureSink) {
-			persistFailureSink(stage, path.c_str(), error);
+		if (const auto sink = persistFailureSink.load(std::memory_order_acquire)) {
+			sink(stage, path.c_str(), error);
 			return;
 		}
 		fprintf(stderr, "persist save failed at %s (error %d): %ls\n",
 			stage ? stage : "", error, path.c_str());
 	}
 
-	// Write live mutable declarations in their registration order. A failed
-	// write, flush or close leaves the dirty flag set for the next autosave.
+	static bool SaveCurrentIfDirty(std::wstring &savedPath)
+	{
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		const auto &path = VariableStore::current.savePath;
+		if (!PersistDirty() || path.empty())
+			return true;
+		if (!WriteSettingsLocked(path))
+			return false;
+		savedPath = path;
+		return true;
+	}
+
 	static bool SavePersistedVariables(const PersistTarget &target)
 	{
 		if (target.directory.empty() || target.fileName.empty())
 			return false;
-
-		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		if (VariableStore::current.persistentNames.empty()) {
-			// Nothing is declared as persist any more (for instance the mod was
-			// removed): drop the pending flag instead of retrying every frame.
-			ClearPersistDirty();
-			return false;
-		}
-
 		std::wstring path = target.directory;
 		if (path.back() != L'\\' && path.back() != L'/')
 			path += L'\\';
 		path += target.fileName;
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		return WriteSettingsLocked(path);
+	}
 
-		errno = 0;
-		FILE *file = _wfsopen(path.c_str(), L"w", _SH_DENYNO);
-		if (!file) {
-			ReportPersistFailure("fopen", path, errno);
+	// Write live mutable declarations in their registration order. A failed
+	// write, close or replacement leaves the old file and dirty flag intact.
+	static bool WriteSettingsLocked(const std::wstring &path)
+	{
+		const auto &globals = VariableStore::current;
+		const bool hasUnknowns = !globals.savedUnknowns.empty() &&
+			globals.saveOwner == migoto::NormalizePersistentConfigPath(path);
+		if (globals.persistentNames.empty() && !hasUnknowns) {
+			ClearPersistDirty();
+			return false;
+		}
+		migoto::StagedSettingsFile staged;
+		FILE *file = nullptr;
+		const int opened = staged.Open(&file, path, [](FILE **out, const wchar_t *candidate, const wchar_t *) {
+			*out = _wfsopen(candidate, L"wx", _SH_DENYRW);
+			return *out ? 0 : errno;
+		});
+		if (opened) {
+			ReportPersistFailure("fopen", path, opened);
 			return false;
 		}
 
@@ -893,25 +907,28 @@ public:
 			ok = false;
 		}
 
-		if (ok) {
+		auto writeValue = [&](const std::wstring &name, double value) {
+			const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.c_str(), -1,
+				nullptr, 0, nullptr, nullptr);
+			std::string utf8(size, '\0');
+			if (!size || !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.c_str(), -1,
+				utf8.data(), size, nullptr, nullptr)) {
+				failedStage = "UTF-8";
+				return false;
+			}
 			failedStage = "fprintf_s";
-			for (const auto &name : VariableStore::current.persistentNames) {
-				auto found = VariableStore::current.values.find(name);
-				if (found == VariableStore::current.values.end())
-					continue;
-				const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.c_str(), -1,
-					nullptr, 0, nullptr, nullptr);
-				std::string utf8(size, '\0');
-				if (!size || !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.c_str(), -1,
-					utf8.data(), size, nullptr, nullptr)) {
-					ok = false;
-					failedStage = "UTF-8";
+			return fprintf_s(file, "%s = %.9g\n", utf8.c_str(), value) >= 0;
+		};
+		for (const auto &name : globals.persistentNames) {
+			if (!ok)
+				break;
+			ok = writeValue(name, globals.values.at(name));
+		}
+		if (hasUnknowns) {
+			for (const auto &[name, value] : globals.savedUnknowns) {
+				if (!ok)
 					break;
-				}
-				if (fprintf_s(file, "%s = %.9g\n", utf8.c_str(), found->second) < 0) {
-					ok = false;
-					break;
-				}
+				ok = writeValue(name, value);
 			}
 		}
 
@@ -935,6 +952,10 @@ public:
 			return false;
 		}
 
+		if (const auto error = staged.Replace(path)) {
+			ReportPersistFailure("replace", path, static_cast<int>(error));
+			return false;
+		}
 		ClearPersistDirty();
 		return true;
 	}

@@ -1302,13 +1302,13 @@ bool DX12ModRuntimeLoad(
 	std::vector<DX12VertexLimitRaiseConfig> loadedVertexLimitRaiseConfigs;
 	UINT64 loadedGeneration = 0;
 	
-	SetBasePaths(configPath);
 	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad)) {
+		const auto &error = iniLoad.errors.empty() ? iniLoad.document.Error() : iniLoad.errors.back();
 		DX12_LOG("DX12ModRuntime",
 			"\"status\":\"config_load_failed\",\"path\":\"%S\",\"error\":\"%S\"",
-			configPath ? configPath : L"", iniLoad.document.Error().c_str());
+			configPath ? configPath : L"", error.c_str());
 		if (statusMessage)
-			*statusMessage = L"DX12 mod config load failed: " + iniLoad.document.Error();
+			*statusMessage = L"DX12 mod config load failed: " + error;
 		if (hasWarnings)
 			*hasWarnings = true;
 		if (hasErrors)
@@ -1316,19 +1316,14 @@ bool DX12ModRuntimeLoad(
 		return false;
 	}
 
-	// The loader resolved [Include] user_config and appended that file last
-	// (d3dx_user.ini by default), so the persist target now names the same file
-	// the values in it came from and the next save writes it back to the right
-	// place even if the config moved it.
-	DX12UserConfigSave::RefreshTarget();
-
+	SetBasePaths(configPath);
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
 	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes, iniLoad.warnings);
 	Bunny::MigotoTextureOverrideParser::ParseSections(iniLoad.document, &textureOverrides);
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
-	Bunny::DX12ConstantsVmUtils::Initialize(commandLists);
+	Bunny::DX12ConstantsVmUtils::Initialize(commandLists, iniLoad.userConfigPath);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
 	// Custom shader elements are rebuilt from the parsed command lists (the
 	// same action stream the draw executor consumes) so the registry and the
@@ -1698,7 +1693,10 @@ bool DX12ModRuntimeReload()
 	// before the user config is parsed back in. This is also what makes F10 a
 	// "save and reload": the file the reload reads next contains the newest
 	// values.
-	DX12UserConfigSave::Save("reload");
+	if (!DX12UserConfigSave::SavePending("reload")) {
+		DX12OverlayStatusState::SetError(L"Unable to save user settings. Reload again to retry.");
+		return false;
+	}
 	std::wstring status;
 	bool hasWarnings = false;
 	bool hasErrors = false;
@@ -1725,7 +1723,7 @@ void DX12ModSavePersistStateOnExit()
 	// whether anything is pending, so a session where no persist variable was
 	// ever touched (or where the last autosave already captured everything)
 	// leaves the file untouched.
-	DX12UserConfigSave::Save("exit");
+	DX12UserConfigSave::SavePending("exit");
 }
 
 

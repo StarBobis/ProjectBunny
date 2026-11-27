@@ -1,7 +1,6 @@
 #pragma once
 
 #include "DX12Config.h"
-#include "MigotoCommandVmUtils.hpp"
 #include "bounded_path_format.h"
 
 #include <set>
@@ -16,6 +15,7 @@ class MigotoIniLoadResult
 {
 public:
 	IniDocument document;
+	std::wstring userConfigPath;
 	std::vector<std::wstring> loadedFiles;
 	std::vector<std::wstring> errors;
 	std::vector<std::wstring> warnings;
@@ -124,19 +124,18 @@ static bool ReadFileText(const std::wstring &path, std::wstring *text)
 	if (!file)
 		return false;
 
-	fseek(file, 0, SEEK_END);
-	long size = ftell(file);
-	fseek(file, 0, SEEK_SET);
-	if (size <= 0) {
+	const long size = fseek(file, 0, SEEK_END) == 0 ? ftell(file) : -1;
+	if (size < 0 || fseek(file, 0, SEEK_SET) != 0) {
 		fclose(file);
-		return true;
+		return false;
 	}
+	if (size == 0)
+		return fclose(file) == 0;
 
 	std::string bytes;
 	bytes.resize(static_cast<size_t>(size));
 	size_t read = fread(&bytes[0], 1, bytes.size(), file);
-	fclose(file);
-	if (read != bytes.size())
+	if (fclose(file) != 0 || read != bytes.size())
 		return false;
 
 	if (bytes.size() >= 3 &&
@@ -144,6 +143,8 @@ static bool ReadFileText(const std::wstring &path, std::wstring *text)
 	    static_cast<unsigned char>(bytes[1]) == 0xbb &&
 	    static_cast<unsigned char>(bytes[2]) == 0xbf) {
 		bytes.erase(0, 3);
+		if (bytes.empty())
+			return true;
 	}
 
 	UINT codePage = CP_UTF8;
@@ -156,7 +157,7 @@ static bool ReadFileText(const std::wstring &path, std::wstring *text)
 			codePage, 0, bytes.data(), static_cast<int>(bytes.size()),
 			nullptr, 0);
 	}
-	if (length < 0)
+	if (length <= 0)
 		return false;
 
 	text->assign(static_cast<size_t>(length), L'\0');
@@ -343,29 +344,29 @@ static void LoadFileRecursive(
 // cannot be read or parsed is reported, because silently ignoring it would
 // make the runtime fall back to the ini defaults while the next save
 // overwrites the user's settings.
-static void LoadUserConfigFile(const std::wstring &path, LoaderState *state)
+static bool LoadUserConfigFile(const std::wstring &path, LoaderState *state)
 {
-	if (!state || path.empty())
-		return;
-	if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES)
-		return;
+	if (path.empty())
+		return true;
+	if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+		const auto error = GetLastError();
+		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+			return true;
+		state->errors.push_back(L"unable to access user_config: " + path);
+		return false;
+	}
 	if (state->seenFiles.count(MigotoIniLoaderPath::CanonicalPath(path))) {
 		state->warnings.push_back(L"user_config already loaded by an include: " + path);
-		return;
+		return true;
 	}
+	const auto errorsBefore = state->errors.size();
 	MigotoIniLoaderPath::LoadFileRecursive(path, path, state);
+	return state->errors.size() == errorsBefore;
 }
 
 };
 
-// Path of the persist file (d3dx_user.ini): the [Include] user_config entry
-// resolved against the root ini's directory, or the DX11 default name beside
-// it. The resolved path is published through
-// MigotoCommandVmUtils::userConfigPath rather than a type of its own, because
-// the runtime's save path only ever needs the string and must not depend on
-// this header (Resources/ pulls it in early, and a second include in the same
-// translation unit is then skipped by #pragma once - see the include order
-// note in DX12ModRuntimeInternal.h).
+// Resolve the active user settings path relative to the root configuration.
 namespace MigotoUserConfigPath
 {
 	inline static const wchar_t *kDefaultFileName = L"d3dx_user.ini";
@@ -426,21 +427,22 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 	// root file even when the file itself is missing - the save path needs the
 	// path to create it, and a missing file must not be an error.
 	const std::wstring configuredUserConfig = MigotoUserConfigPath::FindConfiguredName(state.document);
-	MigotoCommandVmUtils::userConfigPath = MigotoUserConfigPath::Resolve(state.rootDir, configuredUserConfig);
-	if (MigotoCommandVmUtils::userConfigPath.empty()) {
+	auto userConfig = MigotoUserConfigPath::Resolve(state.rootDir, configuredUserConfig);
+	if (userConfig.empty()) {
 		// F-200 #5: the persist file path could not be built completely.
 		// Reject it instead of letting the save path write to a truncated name.
 		state.warnings.push_back(L"user_config path rejected: path too long: " +
 			(configuredUserConfig.empty() ? std::wstring(MigotoUserConfigPath::kDefaultFileName) : configuredUserConfig));
 	}
-	MigotoIniLoaderPath::LoadUserConfigFile(
-		MigotoCommandVmUtils::userConfigPath, &state);
+	const bool loadedUserConfig = MigotoIniLoaderPath::LoadUserConfigFile(userConfig, &state);
+	if (loadedUserConfig)
+		result->userConfigPath = std::move(userConfig);
 
 	result->loadedFiles = std::move(state.loadedFiles);
 	result->errors = std::move(state.errors);
 	result->warnings = std::move(state.warnings);
 	result->document = std::move(state.document);
-	return true;
+	return loadedUserConfig;
 }
 
 

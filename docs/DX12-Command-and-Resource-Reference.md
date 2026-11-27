@@ -559,9 +559,11 @@ F10 触发 `DX12ModRuntimeReload`（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad
 | 文件格式 | `; AUTOMATICALLY GENERATED FILE - DO NOT EDIT` + `[Constants]` + `$名 = 值`（`%.9g`） | `src/common/MigotoCommandVmUtils.hpp:686` |
 | 路径 | `[Include] user_config`，默认 `d3dx_user.ini` | `src/DirectX12/Config/DX12ConfigLoader.h:369` |
 
-写盘失败（打开 / 写 / flush / close 任一步）会写日志 `DX12UserConfig` / `save_failed` 并**保持脏标记**，下一个周期重试。
+设置先写入同目录的独占临时文件，成功关闭后再替换目标文件。写入或替换失败时保留旧文件和待保存的值，记录 `DX12UserConfig` 的 `save_failed`。F10 遇到保存失败会保留当前配置，可再次重载。
 
 属于某个命名空间的持久变量用完整名称写入 UTF-8 文件，例如 `$\testmod\panel_x`。旧 DX12 存档里的 `$panel_x` 优先恢复根变量。没有根变量时，恢复同名的可写持久变量。带 `locked` 标志的声明跳过保存和恢复。
+
+保存时保留当前用户文件中来自未加载 Mod 的数值字面量。重新启用对应的持久变量后会恢复旧值。切换 `user_config` 时，各文件分别保留自己的条目。
 
 用户配置文件最后加载，因此其中的持久值**覆盖** Mod INI 里的默认值（`src/DirectX12/Config/DX12ConstantsVmUtils.h:25`）。
 
