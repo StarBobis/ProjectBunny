@@ -3,7 +3,7 @@
 #pragma once
 
 #include "DX12ResourceHookRuntime.h"
-#include "../Config/DX12SettingsHotkeys.h"
+#include "../Config/DX12HuntingHotkeys.h"
 #include "../Core/DX12Diagnostics.h"
 #include "../Core/Diag/DX12CrashReport.h"
 
@@ -173,131 +173,22 @@ public:
 	}
 };
 
-enum class DX12UiActionBits : LONG
-{
-	HuntToggle = 1 << 0,
-	HuntPreviousVS = 1 << 1,
-	HuntNextVS = 1 << 2,
-	HuntPreviousPS = 1 << 3,
-	HuntNextPS = 1 << 4,
-	HuntPreviousCS = 1 << 5,
-	HuntNextCS = 1 << 6,
-	HuntPreviousIB = 1 << 7,
-	HuntNextIB = 1 << 8,
-	HuntPreviousVB = 1 << 9,
-	HuntNextVB = 1 << 10,
-	// Profiling HUD. Deliberately outside the hunting gate below: the HUD is
-	// useful with hunting off, and switching it on must not enable the heavy
-	// tracking that hunting implies.
-	ProfHudCycle = 1 << 11,
-	HuntReset = 1 << 12,
-	FrameAnalysis = 1 << 13,
-	ShaderDump = 1 << 14,
-	ModReload = 1 << 15,
-	ProfHudFreeze = 1 << 16,
-	HuntMarkVS = 1 << 17,
-	HuntMarkPS = 1 << 18,
-	HuntMarkCS = 1 << 19,
-	HuntMarkIB = 1 << 20,
-	HuntMarkVB = 1 << 21,
-	WipeUserConfig = 1 << 22,
-};
-
 class DX12UiActions
 {
-	struct KeyBinding
-	{
-		int vk;
-		DX12UiActionBits action;
-		bool repeatable;
-		bool requiresDecimal;
-		bool down = false;
-		ULONGLONG lastFireTick = 0;
-	};
-
 public:
 	inline static volatile LONG PendingActions = 0;
 
-	static void Request(DX12UiActionBits action)
+	template <class ReadKey>
+	static void PollKeyboard(ReadKey read, ULONGLONG now)
 	{
-		InterlockedOr(&PendingActions, static_cast<LONG>(action));
+		const LONG actions = DX12HuntingHotkeys::Instance().Poll(read, now);
+		if (actions)
+			InterlockedOr(&PendingActions, actions);
 	}
 
-	// DX11 [Hunting] key bindings (Dependencies/d3dx.ini parity), polled on
-	// the render thread at the Present boundary. Numpad 0 toggles hunting -
-	// and with it the in-game green text - as one indivisible state, so there
-	// is no way to leave hunting burning tracking resources with the text
-	// hidden. Numpad 1-9 / * - navigate and copy PS/VS/IB/VB, Decimal+1/2/3
-	// covers CS, Numpad+ clears the selection, F8 dumps a frame, F9 dumps
-	// shaders. Navigation keys auto-repeat at the DX11 repeat_rate of 6/s.
-	// The configurable settings keys have their own modifier rules.
 	static void PollKeyboard()
 	{
-		static constexpr ULONGLONG kKeyRepeatMs = 166;
-
-		static KeyBinding bindings[] = {
-			{ VK_NUMPAD0,  DX12UiActionBits::HuntToggle,     false, false },
-			{ VK_NUMPAD1,  DX12UiActionBits::HuntPreviousPS, true,  false },
-			{ VK_NUMPAD2,  DX12UiActionBits::HuntNextPS,     true,  false },
-			{ VK_NUMPAD3,  DX12UiActionBits::HuntMarkPS,     false, false },
-			{ VK_NUMPAD4,  DX12UiActionBits::HuntPreviousVS, true,  false },
-			{ VK_NUMPAD5,  DX12UiActionBits::HuntNextVS,     true,  false },
-			{ VK_NUMPAD6,  DX12UiActionBits::HuntMarkVS,     false, false },
-			{ VK_NUMPAD7,  DX12UiActionBits::HuntPreviousIB, true,  false },
-			{ VK_NUMPAD8,  DX12UiActionBits::HuntNextIB,     true,  false },
-			{ VK_NUMPAD9,  DX12UiActionBits::HuntMarkIB,     false, false },
-			{ VK_DIVIDE,   DX12UiActionBits::HuntPreviousVB, true,  false },
-			{ VK_MULTIPLY, DX12UiActionBits::HuntNextVB,     true,  false },
-			{ VK_SUBTRACT, DX12UiActionBits::HuntMarkVB,     false, false },
-			{ VK_NUMPAD1,  DX12UiActionBits::HuntPreviousCS, true,  true },
-			{ VK_NUMPAD2,  DX12UiActionBits::HuntNextCS,     true,  true },
-			{ VK_NUMPAD3,  DX12UiActionBits::HuntMarkCS,     false, true },
-			{ VK_ADD,      DX12UiActionBits::HuntReset,      false, false },
-			{ VK_F8,       DX12UiActionBits::FrameAnalysis,  false, false },
-			{ VK_F9,       DX12UiActionBits::ShaderDump,     false, false },
-			// Profiling HUD: F11 cycles Off -> Compact -> Summary -> Top ->
-			// Sections -> Counters, F12 holds the report the screen is showing
-			// so the numbers stop moving while they are read.
-			{ VK_F11,      DX12UiActionBits::ProfHudCycle,   false, false },
-			{ VK_F12,      DX12UiActionBits::ProfHudFreeze,  false, false },
-		};
-
-		PollSettingsKeys(DX12SettingsHotkeys::KeyDown);
-		const bool decimalDown = (GetAsyncKeyState(VK_DECIMAL) & 0x8000) != 0;
-		const bool modifierDown =
-			(GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
-			(GetAsyncKeyState(VK_SHIFT) & 0x8000) ||
-			(GetAsyncKeyState(VK_MENU) & 0x8000) ||
-			(GetAsyncKeyState(VK_LWIN) & 0x8000) ||
-			(GetAsyncKeyState(VK_RWIN) & 0x8000);
-		const ULONGLONG now = GetTickCount64();
-		for (KeyBinding &binding : bindings) {
-			const bool active = !modifierDown &&
-				((GetAsyncKeyState(binding.vk) & 0x8000) != 0) &&
-				(decimalDown == binding.requiresDecimal);
-			bool fire = false;
-			if (active && !binding.down)
-				fire = true;
-			else if (active && binding.repeatable &&
-				now >= binding.lastFireTick + kKeyRepeatMs)
-				fire = true;
-			if (fire) {
-				binding.lastFireTick = now;
-				Request(binding.action);
-			}
-			binding.down = active;
-		}
-	}
-
-	template <class ReadKey>
-	static void PollSettingsKeys(ReadKey read)
-	{
-		using Hotkeys = DX12SettingsHotkeys;
-		switch (Hotkeys::Instance().Poll(read)) {
-		case Hotkeys::Action::Reload: Request(DX12UiActionBits::ModReload); break;
-		case Hotkeys::Action::Wipe: Request(DX12UiActionBits::WipeUserConfig); break;
-		default: break;
-		}
+		PollKeyboard(DX12HuntingHotkeys::KeyDown, GetTickCount64());
 	}
 
 	static bool Consume()

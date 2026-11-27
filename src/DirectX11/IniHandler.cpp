@@ -1394,46 +1394,11 @@ float GetIniFloat(const wchar_t* section, const wchar_t* key, float def, bool* f
 	return GetIniValue(section, key, def, found, true, ParseFloatValue, LogIniFloat);
 }
 
-inline bool ConvertExpressionToInt(float expr, int& out) noexcept
-{
-	// Saturate infinities and out-of-range values. Map NaN to zero.
-	if (std::isnan(expr))
-		out = 0;
-	else if (expr <= static_cast<float>(INT_MIN))
-		out = INT_MIN;
-	else if (expr >= static_cast<float>(INT_MAX))
-		out = INT_MAX;
-	else
-		out = static_cast<int>(expr);
-
-	return true;
-}
-
 bool ParseIntValue(const wchar_t* section, const wchar_t* key, const wstring& val, int& out, bool warn = false, const wstring* ini_namespace_override = nullptr)
 {
-	wchar_t* end = nullptr;
-	errno = 0;
-	long long n = std::wcstoll(val.c_str(), &end, 10); // TODO: C++17: use std::from_chars
-
-	if (end != val.c_str() && *end == L'\0') {
-		if (errno == ERANGE)
-		{
-			// Saturate integer literal overflow.
-			out = (n < 0) ? INT_MIN : INT_MAX;
-		}
-		else
-		{
-			if (n < INT_MIN)
-				out = INT_MIN;
-			else if (n > INT_MAX)
-				out = INT_MAX;
-			else
-				out = static_cast<int>(n);
-		}
+	if (migoto::ReadIniIntegerLiteral(val.c_str(), out))
 		return true;
-	}
-
-	return ParseIniExpression(ini_namespace_override, section, key, val, out, warn, ConvertExpressionToInt);
+	return ParseIniExpression(ini_namespace_override, section, key, val, out, warn, migoto::ConvertExpressionToInt);
 }
 
 inline void LogIniInt(const wchar_t* key, int value)

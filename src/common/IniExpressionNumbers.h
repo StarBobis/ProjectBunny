@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cmath>
+#include <climits>
 #include <cstdint>
 #include <cwchar>
 #include <cstring>
@@ -25,6 +26,35 @@ inline bool ReadIniBooleanAlias(std::wstring_view text, bool &value)
 inline bool IniBooleanValue(float value) noexcept
 {
 	return !std::isnan(value) && value != 0.0f;
+}
+
+inline bool ReadIniIntegerLiteral(const wchar_t *text, int &out)
+{
+	wchar_t *end = nullptr;
+	errno = 0;
+	const long long value = std::wcstoll(text, &end, 10);
+	if (end == text || *end)
+		return false;
+	if (value <= INT_MIN)
+		out = INT_MIN;
+	else if (value >= INT_MAX)
+		out = INT_MAX;
+	else
+		out = static_cast<int>(value);
+	return true;
+}
+
+inline bool ConvertExpressionToInt(float value, int &out) noexcept
+{
+	if (std::isnan(value))
+		out = 0;
+	else if (value <= static_cast<float>(INT_MIN))
+		out = INT_MIN;
+	else if (value >= static_cast<float>(INT_MAX))
+		out = INT_MAX;
+	else
+		out = static_cast<int>(value);
+	return true;
 }
 
 inline bool ReadBinaryDigits(std::wstring_view input, size_t start, std::uint64_t& out, size_t& length)

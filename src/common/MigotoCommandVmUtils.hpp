@@ -434,6 +434,18 @@ public:
 		}
 	};
 
+	static std::optional<float> ReadStaticIniExpression(const std::wstring &text)
+	{
+		if (!ExpressionParser::ValidSyntax(text))
+			return {};
+		ExpressionContext context;
+		context.requireDeclaredVariables = true;
+		context.staticIniSetting = true;
+		ExpressionParser parser(text, context, ExpressionParser::Mode::Validated);
+		const float value = parser.Parse();
+		return parser.ok ? std::optional<float>{value} : std::nullopt;
+	}
+
 	class BranchFrame
 	{
 	public:

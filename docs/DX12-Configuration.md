@@ -41,7 +41,7 @@
 | `d3dx_user.ini` | 持久化文件 | 默认名；可用 `[Include] user_config` 改名，相对根 `d3dx.ini` 目录 |
 | `d3d12_log.txt` | 诊断日志 | **仅诊断/TIMING 构建**；位于 DLL 模块所在目录 |
 
-配置模板见 [`config/d3dx.ini`](../config/d3dx.ini)（该文件是 DX12 专用模板，已删除 DX11 专属的 `[Hunting]` / `[Device]` / `[Rendering]` / `[Logging]` 段）。
+配置模板见 [`config/d3dx.ini`](../config/d3dx.ini)（该文件是 DX12 专用模板，包含 DX12 可用的 `[Hunting]` 快捷键）。
 
 **模板中仍保留若干 DX11 遗留注释，与本文档的结论冲突**（本轮未修改模板；冲突处以本文档为准）：
 
@@ -348,7 +348,8 @@ DX12 的 VM 会把 `$\LiuYin\swapkey0` 与 `$swapkey0` 折叠到**同一个全�
 | --- | --- |
 | `[Preset*]` | DX12 **没有实现预设**。它只在前缀表里登记（因此会被命名空间化），没有任何解析器消费 |
 | `[Pool*]` | DX12 没有 Pool 实现 |
-| `[Hunting]`、`[Logging]`、`[System]`、`[Device]`、`[Rendering]`、`[Profile]`、`[Stereo]`、`[ConvergenceMap]` | 精确匹配节，保持全局但无消费者 |
+| `[Hunting]`、`[System]` | 全局配置。Hunting 读取已接入的快捷键和重复速率，System 包含未知设置清理等选项 |
+| `[Logging]`、`[Device]`、`[Rendering]`、`[Profile]`、`[Stereo]`、`[ConvergenceMap]` | 精确匹配节，保持全局但无消费者 |
 | `[ClearRenderTargetView]`、`[ClearDepthStencilView]`、`[ClearUnorderedAccessViewUint]`、`[ClearUnorderedAccessViewFloat]` | 同上 |
 
 注意 `[Constants]` 与 `[Present]` 被纳入命令列表解析器的判定集合（`IsExplicitCommandListSection`），而 `[Clear*]` 四个节**不在**其中——即使它们在命名空间前缀表里与 `[Constants]` 并列。
@@ -578,7 +579,7 @@ endif
 - 循环是**环绕**的；步进前会先按当前变量值重新同步当前位置（等价于 DX11 的 `smart=true, wrap=true`）。
 - `condition` 用表达式求值（`MigotoCommandVmUtils::EvaluateExpression`），为空 → 恒真。
 
-### 9.4 内置热键与冲突
+### 9.4 默认快捷键与改绑
 
 | 键 | 作用 |
 | --- | --- |
@@ -588,21 +589,22 @@ endif
 | 小键盘 `1` / `2` / `3` + 小键盘 `.`（Decimal） | 导航 / 标记 CS |
 | `F8` | 帧分析（需先开启 hunting 模式） |
 | `F9` | 着色器导出 |
-| `F10` | 重载 Mod 配置 |
+| `F10` | 保存并重载 Mod 配置 |
+| Ctrl + Alt + F10 | 随包绑定。清空当前用户设置并重载 |
 | `F11` | 性能 HUD 循环：Off → Compact → Summary → Top → Sections → Counters |
 | `F12` | 冻结 / 解冻当前 HUD 报告 |
 
-- 任何 Ctrl / Shift / Alt / Win 按下时，**所有**内置热键都不触发（内置热键要求"修饰键全部松开"）。
-- 导航类热键以 166 ms 间隔自动重复（对应 DX11 的 `repeat_rate` 6/s）。
-- **小键盘 `.`（Decimal）是互斥开关**：每个内置热键的触发条件是：没有修饰键按下、该键本身按下、且 `decimalDown == requiresDecimal`。CS 三项要求**同时按住**小键盘 `.`，其余全部要求**没有按住**小键盘 `.`。因此按住 `.` 期间，F8–F12、小键盘 0/4–9、`/`、`*`、`-`、`+` 全部失效；同一把小键盘 1/2/3 在按住 `.` 时是 CS 导航，不按 `.` 时才是 PS 导航。
-- Mod 自己的 `[Key*]` 绑定**不受**这个全局门控影响，它只按自己的组合键条件判断。
-- 建议 Mod 避开 F8–F12 与小键盘。
+`[Hunting]` 中可重绑 `toggle_hunting`、`done_hunting`、`analyse_frame`、`monitor_performance`、`freeze_performance_monitor`、`reload_config` 和 `wipe_user_config`。导航与标记使用 `previous_`、`next_`、`mark_` 加目标名（`vertexshader`、`pixelshader`、`computeshader`、`vertexbuffer`、`indexbuffer`）。F9 保留为 DX12 着色器导出。
+
+空值禁用对应绑定。只要有一个键名无效，整个组合即失效。`no_modifiers` 排除 Ctrl、Alt、Shift 和左右 Win 键。小键盘小数点的规则由各自绑定中的 `VK_DECIMAL` 或 `no_VK_DECIMAL` 决定。`repeat_rate` 只控制导航，随包为每秒 6 次，0 表示按住时不重复。
+
+Mod 的 `[Key*]` 和 Hunting 各自判断组合键。两者使用相同按键时可同时触发，安排按键时请留意随包配置占用的小键盘和功能键。
 
 ### 9.5 `[Preset*]`
 
 DX12 **没有实现预设**。`[Preset*]` 只在前缀表里登记（因此会被命名空间化），没有任何解析器消费它。DX11 的预设（`[PresetX]` 段 + `key` / `type` / 变量）不会在 DX12 生效；需要类似效果请用 `[Key*]` + `[CommandList*]` 组合实现。
 
-> 源码依据：`src/common/MigotoKeyBindingUtils.hpp`、`src/common/vkeys.h`、`src/DirectX12/Resources/DX12RuntimeControl.h`（`DX12UiActions::PollKeyboard`）、`src/DirectX12/Runtime/DX12Input.h`。
+> 源码依据：`src/common/MigotoKeyBindingUtils.hpp`、`src/common/vkeys.h`、`src/DirectX12/Config/DX12HuntingHotkeys.h`、`src/DirectX12/Resources/DX12RuntimeControl.h`（`DX12UiActions::PollKeyboard`）、`src/DirectX12/Runtime/DX12Input.h`。
 
 ---
 
@@ -617,7 +619,8 @@ DX12 **没有实现预设**。`[Preset*]` 只在前缀表里登记（因此会�
 | 递归命名空间 | 目录级 | **文件相对路径级**（含 `.ini` 后缀），跨文件引用需写全名 |
 | `[Preset*]` | 有预设系统 | **未实现**（只登记前缀） |
 | `[Pool*]` | 有 Pool 实现 | **未实现**（只登记前缀） |
-| `[Hunting]` / `[Logging]` / `[System]` / `[Device]` / `[Rendering]` / `[Profile]` / `[Stereo]` | 有完整实现 | **不消费**；DX12 的 hunting / 日志 / profiling 由内置热键与 TIMING 构建决定 |
+| `[Hunting]` / `[System]` | 有完整实现 | 部分。见 §9.4 与 DX12 配置模板 |
+| `[Logging]` / `[Device]` / `[Rendering]` / `[Profile]` / `[Stereo]` | 有完整实现 | DX12 仅识别这些段名 |
 | `[Logging] log_level` 等 | 生效 | 不生效 |
 | `[Rendering] ini_params` 等 | 生效 | 不生效；DX12 的 `x/y/z/w` 常量走 `[Constants]` / 命令列表 |
 | `[System] settings_auto_save_interval` | 生效（默认 60） | 不生效；60 秒是硬编码常量 |
@@ -637,7 +640,7 @@ DX12 **没有实现预设**。`[Preset*]` 只在前缀表里登记（因此会�
 
 1. **门控与配置可能读不同的 `d3dx.ini`**。门控读 `<DLL 目录>\d3dx.ini` 的 `[Loader] target` / `loader`；配置读当前工作目录优先的 `d3dx.ini`。两处并存且内容不同时，行为难以推断。
 2. **`[Loader]` 的多数字段在 DX12 无效**。`launch`、`require_admin`、`delay`、`module`、`entry_point` 只描述外部加载器；DX12 运行时不会执行它们。
-3. **DX11 全局设置段不生效**。`[Hunting]`、`[Logging]`、`[System]`、`[Device]`、`[Rendering]`、`[Profile]`、`[Stereo]`、`[ConvergenceMap]` 在 DX12 没有任何消费者。
+3. **全局配置支持范围依后端而异**。DX12 能读取 §9.4 中的 `[Hunting]` 快捷键和 `repeat_rate`，其他 DX11 选项请对照 DX12 模板。
 4. **DX11 的资源目录 / 缓存目录 / 着色器导出等开关不生效**。DX12 的 `ShaderFixes` 目录固定为 `<d3dx.ini 所在目录>\ShaderFixes`。
 5. **`[Preset*]` 与 `[Pool*]` 未实现**。写了不会报错，但也不会有任何效果。
 6. **跨文件的命令列表引用需要全名**（§4.4）。隐式命名空间是文件相对路径，不是目录名。

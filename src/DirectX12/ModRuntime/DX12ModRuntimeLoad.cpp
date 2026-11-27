@@ -1336,7 +1336,7 @@ bool DX12ModRuntimeLoad(
 	// cleanup when the complete include tree was available on this reload.
 	const bool confirmUnknowns = reason == DX12ModLoadReason::UserReload &&
 		iniLoad.errors.empty() && iniLoad.includesComplete;
-	auto settingsKeys = DX12SettingsHotkeys::Parse(iniLoad.document, iniLoad.warnings);
+	auto huntingKeys = DX12HuntingHotkeys::Parse(iniLoad.document, iniLoad.warnings);
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
 	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes, iniLoad.warnings);
@@ -1538,7 +1538,7 @@ bool DX12ModRuntimeLoad(
 	gCommandLists.swap(commandLists);
 	gHasCommandLists.store(!gCommandLists.empty(), std::memory_order_release);
 	gKeyBindings.swap(keyBindings);
-	DX12SettingsHotkeys::Instance().Install(std::move(settingsKeys), DX12SettingsHotkeys::KeyDown);
+	DX12HuntingHotkeys::Instance().Install(std::move(huntingKeys), DX12HuntingHotkeys::KeyDown);
 	gCustomShaderElements.swap(customShaderElements);
 	gCustomShaderElementSnapshot.store(
 		std::make_shared<const DX12CustomShaderElementMap>(gCustomShaderElements),

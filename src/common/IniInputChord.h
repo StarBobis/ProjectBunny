@@ -1,8 +1,36 @@
 #pragma once
 
 #include "vkeys.h"
+#include <array>
+#include <cstdint>
 
 namespace migoto {
+
+// One high-bit observation per virtual key per dispatch. Uncached readers
+// still see the backend's own input source (including DX11's test reader).
+class VirtualKeySnapshot
+{
+public:
+	template <class ReadDown>
+	bool Down(int vk, ReadDown read)
+	{
+		if (static_cast<unsigned>(vk) >= states.size())
+			return read(vk);
+		auto &state = states[vk];
+		if (!state)
+			state = read(vk) ? 1 : 2;
+		return state == 1;
+	}
+
+private:
+	std::array<unsigned char, 256> states{};
+};
+
+// DX11 uses whole milliseconds and schedules from the last delivered event.
+inline bool InputRepeatDue(std::uint64_t last, std::uint64_t now, int rate)
+{
+	return rate != 0 && now >= last + (1000 / rate);
+}
 
 inline int ParseKeyboardButton(const wchar_t *token, bool &inverted)
 {

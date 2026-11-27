@@ -68,7 +68,7 @@ struct InputPollSnapshot {
 	bool reuse;
 	bool reject_inactive_presses;
 	std::vector<unsigned char>& combinations;
-	std::array<unsigned char, 256> virtual_keys{};
+	migoto::VirtualKeySnapshot virtual_keys;
 };
 
 thread_local InputPollSnapshot* input_poll_snapshot = nullptr;
@@ -182,12 +182,8 @@ bool VKInputButton::CheckState()
 	auto* snapshot = input_poll_snapshot;
 	if (!snapshot)
 		return ((GetAsyncKeyState(vkey) < 0) ^ invert);
-	if (!snapshot->reuse || static_cast<unsigned>(vkey) >= snapshot->virtual_keys.size())
-		return ((snapshot->read_key(vkey) < 0) ^ invert);
-	auto& value = snapshot->virtual_keys[vkey];
-	if (!value)
-		value = snapshot->read_key(vkey) < 0 ? 1 : 2;
-	return ((value == 1) ^ invert);
+	auto down = [snapshot](int vk) { return snapshot->read_key(vk) < 0; };
+	return (snapshot->reuse ? snapshot->virtual_keys.Down(vkey, down) : down(vkey)) ^ invert;
 }
 
 
@@ -213,8 +209,7 @@ RepeatingInputAction::RepeatingInputAction(InputButton *button, shared_ptr<Input
 
 bool RepeatingInputAction::Dispatch(HackerDevice *device)
 {
-	int ms = (1000 / repeatRate);
-	if (GetTickCount64() < (lastTick + ms))
+	if (!migoto::InputRepeatDue(lastTick, GetTickCount64(), repeatRate))
 		return false;
 
 	bool state = CheckButtonState();

@@ -79,14 +79,9 @@ private:
 		bool clear = true;
 		if (ini.GetString(L"System", L"clear_unknown_settings", &text)) {
 			text = IniDocumentText::ToLower(IniDocumentText::Trim(text));
-			if (!migoto::ReadIniBooleanAlias(text, clear) && Vm::ExpressionParser::ValidSyntax(text)) {
-				Vm::ExpressionContext context;
-				context.requireDeclaredVariables = true;
-				context.staticIniSetting = true;
-				Vm::ExpressionParser parser(text, context, Vm::ExpressionParser::Mode::Validated);
-				const float value = parser.Parse();
-				if (parser.ok)
-					clear = migoto::IniBooleanValue(value);
+			if (!migoto::ReadIniBooleanAlias(text, clear)) {
+				if (const auto value = Vm::ReadStaticIniExpression(text))
+					clear = migoto::IniBooleanValue(*value);
 			}
 		}
 		return clear ? Vm::UnknownSettingsPolicy::ClearUnchanged : Vm::UnknownSettingsPolicy::Preserve;

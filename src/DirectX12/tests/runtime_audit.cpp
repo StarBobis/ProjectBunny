@@ -242,7 +242,7 @@ void TestInactiveUserSettings()
 
 void TestSettingsHotkeys()
 {
-	using Keys = DX12SettingsHotkeys;
+	using Keys = DX12HuntingHotkeys;
 	auto &hotkeys = Keys::Instance();
 	auto install = [&](const wchar_t *config, std::initializer_list<int> held, size_t expectedWarnings) {
 		Bunny::IniDocument ini;
@@ -253,25 +253,151 @@ void TestSettingsHotkeys()
 		hotkeys.Install(std::move(bindings), [&](int vk) { return std::find(held.begin(), held.end(), vk) != held.end(); });
 	};
 	auto poll = [&](std::initializer_list<int> held) {
-		return hotkeys.Poll([&](int vk) { return std::find(held.begin(), held.end(), vk) != held.end(); });
+		return hotkeys.Poll([&](int vk) { return std::find(held.begin(), held.end(), vk) != held.end(); }, 1000);
 	};
 	install(L"[Hunting]\n", {}, 0);
-	Require(poll({VK_CONTROL, VK_MENU, VK_F10}) == Keys::Action::None &&
-		poll({VK_DECIMAL, VK_F10}) == Keys::Action::None && poll({VK_RWIN, VK_F10}) == Keys::Action::None &&
-		poll({VK_F10}) == Keys::Action::Reload, "legacy configs keep the unmodified F10 binding only");
+	Require(poll({VK_CONTROL, VK_MENU, VK_F10}) == 0 &&
+		poll({VK_DECIMAL, VK_F10}) == 0 && poll({VK_RWIN, VK_F10}) == 0 &&
+		poll({VK_F10}) == static_cast<LONG>(DX12UiActionBits::ModReload), "legacy configs keep the unmodified F10 binding only");
 	install(L"[Hunting]\nreload_config=\nwipe_user_config=no_shift bogus VK_F10\n", {}, 1);
-	Require(poll({VK_F10}) == Keys::Action::None, "empty or malformed chord is disabled as a whole");
+	Require(poll({VK_F10}) == 0, "empty or malformed chord is disabled as a whole");
 	install(L"[Hunting]\nreload_config=Prnt Scrn\nwipe_user_config=no_modifiers\n", {}, 1);
-	Require(poll({}) == Keys::Action::None && poll({VK_SNAPSHOT}) == Keys::Action::Reload,
+	Require(poll({}) == 0 && poll({VK_SNAPSHOT}) == static_cast<LONG>(DX12UiActionBits::ModReload),
 		"legacy key with spaces works and a wipe requires a positive key");
 	const auto duplicate = L"[Hunting]\nreload_config=ctrl no_0x41 F7\nwipe_user_config=ctrl no_0x41 F7\n";
 	install(duplicate, {VK_CONTROL, VK_F7}, 0);
-	Require(poll({VK_CONTROL, VK_F7}) == Keys::Action::None &&
-		poll({VK_CONTROL, 'A', VK_F7}) == Keys::Action::None &&
-		poll({VK_CONTROL, VK_F7}) == Keys::Action::Wipe, "rebind while held waits for release and fires one action");
+	Require(poll({VK_CONTROL, VK_F7}) == 0 &&
+		poll({VK_CONTROL, 'A', VK_F7}) == 0 &&
+		poll({VK_CONTROL, VK_F7}) == (static_cast<LONG>(DX12UiActionBits::ModReload) | static_cast<LONG>(DX12UiActionBits::WipeUserConfig)), "rebind while held waits for release before dispatching shared chords");
 	install(duplicate, {}, 0);
-	Require(poll({VK_CONTROL, VK_F7}) == Keys::Action::None, "unchanged held binding survives reinstall");
+	Require(poll({VK_CONTROL, VK_F7}) == 0, "unchanged held binding survives reinstall");
 	poll({});
+}
+
+void TestHuntingKeyBindings()
+{
+	using Keys = DX12HuntingHotkeys;
+	using A = DX12UiActionBits;
+	auto &hotkeys = Keys::Instance();
+	auto install = [&](const std::wstring &body, size_t expectedWarnings, int held = 0) {
+		Bunny::IniDocument doc;
+		Require(doc.Parse((L"[Hunting]\n" + body).c_str()), "parse Hunting settings");
+		std::vector<std::wstring> warnings;
+		auto bindings = Keys::Parse(doc, warnings);
+		Require(warnings.size() == expectedWarnings, "invalid Hunting setting reported once");
+		hotkeys.Install(std::move(bindings), [&](int vk) { return vk == held; });
+	};
+	auto poll = [&](ULONGLONG tick, std::initializer_list<int> keys) {
+		std::array<bool, 256> sampled{};
+		return hotkeys.Poll([&](int vk) {
+			Require(!sampled.at(vk), "each physical key read at most once per Present poll");
+			sampled[vk] = true;
+			return std::find(keys.begin(), keys.end(), vk) != keys.end();
+		}, tick);
+	};
+	auto mask = [](A action) { return static_cast<LONG>(action); };
+	install(L"", 0);
+	Require(!poll(1000, {}), "release all previous bindings");
+	Require(poll(1001, {VK_NUMPAD2}) == mask(A::HuntNextPS) && !poll(1100, {VK_NUMPAD2}) &&
+		poll(1167, {VK_NUMPAD2}) == mask(A::HuntNextPS), "legacy navigation repeats at six per second");
+	Require(!poll(1168, {}) && poll(1169, {VK_NUMPAD2}) == mask(A::HuntNextPS),
+		"fresh presses stay immediate in legacy files");
+	Require(poll(1170, {VK_NUMPAD2, VK_DECIMAL}) == mask(A::HuntNextCS) &&
+		!poll(1171, {VK_NUMPAD2, VK_DECIMAL, VK_LWIN}), "Decimal selects CS and Win suppresses defaults");
+	Require(poll(1200, {VK_F9, VK_F11, VK_F12}) ==
+		(mask(A::ShaderDump) | mask(A::ProfHudCycle) | mask(A::ProfHudFreeze)), "legacy diagnostic keys");
+	poll(1300, {});
+
+	const std::wstring custom = L"next_pixelshader=R\nmark_pixelshader=R\nprevious_vertexshader=\n"
+		L"next_vertexshader=bogus F9\nanalyse_frame=ctrl alt F2\nrepeat_rate=2 * 2\n";
+	install(custom, 1, 'R');
+	Require(!poll(2000, {'R'}) && !poll(4000, {'R'}) && !poll(4100, {}),
+		"new held repeatable chord waits for a physical release");
+	Require(!poll(4200, {VK_NUMPAD4, VK_NUMPAD5}) &&
+		poll(4250, {VK_CONTROL, VK_MENU, VK_F2}) == mask(A::FrameAnalysis),
+		"unbound and malformed navigation disabled, frame analysis accepts custom chord");
+	Require(poll(4300, {'R'}) == (mask(A::HuntNextPS) | mask(A::HuntMarkPS)) &&
+		!poll(4549, {'R'}) && poll(4550, {'R'}) == mask(A::HuntNextPS),
+		"four repeats per second from static expression, mark only on first press");
+	install(custom, 1);
+	Require(!poll(4600, {'R'}) && poll(4800, {'R'}) == mask(A::HuntNextPS),
+		"reload preserves held repeat deadline and mark edge");
+	Require(!poll(5050, {}) && poll(5060, {'R'}) == mask(A::HuntMarkPS) &&
+		poll(5300, {'R'}) == mask(A::HuntNextPS), "explicit rate throttles releases like DX11");
+	install(L"next_pixelshader=P\nrepeat_rate=0\n", 0);
+	Require(poll(6000, {'P'}) == mask(A::HuntNextPS) && !poll(8000, {'P'}) &&
+		!poll(8001, {}) && poll(8002, {'P'}) == mask(A::HuntNextPS), "zero rate disables held repeats");
+	install(L"next_pixelshader=Z\nrepeat_rate=$undeclared\n", 1);
+	Require(poll(9000, {'Z'}) == mask(A::HuntNextPS) && !poll(9165, {'Z'}) &&
+		poll(9166, {'Z'}) == mask(A::HuntNextPS), "invalid rate falls back to legacy cadence");
+	install(L"next_pixelshader=Y\nrepeat_rate=99999999999999999999999\n", 0);
+	Require(poll(10000, {'Y'}) == mask(A::HuntNextPS) && poll(10000, {'Y'}) == mask(A::HuntNextPS),
+		"saturated literal gives a zero-millisecond interval, at most once per poll");
+	install(L"next_pixelshader=Y\nrepeat_rate=nan\n", 0);
+	Require(!poll(12000, {'Y'}), "static NaN becomes zero, a reload does not invent a press");
+	poll(12001, {});
+
+	// Assign each supported action a distinct key. This catches swapped
+	// previous/next stages as well as ignored config names.
+	constexpr std::pair<const wchar_t *, A> actions[] = {
+		{L"previous_vertexbuffer", A::HuntPreviousVB}, {L"next_vertexbuffer", A::HuntNextVB},
+		{L"mark_vertexbuffer", A::HuntMarkVB}, {L"previous_indexbuffer", A::HuntPreviousIB},
+		{L"next_indexbuffer", A::HuntNextIB}, {L"mark_indexbuffer", A::HuntMarkIB},
+		{L"previous_computeshader", A::HuntPreviousCS}, {L"next_computeshader", A::HuntNextCS},
+		{L"mark_computeshader", A::HuntMarkCS}, {L"previous_pixelshader", A::HuntPreviousPS},
+		{L"next_pixelshader", A::HuntNextPS}, {L"mark_pixelshader", A::HuntMarkPS},
+		{L"previous_vertexshader", A::HuntPreviousVS}, {L"next_vertexshader", A::HuntNextVS},
+		{L"mark_vertexshader", A::HuntMarkVS}, {L"toggle_hunting", A::HuntToggle},
+		{L"done_hunting", A::HuntReset}, {L"analyse_frame", A::FrameAnalysis},
+		{L"monitor_performance", A::ProfHudCycle}, {L"freeze_performance_monitor", A::ProfHudFreeze},
+	};
+	std::wstring body = L"repeat_rate=0\n";
+	for (size_t i = 0; i < std::size(actions); ++i) {
+		body += actions[i].first;
+		body += L'=';
+		body += static_cast<wchar_t>(L'A' + i);
+		body += L'\n';
+	}
+	install(body, 0);
+	for (size_t i = 0; i < std::size(actions); ++i)
+		Require(poll(13000, {'A' + static_cast<int>(i)}) == mask(actions[i].second),
+			"configured Hunting name dispatches its own action");
+	poll(13001, {});
+}
+
+void TestHuntingKeyDispatch(ID3D12PipelineState *pipeline, UINT64 csHash)
+{
+	const auto dir = std::filesystem::current_path() /
+		(L"hunting-keys-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create isolated Hunting config");
+	const auto root = dir / L"main.ini";
+	std::ofstream(root) << "[Hunting]\ntoggle_hunting=F2\nnext_computeshader=alt F3\ndone_hunting=F4\n"
+		"analyse_frame=F5\nrepeat_rate=0\n";
+	Require(!DX12HuntIsEnabled() && DX12ModRuntimeLoad(root.c_str()), "load live Hunting bindings");
+	auto poll = [](std::initializer_list<int> keys) {
+		DX12UiActions::PollKeyboard([&](int vk) { return std::find(keys.begin(), keys.end(), vk) != keys.end(); },
+			GetTickCount64());
+		return DX12UiActions::Consume();
+	};
+	poll({});
+	Require(!poll({VK_NUMPAD0}) && poll({VK_F5}) && !DX12HuntIsEnabled() && !DX12FrameAnalysis::IsActive(),
+		"frame request while hunting is off respects the existing gate");
+	Require(poll({VK_F2}) && DX12HuntIsEnabled() && !poll({VK_F2}), "rebound toggle uses one edge");
+	DX12HuntObservePipelineState(pipeline);
+	Require(!poll({VK_F3}) && poll({VK_MENU, VK_F3}), "select registered WARP compute shader");
+	wchar_t overlay[1024]{}, expected[64]{};
+	swprintf_s(expected, L"CS %016llx", static_cast<unsigned long long>(csHash));
+	DX12HuntComposeOverlayText(overlay, std::size(overlay));
+	Require(wcsstr(overlay, expected) != nullptr, "Hunting overlay contains the selected shader hash");
+	Require(poll({VK_F4}), "rebound done_hunting dispatched");
+	DX12HuntComposeOverlayText(overlay, std::size(overlay));
+	Require(wcsstr(overlay, expected) == nullptr && wcsstr(overlay, L"CS:0/1"), "reset disarms real selection");
+	std::ofstream(root, std::ios::app) << "toggle_hunting=F6\n";
+	Require(DX12ModRuntimeReload(), "publish rebound key on reload");
+	poll({});
+	Require(!poll({VK_F2}) && poll({VK_F6}) && !DX12HuntIsEnabled(), "new binding replaces the old one");
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
 }
 
 void TestWipeUserConfig()
@@ -289,7 +415,7 @@ void TestWipeUserConfig()
 			"[Constants]\nglobal persist $choice=3\nglobal locked $fixed=7\n";
 	};
 	auto press = [](std::initializer_list<int> keys) {
-		DX12UiActions::PollSettingsKeys([&](int vk) { return std::find(keys.begin(), keys.end(), vk) != keys.end(); });
+		DX12UiActions::PollKeyboard([&](int vk) { return std::find(keys.begin(), keys.end(), vk) != keys.end(); }, GetTickCount64());
 		return DX12UiActions::Consume();
 	};
 	auto bytes = [](const std::filesystem::path &path) {
@@ -1297,6 +1423,7 @@ void TestPreSkinDispatchParameters(ID3D12Device *device)
 	DX12PsoShaderInfo shaderInfo{};
 	Require(DX12GetPipelineStateShaderInfo(DX12WrapperRuntimeUtils::UnwrapPipelineState(pso.Get()), &shaderInfo)
 		&& shaderInfo.hasCS, "registered compute pipeline");
+	TestHuntingKeyDispatch(DX12WrapperRuntimeUtils::UnwrapPipelineState(pso.Get()), shaderInfo.cs);
 
 	const auto stem = L"dispatch-context-" + std::to_wstring(GetCurrentProcessId());
 	const auto iniPath = std::filesystem::current_path() / (stem + L".ini");
@@ -1619,6 +1746,7 @@ int main(int argc, char **argv)
 		TestInactiveUserSettings();
 		TestUnknownSettingsCleanup();
 		TestSettingsHotkeys();
+		TestHuntingKeyBindings();
 		TestWipeUserConfig();
 		TestExpressionNumbers();
 		TestUnaryMath();
