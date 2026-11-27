@@ -301,6 +301,45 @@ class Bridge:
                                   "length": integer("Maximum UTF-8 bytes in this response.", 4, CHUNK)})
         self.add("capture", "Arm a targeted live draw or buffer capture. Poll the returned ID and read its bytes.",
                  self.arm, selector, ("kind",))
+        trace_id = integer("ID returned by dx11_resource_trace within this target process.", 1, ANY - 1)
+        submission = integer("Execution-order submission number within the trace.", 1)
+        self.add("resource_trace", "Observe DX11 buffer writes, CS dispatches and indexed draws for a bounded "
+                 "window. Select an IB hash, a CS/UAV hash or an existing resource instance ID.",
+                 self.arm_resource_trace, {
+                     "ib_hash": string("Original 8-digit backing IB hash."),
+                     "ib_hashes": {"type": "array", "items": string("Original backing IB hash."),
+                                   "minItems": 1, "maxItems": 16, "uniqueItems": True},
+                     "uav_hash": string("Original 8-digit CS output UAV buffer resource hash."),
+                     "cs_hash": string("16-digit compute shader hash."),
+                     "resource_id": integer("Existing buffer instance ID from this PID.", 1, ANY - 1),
+                     "first_index": integer("Optional start index for an IB selector."),
+                     "index_count": integer("Optional index count for an IB selector.", 1),
+                     "frames": integer("Number of Present frames to observe.", 1, 120, 2),
+                     "sample_resource_id": integer("Opt-in buffer instance whose CPU bytes may be retained.", 1, ANY - 1),
+                     "sample_bytes": integer("Maximum bytes per matching CPU upload, up to 4 MiB per trace.", 1, SAVE_CHUNK),
+                     "caller_frames": integer("Maximum native caller frames per matching CPU upload.", 0, 32, 0),
+                     "caller_resource_id": integer("CPU upload destination whose caller stack may be kept. "
+                                                   "Defaults to resource_id when caller_frames is enabled.", 1, ANY - 1),
+                     "producer_frames": integer("Opt-in APMI Unity palette producer stack frames per enqueue.", 0, 24, 0),
+                 })
+        self.add("resource_trace_status", "Read trace state, match count and observation gaps.",
+                 lambda p, trace_id: p.request("TRACE_STATUS", trace_id), {"trace_id": trace_id}, ("trace_id",))
+        self.add("resource_trace_cancel", "Stop recording and keep the evidence observed so far.",
+                 lambda p, trace_id: p.request("TRACE_CANCEL", trace_id), {"trace_id": trace_id}, ("trace_id",))
+        self.add("resource_trace_list", "Page matching anchors by submission order after recording ends.",
+                 lambda p, trace_id, offset=0: p.request("TRACE_LIST", trace_id, offset),
+                 {"trace_id": trace_id, **paging}, ("trace_id",))
+        self.add("resource_trace_chain", "Resolve a matching draw or dispatch through overlapping UAV, copy "
+                 "and CPU upload events. Read individual submissions for binding details.",
+                 lambda p, trace_id, submission: p.request("TRACE_CHAIN", trace_id, submission),
+                 {"trace_id": trace_id, "submission": submission}, ("trace_id", "submission"))
+        self.add("resource_trace_event", "Read one event, including resource layout, byte ranges, caller "
+                 "location and submission order when available.",
+                 lambda p, trace_id, submission: p.request("TRACE_EVENT", trace_id, submission),
+                 {"trace_id": trace_id, "submission": submission}, ("trace_id", "submission"))
+        self.add("resource_trace_bytes", "Read the opt-in limited CPU sample for one matching upload as base64.",
+                 self.resource_trace_bytes, {"trace_id": trace_id, "submission": submission},
+                 ("trace_id", "submission"))
         self.add("texture_dhash", "Arm a one-shot read of original PS texture dHashes for a specific indexed draw. "
                  "Poll with dx11_capture_status. A region hash requires the backing IB hash.",
                  self.texture_dhash, {
@@ -422,6 +461,60 @@ class Bridge:
         fields = (kind, hash if hash is not None else f"{ANY:x}", stage, slot,
                   draw, frames, offset, length, hash_mode, resource_id, source, phase)
         return pipe.request("ARM", *fields, 1) if indexed_range else pipe.request("ARM", *fields)
+
+    @staticmethod
+    def arm_resource_trace(pipe, ib_hash=None, uav_hash=None, cs_hash=None, resource_id=None,
+                           first_index=None, index_count=None, frames=2, sample_resource_id=None,
+                           sample_bytes=None, caller_frames=0, caller_resource_id=None, ib_hashes=None,
+                           producer_frames=0):
+        def hash_field(value, digits):
+            if value is None:
+                return "0"
+            value = value.lower().removeprefix("0x")
+            if not re.fullmatch(rf"[0-9a-f]{{1,{digits}}}", value) or int(value, 16) == 0:
+                raise PipeError(f"Expected a nonzero hexadecimal hash of up to {digits} digits.",
+                                "TRACE_SELECTOR_INVALID")
+            return value
+
+        if ib_hashes is not None and (not isinstance(ib_hashes, list) or not 1 <= len(ib_hashes) <= 16 or
+                                      any(not isinstance(value, str) for value in ib_hashes)):
+            raise PipeError("Supply one to sixteen IB hash strings.", "TRACE_SELECTOR_INVALID")
+        group = tuple(hash_field(value, 8) for value in (ib_hashes or ()))
+        if (not any((ib_hash, group, uav_hash, cs_hash, resource_id)) or
+                (ib_hash and any((uav_hash, cs_hash, resource_id))) or
+                (group and any((ib_hash, uav_hash, cs_hash, resource_id))) or
+                len({int(value, 16) for value in group}) != len(group) or
+                (not ib_hash and (first_index is not None or index_count is not None)) or
+                ((sample_resource_id is None) != (sample_bytes is None))):
+            raise PipeError("Select an IB or a CS/UAV/resource instance. Supply both sample fields to keep bytes.",
+                            "TRACE_SELECTOR_INVALID")
+        ib, uav, cs = hash_field(ib_hash, 8), hash_field(uav_hash, 8), hash_field(cs_hash, 16)
+        if ((caller_frames and not (caller_resource_id or resource_id)) or
+                (caller_resource_id is not None and not caller_frames)):
+            raise PipeError("Select the upload destination resource instance to keep caller frames.",
+                            "TRACE_CALLER_SELECTOR_INVALID")
+        features = pipe.request("STATUS").get("features", [])
+        if "resource_provenance" not in features:
+            raise PipeError("The running DLL lacks DX11 buffer provenance recording.", "TRACE_UNSUPPORTED")
+        fields = (ib, uav, cs, resource_id or 0, frames, sample_resource_id or 0, sample_bytes or 0,
+                  ANY if first_index is None else first_index, ANY if index_count is None else index_count)
+        if caller_frames and "resource_caller_frames" not in features:
+            raise PipeError("The running DLL lacks caller stack capture.", "TRACE_CALLER_UNSUPPORTED")
+        if producer_frames and "apmi_palette_producer" not in features:
+            raise PipeError("The running DLL lacks APMI producer capture.", "TRACE_APMI_UNSUPPORTED")
+        if group and "resource_trace_ib_groups" not in features:
+            raise PipeError("The running DLL lacks grouped IB trace selectors.", "TRACE_IB_GROUP_UNSUPPORTED")
+        if caller_frames or group or producer_frames:
+            fields += (caller_frames, caller_resource_id or 0)
+        if group or producer_frames:
+            fields += (producer_frames, *group)
+        return pipe.request("TRACE_ARM", *fields)
+
+    @staticmethod
+    def resource_trace_bytes(pipe, trace_id, submission):
+        data = pipe.request("TRACE_BYTES", trace_id, submission)
+        return {"trace_id": trace_id, "submission": submission, "bytes": len(data),
+                "bytes_base64": base64.b64encode(data).decode("ascii")}
 
     @staticmethod
     def texture_dhash(pipe, ib_hash, index_count, slots, hash_mode="resource", resource_hash=None,

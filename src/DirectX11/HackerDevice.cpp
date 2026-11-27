@@ -14,6 +14,7 @@
 
 #include "HackerDevice.h"
 #include "McpAgent.h"
+#include "McpProvenance.h"
 #include "HookedDevice.h"
 #include "FrameAnalysis.h"
 #include "ShaderHeader.h"
@@ -2143,6 +2144,8 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 				G->mResourceInfo[hash].initial_data_used_in_hash = !!data_hash;
 			}
 		LeaveCriticalSection(&G->mCriticalSection);
+		if (pDesc && Dx11Mcp::enabled.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Create(this, *ppBuffer, pInitialData, pDesc->ByteWidth, data_hash);
 	}
 	return hr;
 }
@@ -2623,6 +2626,8 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 			G->mShaders[*ppShader] = hash;
 			LogDebugW(L"    %ls: handle = %p, hash = %016I64x\n", shaderType, *ppShader, hash);
 		LeaveCriticalSection(&G->mCriticalSection);
+		if constexpr (std::is_same_v<ID3D11Shader, ID3D11ComputeShader>)
+			Dx11Mcp::Provenance::RegisterShader(*ppShader, hash);
 	}
 
 	if (SUCCEEDED(hr) && Dx11Mcp::enabled.load(std::memory_order_relaxed))

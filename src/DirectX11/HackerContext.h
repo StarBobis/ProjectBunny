@@ -262,7 +262,7 @@ private:
 	template <void (__stdcall ID3D11DeviceContext::*OrigSetShaderResources)(THIS_
 			UINT StartSlot,
 			UINT NumViews,
-			ID3D11ShaderResourceView *const *ppShaderResourceViews)>
+			ID3D11ShaderResourceView *const *ppShaderResourceViews), bool ComputeStage = false>
 	void SetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
 
 protected:

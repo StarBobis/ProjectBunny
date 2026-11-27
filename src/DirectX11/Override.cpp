@@ -664,6 +664,8 @@ void OverrideTransition::Stop()
 {
 	params.clear();
 	vars.clear();
+	// Queued post lists belong to the key overrides replaced by a reload.
+	pending_post_command_lists.clear();
 	ini_params_upload_pending = false;
 }
 

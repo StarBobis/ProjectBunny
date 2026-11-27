@@ -427,6 +427,9 @@ void polling_optimization_tests(ScopeFixture& fixture, ScopeDevice& device)
     gate = 0;
     keyboard_down[VK_F20] = false;
     check(dispatch() && held == 0, "release still clears an active hold after the mod disappears");
+    check(!pending_post_command_lists.empty(), "activation queued post commands before the next frame");
+    ReloadConfig(device.device);
+    check(pending_post_command_lists.empty(), "reload retires post commands owned by the old key bindings");
 }
 void configured_scope_dispatch(ScopeFixture &fixture, ScopeDevice &device)
 {

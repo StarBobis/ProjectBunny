@@ -140,7 +140,130 @@ void exercise_overlay(HMODULE proxy)
     check(!GetModuleHandleW(L"DWrite.dll") && !GetModuleHandleW(L"d2d1.dll"), "proxy: overlay rendering adds no DirectWrite/Direct2D modules");
 }
 
-int serve_mcp_fixture(const wchar_t* library)
+class ProvenanceFixture {
+    ComPtr<ID3D11Buffer> source, twin, palette, mapped, copied_map, output, vertex;
+    ComPtr<ID3D11ShaderResourceView> inputs[3];
+    ComPtr<ID3D11RenderTargetView> input_rtv;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    ComPtr<ID3D11ComputeShader> cs;
+    ComPtr<ID3D11DeviceContext1> immediate, writer_a, writer_b;
+
+public:
+    ProvenanceFixture(ID3D11Device* device, ID3D11DeviceContext* context)
+    {
+        ComPtr<ID3D11Device1> native;
+        check(SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&native))) &&
+            SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&immediate))) &&
+            SUCCEEDED(native->CreateDeferredContext1(0, &writer_a)) &&
+            SUCCEEDED(native->CreateDeferredContext1(0, &writer_b)), "create provenance fixture contexts");
+        const UINT initial[] = {1, 2, 3, 4, 5, 6, 7, 8};
+        const D3D11_SUBRESOURCE_DATA data{initial, 0, 0};
+        const D3D11_BUFFER_DESC srv_desc{sizeof(initial), D3D11_USAGE_DEFAULT,
+            D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+            0, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, 0};
+        check(SUCCEEDED(device->CreateBuffer(&srv_desc, &data, &source)) &&
+            SUCCEEDED(device->CreateBuffer(&srv_desc, &data, &twin)) &&
+            SUCCEEDED(device->CreateBuffer(&srv_desc, nullptr, &palette)) &&
+            SUCCEEDED(device->CreateBuffer(&srv_desc, nullptr, &copied_map)), "create provenance fixture SRV buffers");
+        D3D11_RENDER_TARGET_VIEW_DESC rtv{};
+        rtv.Format = DXGI_FORMAT_R32_UINT;
+        rtv.ViewDimension = D3D11_RTV_DIMENSION_BUFFER;
+        rtv.Buffer.FirstElement = 0;
+        rtv.Buffer.NumElements = 4;
+        check(SUCCEEDED(device->CreateRenderTargetView(source.Get(), &rtv, &input_rtv)), "create buffer RTV");
+        D3D11_BUFFER_DESC staging{sizeof(initial), D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_WRITE, 0, 0};
+        const D3D11_BUFFER_DESC output_desc{sizeof(initial), D3D11_USAGE_DEFAULT, D3D11_BIND_UNORDERED_ACCESS,
+            0, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, 0};
+        const D3D11_BUFFER_DESC vb_desc{sizeof(initial), D3D11_USAGE_DEFAULT, D3D11_BIND_VERTEX_BUFFER, 0, 0, 0};
+        check(SUCCEEDED(device->CreateBuffer(&staging, nullptr, &mapped)) &&
+            SUCCEEDED(device->CreateBuffer(&output_desc, nullptr, &output)) &&
+            SUCCEEDED(device->CreateBuffer(&vb_desc, nullptr, &vertex)), "create provenance fixture map and output");
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = DXGI_FORMAT_R32_TYPELESS;
+        view.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+        view.BufferEx = {0, 4, D3D11_BUFFEREX_SRV_FLAG_RAW};
+        check(SUCCEEDED(device->CreateShaderResourceView(source.Get(), &view, &inputs[0])) &&
+            SUCCEEDED(device->CreateShaderResourceView(copied_map.Get(), &view, &inputs[1])),
+            "create provenance fixture CS t0 and t1");
+        view.BufferEx = {4, 2, D3D11_BUFFEREX_SRV_FLAG_RAW};
+        check(SUCCEEDED(device->CreateShaderResourceView(palette.Get(), &view, &inputs[2])),
+            "create provenance fixture ranged CS t2");
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
+        uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        uav_desc.Buffer = {0, 8, D3D11_BUFFER_UAV_FLAG_RAW};
+        check(SUCCEEDED(device->CreateUnorderedAccessView(output.Get(), &uav_desc, &uav)),
+            "create provenance fixture CS u0");
+        constexpr char shader[] =
+            "ByteAddressBuffer x : register(t0), y : register(t1), z : register(t2);"
+            "RWByteAddressBuffer result : register(u0);"
+            "[numthreads(1,1,1)] void main() { result.Store(0, x.Load(0) + y.Load(0) + z.Load(0)); }";
+        ComPtr<ID3DBlob> code;
+        check(SUCCEEDED(D3DCompile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "main", "cs_5_0",
+            0, 0, &code, nullptr)) && SUCCEEDED(device->CreateComputeShader(code->GetBufferPointer(),
+            code->GetBufferSize(), nullptr, &cs)), "compile provenance fixture compute shader");
+    }
+
+    void Submit()
+    {
+        const UINT current[] = {21, 22, 23, 24, 25, 26, 27, 28};
+        const UINT patch[] = {71, 72};
+        const UINT older[] = {31, 32, 33, 34, 35, 36, 37, 38};
+        const D3D11_BOX region{4, 0, 0, 12, 1, 1};
+        D3D11_MAPPED_SUBRESOURCE map{};
+        check(SUCCEEDED(immediate->Map(mapped.Get(), 0, D3D11_MAP_WRITE, 0, &map)), "map provenance fixture");
+        memcpy(map.pData, current, sizeof(current));
+        immediate->Unmap(mapped.Get(), 0);
+        immediate->CopyResource(copied_map.Get(), mapped.Get());
+
+        // Record A first and execute it twice after B. A must be the producer
+        // for the copied subrange although B has the higher recording number.
+        writer_a->UpdateSubresource1(twin.Get(), 0, &region, patch, 0, 0, 0);
+        ComPtr<ID3D11CommandList> list_a, list_b;
+        check(SUCCEEDED(writer_a->FinishCommandList(FALSE, &list_a)), "finish provenance command list A");
+        writer_b->UpdateSubresource(twin.Get(), 0, nullptr, older, 0, 0);
+        check(SUCCEEDED(writer_b->FinishCommandList(FALSE, &list_b)), "finish provenance command list B");
+        immediate->ExecuteCommandList(list_b.Get(), TRUE);
+        immediate->ExecuteCommandList(list_a.Get(), TRUE);
+        immediate->ExecuteCommandList(list_a.Get(), TRUE);
+
+        writer_a->CopySubresourceRegion1(palette.Get(), 0, 16, 0, 0, twin.Get(), 0, &region, 0);
+        const D3D11_RECT discarded[] = {{1, 0, 2, 1}, {2, 0, 2, 1}};
+        const D3D11_RECT cleared{2, 0, 3, 1};
+        const FLOAT color[4]{};
+        immediate->ClearRenderTargetView(input_rtv.Get(), color);
+        immediate->ClearView(input_rtv.Get(), color, &cleared, 1);
+        immediate->DiscardView1(inputs[0].Get(), discarded, _countof(discarded));
+        BindAndDispatch(writer_a.Get());
+        ComPtr<ID3D11CommandList> dispatch;
+        check(SUCCEEDED(writer_a->FinishCommandList(FALSE, &dispatch)), "finish provenance dispatch list");
+        immediate->ExecuteCommandList(dispatch.Get(), TRUE);
+        immediate->CopyResource(vertex.Get(), output.Get());
+        const UINT stride = 4, offset = 0;
+        immediate->IASetVertexBuffers(0, 1, vertex.GetAddressOf(), &stride, &offset);
+    }
+
+    void SubmitImmediate()
+    {
+        BindAndDispatch(immediate.Get());
+        ID3D11UnorderedAccessView* empty = nullptr;
+        immediate->CSSetUnorderedAccessViews(0, 1, &empty, nullptr);
+        immediate->CopyResource(vertex.Get(), output.Get());
+    }
+
+private:
+    void BindAndDispatch(ID3D11DeviceContext1* context)
+    {
+        ID3D11ShaderResourceView* views[] = {inputs[0].Get(), inputs[1].Get(), inputs[2].Get()};
+        context->CSSetShaderResources(0, 3, views);
+        context->CSSetUnorderedAccessViews(0, 1, uav.GetAddressOf(), nullptr);
+        context->CSSetShader(cs.Get(), nullptr, 0);
+        context->Dispatch(1, 1, 1);
+    }
+};
+
+int serve_mcp_fixture(const wchar_t* library, bool provenance = false)
 {
     HMODULE proxy = LoadLibraryW(library);
     check(proxy != nullptr, "load DX11 proxy for MCP");
@@ -201,6 +324,8 @@ int serve_mcp_fixture(const wchar_t* library)
         color_view(0xffff0000, blue);
     };
     make_device();
+    std::unique_ptr<ProvenanceFixture> provenance_fixture;
+    if (provenance) provenance_fixture = std::make_unique<ProvenanceFixture>(device.Get(), context.Get());
     const auto deadline = GetTickCount64() + 45000;
     bool holding_map = false, device_switched = false, paused = false;
     bool texture_updated = false;
@@ -261,11 +386,13 @@ int serve_mcp_fixture(const wchar_t* library)
                     context->ClearState();
                 else
                     context->PSSetShader(pixel_shader.Get(), nullptr, 0);
+                if (provenance_fixture) provenance_fixture->Submit();
                 context->IASetIndexBuffer(index.Get(), DXGI_FORMAT_R32_UINT, sizeof(UINT));
                 ID3D11ShaderResourceView* views[] = {red.Get(), nullptr, blue.Get()};
                 context->PSSetShaderResources(16, 3, views);
                 context->Draw(3, 0);
                 context->DrawIndexed(3, 0, 0);
+                if (provenance_fixture) provenance_fixture->SubmitImmediate();
                 context->PSSetShaderResources(16, 1, blue.GetAddressOf());
                 context->DrawIndexedInstanced(2, 1, 1, 0, 0);
             }
@@ -606,6 +733,7 @@ int wmain(int argc, wchar_t** argv)
         check(argc == 3, "expected proxy DLL path and fixture parent, or --child and DLL path");
         const std::wstring mode(argv[1]);
         if (mode == L"--mcp-live") return serve_mcp_fixture(argv[2]);
+        if (mode == L"--mcp-provenance") return serve_mcp_fixture(argv[2], true);
         if (mode == L"--mcp-alternating") return serve_mcp_alternating_fixture(argv[2]);
         if (mode == L"--mcp-pre-present-crash" || mode == L"--mcp-instant-crash")
             return serve_mcp_loading_fixture(argv[2], mode == L"--mcp-instant-crash");

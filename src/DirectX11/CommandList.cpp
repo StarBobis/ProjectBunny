@@ -33,6 +33,7 @@
 #include "ShaderBindings.h"
 #include "HackerContext.h"
 #include "McpAgent.h"
+#include "McpProvenance.h"
 #include "Override.h"
 #include "D3D11Wrapper.h"
 #include "IniHandler.h"
@@ -2347,6 +2348,8 @@ public:
 		call(info)
 	{
 		if (context) Dx11Mcp::OnDraw(context, call, true);
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Draw(state->mHackerContext, call, true);
 	}
 	~McpDrawProbe()
 	{

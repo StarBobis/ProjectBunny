@@ -21,6 +21,7 @@
 
 #include "HackerDevice.h"
 #include "McpAgent.h"
+#include "McpProvenance.h"
 #include "D3D11Wrapper.h"
 //#include "ResourceHash.h"
 //#include "Override.h"
@@ -1660,6 +1661,8 @@ STDMETHODIMP HackerContext::Map(THIS_
 
 	hr = mOrigContext1->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
 	TrackAndDivertMap(hr, pResource, Subresource, MapType, MapFlags, pMappedResource);
+	if (hr == S_OK && pMappedResource && Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Map(this, pResource, Subresource, MapType, *pMappedResource);
 
 	return hr;
 }
@@ -1670,6 +1673,8 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
 	/* [annotation] */
 	__in  UINT Subresource)
 {
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Unmap(this, pResource, Subresource);
     bool discard = false;
     const bool upload = TrackAndDivertUnmap(pResource, Subresource, &discard);
 	mOrigContext1->Unmap(pResource, Subresource);
@@ -1733,6 +1738,8 @@ STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
 {
 	 InvalidateDrawOverrideBindings();
 	 mOrigContext1->IASetVertexBuffers(StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
+	 if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		 Dx11Mcp::Provenance::DeferredVertex(this, StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
 
 	 // Register hashes of vertex buffers for browsing in Shader Hunting Mode.
 	 if (G->hunting == HUNTING_MODE_ENABLED) {
@@ -1978,6 +1985,8 @@ STDMETHODIMP_(void) HackerContext::Dispatch(THIS_
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, context.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, true);
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Draw(this, context.call_info);
 		mOrigContext1->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, context.call_info, false, true);
@@ -2000,6 +2009,8 @@ STDMETHODIMP_(void) HackerContext::DispatchIndirect(THIS_
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, context.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, true);
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Draw(this, context.call_info);
 		mOrigContext1->DispatchIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, context.call_info, false, true);
@@ -2161,6 +2172,9 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	if (ExpandRegionCopy(pDstResource, DstX, DstY, pSrcResource, pSrcBox, &replaceDstX, &replaceSrcBox))
 		pSrcBox = &replaceSrcBox;
 
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Copy(this, pDstResource, DstSubresource, replaceDstX, DstY, DstZ,
+			pSrcResource, SrcSubresource, pSrcBox, "CopySubresourceRegion");
 	 mOrigContext1->CopySubresourceRegion(pDstResource, DstSubresource, replaceDstX, DstY, DstZ,
 		pSrcResource, SrcSubresource, pSrcBox);
     mTextureUploads.CopyRegion(mOrigContext1, pDstResource, DstSubresource, replaceDstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
@@ -2201,6 +2215,8 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
                 override_byte_width = texture_override->override_byte_width;
     }
     if (override_byte_width != -1) {
+        if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+            Dx11Mcp::Provenance::Copy(this, pDstResource, 0, 0, 0, 0, pSrcResource, 0, nullptr, "CopyResource_region_override");
         mOrigContext1->CopySubresourceRegion(
             pDstResource,           // pDstResource
             0,                      // DstSubresource (0 for buffers)
@@ -2218,6 +2234,8 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
         return;
     }
 
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Copy(this, pDstResource, 0, 0, 0, 0, pSrcResource, 0, nullptr, "CopyResource");
 	mOrigContext1->CopyResource(pDstResource, pSrcResource);
     mTextureUploads.Copy(mOrigContext1, pDstResource, pSrcResource);
 
@@ -2247,6 +2265,8 @@ STDMETHODIMP_(void) HackerContext::UpdateSubresource(THIS_
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateResourceDataCacheForWrite(pDstResource);
 
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Update(this, pDstResource, DstSubresource, pDstBox, pSrcData, false);
 	 mOrigContext1->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch,
 		SrcDepthPitch);
     if (pSrcData) mTextureUploads.Update(mOrigContext1, pDstResource, DstSubresource, pDstBox);
@@ -2273,6 +2293,8 @@ STDMETHODIMP_(void) HackerContext::CopyStructureCount(THIS_
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateResourceDataCacheForWrite(pDstBuffer);
 	 mOrigContext1->CopyStructureCount(pDstBuffer, DstAlignedByteOffset, pSrcView);
+	 if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		 Dx11Mcp::Provenance::CopyCount(this, pDstBuffer, DstAlignedByteOffset, pSrcView);
 }
 
 STDMETHODIMP_(void) HackerContext::ClearUnorderedAccessViewUint(THIS_
@@ -2286,6 +2308,8 @@ STDMETHODIMP_(void) HackerContext::ClearUnorderedAccessViewUint(THIS_
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateViewResourceDataCacheForWrite(pUnorderedAccessView);
 	mOrigContext1->ClearUnorderedAccessViewUint(pUnorderedAccessView, Values);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::ClearUav(this, pUnorderedAccessView, "ClearUnorderedAccessViewUint");
 	RunViewCommandList(mHackerDevice, this, &G->post_clear_uav_uint_command_list, pUnorderedAccessView, true);
 }
 
@@ -2300,6 +2324,8 @@ STDMETHODIMP_(void) HackerContext::ClearUnorderedAccessViewFloat(THIS_
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateViewResourceDataCacheForWrite(pUnorderedAccessView);
 	mOrigContext1->ClearUnorderedAccessViewFloat(pUnorderedAccessView, Values);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::ClearUav(this, pUnorderedAccessView, "ClearUnorderedAccessViewFloat");
 	RunViewCommandList(mHackerDevice, this, &G->post_clear_uav_float_command_list, pUnorderedAccessView, true);
 }
 
@@ -2372,6 +2398,8 @@ STDMETHODIMP_(void) HackerContext::ExecuteCommandList(THIS_
         if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
             mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
             InvalidateResourceDataCaches();
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Execute(this, pCommandList);
 		mOrigContext1->ExecuteCommandList(pCommandList, RestoreContextState);
         mTextureUploads.Execute(mOrigContext1, pCommandList);
     }
@@ -2489,7 +2517,7 @@ STDMETHODIMP_(void) HackerContext::CSSetShaderResources(THIS_
 	/* [annotation] */
 	__in_ecount(NumViews)  ID3D11ShaderResourceView *const *ppShaderResourceViews)
 {
-	SetShaderResources<&ID3D11DeviceContext::CSSetShaderResources>(StartSlot, NumViews, ppShaderResourceViews);
+	SetShaderResources<&ID3D11DeviceContext::CSSetShaderResources, true>(StartSlot, NumViews, ppShaderResourceViews);
 }
 
 STDMETHODIMP_(void) HackerContext::CSSetUnorderedAccessViews(THIS_
@@ -2512,6 +2540,8 @@ STDMETHODIMP_(void) HackerContext::CSSetUnorderedAccessViews(THIS_
 	}
 
 	mOrigContext1->CSSetUnorderedAccessViews(StartSlot, NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::DeferredUavs(this, StartSlot, NumUAVs, ppUnorderedAccessViews);
 }
 
 
@@ -2620,6 +2650,8 @@ STDMETHODIMP_(void) HackerContext::CSSetShader(THIS_
 		 G->mSelectedComputeShader,
 		 &mCurrentComputeShader,
 		 &mCurrentComputeShaderHandle);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::DeferredShader(this, pComputeShader);
 }
 
 STDMETHODIMP_(void) HackerContext::CSSetSamplers(THIS_
@@ -3074,6 +3106,8 @@ STDMETHODIMP_(void) HackerContext::ClearState(THIS)
     AdvanceTextureMatchCall();
 	ResetTrackedInputLayout();
 	 mOrigContext1->ClearState();
+	 if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		 Dx11Mcp::Provenance::DeferredClear(this);
 
 	 // ClearState() will unbind StereoParams and IniParams, so we need to
 	 // rebind them now:
@@ -3101,6 +3135,8 @@ STDMETHODIMP HackerContext::FinishCommandList(THIS_
 	__out_opt  ID3D11CommandList **ppCommandList)
 {
 	HRESULT ret = mOrigContext1->FinishCommandList(RestoreDeferredContextState, ppCommandList);
+	if (SUCCEEDED(ret) && Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Finish(this, ppCommandList ? *ppCommandList : nullptr, RestoreDeferredContextState != FALSE);
     if (SUCCEEDED(ret)) mTextureUploads.Finish(ppCommandList ? *ppCommandList : nullptr);
 
 	if (SUCCEEDED(ret) && !RestoreDeferredContextState) {
@@ -3239,7 +3275,7 @@ void HackerContext::InitIniParams()
 template <void (__stdcall ID3D11DeviceContext::*OrigSetShaderResources)(THIS_
 		UINT StartSlot,
 		UINT NumViews,
-		ID3D11ShaderResourceView *const *ppShaderResourceViews)>
+		ID3D11ShaderResourceView *const *ppShaderResourceViews), bool ComputeStage>
 void HackerContext::SetShaderResources(UINT StartSlot, UINT NumViews,
 		ID3D11ShaderResourceView *const *ppShaderResourceViews)
 {
@@ -3260,12 +3296,13 @@ void HackerContext::SetShaderResources(UINT StartSlot, UINT NumViews,
 		}
 	}
 
-	if (override_srvs) {
-		(mOrigContext1->*OrigSetShaderResources)(StartSlot, NumViews, override_srvs);
-		delete [] override_srvs;
-	} else {
-		(mOrigContext1->*OrigSetShaderResources)(StartSlot, NumViews, ppShaderResourceViews);
+	auto* views = override_srvs ? override_srvs : ppShaderResourceViews;
+	(mOrigContext1->*OrigSetShaderResources)(StartSlot, NumViews, views);
+	if constexpr (ComputeStage) {
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::DeferredSrvs(this, StartSlot, NumViews, views);
 	}
+	delete [] override_srvs;
 }
 
 // The rest of these methods are all the primary code for the tool, Direct3D calls that we override
@@ -3340,6 +3377,8 @@ STDMETHODIMP_(void) HackerContext::DrawIndexed(THIS_
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Draw(this, c.call_info);
 		 mOrigContext1->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, c.call_info, false, true);
@@ -3377,6 +3416,8 @@ STDMETHODIMP_(void) HackerContext::IASetIndexBuffer(THIS_
 {
 	InvalidateDrawOverrideBindings();
 	mOrigContext1->IASetIndexBuffer(pIndexBuffer, Format, Offset);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::DeferredIndex(this, pIndexBuffer, Format, Offset);
 
 	// Register hash of index buffer for browsing in Shader Hunting Mode.
 	if (G->hunting == HUNTING_MODE_ENABLED) {
@@ -3419,6 +3460,8 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstanced(THIS_
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, c.call_info);
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Draw(this, c.call_info);
 		mOrigContext1->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation,
 		BaseVertexLocation, StartInstanceLocation);
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
@@ -3586,6 +3629,8 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstancedIndirect(THIS_
         InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		if (G->analyse_frame)
 			FrameAnalysisDumpIndexedIndirectArgs(pBufferForArgs, AlignedByteOffsetForArgs);
+		if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+			Dx11Mcp::Provenance::Draw(this, c.call_info);
 		mOrigContext1->DrawIndexedInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
 		if (Dx11Mcp::capture_armed.load(std::memory_order_relaxed))
 			Dx11Mcp::OnDraw(this, c.call_info, false, true);
@@ -3624,6 +3669,8 @@ STDMETHODIMP_(void) HackerContext::ClearRenderTargetView(THIS_
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateViewResourceDataCacheForWrite(pRenderTargetView);
 	mOrigContext1->ClearRenderTargetView(pRenderTargetView, ColorRGBA);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::ViewWrite(this, pRenderTargetView, nullptr, 0, "ClearRenderTargetView", false);
 	RunViewCommandList(mHackerDevice, this, &G->post_clear_rtv_command_list, pRenderTargetView, true);
 }
 
@@ -3659,6 +3706,9 @@ void STDMETHODCALLTYPE HackerContext::CopySubresourceRegion1(
     if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateResourceDataCacheForWrite(pDstResource);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Copy(this, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource,
+			SrcSubresource, pSrcBox, "CopySubresourceRegion1", CopyFlags);
 	mOrigContext1->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
     mTextureUploads.CopyRegion(mOrigContext1, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags, true);
 }
@@ -3683,6 +3733,8 @@ void STDMETHODCALLTYPE HackerContext::UpdateSubresource1(
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateResourceDataCacheForWrite(pDstResource);
 
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Update(this, pDstResource, DstSubresource, pDstBox, pSrcData, true, CopyFlags);
 	mOrigContext1->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
     if (pSrcData) mTextureUploads.Update(mOrigContext1, pDstResource, DstSubresource, pDstBox, (CopyFlags & D3D11_COPY_DISCARD) != 0);
 
@@ -3698,6 +3750,8 @@ void STDMETHODCALLTYPE HackerContext::DiscardResource(
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateResourceDataCacheForWrite(pResource);
 	mOrigContext1->DiscardResource(pResource);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::Discard(this, pResource);
 }
 
 void STDMETHODCALLTYPE HackerContext::DiscardView(
@@ -3708,6 +3762,8 @@ void STDMETHODCALLTYPE HackerContext::DiscardView(
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateViewResourceDataCacheForWrite(pResourceView);
 	mOrigContext1->DiscardView(pResourceView);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::ViewWrite(this, pResourceView, nullptr, 0, "DiscardView", true);
 }
 
 
@@ -3939,6 +3995,8 @@ void STDMETHODCALLTYPE HackerContext::ClearView(
 	// compatibility with engines that might use this if the feature level
 	// is high enough, and the others if it is not.
 	mOrigContext1->ClearView(pView, Color, pRect, NumRects);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::ViewWrite(this, pView, pRect, NumRects, "ClearView", false);
 }
 
 
@@ -3953,4 +4011,6 @@ void STDMETHODCALLTYPE HackerContext::DiscardView1(
         mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
         InvalidateViewResourceDataCacheForWrite(pResourceView);
 	mOrigContext1->DiscardView1(pResourceView, pRects, NumRects);
+	if (Dx11Mcp::Provenance::Armed.load(std::memory_order_relaxed))
+		Dx11Mcp::Provenance::ViewWrite(this, pResourceView, pRects, NumRects, "DiscardView1", true);
 }

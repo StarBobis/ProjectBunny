@@ -64,6 +64,10 @@ add_library(DirectX11 SHARED
     Logging.h
     McpAgent.cpp
     McpAgent.h
+    McpApmiProducer.cpp
+    McpApmiProducer.h
+    McpProvenance.cpp
+    McpProvenance.h
     McpDiagnostics.cpp
     McpDiagnostics.h
     Overlay.cpp
@@ -475,6 +479,18 @@ if(BUILD_TESTING)
     add_test(NAME dx11_proxy_smoke COMMAND dx11_proxy_smoke
         "$<TARGET_FILE:DirectX11>" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(dx11_proxy_smoke PROPERTIES TIMEOUT 30)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        add_executable(dx11_apmi_producer_regression McpApmiProducer.cpp tests/apmi_producer_regression.cpp)
+        target_include_directories(dx11_apmi_producer_regression PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty ${CMAKE_SOURCE_DIR}/src/common)
+        target_compile_definitions(dx11_apmi_producer_regression PRIVATE DX11_APMI_PRODUCER_TEST=1)
+        target_compile_features(dx11_apmi_producer_regression PRIVATE cxx_std_17)
+        target_link_libraries(dx11_apmi_producer_regression PRIVATE Nektra::NktHookLib Advapi32.lib)
+        set_target_msvc_options(dx11_apmi_producer_regression)
+        set_target_common_definitions(dx11_apmi_producer_regression)
+        add_test(NAME dx11_apmi_producer_regression COMMAND dx11_apmi_producer_regression)
+        set_tests_properties(dx11_apmi_producer_regression PROPERTIES TIMEOUT 15)
+    endif()
     if(Python3_Interpreter_FOUND)
         add_dependencies(dx11_upstream_regression dx11_crash_diagnostics_host)
         add_test(NAME dx11_crash_diagnostics_regression
@@ -485,6 +501,10 @@ if(BUILD_TESTING)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
                 "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
         set_tests_properties(dx11_mcp_regression PROPERTIES TIMEOUT 55)
+        add_test(NAME dx11_mcp_provenance_regression
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
+                --provenance "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
+        set_tests_properties(dx11_mcp_provenance_regression PROPERTIES TIMEOUT 55)
         add_test(NAME dx11_mcp_monitor_regression
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test-dx11-mcp.py"
                 --monitor "$<TARGET_FILE:dx11_proxy_smoke>" "$<TARGET_FILE:DirectX11>")
