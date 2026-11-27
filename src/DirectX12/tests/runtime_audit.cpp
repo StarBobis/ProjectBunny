@@ -12,6 +12,7 @@
 #include "tests/IniBitwiseCases.h"
 #include "tests/IniXInputCases.h"
 #include "tests/IniKeyCycleCases.h"
+#include "tests/IniKeyTransitionCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -26,8 +27,11 @@ using Microsoft::WRL::ComPtr;
 
 void Require(bool condition, const char *message)
 {
-	if (!condition)
+	if (!condition) {
+		fprintf(stderr, "Failed assertion: %s\n", message);
+		fflush(stderr);
 		throw std::runtime_error(message);
+	}
 }
 
 void TestShaderRegexExclusions()
@@ -125,11 +129,12 @@ void TestLockedVariables()
 	Require(vm.Evaluate(L"$\\mod a\\probe") == 6 && vm.Evaluate(L"$\\mod a\\variant") == 1.5 &&
 		Keys::ConditionActive(bindings[0]) && Keys::ConditionActive(bindings[1]),
 		"post preserves the local and explicit global resolves through the lock");
-	std::vector<Keys::RuntimeAction> actions;
-	Keys::ProcessBindings(&bindings, &actions, [](int vk) { return vk == VK_F2 || vk == VK_F3; }, {});
+	Keys::FrameState keyState;
+	auto ignoreCommand = [](const std::wstring &, bool) {};
+	Keys::ProcessBindings(bindings, keyState, [](int vk) { return vk == VK_F2 || vk == VK_F3; }, {}, ignoreCommand);
 	Require(vm.Evaluate(L"$\\mod a\\probe") == 7 && vm.Evaluate(L"$\\skin\\\u732b-mod\\variant") == 5 &&
 		vm.Evaluate(L"$\\c\\variant") == 40 && Vm::PersistDirty(), "key conditions, cycle and hold use owner");
-	Keys::DeactivateBinding(&bindings[1], &actions, true);
+	Keys::ProcessBindings(bindings, keyState, [](int) { return false; }, {}, ignoreCommand);
 	Require(vm.Evaluate(L"$variant", b) == 40, "hold release restores its own saved value");
 	vm.Assign(L"$variant", L"44", b);
 	Vm::SetGlobal(L"$\\mod a\\variant", 0);
@@ -360,14 +365,16 @@ void TestSharedModTriggers()
 	migoto::XInputSnapshot pads;
 	pads.slots[1].connected = true;
 	auto &pad = pads.slots[1].state.Gamepad;
-	std::vector<Keys::RuntimeAction> actions;
+	Keys::FrameState keyState;
+	std::vector<std::wstring> actions;
 	auto frame = [&](std::initializer_list<int> keys) {
 		std::array<bool,256> sampled{};
-		Keys::ProcessBindings(&bindings, &actions, [&](int vk) {
+		actions.clear();
+		Keys::ProcessBindings(bindings, keyState, [&](int vk) {
 			Require(!sampled.at(vk), "multiple Mod triggers share the same keyboard poll");
 			sampled[vk] = true;
 			return std::find(keys.begin(), keys.end(), vk) != keys.end();
-		}, pads);
+		}, pads, [&](const std::wstring &name, bool post) { if (!post) actions.push_back(name); });
 	};
 	frame({'Z'});
 	Require(vm.Evaluate(L"$mode") == 1, "keyboard advances shared cycle");
@@ -382,8 +389,8 @@ void TestSharedModTriggers()
 	frame({});
 	pad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B;
 	frame({});
-	Require(actions.size() == 2 && !_wcsicmp(actions.front().commandList.c_str(), L"CommandListTwo") &&
-		!_wcsicmp(actions.back().commandList.c_str(), L"CommandListZero"), "cycle-back dispatch precedes forward bindings");
+	Require(actions.size() == 2 && !_wcsicmp(actions.front().c_str(), L"CommandListTwo") &&
+		!_wcsicmp(actions.back().c_str(), L"CommandListZero"), "cycle-back dispatch precedes forward bindings");
 	pad.wButtons = 0;
 	frame({VK_LCONTROL, 'H'});
 	pad.bLeftTrigger = 129;
@@ -411,6 +418,42 @@ void TestSharedModTriggers()
 	Keys::SetKeyPressSink(previousSink);
 	Require(vm.Evaluate(L"$traced") == 1 && GetExpressionRandomSampleCount() == samples + 1,
 		"tracing a controller edge does not evaluate its condition twice");
+	Vm::ClearGlobals();
+}
+
+void TestKeyTransitionClock()
+{
+	using Keys = Bunny::MigotoKeyBindingUtils;
+	using Vm = MigotoCommandVmUtils;
+	Bunny::IniDocument doc;
+	Require(doc.Parse(L"[KeyCycle]\nkey=A\nback=B\ntype=cycle\n$v=10,20,30\ntransition=100,200,0\n"
+		L"transition_type=linear,cosine,linear\n[KeyHold]\nkey=H\ntype=hold\n$v=50\ntransition=5*20\n"
+		L"release_transition=200\nrelease_transition_type=cosine\n"
+		L"[KeyInvalid]\nkey=I\n$v=11\ntransition_type=bad\ntransition=missing\n"), "parse transition settings");
+	Vm::ClearGlobals();
+	Vm::State vm;
+	vm.Assign(L"$v", L"0");
+	std::vector<Keys::Binding> bindings;
+	std::vector<std::wstring> warnings;
+	Keys::ParseSections(doc, &bindings, &warnings);
+	Require(warnings.size() == 2, "diagnose invalid duration and curve");
+	Keys::FrameState state;
+	auto frame = [&](ULONGLONG tick, int pressed) {
+		Keys::ProcessBindings(bindings, state, [&](int vk) { return vk == pressed; }, {},
+			[](const std::wstring &, bool) {}, [tick] { return tick; });
+		return vm.Evaluate(L"$v");
+	};
+	Require(frame(100, 'A') == 0 && frame(125, 0) == 2.5, "linear transition publishes an intermediate float");
+	Require(frame(150, 'A') == 2.5 && state.pending.at(L"$v").target == 20,
+		"smart cycle matches the target and retargets from the last published value");
+	const double expected = 2.5 + (20.0 - 2.5) * (1.0 - std::cos(3.141592653589793 / 4)) / 2.0;
+	Require(std::abs(frame(200, 0) - expected) < 1e-5 && frame(201, 'A') == 30 && state.pending.empty(),
+		"per-step cosine curve and immediate completion");
+	Require(frame(300, 'H') == 30 && frame(350, 'H') == 40 && frame(375, 0) == 40, "hold and timed release start from visible value");
+	Require(frame(475, 0) == 35 && frame(500, 'H') == 35 && frame(600, 'H') == 50 &&
+		frame(610, 0) == 50 && frame(810, 0) == 30 && state.saves.empty() && state.pending.empty(),
+		"repress during release saves its destination and restores the original on final release");
+	Require(frame(820, 'I') == 11 && state.pending.empty(), "invalid options fall back to immediate linear activation");
 	Vm::ClearGlobals();
 }
 
@@ -1387,12 +1430,66 @@ void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
 	auto &port = Source::hardware.slots[1];
 	port.connected = true;
 	Vm::State vm;
+	std::ofstream(root) << "[Constants]\n" << migoto::tests::keyPhaseIni;
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::Initial, Source::Read),
+		"load transition phase callbacks on the WARP swap chain");
+	for (const auto &sample : migoto::tests::keyPhaseSamples) {
+		port.state.Gamepad.wButtons = (sample.tap ? XINPUT_GAMEPAD_A : 0) |
+			(sample.hold ? XINPUT_GAMEPAD_B : 0) | (sample.toggle ? XINPUT_GAMEPAD_X : 0);
+		Check(chain->Present(0, 0));
+		Require(vm.Evaluate(L"$v") == sample.value && vm.Evaluate(L"$presses") == sample.presses &&
+			vm.Evaluate(L"$releases") == sample.releases && vm.Evaluate(L"$release_value") == sample.releaseValue,
+			"WARP hold and toggle overlap, release runs only post before restoration");
+		Require(vm.Evaluate(L"$pre") == 2 && vm.Evaluate(L"$post") == 8 &&
+			vm.Evaluate(L"$saved") == 2 && vm.Evaluate(L"$trace") == 123412 && vm.Evaluate(L"$order") == 28,
+			"WARP pre/post order, shared local, nested inherited and explicit phases");
+	}
+	port.state.Gamepad.wButtons = 0;
+	std::ofstream(root) << "[Constants]\nglobal $v=2\n[KeyTimed]\nkey=XB2_A\ntype=hold\n"
+		"$v=10\ntransition=1000000\nrelease_transition=1000000\nrelease_transition_type=cosine\n";
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload, Source::Read),
+		"reload timed transition");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A;
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$v") < 2.1 && gKeyFrame.saves.size() == 1, "timed hold starts on Present");
+	const auto settings = dir / L"d3dx_user.ini";
+	HANDLE exclusive = CreateFileW(settings.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+	Require(exclusive != INVALID_HANDLE_VALUE, "create exclusively held user settings");
+	const bool reloaded = DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload, Source::Read);
+	CloseHandle(exclusive);
+	std::filesystem::remove(settings);
+	Require(!reloaded && !gKeyFrame.pending.empty() && !gKeyFrame.saves.empty(),
+		"a settings read failure preserves the active transition generation");
+	// Move only this fixture's start time. The actual Present1 clock,
+	// interpolation, write and cleanup all run through the runtime.
+	gKeyFrame.pending.at(L"$v").activation_time = GetTickCount64() - 250000;
+	DXGI_PRESENT_PARAMETERS presentArgs{};
+	Check(chain->Present1(0, DXGI_PRESENT_TEST, &presentArgs));
+	Require(vm.Evaluate(L"$v") < 2.1, "test presentation does not publish a transition sample");
+	Check(chain->Present1(0, 0, &presentArgs));
+	Require(std::abs(vm.Evaluate(L"$v") - 4.0) < 0.02, "Present1 samples a running transition after failed reload");
+	port.connected = false;
+	Check(chain->Present(0, 0));
+	Require(gKeyFrame.saves.empty() && gKeyFrame.pending.at(L"$v").target == 2, "disconnect schedules the release destination");
+	gKeyFrame.pending.at(L"$v").activation_time = GetTickCount64() - 500000;
+	Check(chain->Present(0, 0));
+	Require(std::abs(vm.Evaluate(L"$v") - 3.0) < 0.03, "cosine release progresses across idle presentations");
+	gKeyFrame.pending.at(L"$v").activation_time = GetTickCount64() - 1000001;
+	Check(chain->Present(0, 0));
+	Require(gKeyFrame.pending.empty() && vm.Evaluate(L"$v") == 2, "release finishes on a frame with no pressed keys");
+	port.connected = true;
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload, Source::Read),
+		"reprobe the connected controller");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A;
+	Check(chain->Present(0, 0));
+	Require(!gKeyFrame.pending.empty() && !gKeyFrame.saves.empty(), "transition and original value live before reload");
 	for (const auto &test : migoto::tests::keyCycleCases) {
 		port.state.Gamepad.wButtons = 0;
 		std::ofstream(root) << "[Constants]\n" << test.Config();
 		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr,
 			DX12ModLoadReason::UserReload, Source::Read), "reload cycle config");
-		Require(vm.Evaluate(L"$phase") == 99 && vm.Evaluate(L"$score") == 0, "fresh cycle globals");
+		Require(vm.Evaluate(L"$phase") == 99 && vm.Evaluate(L"$score") == 0 && gKeyFrame.pending.empty() && gKeyFrame.saves.empty(),
+			"reload publishes fresh cycle globals and discards outgoing transitions and owners");
 		for (const auto &press : test.presses) {
 			if (press.externalValue)
 				Vm::SetGlobal(L"$phase", *press.externalValue);
@@ -1448,8 +1545,13 @@ void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 	Check(chain->Present1(0, 0, &parameters));
 	Require(vm.Evaluate(L"frame_number") == frameBeforePresent + 2 && vm.Evaluate(L"time") >= presentTime,
 		"wrapped Present1 publishes its clock and frame number");
-	TestControllerFrameDispatch(chain.Get());
-	TestKeyCyclesOnPresent(chain.Get());
+	try {
+		TestControllerFrameDispatch(chain.Get());
+		TestKeyCyclesOnPresent(chain.Get());
+	} catch (...) {
+		Drain(device, first.Get()); // The debug layer also requires completion on a failed assertion.
+		throw;
+	}
 	Drain(device, first.Get());
 	ComPtr<IDXGISwapChain3> chain3;
 	Check(chain.As(&chain3));
@@ -2001,6 +2103,7 @@ int main(int argc, char **argv)
 		TestHuntingKeyBindings();
 		TestControllerInputs();
 		TestSharedModTriggers();
+		TestKeyTransitionClock();
 		TestWipeUserConfig();
 		TestExpressionNumbers();
 		TestUnaryMath();

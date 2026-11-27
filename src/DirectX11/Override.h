@@ -7,6 +7,7 @@
 
 #include "util.h"
 #include "IniKeyCycle.h"
+#include "IniOverrideTransition.h"
 #include "Input.h"
 #include "HackerDevice.h"
 
@@ -25,11 +26,7 @@ static EnumName_t<const wchar_t *, KeyOverrideType> KeyOverrideTypeNames[] = {
 	{NULL, KeyOverrideType::INVALID} // End of list marker
 };
 
-enum class TransitionType {
-	INVALID = -1,
-	LINEAR,
-	COSINE,
-};
+using TransitionType = migoto::TransitionType;
 static EnumName_t<const char *, TransitionType> TransitionTypeNames[] = {
 	{"linear", TransitionType::LINEAR},
 	{"cosine", TransitionType::COSINE},
@@ -221,22 +218,7 @@ public:
 typedef std::map<std::wstring, class PresetOverride> PresetOverrideMap;
 extern PresetOverrideMap presetOverrides;
 
-struct OverrideTransitionParam
-{
-	float start;
-	float target;
-	ULONGLONG activation_time;
-	int time;
-	TransitionType transition_type;
-
-	OverrideTransitionParam() :
-		start(FLT_MAX),
-		target(FLT_MAX),
-		activation_time(0),
-		time(-1),
-		transition_type(TransitionType::LINEAR)
-	{}
-};
+using OverrideTransitionParam = migoto::OverrideTransitionValue;
 
 class OverrideTransition
 {
@@ -258,16 +240,9 @@ public:
 // bindings are released that the final value that is restored matches the
 // original value. The local saves in each individual override do not guarantee
 // this.
-class OverrideGlobalSaveParam
+class OverrideGlobalSaveParam : public migoto::OverrideSavedValue
 {
-private:
-	float save;
-	int refcount;
 public:
-	OverrideGlobalSaveParam();
-
-	float Reset();
-	void Save(float val);
 	int Restore(float *val);
 };
 

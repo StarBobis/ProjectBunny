@@ -7,6 +7,7 @@
 #include "vkeys.h"
 #include "tests/IniXInputCases.h"
 #include "tests/IniKeyCycleCases.h"
+#include "tests/IniKeyTransitionCases.h"
 #include "HLSLDecompiler/DecompileHLSL.h"
 #include <array>
 #include <atomic>

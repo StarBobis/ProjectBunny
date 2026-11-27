@@ -756,6 +756,14 @@ public:
 		return globals.values.find(name);
 	}
 
+	static std::wstring ResolveGlobalName(const std::wstring &name, std::wstring_view iniNamespace)
+	{
+		std::lock_guard lock(VariableStore::globalsMutex);
+		const auto &globals = VariableStore::current;
+		const auto found = FindGlobal(globals, name, iniNamespace);
+		return found == globals.values.end() ? name : found->first;
+	}
+
 	static bool IsLockedGlobal(ExpressionContext context, const std::wstring &name)
 	{
 		auto test = [&](const GlobalVariables &globals) {

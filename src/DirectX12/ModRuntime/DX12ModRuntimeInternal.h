@@ -83,6 +83,23 @@ inline Bunny::CommandListMap gCommandLists;
 inline std::atomic<bool> gHasCommandLists{ false };
 inline std::atomic<bool> gHasKeyBindings{ false };
 
+// Serializes key callbacks and their variable updates with settings publication.
+// Draw and dispatch recording never take this mutex.
+inline std::mutex gKeyFrameMutex;
+inline Bunny::MigotoKeyBindingUtils::FrameState gKeyFrame;
+
+struct DX12KeyCommandList
+{
+	std::vector<Bunny::CommandListAction> pre, post;
+	MigotoCommandVmUtils::State vm;
+	bool running = false;
+};
+
+using DX12KeyCommandLists = std::unordered_map<std::wstring, DX12KeyCommandList>;
+inline DX12KeyCommandLists gKeyCommandLists;
+
+DX12KeyCommandLists BuildKeyCommandLists(const Bunny::IniDocument &ini,
+	const std::vector<Bunny::MigotoKeyBindingUtils::Binding> &bindings);
 inline std::vector<Bunny::MigotoKeyBindingUtils::Binding> gKeyBindings;
 
 // Custom shader elements ([CustomShaderX] sections with stage files/render
@@ -4289,7 +4306,7 @@ bool RunNamedCommandList(
 	std::vector<DX12PendingResourceViewRequest> *pendingResourceViews);
 
 
-bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost);
+
 
 
 void ProcessDx12KeyBindingsForFrame(const migoto::XInputSnapshot &controllers);

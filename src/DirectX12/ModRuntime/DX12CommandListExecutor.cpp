@@ -1453,21 +1453,6 @@ bool RunNamedCommandList(
 }
 
 
-bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
-{
-	if (name.empty())
-		return false;
-	if (!CommandListRuntimeEffect(name, includePost))
-		return false;
-
-	DX12IaHashState emptyIa = EmptyIaHashState();
-	DX12CommandListExecutor executor(
-		nullptr, nullptr, emptyIa, {}, nullptr, nullptr);
-	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, includePost);
-	return true;
-}
-
-
 #if DX12_TIMING_BUILD
 // TIMING-build key diagnostics: one line per hotkey press edge (with the
 // condition verdict) plus a frame-boundary snapshot of $active0/$swapkey0
@@ -1533,24 +1518,16 @@ void ProcessDx12KeyBindingsForFrame(const migoto::XInputSnapshot &controllers)
 		(void)registered;
 	}
 #endif
-	std::vector<Bunny::MigotoKeyBindingUtils::RuntimeAction> actions;
-	// Key processing is best-effort input handling; it must never block the
-	// frame boundary on the global mod lock while recording threads take
-	// shared acquisitions on every draw/dispatch. A skipped round simply
-	// delays a hotkey by one frame. The autosave below still runs in that case
-	// (it takes the lock itself only when a persist variable changed), so a
-	// busy frame boundary can delay a hotkey but never the save.
-	if (TryAcquireSRWLockExclusive(&gModLock)) {
-		MarkFrameBoundaryStage("key_bindings_locked");
-		if (gLoaded)
-			Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions, DX12HuntingHotkeys::KeyDown, controllers);
-		ReleaseSRWLockExclusive(&gModLock);
-		MarkFrameBoundaryStage("key_bindings_done");
-
-		for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
-			RunNamedCommandListVmOnly(action.commandList, action.includePost);
-		MarkFrameBoundaryStage("key_actions_done");
+	{
+		std::unique_lock lock(gKeyFrameMutex, std::try_to_lock);
+		if (lock && gLoaded) {
+			MarkFrameBoundaryStage("key_bindings_locked");
+			Bunny::MigotoKeyBindingUtils::ProcessBindings(gKeyBindings, gKeyFrame, DX12HuntingHotkeys::KeyDown, controllers,
+				[](const std::wstring &name, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(name, post); });
+			MarkFrameBoundaryStage("key_bindings_done");
+		}
 	}
+	MarkFrameBoundaryStage("key_actions_done");
 	// Writes triggered by command lists (UI panels, shader overrides) also land
 	// in the global table during this frame, so the flush belongs at the frame
 	// boundary - the same place DX11's Present hook autosaves from.

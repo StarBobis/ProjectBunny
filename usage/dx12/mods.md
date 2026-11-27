@@ -59,6 +59,26 @@ $variant = 0, 1, 2
 
 变量、`condition` 和 `run` 的逗号列表按档位配对。例如 `run = CommandListA,,CommandListB` 表示第一档执行 A，第二档留空，第三档执行 B。某列较短时继续使用它的最后一项。某档的条件为假时，位置仍会移动，该档的赋值和命令会跳过。
 
+### 让变量平滑变化
+
+下面的长按键会在 200 毫秒内将 `$zoom` 从当前值过渡到 2。松开时，用 300 毫秒回到按下前的目标值。时间以毫秒计，曲线可选 `linear`（默认）或 `cosine`。
+
+```ini
+[Constants]
+global $zoom = 1
+
+[KeyZoom]
+key = RBUTTON
+type = hold
+$zoom = 2
+transition = 200
+transition_type = cosine
+release_transition = 300
+release_transition_type = cosine
+```
+
+`run` 的普通命令在按下时执行，可以读取过渡开始前的值。对于 `activate` 和 `cycle`，`post` 命令在本帧变量更新后执行一次。过渡时间为零时，它能读到目标值。过渡仍在进行时，它读到第一帧的值。对于 `hold` 和 `toggle`，`post` 在松开或关闭时执行，读取恢复前的值。
+
 ## 保存的选项
 
 `global persist` 变量默认保存在 `d3dx_user.ini`。可在主配置指定路径：

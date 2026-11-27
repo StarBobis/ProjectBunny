@@ -4,8 +4,6 @@
 #include "D3D11Wrapper.h"
 #include "IniHandler.h"
 
-#define _USE_MATH_DEFINES
-#include <math.h>
 #include <strsafe.h>
 #include <algorithm>
 
@@ -565,30 +563,6 @@ void PresetOverride::Update(HackerDevice *wrapper)
 		Override::Deactivate(wrapper);
 }
 
-static void _ScheduleTransition(struct OverrideTransitionParam *transition,
-		char *name, float current, float val, ULONGLONG now, int time,
-		TransitionType transition_type)
-{
-	LogInfoNoNL(" %s: %#.2g -> %#.2g", name, current, val);
-	transition->start = current;
-	transition->target = val;
-	transition->activation_time = now;
-	transition->time = time;
-	transition->transition_type = transition_type;
-}
-// FIXME: Clean up the wide vs sensible string mess and remove this duplicate function:
-static void _ScheduleTransition(struct OverrideTransitionParam *transition,
-		const wchar_t *name, float current, float val, ULONGLONG now, int time,
-		TransitionType transition_type)
-{
-	LogInfoNoNL(" %S: %#.2g -> %#.2g", name, current, val);
-	transition->start = current;
-	transition->target = val;
-	transition->activation_time = now;
-	transition->time = time;
-	transition->transition_type = transition_type;
-}
-
 void OverrideTransition::ScheduleTransition(HackerDevice *wrapper,
 		OverrideParams *targets,
 		OverrideVars *var_targets,
@@ -609,14 +583,16 @@ void OverrideTransition::ScheduleTransition(HackerDevice *wrapper,
 
 	for (i = targets->begin(); i != targets->end(); i++) {
 		StringCchPrintfA(buf, 8, "%c%.0i", i->first.chr(), i->first.idx);
-		_ScheduleTransition(&params[i->first], buf, G->iniParams[i->first.idx].*i->first.component,
-				i->second, now, time, transition_type);
+		current = G->iniParams[i->first.idx].*i->first.component;
+		LogInfoNoNL(" %s: %#.2g -> %#.2g", buf, current, i->second);
+		params[i->first].Schedule(current, i->second, now, time, transition_type);
 	}
 	for (j = var_targets->begin(); j != var_targets->end(); j++) {
 		if (j->first->flags & VariableFlags::LOCKED)
 			continue;
-		_ScheduleTransition(&vars[j->first], j->first->name.c_str(), j->first->fval,
-				j->second, now, time, transition_type);
+		current = j->first->fval;
+		LogInfoNoNL(" %S: %#.2g -> %#.2g", j->first->name.c_str(), current, j->second);
+		vars[j->first].Schedule(current, j->second, now, time, transition_type);
 	}
 	LogInfo("\n");
 }
@@ -630,35 +606,6 @@ void OverrideTransition::UpdatePresets(HackerDevice *wrapper)
 		i->second.Update(wrapper);
 }
 
-static float _UpdateTransition(struct OverrideTransitionParam *transition, ULONGLONG now)
-{
-	ULONGLONG time;
-	float percent;
-
-	if (transition->time == -1)
-		return FLT_MAX;
-
-	if (transition->time == 0) {
-		transition->time = -1;
-		return transition->target;
-	}
-
-	time = now - transition->activation_time;
-	percent = (float)time / transition->time;
-
-	if (percent >= 1.0f) {
-		transition->time = -1;
-		return transition->target;
-	}
-
-	if (transition->transition_type == TransitionType::COSINE)
-		percent = (float)((1.0 - cos(percent * M_PI)) / 2.0);
-
-	percent = transition->target * percent + transition->start * (1.0f - percent);
-
-	return percent;
-}
-
 void OverrideTransition::UpdateTransitions(HackerDevice *wrapper)
 {
 	std::map<OverrideParam, OverrideTransitionParam>::iterator i;
@@ -669,7 +616,7 @@ void OverrideTransition::UpdateTransitions(HackerDevice *wrapper)
 	if (!params.empty()) {
 		LogDebugNoNL(" IniParams remapped to ");
 		for (i = params.begin(); i != params.end();) {
-			float val = _UpdateTransition(&i->second, now);
+			float val = i->second.Update(now);
 			G->iniParams[i->first.idx].*i->first.component = val;
 			LogDebugNoNL("%c%.0i=%#.2g, ", i->first.chr(), i->first.idx, val);
 			if (i->second.time == -1)
@@ -691,7 +638,7 @@ void OverrideTransition::UpdateTransitions(HackerDevice *wrapper)
 				j = vars.erase(j);
 				continue;
 			}
-			float val = _UpdateTransition(&j->second, now);
+			float val = j->second.Update(now);
 			if (j->first->fval != val) {
 				j->first->fval = val;
 				if (j->first->flags & VariableFlags::PERSIST)
@@ -720,22 +667,6 @@ void OverrideTransition::Stop()
 	ini_params_upload_pending = false;
 }
 
-OverrideGlobalSaveParam::OverrideGlobalSaveParam() :
-	save(FLT_MAX),
-	refcount(0)
-{
-}
-
-float OverrideGlobalSaveParam::Reset()
-{
-	float ret = save;
-
-	save = FLT_MAX;
-	refcount = 0;
-
-	return ret;
-}
-
 void OverrideGlobalSave::Reset(HackerDevice* wrapper)
 {
 	float val;
@@ -746,13 +677,6 @@ void OverrideGlobalSave::Reset(HackerDevice* wrapper)
 	// Make sure any current transition won't continue to change the
 	// parameters after the reset:
 	CurrentTransition.Stop();
-}
-
-void OverrideGlobalSaveParam::Save(float val)
-{
-	if (!refcount)
-		save = val;
-	refcount++;
 }
 
 // Saves the current values for each parameter to the override's local save
@@ -793,16 +717,9 @@ void OverrideGlobalSave::Save(HackerDevice *wrapper, Override *preset)
 
 int OverrideGlobalSaveParam::Restore(float *val)
 {
-	refcount--;
-
-	if (!refcount) {
-		if (val)
-			*val = save;
-		save = FLT_MAX;
-	} else if (refcount < 0) {
+	const int refcount = migoto::OverrideSavedValue::Restore(val);
+	if (refcount < 0)
 		LogInfo("BUG! OverrideGlobalSaveParam refcount < 0!\n");
-	}
-
 	return refcount;
 }
 

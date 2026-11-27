@@ -534,6 +534,7 @@ using CommandListMap = std::unordered_map<std::wstring, CommandListConfig>;
 class MigotoCommandListParser
 {
 public:
+	static bool ParseSectionAction(const IniEntry &entry, CommandListAction &action);
 	static bool ParseTarget(const std::wstring &text, CommandListTarget *target);
 	static bool ParseActionFromRawLine(const std::wstring &rawLine, CommandListAction *action);
 	static bool ParseActionFromEntry(
@@ -1042,6 +1043,21 @@ inline void MigotoCommandListParser::PreserveResourceAssignmentName(
 		action->resource = IniDocumentText::Trim(entry.key);
 }
 
+inline bool MigotoCommandListParser::ParseSectionAction(const IniEntry &entry, CommandListAction &action)
+{
+	CommandListAction raw;
+	if (ParseActionFromRawLine(entry.rawLine, &raw) && (!entry.hasEquals || raw.kind == CommandListActionKind::ControlFlow)) {
+		action = std::move(raw);
+	} else {
+		if (!entry.hasEquals || !ParseActionFromEntry(IniDocumentText::ToLower(IniDocumentText::Trim(entry.key)),
+			IniDocumentText::Trim(entry.value), &action))
+			return false;
+		PreserveResourceAssignmentName(entry, &action);
+	}
+	ResolveActionReferences(&action, entry.iniNamespace);
+	return true;
+}
+
 inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, CommandListMap *commandLists)
 {
 	if (!commandLists)
@@ -1060,25 +1076,9 @@ inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, Comma
 		config.iniNamespace = section.iniNamespace;
 
 		for (const IniEntry &entry : section.entries) {
-			CommandListAction rawAction;
-			if (MigotoCommandListParser::ParseActionFromRawLine(entry.rawLine, &rawAction) &&
-				(!entry.hasEquals || rawAction.kind == CommandListActionKind::ControlFlow)) {
-				MigotoCommandListParser::ResolveActionReferences(&rawAction, entry.iniNamespace);
-				config.actions.push_back(rawAction);
-				continue;
-			}
-			if (!entry.hasEquals)
-				continue;
-
-			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
-			std::wstring value = IniDocumentText::Trim(entry.value);
 			CommandListAction action;
-			if (MigotoCommandListParser::ParseActionFromEntry(key, value, &action)) {
-				MigotoCommandListParser::PreserveResourceAssignmentName(entry, &action);
-				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
-				config.actions.push_back(action);
-				continue;
-			}
+			if (ParseSectionAction(entry, action))
+				config.actions.push_back(std::move(action));
 		}
 
 		(*commandLists)[config.section] = config;

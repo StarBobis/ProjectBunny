@@ -145,6 +145,7 @@ add_library(DirectX12 SHARED
     ModRuntime/DX12BundleSrvMirror.cpp
     ModRuntime/DX12TextureOverrideMatching.cpp
     ModRuntime/DX12CommandListExecutor.cpp
+    ModRuntime/DX12KeyCommandLists.cpp
     ModRuntime/DX12ShaderOverrideRuntime.cpp
 
     # 3Dmigoto config/runtime model used only by DX12

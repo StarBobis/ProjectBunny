@@ -6,7 +6,7 @@
 | --- | --- |
 | Include、递归加载、排除规则、命名空间 | 可用 |
 | global/local/persist、分支、基本四则与逻辑表达式 | 可用 |
-| Key cycle/hold/toggle、condition、反向 cycle | 可用；不含 DX11 全部输入后端与过渡选项 |
+| Key cycle/hold/toggle、反向循环、标量过渡 | 支持逐档条件、线性和余弦过渡、激活与释放回调，见[按键配置](./mods#让变量平滑变化) |
 | TextureOverride、ShaderOverride | 可用，支持字段以对应参考页为准 |
 | Resource 文件、资源别名、图形纹理 SRV 捕获 | 可用，依赖执行上下文 |
 | CustomShader | 有独立执行路径，状态与资源支持不等同 DX11 |

@@ -11,6 +11,8 @@
 #include "MigotoCommandVmUtils.hpp"
 #include "MigotoInputCombination.h"
 #include "IniKeyCycle.h"
+#include "IniOverrideTransition.h"
+#include <map>
 
 namespace Bunny {
 
@@ -31,8 +33,8 @@ public:
 		std::wstring name;
 		std::wstring iniNamespace;
 		std::vector<std::wstring> values;
-		double savedValue = 0.0;
-		bool hasSavedValue = false;
+		std::wstring target;
+		std::optional<float> savedValue;
 	};
 
 	class Trigger
@@ -42,6 +44,40 @@ public:
 		bool reverse = false;
 		migoto::InputCombination combination;
 		bool wasDown = false;
+	};
+
+	struct TransitionSettings
+	{
+		std::vector<int> durations;
+		std::vector<migoto::TransitionType> curves;
+
+		size_t Count() const { return (std::max)(durations.size(), curves.size()); }
+	};
+
+	struct FrameState
+	{
+		std::map<std::wstring, migoto::OverrideTransitionValue> pending;
+		std::map<std::wstring, migoto::OverrideSavedValue> saves;
+
+		float Target(const std::wstring &name) const
+		{
+			const auto it = pending.find(name);
+			if (it != pending.end() && it->second.time != -1)
+				return it->second.target;
+			return static_cast<float>(MigotoCommandVmUtils::LookupVariable({}, name));
+		}
+
+		void Update(ULONGLONG now)
+		{
+			for (auto it = pending.begin(); it != pending.end();) {
+				auto &transition = it->second;
+				MigotoCommandVmUtils::SetScopedGlobal({}, it->first, transition.Update(now));
+				if (transition.time == -1)
+					it = pending.erase(it);
+				else
+					++it;
+			}
+		}
 	};
 
 	class Binding
@@ -58,13 +94,7 @@ public:
 		bool active = false;
 		migoto::KeyCycleCursor cycle;
 		std::vector<std::wstring> cycleConditions;
-	};
-
-	class RuntimeAction
-	{
-	public:
-		std::wstring commandList;
-		bool includePost = false;
+		TransitionSettings press, release;
 	};
 
 	// Optional per-press diagnostic sink. Registered by the DX12 runtime in
@@ -88,10 +118,18 @@ public:
 		if (!bindings)
 			return;
 		bindings->clear();
-		for (const IniSection &section : ini.Sections()) {
-			if (!StartsWithI(section.name, L"Key"))
-				continue;
-
+		std::vector<const IniSection *> sections;
+		for (const auto &section : ini.Sections()) {
+			if (StartsWithI(section.name, L"Key"))
+				sections.push_back(&section);
+		}
+		// DX11 registers listeners in case-insensitive section-name order.
+		// A pre callback can change the condition of the next listener.
+		std::sort(sections.begin(), sections.end(), [](const IniSection *a, const IniSection *b) {
+			return _wcsicmp(a->name.c_str(), b->name.c_str()) < 0;
+		});
+		for (const auto *keySection : sections) {
+			const auto &section = *keySection;
 			Binding binding;
 			binding.section = section.name;
 			binding.originalSection = section.originalName.empty() ? section.name : section.originalName;
@@ -104,6 +142,11 @@ public:
 					continue;
 				std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
 				std::wstring value = IniDocumentText::Trim(entry.value);
+				if (key == L"transition" || key == L"release_transition" ||
+					key == L"transition_type" || key == L"release_transition_type") {
+					ReadTransitions(binding, key, value, entry.iniNamespace, warnings);
+					continue;
+				}
 				if (key == L"condition") {
 					binding.condition = IniDocumentText::ToLower(value);
 					binding.conditionNamespace = entry.iniNamespace;
@@ -160,6 +203,7 @@ public:
 					context.iniNamespace = variable.iniNamespace;
 					if (MigotoCommandVmUtils::IsLockedGlobal(context, variable.name))
 						continue;
+					variable.target = MigotoCommandVmUtils::ResolveGlobalName(variable.name, variable.iniNamespace);
 					variable.values = SplitCommaValues(value);
 					if (!variable.name.empty())
 						binding.variables.push_back(variable);
@@ -177,13 +221,11 @@ public:
 		}
 	}
 
-	template <class ReadKey>
-	static void ProcessBindings(std::vector<Binding> *bindings, std::vector<RuntimeAction> *actions,
-		ReadKey read, const migoto::XInputSnapshot &controllers)
+	template <class ReadKey, class Run, class Clock = decltype(&GetTickCount64)>
+	static void ProcessBindings(std::vector<Binding> &bindings, FrameState &state,
+		ReadKey read, const migoto::XInputSnapshot &controllers, Run run, Clock clock = GetTickCount64)
 	{
-		if (!bindings || !actions)
-			return;
-		actions->clear();
+		std::vector<const std::wstring *> post;
 		migoto::VirtualKeySnapshot keyboard;
 		auto downKey = [&](int vk) {
 			if (keyboard.Down(vk, read))
@@ -195,50 +237,38 @@ public:
 			default: return false;
 			}
 		};
-		for (Binding &binding : *bindings) {
+		for (Binding &binding : bindings) {
 			for (Trigger &trigger : binding.triggers) {
 				const bool down = trigger.combination.Active(downKey, controllers);
 				if (down == trigger.wasDown)
 					continue;
 				trigger.wasDown = down;
-				if (!down) {
-					if (binding.type == BindingType::Hold && binding.active)
-						DeactivateBinding(&binding, actions, true);
+				if (!down && (binding.type != BindingType::Hold || !binding.active))
 					continue;
+				if (binding.type == BindingType::Cycle && !SelectCycleStep(binding, state, trigger.reverse))
+					continue;
+				const bool allowed = !down || ConditionActive(binding);
+				if (allowed) {
+					const bool releases = !down || (binding.type == BindingType::Toggle && binding.active);
+					const bool saves = !binding.active && (binding.type == BindingType::Hold || binding.type == BindingType::Toggle);
+					const size_t index = binding.type == BindingType::Cycle ? binding.cycle.index : 0;
+					ScheduleVariables(binding, state, index, releases, saves, clock());
+					binding.active = !releases;
+					const auto &command = AtStep(binding.runCommandLists, index);
+					if (!command.empty()) {
+						run(command, releases);
+						if (!releases && !saves)
+							post.push_back(&command);
+					}
 				}
-				if (binding.type == BindingType::Cycle && !SelectCycleStep(binding, trigger.reverse))
-					continue;
-				const bool allowed = ConditionActive(binding);
-				if (allowed)
-					Press(binding, actions);
-				if (g_keyPressSink)
+				if (down && g_keyPressSink)
 					EmitKeyPressDiag(binding, trigger, allowed);
 			}
 		}
-	}
-
-	static void Press(Binding &binding, std::vector<RuntimeAction> *actions)
-	{
-		switch (binding.type) {
-		case BindingType::Cycle:
-			ApplyVariables(&binding, binding.cycle.index);
-			AppendRunAction(binding, binding.cycle.index, true, actions);
-			break;
-		case BindingType::Hold:
-			// A second held trigger runs the activate action but must not replace
-			// the value saved by the first. Either release deactivates the preset.
-			ActivateBinding(&binding, actions, !binding.active, binding.active);
-			break;
-		case BindingType::Toggle:
-			if (binding.active)
-				DeactivateBinding(&binding, actions, true);
-			else
-				ActivateBinding(&binding, actions, true, false);
-			break;
-		case BindingType::Activate:
-			ActivateBinding(&binding, actions, false, true);
-			break;
-		}
+		if (!state.pending.empty())
+			state.Update(clock());
+		for (const auto *command : post)
+			run(*command, true);
 	}
 
 	static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
@@ -279,34 +309,11 @@ public:
 		return binding.type == BindingType::Cycle ? value != 0 : MigotoCommandVmUtils::Truthy(value);
 	}
 
-	static void ActivateBinding(
-		Binding *binding, std::vector<RuntimeAction> *actions,
-		bool saveVariables, bool includePost)
-	{
-		if (!binding || !actions)
-			return;
-		if (saveVariables)
-			SaveVariables(binding);
-		ApplyVariables(binding, 0);
-		AppendRunAction(*binding, 0, includePost, actions);
-		binding->active = true;
-	}
-
-	static void DeactivateBinding(
-		Binding *binding, std::vector<RuntimeAction> *actions, bool includePost)
-	{
-		if (!binding || !actions)
-			return;
-		RestoreVariables(binding);
-		AppendRunAction(*binding, 0, includePost, actions);
-		binding->active = false;
-	}
-
-	static bool SelectCycleStep(Binding &binding, bool back)
+	static bool SelectCycleStep(Binding &binding, const FrameState &state, bool back)
 	{
 		const auto count = CycleValueCount(binding);
 		if (binding.cycle.smart)
-			binding.cycle.Resync(count, [&](size_t index) { return CycleStepMatches(binding, index); });
+			binding.cycle.Resync(count, [&](size_t index) { return CycleStepMatches(binding, state, index); });
 		return binding.cycle.Advance(count, back);
 	}
 
@@ -324,52 +331,80 @@ public:
 		return AtStep(binding.cycleConditions, index);
 	}
 
-	static void SaveVariables(Binding *binding)
+	static void ReadTransitions(Binding &binding, const std::wstring &key, const std::wstring &text,
+		const std::wstring &iniNamespace, std::vector<std::wstring> *warnings)
 	{
-		if (!binding)
-			return;
-		MigotoCommandVmUtils::ExpressionContext context;
-		for (VariableValues &variable : binding->variables) {
-			context.iniNamespace = variable.iniNamespace;
-			variable.savedValue = MigotoCommandVmUtils::LookupVariable(context, variable.name);
-			variable.hasSavedValue = true;
+		auto &settings = key.starts_with(L"release_") ? binding.release : binding.press;
+		const bool curve = key.ends_with(L"_type");
+		const bool cycle = binding.type == BindingType::Cycle;
+		const auto values = cycle ? SplitCommaValues(text) : std::vector<std::wstring>{text};
+		if (curve)
+			settings.curves.clear();
+		else
+			settings.durations.clear();
+		for (const auto &field : values) {
+			const auto value = IniDocumentText::ToLower(field);
+			bool valid = true;
+			if (curve) {
+				const bool cosine = value == L"cosine";
+				valid = cosine || value.empty() || value == L"linear";
+				settings.curves.push_back(cosine ? migoto::TransitionType::COSINE : migoto::TransitionType::LINEAR);
+			} else {
+				int duration = 0;
+				if (cycle) {
+					// DX11 cycle fields use %i and accept a numeric prefix.
+					wchar_t *end = nullptr;
+					const long parsed = std::wcstol(value.c_str(), &end, 0);
+					valid = value.empty() || end != value.c_str();
+					duration = static_cast<int>(parsed);
+				} else if (!value.empty() && !migoto::ReadIniIntegerLiteral(value.c_str(), duration)) {
+					const auto number = MigotoCommandVmUtils::ReadStaticIniExpression(value, iniNamespace);
+					valid = number.has_value();
+					if (number)
+						migoto::ConvertExpressionToInt(*number, duration);
+				}
+				settings.durations.push_back(duration);
+			}
+			if (!valid && warnings)
+				warnings->push_back(binding.section + L": invalid " + key + L": " + field);
 		}
 	}
 
-	static void RestoreVariables(Binding *binding)
+	static void ScheduleVariables(Binding &binding, FrameState &state, size_t index, bool release, bool save, ULONGLONG now)
 	{
-		if (!binding)
-			return;
-		for (VariableValues &variable : binding->variables) {
-			if (!variable.hasSavedValue)
-				continue;
-			MigotoCommandVmUtils::ExpressionContext context;
-			context.iniNamespace = variable.iniNamespace;
-			MigotoCommandVmUtils::SetScopedGlobal(context, variable.name, variable.savedValue);
-			variable.hasSavedValue = false;
-		}
-	}
-
-	static void ApplyVariables(Binding *binding, size_t index)
-	{
-		if (!binding)
-			return;
-		MigotoCommandVmUtils::ExpressionContext context;
-		for (VariableValues &variable : binding->variables) {
+		const auto &settings = release ? binding.release : binding.press;
+		const int duration = settings.durations.empty() ? 0 : settings.durations[(std::min)(index, settings.durations.size() - 1)];
+		const auto curve = settings.curves.empty() ? migoto::TransitionType::LINEAR : settings.curves[(std::min)(index, settings.curves.size() - 1)];
+		for (auto &variable : binding.variables) {
 			const auto &expression = AtStep(variable.values, index);
-			if (expression.empty())
+			if (expression.empty() || MigotoCommandVmUtils::IsLockedGlobal({}, variable.target))
 				continue;
-			context.iniNamespace = variable.iniNamespace;
-			if (MigotoCommandVmUtils::IsLockedGlobal(context, variable.name))
-				continue;
-			double value = MigotoCommandVmUtils::EvaluateExpression(context, expression);
-			MigotoCommandVmUtils::SetScopedGlobal(context, variable.name, value);
+			float target;
+			if (release) {
+				if (!variable.savedValue)
+					continue;
+				target = *variable.savedValue;
+				variable.savedValue.reset();
+				auto saved = state.saves.find(variable.target);
+				if (saved != state.saves.end() && !saved->second.Restore(&target))
+					state.saves.erase(saved);
+			} else {
+				if (save) {
+					variable.savedValue = state.Target(variable.target);
+					state.saves[variable.target].Save(*variable.savedValue);
+				}
+				MigotoCommandVmUtils::ExpressionContext context;
+				context.iniNamespace = variable.iniNamespace;
+				target = static_cast<float>(MigotoCommandVmUtils::EvaluateExpression(context, expression));
+			}
+			const float current = static_cast<float>(MigotoCommandVmUtils::LookupVariable({}, variable.target));
+			state.pending[variable.target].Schedule(current, target, now, duration, curve);
 		}
 	}
 
 	static size_t CycleValueCount(const Binding &binding)
 	{
-		size_t count = binding.cycleConditions.size();
+		size_t count = (std::max)({binding.cycleConditions.size(), binding.press.Count(), binding.release.Count()});
 		for (const VariableValues &variable : binding.variables) {
 			if (variable.values.size() > count)
 				count = variable.values.size();
@@ -379,7 +414,7 @@ public:
 		return count;
 	}
 
-	static bool CycleStepMatches(const Binding &binding, size_t index)
+	static bool CycleStepMatches(const Binding &binding, const FrameState &state, size_t index)
 	{
 		MigotoCommandVmUtils::ExpressionContext context;
 		for (const auto &variable : binding.variables) {
@@ -388,23 +423,10 @@ public:
 				continue;
 			context.iniNamespace = variable.iniNamespace;
 			const auto expected = MigotoCommandVmUtils::EvaluateExpression(context, expression);
-			if (static_cast<float>(MigotoCommandVmUtils::LookupVariable(context, variable.name)) != static_cast<float>(expected))
+			if (state.Target(variable.target) != static_cast<float>(expected))
 				return false;
 		}
 		return true;
-	}
-
-	static void AppendRunAction(
-		const Binding &binding, size_t index, bool includePost,
-		std::vector<RuntimeAction> *actions)
-	{
-		const auto &command = AtStep(binding.runCommandLists, index);
-		if (!actions || command.empty())
-			return;
-		RuntimeAction action;
-		action.commandList = command;
-		action.includePost = includePost;
-		actions->push_back(action);
 	}
 
 	static void EmitKeyPressDiag(const Binding &binding, const Trigger &trigger, bool conditionActive)

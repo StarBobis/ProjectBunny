@@ -51,6 +51,44 @@ public:
 void test_f193()
 {
     IniParameterStateScope saved; AuditConfigScope config; BatchDevice device;
+    cycle_audit_load(config, device, migoto::tests::keyPhaseIni);
+    {
+        KeyOverride tap(KeyOverrideType::ACTIVATE), hold(KeyOverrideType::HOLD), toggle(KeyOverrideType::TOGGLE);
+        tap.ParseIniSection(L"KeyTap"); hold.ParseIniSection(L"KeyHold"); toggle.ParseIniSection(L"KeyOther");
+        KeyOverride observer(KeyOverrideType::ACTIVATE);
+        observer.ParseIniSection(L"KeyZObserver");
+        bool held = false, toggled = false;
+        for (const auto &sample : migoto::tests::keyPhaseSamples) {
+            if (sample.tap) {
+                tap.DownEvent(device.device);
+                observer.DownEvent(device.device);
+            }
+            if (sample.hold && !held) hold.DownEvent(device.device);
+            if (!sample.hold && held) hold.UpEvent(device.device);
+            if (sample.toggle && !toggled) toggle.DownEvent(device.device);
+            held = sample.hold;
+            toggled = sample.toggle;
+            cycle_audit_flush(device);
+            require_batch(cycle_audit_value(L"$v") == sample.value && cycle_audit_value(L"$presses") == sample.presses &&
+                cycle_audit_value(L"$releases") == sample.releases && cycle_audit_value(L"$release_value") == sample.releaseValue,
+                "DX11 hold and toggle overlap, release runs only post before restoration");
+            require_batch(cycle_audit_value(L"$pre") == 2 && cycle_audit_value(L"$post") == 8 &&
+                cycle_audit_value(L"$saved") == 2 && cycle_audit_value(L"$trace") == 123412 && cycle_audit_value(L"$order") == 28,
+                "DX11 pre/post order, shared local, nested inherited and explicit phases");
+        }
+        KeyOverride curve(KeyOverrideType::HOLD);
+        curve.ParseIniSection(L"KeyCurve");
+        curve.DownEvent(device.device);
+        auto &record = CurrentTransition.vars.at(&command_list_globals.at(L"$v"));
+        record.activation_time = GetTickCount64() - 250000;
+        cycle_audit_flush(device);
+        require_batch(std::abs(cycle_audit_value(L"$v") - 8.292893f) < 0.002f, "DX11 cosine quarter using scheduled scalar");
+        curve.UpEvent(device.device);
+        require_batch(record.target == 8 && record.time == 2000000, "DX11 release restores original while press is in flight");
+        record.activation_time = GetTickCount64() - 2000001;
+        cycle_audit_flush(device);
+        require_batch(cycle_audit_value(L"$v") == 8 && CurrentTransition.vars.empty(), "DX11 release completes and retires");
+    }
     for (const auto &test : migoto::tests::keyCycleCases) {
         cycle_audit_load(config, device, test.Config().c_str());
         CycleAuditLifetime item(L"KeyCycle");

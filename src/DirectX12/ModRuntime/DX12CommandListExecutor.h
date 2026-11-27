@@ -253,6 +253,8 @@ public:
 		RunCommandListLinks(links, 0, includePost, nullptr);
 	}
 
+	static void RunKeyCommandPhase(const std::wstring &name, bool post, unsigned depth = 0);
+
 	void RunShaderOverride(const Bunny::ShaderOverrideConfig &config)
 	{
 		if (!mReplacement)
@@ -1131,7 +1133,7 @@ public:
 	// the phase-2.4 element pipeline instead of the plain command list
 	// machinery. Stage-less CustomShader-prefixed lists stay plain command
 	// lists. Reads the published generation snapshot (lock free).
-	bool IsRegisteredCustomShaderElement(const std::wstring &section) const
+	static bool IsRegisteredCustomShaderElement(const std::wstring &section)
 	{
 		if (section.empty())
 			return false;
@@ -1415,32 +1417,23 @@ public:
 	// directives executed at draw time map X onto Y for every later name
 	// resolution. Capture-style "ref ps-tN" values take the capture path
 	// above; anything else (plain copies) is logged once as unsupported.
+	static bool RegisterResourceAlias(const Bunny::CommandListAction &action)
+	{
+		const auto target = Bunny::DX12ResourceAliasStore::AliasTarget(action.value);
+		if (!MigotoIniCommandListUtils::StartsWithI(target, L"Resource"))
+			return false;
+		const auto name = Bunny::IniDocumentText::Trim(action.resource);
+		gResourceAliases.Add(name, target);
+		DX12_LOG("DX12ResourceAliasDiag", "event=alias_added name=%S target=%S", name.c_str(), target.c_str());
+		return true;
+	}
+
 	void RegisterResourceAliasFromAction(const Bunny::CommandListAction &action)
 	{
-		if (action.kind != Bunny::CommandListActionKind::ResourceAssignment)
-			return;
-		const std::wstring value = Bunny::IniDocumentText::Trim(action.value);
-		if (value.empty())
-			return;
-		if (!Bunny::DX12ResourceAliasStore::IsResourceAliasValue(value)) {
-			if (TryCaptureResourceFromAction(action))
-				return;
-			DX12_LOG("DX12ResourceAliasDiag",
-				"event=unsupported_copy target=%S (capture failed or not a texture SRV)",
-				value.c_str());
-			return;
-		}
-		// action.resource carries the assignment key with its original
-		// casing and namespace resolution applied (parse-time
-		// PreserveResourceAssignmentName); the alias store normalizes case
-		// internally, while the capture/load side needs the original
-		// spelling for the case-sensitive loaded-resource map.
-		const std::wstring name = Bunny::IniDocumentText::Trim(action.resource);
-		const std::wstring target = Bunny::DX12ResourceAliasStore::AliasTarget(value);
-		gResourceAliases.Add(name, target);
-		DX12_LOG("DX12ResourceAliasDiag",
-			"event=alias_added name=%S target=%S",
-			name.c_str(), target.c_str());
+		if (action.kind == Bunny::CommandListActionKind::ResourceAssignment && !action.value.empty() &&
+			!RegisterResourceAlias(action) && !TryCaptureResourceFromAction(action))
+			DX12_LOG("DX12ResourceAliasDiag", "event=unsupported_copy target=%S (capture failed or not a texture SRV)",
+				action.value.c_str());
 	}
 
 	void RunCommandList(

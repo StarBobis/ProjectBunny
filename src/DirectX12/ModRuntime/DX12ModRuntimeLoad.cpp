@@ -1253,8 +1253,7 @@ bool DX12ModRuntimeLoad(
 {
 	// The deferred startup load can overlap a user reload from another swap
 	// chain. Publish settings, bindings and mod tables in the same load order.
-	static std::mutex loadMutex;
-	std::lock_guard loadLock(loadMutex);
+	std::lock_guard loadLock(gKeyFrameMutex);
 	Bunny::MigotoIniLoadResult iniLoad;
 	Bunny::ShaderOverrideMap shaderOverrides;
 	Bunny::ShaderRegexMap shaderRegexes;
@@ -1375,6 +1374,7 @@ bool DX12ModRuntimeLoad(
 	SetBasePaths(configPath);
 	ReleaseSRWLockExclusive(&gModLock);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings, &iniLoad.warnings);
+	auto keyCommandLists = BuildKeyCommandLists(iniLoad.document, keyBindings);
 	for (const auto &binding : keyBindings) {
 		for (const auto &trigger : binding.triggers)
 			huntingKeys.IncludeDevices(trigger.combination);
@@ -1543,6 +1543,8 @@ bool DX12ModRuntimeLoad(
 	gModResources.swap(resources);
 	gCommandLists.swap(commandLists);
 	gHasCommandLists.store(!gCommandLists.empty(), std::memory_order_release);
+	gKeyFrame = {};
+	gKeyCommandLists.swap(keyCommandLists);
 	gKeyBindings.swap(keyBindings);
 	gHasKeyBindings.store(!gKeyBindings.empty(), std::memory_order_release);
 	DX12HuntingHotkeys::Instance().Install(std::move(huntingKeys), DX12HuntingHotkeys::KeyDown, controllerReader);
