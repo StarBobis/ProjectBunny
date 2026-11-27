@@ -634,7 +634,8 @@ ps = draw_ps.hlsl
 | `[CustomShader]` 访问 CBV / UAV / 多 register space | 不支持 | 共享根签名只提供 `t0`–`t127` 与 `s0`。 |
 | `[CustomShader]` 元素内读取游戏当帧状态 | 不支持 | 元素在 Present 回放，body 不被解释。 |
 | `[TextureOverride]` 的 `match_uav_bytes` 精确筛选 | 只记录标记 | 数值被丢弃。 |
-| DX11 的显式 instanced / indirect 绘制命令集合 | 未提供 | 见 [`usage/dx12/custom-shaders.md`](../usage/dx12/custom-shaders.md)。 |
+| 显式实例绘制 | 替换绘制支持索引和非索引两种形式 | Present 独立图形元素只支持非索引形式。见 [`usage/dx12/custom-shaders.md`](../usage/dx12/custom-shaders.md)。 |
+| 间接绘制与间接派发 | 待实现 | 尚缺从参数缓冲执行命令的路径。 |
 | 像素着色器着色器常量 `xNN` 直写 | 部分支持 | 只在自定义元素的 IniParams 通道上有意义。 |
 
 ---

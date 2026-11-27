@@ -867,8 +867,8 @@ bool DX12ModRecordPresentOverlay(
 		scissor.bottom = static_cast<LONG>(backBufferHeight);
 		commandList->RSSetScissorRects(1, &scissor);
 		commandList->DrawInstanced(
-			record.drawCount ? record.drawCount : 4, 1,
-			record.drawStart, 0);
+			record.drawCount, record.drawInstanceCount,
+			record.drawStart, record.drawFirstInstance);
 		anyDrawn = true;
 		DX12_LOG_FLUSH("DX12CustomShaderDiag",
 			"event=element_drawn section=%S w=%u h=%u format=%d textures=%zu",

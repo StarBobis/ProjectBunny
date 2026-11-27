@@ -3,6 +3,8 @@
 #include "Core/DX12Diagnostics.h"
 #include "MigotoIniCommandListUtils.hpp"
 #include "ShaderRegexExclusions.h"
+#include "IniDrawArguments.h"
+#include <cerrno>
 
 #include <algorithm>
 #include <cwctype>
@@ -495,6 +497,8 @@ public:
 	std::wstring iniNamespace;
 	uint32_t args[5] = {};
 	uint32_t argCount = 0;
+	// Literal arguments stay in args. Only script-valued operands need VM work at draw time.
+	std::vector<std::pair<uint32_t, std::wstring>> drawExpressions;
 };
 
 class CommandListConfig
@@ -754,27 +758,32 @@ inline bool MigotoCommandListParserText::ParseDrawArgs(
 	if (!action || expectedArgs > 5)
 		return false;
 
-	std::wstring text = value;
-	size_t start = 0;
-	uint32_t count = 0;
-	while (start <= text.size()) {
-		size_t comma = text.find(L',', start);
-		std::wstring token = comma == std::wstring::npos ?
-			text.substr(start) : text.substr(start, comma - start);
-		if (count >= expectedArgs)
-			return false;
-		uint32_t parsed = 0;
-		if (!MigotoCommandListParserText::ParseUInt(token, &parsed))
-			return false;
-		action->args[count++] = parsed;
-		if (comma == std::wstring::npos)
-			break;
-		start = comma + 1;
-	}
+	const bool instanced = expectedArgs >= 4;
+	const bool parsed = migoto::VisitDrawArguments(value, expectedArgs,
+		[&](size_t index, std::wstring_view argument) {
+			std::wstring token = IniDocumentText::Trim(std::wstring(argument));
+			if (token.empty())
+				return false;
+			if (!instanced)
+				return ParseUInt(token, &action->args[index]);
 
-	if (count != expectedArgs)
+			wchar_t *end = nullptr;
+			errno = 0;
+			const long long literal = std::wcstoll(token.c_str(), &end, 0);
+			if (*end == L'\0') {
+				const bool baseVertex = expectedArgs == 5 && index == 3;
+				if (errno == ERANGE || literal < (baseVertex ? INT32_MIN : 0) ||
+					literal > (baseVertex ? static_cast<long long>(INT32_MAX) : UINT32_MAX))
+					return false;
+				action->args[index] = static_cast<uint32_t>(literal);
+			} else {
+				action->drawExpressions.emplace_back(static_cast<uint32_t>(index), std::move(token));
+			}
+			return true;
+		});
+	if (!parsed)
 		return false;
-	action->argCount = count;
+	action->argCount = expectedArgs;
 	return true;
 }
 
@@ -838,6 +847,11 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 		return true;
 	}
 
+	if (key == L"drawinstanced" || key == L"drawindexedinstanced") {
+		const bool indexed = key == L"drawindexedinstanced";
+		action->kind = indexed ? CommandListActionKind::DrawIndexed : CommandListActionKind::Draw;
+		return MigotoCommandListParserText::ParseDrawArgs(value, indexed ? 5 : 4, action);
+	}
 	if (key == L"draw") {
 		if (IniDocumentText::ToLower(value) == L"from_caller") {
 			action->kind = CommandListActionKind::DrawFromCaller;

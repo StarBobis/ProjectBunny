@@ -9,7 +9,7 @@
 | 命令列表和触发时机 | 基本 run、阶段链接 | 回调和代理、abort、每帧限制、资源命令的 pre/post、清理事件 |
 | 运行时参数和输入 | 窗口、光标、基本 Key 和持久化 | 逐绘制上下文、帧计数、IniParams 绑定、Preset、输入后端、过渡和暂停 |
 | 资源与匹配 | 基本文件资源、别名、固定槽捕获、Hash 和绘制条件 | 通用复制、创建选项、资源池、区域、动态槽、范围、资源和着色器 getter、描述匹配、dHash Filter、贴图快照、store |
-| 图形与计算 | IB/VB 和 SRV 替换、图形自定义元素、部分计算蒙皮、二进制着色器替换 | 独立自定义 CS、各阶段替换、图形状态合并、输入布局、流输出、显式实例和间接命令、文本补丁 |
+| 图形与计算 | IB/VB 和 SRV 替换、图形自定义元素、部分计算蒙皮、二进制着色器替换、替换绘制中的显式实例参数 | 独立自定义 CS、各阶段替换、图形状态合并、输入布局、流输出、自动推导绘制数量的完整语义、间接命令、Present 独立元素的索引绘制、文本补丁 |
 | 分析与设备配置 | Hunting、F8/F9、性能 HUD、DX12 日志 | 定点 dump、按 draw 配置分析、MCP、其他 Loader/Device/Rendering/Logging 设置 |
 
 每轮用生产入口做功能回归，共享逻辑同时跑 DX11 回归。驱动特有能力按具体效果评估。WARP 或离线配置回归覆盖的阶段与实机游戏复测分别记录。
@@ -21,5 +21,6 @@
 | ShaderRegex 排除规则 | DX11 的 `dx11_upstream_regression --shader-regex-exclusions`，DX12 的 `dx12_runtime_audit`。后者读入 INI、调用运行时组匹配，并重新加载配置 |
 | 数字字面量与运算符 | DX11 的 `dx11_upstream_regression --audit-item P-02`，DX12 的 `dx12_runtime_audit`。后者执行 `[Constants]` 并覆盖结合顺序、负零、最大长度和非法输入 |
 | 一元数学函数 | 两端执行 `src/common/tests/IniUnaryMathCases.h` 中同一组用例。DX11 的 `dx11_upstream_regression` 同时检查静态求值和优化，DX12 的 `dx12_runtime_audit` 同时检查变量、嵌套调用和非法调用 |
+| 显式实例绘制 | DX11 的 `dx11_upstream_regression` 覆盖共用的参数分割入口。DX12 的 `dx12_runtime_audit` 从 INI 经静态计划和动态执行到原生绘制回调核对参数，包括负基顶点、零实例、越界和非法表达式 |
 
 以上脚本语义已通过本地回归，游戏内 Mod 的组合行为仍需目标环境复测。

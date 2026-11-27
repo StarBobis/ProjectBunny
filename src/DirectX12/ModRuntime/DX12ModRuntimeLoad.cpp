@@ -1881,19 +1881,9 @@ bool AppendActionToCompiledPlan(
 	case Bunny::CommandListActionKind::DrawFromCaller:
 	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 	{
-		DX12ModIaReplacement::DrawCall draw;
-		draw.indexed = (action.kind == Bunny::CommandListActionKind::DrawIndexed ||
-						action.kind == Bunny::CommandListActionKind::DrawIndexedAuto ||
-						action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller);
-		draw.fromCaller = (action.kind == Bunny::CommandListActionKind::DrawFromCaller ||
-						   action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller);
-		draw.autoCount = (action.kind == Bunny::CommandListActionKind::DrawIndexedAuto);
-		if (!draw.fromCaller && !draw.autoCount)
-		{
-			draw.count = action.args[0];
-			draw.start = action.args[1];
-			draw.baseVertex = draw.indexed ? static_cast<INT>(action.args[2]) : 0;
-		}
+		if (!action.drawExpressions.empty())
+			return false;
+		const auto draw = DX12ModIaReplacement::DrawCall::FromAction(action, action.args);
 		plan->draws.push_back(draw);
 		{
 			DX12CompiledCommandListPlan::Op op;

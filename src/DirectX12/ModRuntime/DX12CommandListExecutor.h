@@ -315,24 +315,32 @@ public:
 			mReplacement->skip = true;
 	}
 
+	bool ResolveDraw(const Bunny::CommandListAction &action, DX12ModIaReplacement::DrawCall &draw)
+	{
+		if (action.drawExpressions.empty()) {
+			draw = DX12ModIaReplacement::DrawCall::FromAction(action, action.args);
+			return true;
+		}
+		observedDynamicCommandState = true;
+		auto args = std::to_array(action.args);
+		for (const auto &[index, text] : action.drawExpressions) {
+			MigotoCommandVmUtils::ExpressionParser parser(text, mVm.Context());
+			const double value = std::trunc(parser.Parse());
+			const bool baseVertex = action.argCount == 5 && index == 3;
+			if (!parser.ok || !std::isfinite(value) || value < (baseVertex ? INT32_MIN : 0) ||
+				value > (baseVertex ? static_cast<double>(INT32_MAX) : UINT32_MAX))
+				return false;
+			args[index] = static_cast<uint32_t>(static_cast<int64_t>(value));
+		}
+		draw = DX12ModIaReplacement::DrawCall::FromAction(action, args.data());
+		return true;
+	}
+
 	void AppendDraw(const Bunny::CommandListAction &action)
 	{
-		if (!mReplacement)
-			return;
 		DX12ModIaReplacement::DrawCall draw;
-		draw.indexed =
-			action.kind == Bunny::CommandListActionKind::DrawIndexed ||
-			action.kind == Bunny::CommandListActionKind::DrawIndexedAuto ||
-			action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller;
-		draw.fromCaller =
-			action.kind == Bunny::CommandListActionKind::DrawFromCaller ||
-			action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller;
-		draw.autoCount = action.kind == Bunny::CommandListActionKind::DrawIndexedAuto;
-		if (!draw.fromCaller && !draw.autoCount) {
-			draw.count = action.args[0];
-			draw.start = action.args[1];
-			draw.baseVertex = draw.indexed ? static_cast<INT>(action.args[2]) : 0;
-		}
+		if (!mReplacement || !ResolveDraw(action, draw))
+			return;
 		mReplacement->draws.push_back(draw);
 		MarkChanged();
 	}
@@ -1461,15 +1469,20 @@ public:
 						continue;
 					addSlot(action.target.slot, action.resource);
 				}
-				// The first plain Draw action supplies the recorded draw
-				// arguments; bodies with conditional or multiple draws
-				// currently fall back to the default 4-vertex strip (the
-				// replay logs each draw, so divergence is visible).
+				// The standalone graph has no index binding. Never replay an
+				// explicit indexed instance request as the default overlay quad.
 				for (const Bunny::CommandListAction &action : commandList.actions) {
+					if (action.kind == Bunny::CommandListActionKind::DrawIndexed && action.argCount == 5)
+						return;
 					if (action.kind == Bunny::CommandListActionKind::Draw &&
 					    action.argCount >= 2) {
-						record.drawCount = action.args[0];
-						record.drawStart = action.args[1];
+						DX12ModIaReplacement::DrawCall draw;
+						if (!ResolveDraw(action, draw))
+							return;
+						record.drawCount = draw.explicitInstances || draw.count ? draw.count : 4;
+						record.drawStart = draw.start;
+						record.drawInstanceCount = draw.explicitInstances ? draw.instanceCount : 1;
+						record.drawFirstInstance = draw.firstInstance;
 						break;
 					}
 				}

@@ -51,11 +51,15 @@ draw = 3, 0
 | --- | --- |
 | `draw` | 顶点数、首顶点 |
 | `drawindexed` | 索引数、首索引、基础顶点 |
+| `drawinstanced` | 每实例顶点数、实例数、首顶点、首实例 |
+| `drawindexedinstanced` | 每实例索引数、实例数、首索引、有符号基顶点、首实例 |
 | `dispatch` | X、Y、Z 线程组数 |
 | `draw = from_caller` | 沿用调用者绘制参数 |
 | `drawindexed = from_caller` | 沿用调用者索引绘制参数 |
 | `drawindexed = auto` | 从替换索引缓冲推导数量 |
 
-DX11 的显式 instanced/indirect 命令集合没有在此完整提供。选择 from_caller 时仍需核对原始调用类型与替换资源容量。
+在原绘制的替换命令列表内，两条实例绘制命令都接受整数和运行时数值表达式。例如 `drawindexedinstanced = 12, $copies, 0, -2, 4` 使用当前索引绑定，从实例 4 开始绘制。参数数量错误或数值越界会跳过该条命令。
+
+独立的 Present 图形元素可记录第一条非索引 `drawinstanced`。该路径尚缺索引缓冲绑定和间接绘制支持。
 
 `dispatch` 作用于相应计算替换路径；它不使本页的图形元素自动创建独立计算 PSO。完整图形文件结构见[常用写法](./recipes)。

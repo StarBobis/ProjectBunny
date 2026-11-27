@@ -555,6 +555,78 @@ void TestOverlay(ID3D12Device *device)
 	Bunny::DX12PresentOverlayChannel::ClearAll();
 }
 
+// Capture the native draw arguments at the hook's callback boundary.
+std::vector<std::array<int64_t, 6>> recordedDraws;
+
+void TestInstancedDraws(ID3D12Device *device)
+{
+	Bunny::IniDocument ini;
+	Require(ini.Parse(
+		L"[CommandListLiteral]\ndrawinstanced=9,2,3,4\ndrawindexedinstanced=8,5,2,-3,7\n"
+		L"draw=4,1\ndrawindexedinstanced=0,0,0,-2147483648,4294967295\n"
+		L"[CommandListDynamic]\nlocal $start = 2\n"
+		L"drawindexedinstanced=6, $instances+1, $start, -$start, 11\n"
+		L"drawinstanced=4,nan,0,0\ndrawinstanced=4,4294967296.0,0,0\n"
+		L"drawinstanced=4,1+,0,0\n"
+		L"[CommandListInvalid]\ndrawinstanced=2,1,0\ndrawindexedinstanced=1,2,3,4,5,6\n"
+		L"drawinstanced=2,-1,0,0\ndrawindexedinstanced=1,1,0,2147483648,0\n"
+		L"[CustomShaderCopies]\nvs=copy-vs.hlsl\nps=copy-ps.hlsl\ndrawinstanced=0,$instances,3,9\n"
+		L"[CustomShaderIndexed]\nvs=copy-vs.hlsl\nps=copy-ps.hlsl\ndrawindexedinstanced=4,1,0,0,0\n"
+		L"[CustomShaderDefault]\nvs=copy-vs.hlsl\nps=copy-ps.hlsl\n"),
+		"instanced draw config");
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
+	Require(lists.at(L"CommandListInvalid").actions.empty(), "reject incorrect arity and literal bounds");
+	std::unordered_map<std::wstring, DX12CompiledCommandListPlan> plans;
+	BuildDx12CompiledCommandListPlans(lists, &plans);
+	Require(!plans.at(L"CommandListLiteral").unsupported && plans.at(L"CommandListDynamic").unsupported,
+		"literal draw plans compile, expression draws require execution");
+
+	List native(device, D3D12_COMMAND_LIST_TYPE_DIRECT);
+	const DX12IaHashState ia{};
+	DX12ModIaReplacement replacement;
+	DX12CommandListExecutor executor(device, native.list.Get(), ia, 0, 0, 13, 0, 0, 21, &replacement);
+	executor.SetExecutionMode(true, true);
+	executor.ExecuteCompiledCommandListPlan(plans.at(L"CommandListLiteral"), 0, false);
+	for (int instances : {2, 6}) {
+		MigotoCommandVmUtils::SetGlobal(L"$instances", instances);
+		executor.RunActions(lists.at(L"CommandListDynamic").actions, 0, false, nullptr);
+	}
+	Require(executor.observedDynamicCommandState, "expression draws bypass cross-draw caching");
+	DX12IaReplacementExecutorCallbacks callbacks;
+	callbacks.drawInstanced = [](ID3D12GraphicsCommandList*, UINT count, UINT instances, UINT start, UINT first) {
+		recordedDraws.push_back({0, count, instances, start, 0, first});
+	};
+	callbacks.drawIndexedInstanced = [](ID3D12GraphicsCommandList*, UINT count, UINT instances,
+		UINT start, INT base, UINT first) {
+		recordedDraws.push_back({1, count, instances, start, base, first});
+	};
+	DX12IaDrawInvocation original;
+	original.instanceCount = 13;
+	original.firstInstance = 21;
+	recordedDraws.clear();
+	DX12IaReplacementDrawExecutor(native.list.Get(), callbacks).ExecuteReplacementDraws(replacement, original);
+	const std::vector<std::array<int64_t, 6>> expected{
+		{0,9,2,3,0,4}, {1,8,5,2,-3,7}, {0,4,13,1,0,21}, {1,0,0,0,INT32_MIN,UINT32_MAX},
+		{1,6,3,2,-2,11}, {1,6,7,2,-2,11}};
+	Require(recordedDraws == expected, "explicit instance parameters, dynamic values and inherited legacy draw");
+	auto elements = std::make_shared<DX12CustomShaderElementMap>();
+	Bunny::DX12CustomShaderElementParser::BuildRegistry(lists, elements.get());
+	const auto previous = gCustomShaderElementSnapshot.exchange(elements);
+	for (const auto *section : {L"CustomShaderCopies", L"CustomShaderIndexed", L"CustomShaderDefault"})
+		executor.RunCommandList(lists.at(section), 0, false, nullptr);
+	gCustomShaderElementSnapshot.store(previous);
+	const auto &records = replacement.customElementRecords;
+	Require(records.size() == 2, "standalone indexed draw without an index binding skips recording");
+	Require(records[0].drawCount == 0 && records[0].drawStart == 3 &&
+		records[0].drawInstanceCount == 6 && records[0].drawFirstInstance == 9,
+		"standalone element preserves explicit zero count and evaluated instance range");
+	Require(records[1].drawCount == 4 && records[1].drawInstanceCount == 1 &&
+		records[1].drawFirstInstance == 0, "standalone element default quad");
+	Check(native.list->Close());
+	MigotoCommandVmUtils::ClearGlobals();
+}
+
 void TestDescriptors(ID3D12Device *device, bool benchmark)
 {
 	constexpr auto type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -627,6 +699,7 @@ int main(int argc, char **argv)
 		TestShaderRegexExclusions();
 		TestExpressionNumbers();
 		TestUnaryMath();
+		TestInstancedDraws(device.Get());
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
 		TestQueueHandoff(device.Get());

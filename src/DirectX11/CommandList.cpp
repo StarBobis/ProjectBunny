@@ -2,6 +2,7 @@
 #include "PngColorSpace.h"
 #include "ExpressionFunctions.h"
 #include "IniExpressionNumbers.h"
+#include "IniDrawArguments.h"
 #include "IniUnaryMath.h"
 // Include before util.h (or any header that includes util.h) to get pretty
 // version of LockResourceCreationMode:
@@ -1058,7 +1059,6 @@ static bool ParseDrawCommandArgs(const wchar_t* section, wstring *val, DrawComma
 {
 	size_t start = 0, end;
 	wstring sub;
-	int i;
 
 	if (indirect) {
 		end = val->find(L',', start);
@@ -1084,19 +1084,11 @@ static bool ParseDrawCommandArgs(const wchar_t* section, wstring *val, DrawComma
 		start = end + 1;
 	}
 
-	for (i = 0; i < nargs; i++) {
-		end = val->find(L',', start);
-
-		sub = val->substr(start, end - start);
-		if (!operation->args[i].parse(&sub, ini_namespace, scope))
-			return false;
-
-		if (end == wstring::npos)
-			return (i+1 == nargs);
-		start = end + 1;
-	}
-
-	return false;
+	return migoto::VisitDrawArguments(std::wstring_view(*val).substr(start), nargs,
+		[&](size_t index, std::wstring_view argument) {
+			sub.assign(argument);
+			return operation->args[index].parse(&sub, ini_namespace, scope);
+		});
 }
 
 static bool ParseDrawCommand(const wchar_t *section,

@@ -19,7 +19,8 @@
 | 位运算、位移、random、locked | 不支持 DX11 扩展语法 |
 | store、dump、clear、analyse_options | 无同等通用命令，抓取用 F8/F9 |
 | Preset、输入暂停模式、DX11 全局 Device/Rendering/Logging | 不按 DX11 语义执行 |
-| 完整显式 instanced/indirect 命令集合 | 未完整提供 |
+| 显式实例绘制 | 替换绘制支持 `drawinstanced` 和 `drawindexedinstanced`。独立 Present 图形元素支持前者 |
+| 间接绘制与间接派发命令 | 待实现 |
 | DX11 输入布局设置器、Stream Output | 不直接迁移 |
 | DX11 立体驱动配置 | 不适用 |
 

@@ -166,25 +166,25 @@ public:
 				if (!count)
 					continue;
 			} else {
-				if (!draw.count)
+				if (!draw.count && !draw.explicitInstances)
 					continue;
 			}
 
 			DX12IaReplacementDrawScope replacementDrawScope;
+			const UINT instanceCount = draw.explicitInstances ? draw.instanceCount : originalDraw.instanceCount;
+			const UINT firstInstance = draw.explicitInstances ? draw.firstInstance : originalDraw.firstInstance;
 			if (draw.indexed) {
 				if (callbacks->drawIndexedInstanced) {
 					if (callbacks->recordReplacementDraw)
 						callbacks->recordReplacementDraw(true);
 					callbacks->drawIndexedInstanced(
-						commandList, count, originalDraw.instanceCount,
-						start, baseVertex, originalDraw.firstInstance);
+						commandList, count, instanceCount, start, baseVertex, firstInstance);
 				}
 			} else if (callbacks->drawInstanced) {
 				if (callbacks->recordReplacementDraw)
 					callbacks->recordReplacementDraw(false);
 				callbacks->drawInstanced(
-					commandList, count, originalDraw.instanceCount,
-					start, originalDraw.firstInstance);
+					commandList, count, instanceCount, start, firstInstance);
 			}
 		}
 	}

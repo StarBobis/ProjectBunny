@@ -28,6 +28,8 @@ run = CommandListApply
 | `run = CustomShader名称` | 调用自定义着色器元素 |
 | `CheckTextureOverride = ps-t0` | 检查固定槽的覆盖规则 |
 | `handling = skip` | 跳过原始 draw/dispatch |
+| `drawinstanced = 顶点数, 实例数, 首顶点, 首实例` | 以给定实例范围绘制 |
+| `drawindexedinstanced = 索引数, 实例数, 首索引, 基顶点, 首实例` | 使用当前索引绑定绘制，基顶点可为负数 |
 | `ib/vbN = Resource名称` | 模型缓冲绑定 |
 | `ps-tN/vs-tN/cs-tN` | SRV 绑定 |
 | `阶段-cbN`、`ps-uN/cs-uN` | 受相应执行路径支持的 CB/UAV 绑定 |

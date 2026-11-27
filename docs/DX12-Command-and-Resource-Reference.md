@@ -130,16 +130,18 @@ run → checktextureoverride → handling(skip) → draw → drawindexed → dis
 | --- | --- | --- |
 | `draw = 顶点数, 起始顶点` | 2 个无符号整数 | 非索引绘制。 |
 | `drawindexed = 索引数, 起始索引, 基顶点` | 3 个无符号整数 | 索引绘制。基顶点在 DX12 中按有符号使用。 |
+| `drawinstanced = 顶点数, 实例数, 首顶点, 首实例` | 4 个数值 | 每实例顶点数和实例范围均由该命令指定。 |
+| `drawindexedinstanced = 索引数, 实例数, 首索引, 基顶点, 首实例` | 5 个数值 | 基顶点接受有符号 32 位整数，其余参数取无符号 32 位整数。 |
 | `drawindexed = auto` | — | 索引数在绘制时按**被替换后的索引缓冲**重算。 |
 | `draw = from_caller` | — | 顶点数与起始顶点取自被拦截的原始绘制。 |
 | `drawindexed = from_caller` | — | 索引数、起始索引、基顶点取自被拦截的原始绘制。 |
 | `dispatch = X组, Y组, Z组` | 3 个无符号整数 | 计算派发。 |
 
-参数解析：`ParseDrawArgs`（`src/DirectX12/Config/DX12Config.h:750`）按逗号切分，每个参数用 `wcstoul(..., 0)` 解析（因此 `0x` 前缀可用），**参数个数必须精确匹配**，多一个少一个都会使该条命令被丢弃。
+参数以逗号分隔，个数必须精确匹配。显式实例绘制可以混用整数字面量和运行时表达式。表达式结果向零截断，非法表达式、非有限值或整数越界都会跳过本条指令。普通 `draw`、`drawindexed` 和 `dispatch` 的数值形式使用整数字面量。
 
 执行语义（`src/DirectX12/Hooks/DX12IaReplacement.h:118`，`ExecuteReplacementDraws`）：
 
-- 实例数与起始实例始终取自原始绘制，命令本身无法覆盖。
+- 普通绘制继承原调用的实例数与首实例；显式实例绘制将配置的值直接传给 DX12，包括零计数。
 - `from_caller`：沿用原始绘制的顶点/索引数与起点；得到的计数为 0 时该次绘制被跳过。
 - `auto`：要求本次替换确实替换了索引缓冲（`replacement.hasIndexBuffer`），否则跳过；索引数 = 索引缓冲字节数 ÷ 元素宽度（`R16_UINT` 为 2 字节，其余按 4 字节），起始索引与基顶点强制为 0。
 - 普通绘制：顶点数为 0 时跳过。

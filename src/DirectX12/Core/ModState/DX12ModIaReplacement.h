@@ -237,10 +237,35 @@ public:
 		UINT count = 0;
 		UINT start = 0;
 		INT baseVertex = 0;
+		bool explicitInstances = false;
+		UINT instanceCount = 0;
+		UINT firstInstance = 0;
 		bool fromCaller = false;
 		// `drawindexed = auto`: count is recomputed from the replaced index
 		// buffer view at execution time instead of using a literal value.
 		bool autoCount = false;
+
+		static DrawCall FromAction(const Bunny::CommandListAction &action, const uint32_t *args)
+		{
+			using Kind = Bunny::CommandListActionKind;
+			DrawCall draw;
+			draw.indexed = action.kind == Kind::DrawIndexed || action.kind == Kind::DrawIndexedAuto ||
+				action.kind == Kind::DrawIndexedFromCaller;
+			draw.fromCaller = action.kind == Kind::DrawFromCaller || action.kind == Kind::DrawIndexedFromCaller;
+			draw.autoCount = action.kind == Kind::DrawIndexedAuto;
+			draw.explicitInstances = action.argCount >= 4;
+			draw.count = args[0];
+			if (draw.explicitInstances) {
+				draw.instanceCount = args[1];
+				draw.start = args[2];
+				draw.baseVertex = draw.indexed ? static_cast<INT>(args[3]) : 0;
+				draw.firstInstance = args[draw.indexed ? 4 : 3];
+			} else {
+				draw.start = args[1];
+				draw.baseVertex = draw.indexed ? static_cast<INT>(args[2]) : 0;
+			}
+			return draw;
+		}
 	};
 	class DispatchCall
 	{
@@ -329,8 +354,10 @@ public:
 		Bunny::DX12CustomShaderElementSpec spec;
 		std::vector<float> iniParams; // kIniParamsFloat4Count * 4 floats
 		std::vector<std::pair<UINT, std::wstring>> textureSlots;
-		UINT drawCount = 0;
+		UINT drawCount = 4;
 		UINT drawStart = 0;
+		UINT drawInstanceCount = 1;
+		UINT drawFirstInstance = 0;
 	};
 	std::vector<CustomElementRecord> customElementRecords;
 
