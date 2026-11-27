@@ -19,6 +19,7 @@
 #include "tests/IniLogicalCases.h"
 #include "tests/IniEarlySettingsCases.h"
 #include "tests/IniFileConditionCases.h"
+#include "tests/IniHuntingModeCases.h"
 #include "tests/IniGraphicsConstantCases.h"
 #include <bit>
 #include <xmmintrin.h>
@@ -54,7 +55,7 @@ void TestFileConditions()
 		Require(doc.Parse(text.c_str()) == test.validConstant && (doc.FindSection(L"Constants") != nullptr) == test.loads,
 			"DX12 file guard determines both file contents and validation status");
 	}
-	for (bool hunting : {false, true}) {
+	for (unsigned hunting : {0u, 1u, 2u}) {
 		Bunny::IniDocument doc;
 		Bunny::IniFileParseResult parsed;
 		Require(doc.AppendParse(L"condition=!hunting\n[Constants]\n", L"hunt.ini", L"", L"",
@@ -81,7 +82,7 @@ void TestFileConditions()
 	};
 	auto load = [&](bool warn, bool active) {
 		Bunny::MigotoIniLoadResult tree;
-		Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &tree, {}, DX12HuntIsEnabled()) &&
+		Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &tree, {}, DX12HuntGetMode()) &&
 			tree.errors.empty() && tree.includesComplete == !warn && tree.warnings.size() == static_cast<size_t>(warn),
 			"file guard diagnostic and include completeness");
 		if (warn)
@@ -107,11 +108,10 @@ void TestFileConditions()
 		std::string bytes{std::istreambuf_iterator<char>(input), {}};
 		Require(bytes.find("$unknown=12") != bytes.npos, "invalid guard cannot confirm cleanup for a missing declaration");
 	}
-	const bool initiallyHunting = DX12HuntIsEnabled();
 	gate("condition=!hunting\n");
-	load(initiallyHunting, !initiallyHunting);
+	load(DX12HuntGetMode() != 0, DX12HuntGetMode() == 0);
 	DX12HuntToggle();
-	load(!initiallyHunting, initiallyHunting);
+	load(DX12HuntGetMode() != 0, DX12HuntGetMode() == 0);
 	DX12HuntToggle();
 	gate("condition=nan\n");
 	load(false, true);
@@ -815,6 +815,57 @@ void TestHuntingKeyBindings()
 		Require(poll(13000, {'A' + static_cast<int>(i)}) == mask(actions[i].second),
 			"configured Hunting name dispatches its own action");
 	poll(13001, {});
+}
+
+void TestHuntingModes()
+{
+	using Vm = MigotoCommandVmUtils;
+	using Action = DX12UiActionBits;
+	const auto directory = std::filesystem::current_path() /
+		(L"hunting-modes-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(directory), "create Hunting mode fixture");
+	const auto root = directory / L"main.ini";
+	auto configure = [&](const char *mode) {
+		std::ofstream(root) << "[Hunting]\nhunting=" << mode << "\ntoggle_hunting=F16\n"
+			"reload_config=F15\nmonitor_performance=F14\nrepeat_rate=random(7)\n[Constants]\nglobal $at_load = hunting\n";
+	};
+	auto poll = [](int key) {
+		return DX12HuntingHotkeys::Instance().Poll([=](int vk) { return vk == key; }, GetTickCount64());
+	};
+	Vm::State vm;
+	for (const auto &test : migoto::tests::huntingModes) {
+		configure(test.setting);
+		bool warnings = false, errors = false;
+		const auto samples = GetExpressionRandomSampleCount();
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, &warnings, &errors, DX12ModLoadReason::UserReload) &&
+			!errors && warnings == (std::string_view(test.setting) == "bad_setting"), "load valid or malformed Hunting setting");
+		Require(GetExpressionRandomSampleCount() == samples + static_cast<unsigned>(test.keys),
+			"hard-disabled Hunting never evaluates its repeat rate");
+		Require(vm.Evaluate(L"$at_load") == test.loaded && vm.Evaluate(L"HUNTING") == test.loaded &&
+			DX12HuntIsEnabled() == (test.loaded == 1) && DX12HuntNeedsHotPath() == DX12HuntIsEnabled(),
+			"early Constants and active tracking agree with the installed mode");
+		poll(0);
+		Require(poll(VK_F15) == static_cast<LONG>(Action::ModReload) && poll(VK_F14) == static_cast<LONG>(Action::ProfHudCycle),
+			"reload and performance controls survive hard-disable");
+		Require(poll(VK_F16) == (test.keys ? static_cast<LONG>(Action::HuntToggle) : 0),
+			"only a registered Hunting toggle reaches dispatch");
+		// A toggle already queued before reload must also respect hard-disable.
+		DX12HuntToggle();
+		Require(vm.Evaluate(L"hunting") == test.toggled && vm.Evaluate(L"$at_load") == test.loaded &&
+			!Vm::VariableStore::frameVariableReferenced.load(), "toggle changes the live operand without a Present or window queries");
+	}
+	configure("1");
+	Require(DX12ModRuntimeLoad(root.c_str()) && DX12HuntIsEnabled(), "prepare active mode for failed reload");
+	const auto saved = directory / L"d3dx_user.ini";
+	std::ofstream(saved) << "condition=1 +\n";
+	configure("0");
+	Require(!DX12ModRuntimeLoad(root.c_str()) && DX12HuntIsEnabled() && vm.Evaluate(L"$at_load") == 1,
+		"unreadable persistence source keeps the live mode and Constants");
+	std::filesystem::remove(saved);
+	Require(DX12ModRuntimeLoad(root.c_str()) && !DX12HuntIsEnabled() && vm.Evaluate(L"$at_load") == 2,
+		"retry applies the previously rejected mode");
+	std::filesystem::remove(root);
+	std::filesystem::remove(directory);
 }
 
 void TestHuntingKeyDispatch(ID3D12PipelineState *pipeline, UINT64 csHash)
@@ -2695,6 +2746,7 @@ int main(int argc, char **argv)
 		TestUnknownSettingsCleanup();
 		TestSettingsHotkeys();
 		TestHuntingKeyBindings();
+		TestHuntingModes();
 		TestControllerInputs();
 		TestSharedModTriggers();
 		TestKeyTransitionClock();

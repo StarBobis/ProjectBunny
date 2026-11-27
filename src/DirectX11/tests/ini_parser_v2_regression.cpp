@@ -1,4 +1,6 @@
 #include "Logging.h"
+#include "tests/IniHuntingModeCases.h"
+#include "ExpressionFunctions.h"
 #include "CommandList.h"
 #include "IniHandler.h"
 #include "HackerContext.h"
@@ -170,6 +172,35 @@ void test_section_and_include(IniV2Files& files, CommandListState& state)
     check(text.find("$poolfuturev2[0] = 44") != std::string::npos && text.find("$ini_v2_value = 9") != std::string::npos,
         "unknown-pool capture remains reachable through reordered parsing and user-path ownership");
 }
+bool huntingKeyDown;
+SHORT WINAPI ReadHuntingKey(int vk) { return huntingKeyDown && vk == VK_F16 ? static_cast<SHORT>(0x8000) : 0; }
+
+void test_hunting_modes(IniV2Files &files, CommandListState &state)
+{
+    const auto previous = G->hunting;
+    files.write(files.settings, "[Constants]\n");
+    for (const auto &test : migoto::tests::huntingModes) {
+        const std::string header = "[Logging]\nlog_level=disabled\nshow_warnings=0\n[Hunting]\nhunting=";
+        files.write(files.config, header + test.setting + "\ntoggle_hunting=F16\nrepeat_rate=random(7)\n[Include]\nuser_config=" +
+            files.directory.filename().string() + "\\settings.ini\n");
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, files.config.c_str());
+        ClearKeyBindings();
+        const auto samples = GetExpressionRandomSampleCount();
+        LoadConfigFile();
+        check(GetExpressionRandomSampleCount() == samples + static_cast<unsigned>(test.keys),
+            "hard-disabled native Hunting never evaluates its repeat rate");
+        check(G->hunting == test.loaded && evaluate(L"hunting", state) == test.loaded,
+            "native Hunting registration publishes the configured runtime mode");
+        huntingKeyDown = false;
+        DispatchRegisteredInputActions(nullptr, ReadHuntingKey);
+        huntingKeyDown = true;
+        const bool dispatched = DispatchRegisteredInputActions(nullptr, ReadHuntingKey);
+        check(dispatched == test.keys && evaluate(L"hunting", state) == test.toggled,
+            "native configured Hunting toggle and live expression");
+    }
+    G->hunting = previous;
+}
+
 void test_pool_lexical(CommandListState& state)
 {
     const std::wstring plain = L"PoolVars", ns = L"Ini V2 \u6a21\u578b-hyphen";
@@ -218,6 +249,7 @@ void test_dx11_ini_parser_v2_regression()
         IniV2Files files;
         HackerContext context(nullptr, nullptr); CommandListState state; state.mHackerContext = &context;
         test_section_and_include(files, state); test_pool_lexical(state); test_failed_parser_transactions();
+        test_hunting_modes(files, state);
         std::fputs("PASS: real INI section pointers, include provenance/user precedence and pool/flow parser ordering\n", stderr);
     } catch (const std::exception& error) { std::fprintf(stderr, "FAIL INI parser v2: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }

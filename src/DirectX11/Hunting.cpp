@@ -2046,10 +2046,7 @@ static void DoneHunting(HackerDevice *device, void *private_data)
 
 static void ToggleHunting(HackerDevice *device, void *private_data)
 {
-	if (G->hunting == HUNTING_MODE_ENABLED)
-		G->hunting = HUNTING_MODE_SOFT_DISABLED;
-	else
-		G->hunting = HUNTING_MODE_ENABLED;
+	G->hunting = migoto::ToggledHuntingMode(G->hunting);
 	LogInfo("> Hunting toggled to %d\n", G->hunting);
 }
 
@@ -2093,7 +2090,7 @@ void ParseHuntingSection()
 	if (G->hunting == HUNTING_MODE_DISABLED) {
 		// There are glitches related to ShaderRegex processing for reloaded inis and shader compilation with `hunting = 0`
 		// So we better make sure that hunting mode won't actually be ever fully disabled
-		G->hunting = HUNTING_MODE_SOFT_DISABLED;
+		G->hunting = migoto::LoadedHuntingMode(G->hunting);
 		return;
 	}
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12Config.h"
+#include "IniHuntingMode.h"
 #include "MigotoInputCombination.h"
 #include "IniForegroundWindow.h"
 #include "DX12FrameInput.h"
@@ -177,19 +178,30 @@ public:
 			usesGuide |= combination.UsesGuide();
 		}
 
+		std::optional<unsigned> configuredMode;
 		void ReadHuntingSettings(const Bunny::IniDocument &ini, std::vector<std::wstring> &warnings)
 		{
 			std::wstring text;
 			const auto *hunting = ini.FindSection(L"Hunting");
-			const auto *entry = hunting ? hunting->FindGlobalSetting(L"repeat_rate") : nullptr;
+			if (const auto *mode = hunting ? hunting->FindGlobalSetting(L"hunting") : nullptr) {
+				const auto value = MigotoCommandVmUtils::ReadEarlyIniInteger(mode->value);
+				configuredMode = static_cast<unsigned>(value.value_or(0));
+				if (!value)
+					warnings.push_back(L"Invalid [Hunting] hunting: " + mode->value);
+			}
+			const bool registerHunting = configuredMode != HUNTING_MODE_DISABLED;
+			const auto *entry = registerHunting && hunting ? hunting->FindGlobalSetting(L"repeat_rate") : nullptr;
 			if (entry) {
-				if (const auto rate = MigotoCommandVmUtils::ReadEarlyIniInteger(entry->value))
+				if (const auto rate = MigotoCommandVmUtils::ReadEarlyIniInteger(entry->value, configuredMode))
 					repeatRate = *rate;
 				else
 					warnings.push_back(L"Invalid [Hunting] repeat_rate: " + entry->value);
 			}
 			for (size_t i = 0; i < std::size(specs); ++i) {
 				const auto &spec = specs[i];
+				if (!registerHunting && spec.action != Action::ProfHudCycle && spec.action != Action::ProfHudFreeze &&
+					spec.action != Action::ModReload && spec.action != Action::WipeUserConfig)
+					continue;
 				if (!spec.name || !ini.GetString(L"Hunting", spec.name, &text))
 					text = spec.fallback;
 				auto &combination = chords[i].combination;

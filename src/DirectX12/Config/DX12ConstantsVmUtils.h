@@ -33,7 +33,7 @@ public:
 
 	static Vm::SettingsLoadResult Initialize(const CommandListMap &commandLists, const std::wstring &userConfigPath,
 		const IniDocument *reloadConfig, const Vm::SettingsReloadSnapshot &reload, Vm::ShortcutPermission shortcuts,
-		Vm::UnknownSettingsPolicy policy)
+		Vm::UnknownSettingsPolicy policy, std::optional<unsigned> huntingMode = {})
 	{
 		Vm::GlobalVariables globals;
 		globals.shortcuts = shortcuts;
@@ -42,6 +42,7 @@ public:
 		if (const auto *constants = FindConstants(commandLists)) {
 			Vm::State state;
 			state.initializing = &globals;
+			state.huntingMode = huntingMode;
 			state.PushLocalScope();
 			for (const auto &action : constants->actions) {
 				if (action.kind == CommandListActionKind::VariableAssignment)

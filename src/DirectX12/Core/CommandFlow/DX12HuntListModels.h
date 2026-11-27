@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 // Hunt selection declarations. Split out of Core/DX12CommandFlow.h; include
 // that umbrella header from existing code.
 #include "../DX12HotPath.h"
@@ -30,6 +32,8 @@ bool DX12HuntShouldSkipDraw(
 	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex,
 	INT baseVertex);
 bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList);
+unsigned DX12HuntGetMode();
+void DX12HuntApplyConfiguration(std::optional<unsigned> configured);
 bool DX12HuntIsEnabled();
 bool DX12HuntNeedsHotPath();
 void DX12HuntToggle();

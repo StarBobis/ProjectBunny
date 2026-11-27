@@ -76,7 +76,7 @@ public:
 		const std::wstring &sourcePath,
 		const std::wstring &sourceDir,
 		const std::wstring &iniNamespace, migoto::InputDisableScope inputScope = migoto::InputDisableScope::ALL,
-		IniFileParseResult *file = nullptr, bool huntingActive = false);
+		IniFileParseResult *file = nullptr, unsigned huntingMode = 0);
 
 	const IniSection *FindSection(const wchar_t *section) const;
 	const std::vector<IniSection> &Sections() const { return mSections; }
@@ -306,7 +306,7 @@ inline bool IniDocument::AppendParse(
 	const wchar_t *text,
 	const std::wstring &sourcePath,
 	const std::wstring &sourceDir,
-	const std::wstring &iniNamespace, migoto::InputDisableScope inputScope, IniFileParseResult *file, bool huntingActive)
+	const std::wstring &iniNamespace, migoto::InputDisableScope inputScope, IniFileParseResult *file, unsigned huntingMode)
 {
 	if (!text)
 		return true;
@@ -380,7 +380,7 @@ inline bool IniDocument::AppendParse(
 					continue;
 				}
 				if (key == L"condition") {
-					const auto decision = MigotoCommandVmUtils::ReadIncludeCondition(value, huntingActive);
+					const auto decision = MigotoCommandVmUtils::ReadIncludeCondition(value, huntingMode);
 					if (decision == migoto::IncludeDecision::Load)
 						continue;
 					if (decision == migoto::IncludeDecision::Skip)

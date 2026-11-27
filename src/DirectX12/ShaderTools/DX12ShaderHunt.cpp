@@ -1,6 +1,8 @@
 // DX12ShaderHunt: hunt state, stage/IA navigation and skip logic.
 // Split from DX12ShaderTools.cpp; implementation unit for its module.
 #include "DX12Core.h"
+#include "IniHuntingMode.h"
+#include <mutex>
 #include "DX12Hooks.h"
 #include "DX12Tracking.h"
 #include "DX12Runtime.h"
@@ -74,7 +76,9 @@ struct HuntCommandListVisits
 };
 
 static SRWLOCK gHuntLock = SRWLOCK_INIT;
-static volatile LONG gHuntingActive = 0;
+static std::atomic<unsigned> gHuntingMode{HUNTING_MODE_DISABLED};
+static std::mutex gHuntingModeMutex;
+static bool gHuntingKeysEnabled = true; // protected by gHuntingModeMutex
 // Sharded per-list visit accumulators. DX11 assumed single-threaded
 // recording, so one global map + one global lock worked; under DX12 every
 // recording thread's every draw queued on the single gHuntLock. Visits are
@@ -618,23 +622,31 @@ bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList)
 		PsoShouldSkip(pipelineState, true, 0, 0, selectedCS);
 }
 
+unsigned DX12HuntGetMode()
+{
+	return gHuntingMode.load(std::memory_order_acquire);
+}
+
 bool DX12HuntIsEnabled()
 {
-	return gHuntingActive != 0;
+	return DX12HuntGetMode() == HUNTING_MODE_ENABLED;
 }
 
 bool DX12HuntNeedsHotPath()
 {
-	return gHuntingActive != 0;
+	return DX12HuntIsEnabled();
 }
 
-void DX12HuntToggle()
+static void SetHuntingModeLocked(unsigned next)
 {
+	const bool enabled = next == HUNTING_MODE_ENABLED;
+	if (enabled == DX12HuntIsEnabled()) {
+		gHuntingMode.store(next, std::memory_order_release);
+		return;
+	}
 	size_t oldIa = 0;
 	size_t oldIB = 0;
 	size_t oldVB = 0;
-
-	const bool enabled = InterlockedCompareExchange(&gHuntingActive, 0, 0) == 0;
 
 	if (enabled) {
 		for (HuntVisitsShard &visitsShard : gHuntVisitsShards) {
@@ -653,10 +665,10 @@ void DX12HuntToggle()
 		gVB = IaSelection();
 		gLastOverlayStatsFrame = gPresentFrames;
 		ReleaseSRWLockExclusive(&gHuntLock);
-		InterlockedExchange(&gHuntingActive, 1);
+		gHuntingMode.store(next, std::memory_order_release);
 		DX12RuntimeState::SetRuntimeMode(DX12RuntimeMode::Hunting);
 	} else {
-		InterlockedExchange(&gHuntingActive, 0);
+		gHuntingMode.store(next, std::memory_order_release);
 		DX12RuntimeState::SetRuntimeMode(DX12RuntimeMode::Mod);
 	}
 
@@ -675,6 +687,21 @@ void DX12HuntToggle()
 	}
 	DX12_LOG_TEXT("DX12 hunting toggled %s\n", enabled ? "on" : "off");
 }
+
+void DX12HuntToggle()
+{
+	std::lock_guard lock(gHuntingModeMutex);
+	if (gHuntingKeysEnabled)
+		SetHuntingModeLocked(migoto::ToggledHuntingMode(DX12HuntGetMode()));
+}
+
+void DX12HuntApplyConfiguration(std::optional<unsigned> configured)
+{
+	std::lock_guard lock(gHuntingModeMutex);
+	gHuntingKeysEnabled = !configured || *configured != HUNTING_MODE_DISABLED;
+	SetHuntingModeLocked(migoto::LoadedHuntingMode(configured.value_or(DX12HuntGetMode())));
+}
+
 
 void DX12HuntOnPresent()
 {

@@ -21,6 +21,7 @@
 | `cursor_hotspot_x/cursor_hotspot_y` | 光标热点 |
 | `effective_dpi` | 有效 DPI |
 | `frame_analysis` | 帧分析会话开启时为 1，关闭时为 0 |
+| `hunting` | 定位开启时为 1，正常关闭时为 2。切换热键生效后立刻更新 |
 
 窗口、光标和分辨率值在帧边界更新，不是每次表达式都查询系统。
 
@@ -30,7 +31,6 @@
 
 | 名称 | 当前返回 |
 | --- | --- |
-| `hunting` | 固定为 0 |
 | `sli/stereo_active/stereo_available` | 固定为 0 |
 
 四个帧参数在第一次正式 Present 前均为 0。读同一条表达式时使用同一份帧数据，重载 INI 后继续计数。`time` 已改为按帧采样，同一帧内反复读取会得到相同结果。`fps` 忽略零间隔和超过一秒的间隔，`frame_time` 仍反映长帧。

@@ -35,8 +35,11 @@ public:
 	using ShortcutPermission = bool (*)();
 	static bool AllowShortcuts() { return true; }
 	inline static std::atomic<ShortcutPermission> runtimeShortcuts{AllowShortcuts};
-	using FrameAnalysisReader = bool (*)();
-	inline static std::atomic<FrameAnalysisReader> readFrameAnalysis{nullptr};
+	struct RuntimeDiagnostics {
+		unsigned (*huntingMode)();
+		bool (*frameAnalysis)();
+	};
+	inline static std::atomic<const RuntimeDiagnostics *> runtimeDiagnostics{nullptr};
 
 	class GlobalVariables
 	{
@@ -102,7 +105,7 @@ public:
 		GlobalVariables *initializing = nullptr;
 		bool requireDeclaredVariables = false;
 		IniEvaluation iniEvaluation = IniEvaluation::Runtime;
-		bool huntingActive = false;
+		std::optional<unsigned> huntingMode;
 	};
 
 	class ExpressionParser
@@ -556,9 +559,7 @@ public:
 					return 0;
 				// DX11 accepts hunting here; frame_analysis requires command-list scope.
 				if (name == L"hunting") {
-					const bool active = context.iniEvaluation == IniEvaluation::FileCondition ?
-						context.huntingActive : LookupVariable(context, L"hunting") != 0;
-					if (!active)
+					if (LookupVariable(context, L"hunting") == 0)
 						return 0;
 				}
 				const bool snapshot = context.iniEvaluation == IniEvaluation::Setting &&
@@ -577,37 +578,40 @@ public:
 		}
 	};
 
-	static std::optional<float> ReadStaticIniExpression(const std::wstring &text, std::wstring_view iniNamespace = {})
+	static std::optional<float> ReadStaticIniExpression(const std::wstring &text, std::wstring_view iniNamespace = {},
+		std::optional<unsigned> huntingMode = {})
 	{
 		if (!ExpressionParser::ValidSyntax(text))
 			return {};
 		ExpressionContext context;
 		context.requireDeclaredVariables = true;
 		context.iniEvaluation = IniEvaluation::Setting;
+		context.huntingMode = huntingMode;
 		context.iniNamespace = iniNamespace;
 		ExpressionParser parser(text, context, ExpressionParser::Mode::Validated);
 		const float value = parser.Parse();
 		return parser.ok ? std::optional<float>{value} : std::nullopt;
 	}
 
-	static migoto::IncludeDecision ReadIncludeCondition(const std::wstring &text, bool huntingActive)
+	static migoto::IncludeDecision ReadIncludeCondition(const std::wstring &text, unsigned huntingMode)
 	{
 		const auto normalized = MigotoIniCommandListUtils::ToLower(text);
 		ExpressionContext context;
 		context.iniEvaluation = IniEvaluation::FileCondition;
-		context.huntingActive = huntingActive;
+		context.huntingMode = huntingMode;
 		ExpressionParser parser(normalized, context, ExpressionParser::Mode::Validated);
 		return migoto::EvaluateIncludeCondition(
 			[&] { return ExpressionParser::ValidSyntax(normalized); },
 			[&](float &value) { value = parser.Parse(); return parser.ok; });
 	}
 
-	static std::optional<int> ReadStaticIniInteger(const std::wstring &text, std::wstring_view iniNamespace = {})
+	static std::optional<int> ReadStaticIniInteger(const std::wstring &text, std::wstring_view iniNamespace = {},
+		std::optional<unsigned> huntingMode = {})
 	{
 		int value;
 		if (migoto::ReadIniIntegerLiteral(text.c_str(), value))
 			return value;
-		if (const auto expression = ReadStaticIniExpression(text, iniNamespace)) {
+		if (const auto expression = ReadStaticIniExpression(text, iniNamespace, huntingMode)) {
 			migoto::ConvertExpressionToInt(*expression, value);
 			return value;
 		}
@@ -635,11 +639,11 @@ public:
 		return ReadStaticIniBoolean(MigotoIniCommandListUtils::ToLower(text));
 	}
 
-	static std::optional<int> ReadEarlyIniInteger(const std::wstring &text)
+	static std::optional<int> ReadEarlyIniInteger(const std::wstring &text, std::optional<unsigned> huntingMode = {})
 	{
 		if (text.find(L'$') != std::wstring::npos)
 			return {};
-		return ReadStaticIniInteger(MigotoIniCommandListUtils::ToLower(text));
+		return ReadStaticIniInteger(MigotoIniCommandListUtils::ToLower(text), {}, huntingMode);
 	}
 
 	class BranchFrame
@@ -664,6 +668,7 @@ public:
 	public:
 		std::vector<std::unordered_map<std::wstring, double>> localScopes;
 		DrawCallParameters call;
+		std::optional<unsigned> huntingMode;
 		GlobalVariables *initializing = nullptr;
 		std::vector<BranchFrame> branches;
 		std::vector<PostAssignment> postAssignments;
@@ -691,6 +696,7 @@ public:
 			context.call = &call;
 			context.iniNamespace = iniNamespace;
 			context.initializing = initializing;
+			context.huntingMode = huntingMode;
 			return context;
 		}
 
@@ -832,7 +838,7 @@ public:
 			L"cursor_x", L"cursor_y",
 			L"cursor_showing", L"cursor_visible",
 			L"cursor_hotspot_x", L"cursor_hotspot_y",
-			L"effective_dpi", L"hunting", L"sli",
+			L"effective_dpi", L"sli",
 			L"stereo_active", L"stereo_available",
 		};
 		for (const wchar_t *candidate : kFrameVariables) {
@@ -884,9 +890,15 @@ public:
 		if (auto *local = FindLocal(context, normalized))
 			return *local;
 
+		if (normalized == L"hunting") {
+			if (context.huntingMode)
+				return *context.huntingMode;
+			const auto *read = runtimeDiagnostics.load(std::memory_order_acquire);
+			return read ? read->huntingMode() : 0;
+		}
 		if (normalized == L"frame_analysis") {
-			const auto read = readFrameAnalysis.load(std::memory_order_acquire);
-			return read && read();
+			const auto *read = runtimeDiagnostics.load(std::memory_order_acquire);
+			return read && read->frameAnalysis();
 		}
 		if (!normalized.empty() && (normalized.front() == L't' || normalized.front() == L'f')) {
 			if (const auto field = FrameTiming::Find(normalized)) {

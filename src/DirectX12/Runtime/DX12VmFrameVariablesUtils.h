@@ -112,7 +112,6 @@ public:
 		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_hotspot_x", frame.cursorHotspotX);
 		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_hotspot_y", frame.cursorHotspotY);
 		MigotoCommandVmUtils::SetGlobalIfChanged(L"effective_dpi", frame.effectiveDpi);
-		MigotoCommandVmUtils::SetGlobalIfChanged(L"hunting", 0.0);
 		MigotoCommandVmUtils::SetGlobalIfChanged(L"sli", 0.0);
 		MigotoCommandVmUtils::SetGlobalIfChanged(L"stereo_active", 0.0);
 		MigotoCommandVmUtils::SetGlobalIfChanged(L"stereo_available", 0.0);

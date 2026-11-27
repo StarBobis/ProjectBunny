@@ -1324,7 +1324,8 @@ bool DX12ModRuntimeLoad(
 	UINT64 loadedGeneration = 0;
 	
 	using Vm = MigotoCommandVmUtils;
-	Vm::readFrameAnalysis.store(DX12FrameAnalysisState::IsActive, std::memory_order_release);
+	static constexpr Vm::RuntimeDiagnostics diagnostics{DX12HuntGetMode, DX12FrameAnalysisState::IsActive};
+	Vm::runtimeDiagnostics.store(&diagnostics, std::memory_order_release);
 	const bool wipe = reason == DX12ModLoadReason::WipeUserConfig;
 	const auto reload = reason == DX12ModLoadReason::Initial ?
 		Vm::SettingsReloadSnapshot{} : Vm::BeginSettingsReload(wipe);
@@ -1335,7 +1336,7 @@ bool DX12ModRuntimeLoad(
 			*hasErrors = true;
 		return false;
 	}
-	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad, reload.wipePath, DX12HuntIsEnabled())) {
+	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad, reload.wipePath, DX12HuntGetMode())) {
 		const auto &error = iniLoad.errors.empty() ? iniLoad.document.Error() : iniLoad.errors.back();
 		DX12_LOG("DX12ModRuntime",
 			"\"status\":\"config_load_failed\",\"path\":\"%S\",\"error\":\"%S\"",
@@ -1360,6 +1361,7 @@ bool DX12ModRuntimeLoad(
 	huntingKeys.ReadInputSettings(iniLoad.document, iniLoad.warnings, DX12HuntingHotkeys::Instance().NeedsInitialInputSetting());
 	const auto shortcuts = ReadExpressionShortcutPolicy(iniLoad.document, configPath);
 	huntingKeys.ReadHuntingSettings(iniLoad.document, iniLoad.warnings);
+	const auto configuredHunting = huntingKeys.configuredMode;
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
 	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes, iniLoad.warnings);
@@ -1368,7 +1370,8 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
 	const auto settings = Bunny::DX12ConstantsVmUtils::Initialize(commandLists, iniLoad.userConfigPath,
 		confirmUnknowns ? &iniLoad.document : nullptr, reload, shortcuts,
-		confirmUnknowns ? cleanup : Vm::UnknownSettingsPolicy::Observe);
+		confirmUnknowns ? cleanup : Vm::UnknownSettingsPolicy::Observe,
+		migoto::LoadedHuntingMode(configuredHunting.value_or(DX12HuntGetMode())));
 	if (settings.status != Vm::SettingsPublishStatus::Applied) {
 		if (statusMessage) {
 			if (settings.status == Vm::SettingsPublishStatus::WipeFailed)
@@ -1704,6 +1707,7 @@ bool DX12ModRuntimeLoad(
 		item.second.skipGeneration = 0;
 	}
 	ReleaseSRWLockExclusive(&gModLock);
+	DX12HuntApplyConfiguration(configuredHunting);
 	ClearPreSkinRuntimeState();
 
 	DX12_LOG("DX12ModRuntime",

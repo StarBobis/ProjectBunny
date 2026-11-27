@@ -28,7 +28,7 @@ class MigotoIniLoader
 {
 public:
 	static bool LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result,
-		const std::wstring &wipePath = {}, bool huntingActive = false);
+		const std::wstring &wipePath = {}, unsigned huntingMode = 0);
 };
 
 
@@ -199,7 +199,7 @@ struct PendingIncludeSection
 class LoaderState
 {
 public:
-	bool huntingActive = false;
+	unsigned huntingMode = 0;
 	std::wstring rootDir;
 	std::map<std::wstring, bool> parsedFiles; // Canonical path to successful parse, including a false guard.
 	std::vector<PendingIncludeSection> pending;
@@ -325,7 +325,7 @@ static void LoadFile(const std::wstring &path, const std::wstring &iniNamespace,
 	state->loadedFiles.push_back(path);
 	std::wstring sourceDir = MigotoIniLoaderPath::DirectoryOf(path);
 	IniFileParseResult file;
-	if (!state->document.AppendParse(text.c_str(), path, sourceDir, iniNamespace, scope, &file, state->huntingActive)) {
+	if (!state->document.AppendParse(text.c_str(), path, sourceDir, iniNamespace, scope, &file, state->huntingMode)) {
 		state->errors.push_back(
 			L"unable to parse ini: " + path + L" (" + state->document.Error() + L")");
 		return;
@@ -447,7 +447,7 @@ namespace MigotoUserConfigPath
 };
 
 inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result,
-	const std::wstring &wipePath, bool huntingActive)
+	const std::wstring &wipePath, unsigned huntingMode)
 {
 	if (!rootPath || !result)
 		return false;
@@ -461,7 +461,7 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 		return wipePath.empty();
 	}
 	MigotoIniLoaderPath::LoaderState state;
-	state.huntingActive = huntingActive;
+	state.huntingMode = huntingMode;
 	state.rootDir = MigotoIniLoaderPath::DirectoryOf(rootPath);
 	MigotoIniLoaderPath::LoadFile(rootPath, L"", &state);
 	MigotoIniLoaderPath::LoadQueuedIncludes(state);

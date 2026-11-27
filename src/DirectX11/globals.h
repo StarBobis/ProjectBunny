@@ -32,11 +32,7 @@ class CommandListCommand;
 class CommandList;
 
 
-enum HuntingMode {
-	HUNTING_MODE_DISABLED = 0,
-	HUNTING_MODE_ENABLED = 1,
-	HUNTING_MODE_SOFT_DISABLED = 2,
-};
+#include "IniHuntingMode.h"
 
 enum class MarkingMode {
 	SKIP,
