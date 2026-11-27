@@ -295,8 +295,7 @@ bool InvokeInputBinding(HackerDevice* device, const std::wstring& id, bool relea
 	for (const auto& binding : named_bindings) {
 		if (_wcsicmp(id.c_str(), binding.info.id.c_str()) != 0)
 			continue;
-		if (G->disable_input && binding.scope >= InputDisableScope::MODS &&
-			G->input_disable_scope >= binding.scope)
+		if (G->disable_input && migoto::InputBindingSuppressed(G->input_disable_scope, binding.scope))
 			return false;
 		auto listener = binding.listener;
 		if (release)
@@ -441,8 +440,7 @@ static bool DispatchInputActions(HackerDevice *device)
 {
 	bool input_processed = false;
 	for (InputAction* action : actions) {
-		if (G->disable_input && action->disable_scope >= InputDisableScope::MODS &&
-			G->input_disable_scope >= action->disable_scope)
+		if (G->disable_input && migoto::InputBindingSuppressed(G->input_disable_scope, action->disable_scope))
 			continue;
 		input_processed |= action->Dispatch(device);
 	}
@@ -469,32 +467,4 @@ size_t CountRegisteredInputActions(InputDisableScope disable_scope)
 {
 	return static_cast<size_t>(std::count_if(actions.begin(), actions.end(),
 		[disable_scope](const InputAction* action) { return action->disable_scope == disable_scope; }));
-}
-
-static std::wstring NormalizeInputSourcePath(std::wstring path)
-{
-	if (path.empty())
-		return {};
-	std::replace(path.begin(), path.end(), L'/', L'\\');
-	const DWORD required = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
-	if (!required)
-		return {};
-	std::wstring absolute(required, L'\0');
-	const DWORD written = GetFullPathNameW(path.c_str(), required, absolute.data(), nullptr);
-	if (!written || written >= required)
-		return {};
-	absolute.resize(written);
-	while (!absolute.empty() && absolute.back() == L'\\')
-		absolute.pop_back();
-	return absolute;
-}
-
-bool IsInputPathWithinDirectory(const std::wstring& filename, const std::wstring& directory)
-{
-	const std::wstring source = NormalizeInputSourcePath(filename);
-	const std::wstring root = NormalizeInputSourcePath(directory);
-	if (root.empty() || root.size() > INT_MAX || source.size() <= root.size() || source[root.size()] != L'\\')
-		return false;
-	return CompareStringOrdinal(source.data(), static_cast<int>(root.size()), root.data(),
-		static_cast<int>(root.size()), TRUE) == CSTR_EQUAL;
 }

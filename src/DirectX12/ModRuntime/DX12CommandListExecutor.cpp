@@ -143,7 +143,7 @@ bool IaTriggeredCandidatesDependOnActivePreSkin(
 }
 
 
-void DX12ModBeginFrame(IDXGISwapChain *swapChain, const std::optional<migoto::XInputSnapshot> &controllers)
+void DX12ModBeginFrame(IDXGISwapChain *swapChain, const std::optional<DX12FrameInput> &input)
 {
 #if DX12_TIMING_BUILD
 	// Arm the freeze watchdog with the first frame boundary; cheap no-op
@@ -162,7 +162,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain, const std::optional<migoto::XI
 	if (gHasCommandLists.load(std::memory_order_relaxed) || gHasKeyBindings.load(std::memory_order_relaxed))
 		DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
 	MarkFrameBoundaryStage("key_bindings");
-	ProcessDx12KeyBindingsForFrame(controllers);
+	ProcessDx12KeyBindingsForFrame(input);
 	MarkFrameBoundaryStage("pre_skin_clear");
 
 	std::vector<DX12RetiredLoadedResource> expired;
@@ -1496,16 +1496,16 @@ static void DX12TraceFrameKeyVariables()
 #endif
 
 
-void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const std::optional<migoto::XInputSnapshot> &controllers)
+void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const std::optional<DX12FrameInput> &input)
 {
 	if (gHasKeyBindings.load(std::memory_order_acquire))
 		DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
 	else if (!MigotoCommandVmUtils::PersistDirty())
 		return;
-	ProcessDx12KeyBindingsForFrame(controllers);
+	ProcessDx12KeyBindingsForFrame(input);
 }
 
-void ProcessDx12KeyBindingsForFrame(const std::optional<migoto::XInputSnapshot> &controllers)
+void ProcessDx12KeyBindingsForFrame(const std::optional<DX12FrameInput> &input)
 {
 #if DX12_TIMING_BUILD
 	// Register the key diagnostics sink lazily on the first frame so it is
@@ -1522,11 +1522,12 @@ void ProcessDx12KeyBindingsForFrame(const std::optional<migoto::XInputSnapshot> 
 		std::unique_lock lock(gKeyFrameMutex, std::try_to_lock);
 		if (lock && gLoaded) {
 			MarkFrameBoundaryStage("key_bindings_locked");
-			if (controllers) {
-				Bunny::MigotoKeyBindingUtils::ProcessBindings(gKeyBindings, gKeyFrame, DX12HuntingHotkeys::KeyDown, *controllers,
-					[](const std::wstring &name, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(name, post); });
+			if (input && input->generation == gReloadGeneration) {
+				Bunny::MigotoKeyBindingUtils::ProcessBindings(gKeyBindings, gKeyFrame, DX12HuntingHotkeys::KeyDown, input->controllers,
+					[](const std::wstring &name, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(name, post); },
+					GetTickCount64, input->blocked);
 			} else if (!gKeyFrame.pending.empty()) {
-				// Losing focus suspends input dispatch. Already scheduled transitions keep running.
+				// Blocked or pre-reload input cannot deliver edges. Active transitions still advance.
 				gKeyFrame.Update(GetTickCount64());
 			}
 			MarkFrameBoundaryStage("key_bindings_done");

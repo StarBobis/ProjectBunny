@@ -90,6 +90,7 @@ public:
 		std::wstring condition;
 		std::wstring conditionNamespace;
 		BindingType type = BindingType::Activate;
+		migoto::InputDisableScope inputScope = migoto::InputDisableScope::ALL;
 		std::vector<Trigger> triggers;
 		std::vector<VariableValues> variables;
 		std::vector<std::wstring> runCommandLists;
@@ -135,6 +136,7 @@ public:
 			const auto &section = *keySection;
 			Binding binding;
 			binding.section = section.name;
+			binding.inputScope = section.inputScope;
 			binding.originalSection = section.originalName.empty() ? section.name : section.originalName;
 			std::wstring type;
 			if (ini.GetString(section.name.c_str(), L"type", &type))
@@ -149,7 +151,7 @@ public:
 				if (key == L"delay" || key == L"release_delay") {
 					const bool press = key == L"delay";
 					bool &seen = press ? havePressDelay : haveReleaseDelay;
-					if (!seen) {
+					if (!seen && !value.empty()) {
 						seen = true; // DX11 uses the first scalar setting in the section.
 						const auto delay = MigotoCommandVmUtils::ReadStaticIniInteger(IniDocumentText::ToLower(value), entry.iniNamespace);
 						if (!delay && warnings)
@@ -239,7 +241,8 @@ public:
 
 	template <class ReadKey, class Run, class Clock = decltype(&GetTickCount64)>
 	static void ProcessBindings(std::vector<Binding> &bindings, FrameState &state,
-		ReadKey read, const migoto::XInputSnapshot &controllers, Run run, Clock clock = GetTickCount64)
+		ReadKey read, const migoto::XInputSnapshot &controllers, Run run, Clock clock = GetTickCount64,
+		migoto::InputDisableScope blocked = migoto::InputDisableScope::NONE)
 	{
 		std::vector<const std::wstring *> post;
 		migoto::VirtualKeySnapshot keyboard;
@@ -254,6 +257,8 @@ public:
 			}
 		};
 		for (Binding &binding : bindings) {
+			if (migoto::InputBindingSuppressed(blocked, binding.inputScope))
+				continue;
 			for (Trigger &trigger : binding.triggers) {
 				const bool down = trigger.combination.Active(downKey, controllers);
 				if (!trigger.delayState.EventDue(down, trigger.wasDown, binding.delays, clock))

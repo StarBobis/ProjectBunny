@@ -1655,7 +1655,7 @@ enum class DX12PsoKind
 };
 
 
-void ProcessDx12KeyBindingsForFrame(const std::optional<migoto::XInputSnapshot> &controllers);
+void ProcessDx12KeyBindingsForFrame(const std::optional<DX12FrameInput> &input);
 
 
 class DX12StoredPso
@@ -3438,7 +3438,7 @@ bool PreloadPreSkinReplacementResources(ID3D12Device *device);
 bool PreloadPreSkinOutputResizeCache(ID3D12Device *device);
 
 
-void DX12ModBeginFrame(IDXGISwapChain *swapChain, const std::optional<migoto::XInputSnapshot> &controllers);
+void DX12ModBeginFrame(IDXGISwapChain *swapChain, const std::optional<DX12FrameInput> &input);
 
 
 bool DX12ModPreparePresentReplacement(
@@ -4309,7 +4309,7 @@ bool RunNamedCommandList(
 
 
 
-void ProcessDx12KeyBindingsForFrame(const std::optional<migoto::XInputSnapshot> &controllers);
+void ProcessDx12KeyBindingsForFrame(const std::optional<DX12FrameInput> &input);
 
 
 void AppendShaderOverrideForHashLocked(

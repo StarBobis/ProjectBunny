@@ -19,6 +19,7 @@
 #include "ResourceHash.h"
 #include "ShaderBindings.h"
 #include "FrameTiming.h"
+#include "IniInputScope.h"
 #include "CommandList.h"
 #include "profiling.h"
 #include "lock.h"
@@ -401,12 +402,7 @@ struct ShaderModelCacheEntry {
 	std::string shaderModel;
 };
 
-enum class InputDisableScope : int8_t {
-    INVALID = -1,
-    NONE = 0,
-    MODS = 1,
-    ALL = 2,
-};
+using migoto::InputDisableScope;
 static EnumName_t<const wchar_t*, InputDisableScope> InputDisableScopeNames[] = {
     {L"mods", InputDisableScope::MODS},
     {L"all", InputDisableScope::ALL},

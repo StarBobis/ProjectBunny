@@ -179,16 +179,16 @@ public:
 	inline static volatile LONG PendingActions = 0;
 
 	template <class ReadKey>
-	static std::optional<migoto::XInputSnapshot> PollKeyboard(ReadKey read, ULONGLONG now, migoto::InputWindowSource windows = {})
+	static std::optional<DX12FrameInput> PollKeyboard(ReadKey read, ULONGLONG now, migoto::InputWindowSource windows = {})
 	{
-		std::optional<migoto::XInputSnapshot> controllers;
-		const LONG actions = DX12HuntingHotkeys::Instance().Poll(read, now, &controllers, windows);
+		std::optional<DX12FrameInput> input;
+		const LONG actions = DX12HuntingHotkeys::Instance().Poll(read, now, &input, windows);
 		if (actions)
 			InterlockedOr(&PendingActions, actions);
-		return controllers;
+		return input;
 	}
 
-	static std::optional<migoto::XInputSnapshot> PollKeyboard()
+	static std::optional<DX12FrameInput> PollKeyboard()
 	{
 		return PollKeyboard(DX12HuntingHotkeys::KeyDown, GetTickCount64());
 	}
@@ -204,6 +204,9 @@ public:
 		const LONG actions = InterlockedExchange(&PendingActions, 0);
 		if (!actions)
 			return false;
+
+		if (HasAction(actions, DX12UiActionBits::InputToggled))
+			DX12OverlayStatusState::SetTemporary(DX12HuntingHotkeys::Instance().InputStatus(), 1500);
 
 		const bool huntToggleRequested = HasAction(actions, DX12UiActionBits::HuntToggle);
 

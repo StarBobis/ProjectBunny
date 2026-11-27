@@ -178,7 +178,7 @@ void RegisterInputAction(std::unique_ptr<InputAction> action, InputDisableScope 
 
 // Compare actual source filenames against recursive include roots. Namespace
 // aliases do not participate; paths are made absolute with Windows semantics.
-bool IsInputPathWithinDirectory(const std::wstring& filename, const std::wstring& directory);
+using migoto::IsInputPathWithinDirectory;
 InputDisableScope GetIniKeyBindingScope(const wchar_t* section);
 
 // Dispatches registered actions after backend polling/foreground checks. Kept

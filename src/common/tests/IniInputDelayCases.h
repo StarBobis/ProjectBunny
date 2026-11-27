@@ -9,7 +9,7 @@ namespace migoto::tests {
 inline constexpr char inputDelayIni[] =
 	"global $gate=0\nglobal $held=2\nglobal $presses=0\nglobal $releases=0\n"
 	"global $step=99\nglobal $invalid=0\nglobal $negative=0\n"
-	"[KeyDelayHold]\nkey=H\ntype=hold\ndelay=4*2\ndelay=999\nrelease_delay=0x6\n"
+	"[KeyDelayHold]\nkey=H\ntype=hold\ndelay=\ndelay=4*2\ndelay=999\nrelease_delay=0x6\n"
 	"condition=$gate\n$held=7\nrun=CommandListDelay\n"
 	"[CommandListDelay]\n$presses=$presses+1\npost $releases=$releases+1\n"
 	"[KeyDelayCycle]\nkey=A\nkey=C\nback=B\ntype=cycle\nsmart=false\ndelay=8\nrelease_delay=6\n$step=0,1,2\n"

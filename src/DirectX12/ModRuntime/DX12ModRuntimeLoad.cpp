@@ -1373,6 +1373,7 @@ bool DX12ModRuntimeLoad(
 	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	SetBasePaths(configPath);
 	ReleaseSRWLockExclusive(&gModLock);
+	huntingKeys.ReadInputSettings(iniLoad.document, iniLoad.warnings, DX12HuntingHotkeys::Instance().NeedsInitialInputSetting());
 	huntingKeys.ReadForegroundSettings(iniLoad.document, iniLoad.warnings);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings, &iniLoad.warnings);
 	auto keyCommandLists = BuildKeyCommandLists(iniLoad.document, keyBindings);
@@ -1548,7 +1549,6 @@ bool DX12ModRuntimeLoad(
 	gKeyCommandLists.swap(keyCommandLists);
 	gKeyBindings.swap(keyBindings);
 	gHasKeyBindings.store(!gKeyBindings.empty(), std::memory_order_release);
-	DX12HuntingHotkeys::Instance().Install(std::move(huntingKeys), DX12HuntingHotkeys::KeyDown, controllerReader);
 	gCustomShaderElements.swap(customShaderElements);
 	gCustomShaderElementSnapshot.store(
 		std::make_shared<const DX12CustomShaderElementMap>(gCustomShaderElements),
@@ -1651,6 +1651,7 @@ bool DX12ModRuntimeLoad(
 	InterlockedExchange(&gHasPresentRuntimeEffect, presentRuntimeEffect ? 1 : 0);
 	gLoaded = true;
 	++gReloadGeneration;
+	DX12HuntingHotkeys::Instance().Install(std::move(huntingKeys), DX12HuntingHotkeys::KeyDown, controllerReader, gReloadGeneration);
 	InterlockedExchange64(
 		reinterpret_cast<volatile LONG64*>(&gShaderOverrideNegativeCacheGeneration),
 		static_cast<LONG64>(gReloadGeneration));

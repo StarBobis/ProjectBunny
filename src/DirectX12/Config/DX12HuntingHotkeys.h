@@ -3,6 +3,7 @@
 #include "DX12Config.h"
 #include "MigotoInputCombination.h"
 #include "IniForegroundWindow.h"
+#include "DX12FrameInput.h"
 #include <algorithm>
 #include <mutex>
 #include <vector>
@@ -35,6 +36,7 @@ enum class DX12UiActionBits : LONG
 	HuntMarkIB = 1 << 20,
 	HuntMarkVB = 1 << 21,
 	WipeUserConfig = 1 << 22,
+	InputToggled = 1 << 23,
 };
 
 // Present polls these bindings even when hunting is off. Input edges survive
@@ -119,6 +121,9 @@ public:
 		std::optional<int> repeatRate;
 		unsigned ports = 0;
 		bool usesGuide = false;
+		migoto::InputCombination toggleInput;
+		migoto::InputDisableScope disableMode = migoto::InputDisableScope::MODS;
+		bool initiallyEnabled = true;
 		bool checkWindow = false;
 		std::wstring additionalTitle;
 	public:
@@ -127,18 +132,8 @@ public:
 			const auto *system = ini.FindSection(L"System");
 			if (!system)
 				return;
-			const Bunny::IniEntry *check = nullptr, *title = nullptr;
-			for (const auto &entry : system->entries) {
-				if (!entry.hasEquals || entry.value.empty())
-					continue;
-				// Within the root file DX11 keeps the first setting. Included
-				// files may override global [System] settings in load order.
-				const bool included = !entry.iniNamespace.empty();
-				if ((!check || included) && !_wcsicmp(entry.key.c_str(), L"check_foreground_window"))
-					check = &entry;
-				if ((!title || included) && !_wcsicmp(entry.key.c_str(), L"additional_foreground_window"))
-					title = &entry;
-			}
+			const auto *check = system->FindGlobalSetting(L"check_foreground_window");
+			const auto *title = system->FindGlobalSetting(L"additional_foreground_window");
 			if (check) {
 				const auto value = MigotoCommandVmUtils::ReadStaticIniBoolean(Bunny::IniDocumentText::ToLower(check->value));
 				checkWindow = value.value_or(false);
@@ -149,6 +144,30 @@ public:
 				additionalTitle = title->value.substr(0, MAX_PATH - 1);
 				if (title->value.size() >= MAX_PATH)
 					warnings.push_back(L"[System] additional_foreground_window exceeds MAX_PATH");
+			}
+		}
+
+		void ReadInputSettings(const Bunny::IniDocument &ini, std::vector<std::wstring> &warnings, bool readInitial)
+		{
+			const auto *section = ini.FindSection(L"Input");
+			if (!section)
+				return;
+			if (const auto *setting = readInitial ? section->FindGlobalSetting(L"input") : nullptr) {
+				const auto flag = MigotoCommandVmUtils::ReadStaticIniBoolean(Bunny::IniDocumentText::ToLower(setting->value));
+				initiallyEnabled = flag.value_or(true);
+				if (!flag)
+					warnings.push_back(L"Invalid [Input] input: " + setting->value);
+			}
+			if (const auto *setting = section->FindGlobalSetting(L"input_disable_mode")) {
+				if (!_wcsicmp(setting->value.c_str(), L"all"))
+					disableMode = migoto::InputDisableScope::ALL;
+				else if (_wcsicmp(setting->value.c_str(), L"mods"))
+					warnings.push_back(L"Invalid [Input] input_disable_mode: " + setting->value);
+			}
+			if (const auto *setting = section->FindGlobalSetting(L"toggle_input")) {
+				if (!toggleInput.Parse(setting->value.substr(0, MAX_PATH - 1)))
+					warnings.push_back(L"Invalid [Input] toggle_input: " + setting->value);
+				IncludeDevices(toggleInput);
 			}
 		}
 
@@ -184,7 +203,7 @@ public:
 	static bool KeyDown(int vk) { return GetAsyncKeyState(vk) < 0; }
 
 	template <class ReadKey>
-	void Install(Bindings bindings, ReadKey read, migoto::XInputReader reader = nullptr)
+	void Install(Bindings bindings, ReadKey read, migoto::XInputReader reader = nullptr, UINT64 generation = 0)
 	{
 		std::lock_guard lock(mutex);
 		if (bindings.usesGuide && !reader)
@@ -208,11 +227,17 @@ public:
 		// DX11 reload retains the last nonempty additional window title.
 		if (bindings.additionalTitle.empty())
 			bindings.additionalTitle = std::move(current.additionalTitle);
+		if (!inputInitialized) {
+			inputEnabled = bindings.initiallyEnabled;
+			inputInitialized = true;
+		}
+		toggleDown = false; // Reload creates a fresh toggle listener in DX11.
+		bindingGeneration = generation;
 		current = std::move(bindings);
 	}
 
 	template <class ReadKey>
-	LONG Poll(ReadKey read, ULONGLONG now, std::optional<migoto::XInputSnapshot> *sample = nullptr,
+	LONG Poll(ReadKey read, ULONGLONG now, std::optional<DX12FrameInput> *sample = nullptr,
 		migoto::InputWindowSource windows = {})
 	{
 		std::lock_guard lock(mutex);
@@ -223,16 +248,41 @@ public:
 		}
 		if (current.ports)
 			controllers.Update(now / 1000, current.ports, controllerReader);
-		if (sample)
-			*sample = controllers.snapshot;
 		migoto::VirtualKeySnapshot snapshot;
 		auto down = [&](int vk) { return snapshot.Down(vk, read); };
 		LONG actions = 0;
+		if (!current.toggleInput.Empty()) {
+			const bool pressed = current.toggleInput.Active(down, controllers.snapshot);
+			if (pressed && !toggleDown) {
+				inputEnabled = !inputEnabled;
+				actions |= static_cast<LONG>(Action::InputToggled);
+			}
+			toggleDown = pressed;
+		}
+		const auto blocked = inputEnabled ? migoto::InputDisableScope::NONE : current.disableMode;
+		if (sample)
+			sample->emplace(controllers.snapshot, bindingGeneration, blocked);
+		if (migoto::InputBindingSuppressed(blocked, migoto::InputDisableScope::ALL))
+			return actions;
 		for (size_t i = 0; i < current.chords.size(); ++i) {
 			if (current.chords[i].Pressed(down, controllers.snapshot, now, specs[i].repeatable, current.repeatRate))
 				actions |= static_cast<LONG>(specs[i].action);
 		}
 		return actions;
+	}
+
+	bool NeedsInitialInputSetting()
+	{
+		std::lock_guard lock(mutex);
+		return !inputInitialized;
+	}
+
+	const wchar_t *InputStatus()
+	{
+		std::lock_guard lock(mutex);
+		if (current.disableMode == migoto::InputDisableScope::ALL)
+			return inputEnabled ? L"Enabled all key bindings" : L"Disabled all key bindings";
+		return inputEnabled ? L"Enabled mods key bindings" : L"Disabled mods key bindings";
 	}
 
 	static DX12HuntingHotkeys &Instance()
@@ -249,6 +299,10 @@ private:
 	}
 	std::mutex mutex;
 	Bindings current;
+	UINT64 bindingGeneration = 0;
+	bool inputInitialized = false;
+	bool inputEnabled = true;
+	bool toggleDown = false;
 	migoto::XInputPoller controllers;
 	migoto::XInputGuideLibrary guide;
 	migoto::XInputReader controllerReader = XInputGetState;

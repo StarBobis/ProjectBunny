@@ -19,6 +19,7 @@ user_config = d3dx_user.ini
 | --- | --- |
 | `[Constants]` | 全局变量、持久声明与 IniParams 初始化 |
 | `[Present]` | 每帧命令 |
+| `[Input]` | 快捷键的初始状态、开关键和禁用范围 |
 | `[Key名称]` | 按键 |
 | `[CommandList名称]` | 复用命令 |
 | `[Resource名称]` | 文件资源、占位资源 |
@@ -28,6 +29,26 @@ user_config = d3dx_user.ini
 | `[ShaderRegex名称]` | 仅无 Pattern 的模型筛选命令路径 |
 
 解析器识别部分 DX11 节名用于兼容，不等于运行时实现其功能。完整边界见[兼容范围](./compatibility)。
+
+## 临时禁用快捷键
+
+`[Input]` 的 `input` 决定首次加载时是否启用快捷键，默认为 `on`。可以配置一个始终可用的开关键。
+
+```ini
+[Input]
+input = on
+input_disable_mode = mods
+toggle_input = ctrl alt F7
+```
+
+| 禁用范围 | 按下开关键后的效果 |
+| --- | --- |
+| `mods`（默认） | 暂停通过 `include_recursive` 加载的文件里的 `[Key]`，包括循环的 `back`。主配置、显式 `include` 文件和 Hunting 快捷键仍可用。 |
+| `all` | 同时暂停主配置、显式包含文件和 Hunting 的快捷键，包括 F10。再次按 `toggle_input` 可以重新启用。 |
+
+如果同一文件既被显式包含，又出现在递归目录中，首次加载它的方式决定范围。当前一批配置里的包含指令会先处理，新文件自己的包含指令在下一批处理。修改 `namespace` 不改变范围。同一命名空间出现重复的 `[Key]` 节名时，以先加载的节为准。
+
+重载会读取新的范围和开关键，并保留当前启用状态。在禁用期间松开 `hold` 键，重新启用后的第一帧会处理松开并恢复变量。
 
 ## 命名空间
 

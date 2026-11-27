@@ -1,5 +1,7 @@
 #pragma once
 
+#include "IniInputScope.h"
+
 #include "Core/DX12Diagnostics.h"
 #include "MigotoIniCommandListUtils.hpp"
 #include "MigotoCommandVmUtils.hpp"
@@ -43,7 +45,25 @@ public:
 	std::wstring sourcePath;
 	std::wstring sourceDir;
 	std::wstring iniNamespace;
+	migoto::InputDisableScope inputScope = migoto::InputDisableScope::ALL;
 	std::vector<IniEntry> entries;
+
+	const IniEntry *FindGlobalSetting(const wchar_t *key) const
+	{
+		const IniEntry *setting = nullptr;
+		for (const auto &entry : entries) {
+			// The first nonempty root value wins. Includes override global settings in load order.
+			if (entry.hasEquals && !entry.value.empty() && (!setting || !entry.iniNamespace.empty()) &&
+				_wcsicmp(entry.key.c_str(), key) == 0)
+				setting = &entry;
+		}
+		return setting;
+	}
+};
+
+struct IniFileParseResult {
+	std::vector<IniSection> includes;
+	std::vector<std::wstring> warnings;
 };
 
 class IniDocument {
@@ -54,7 +74,8 @@ public:
 		const wchar_t *text,
 		const std::wstring &sourcePath,
 		const std::wstring &sourceDir,
-		const std::wstring &iniNamespace);
+		const std::wstring &iniNamespace, migoto::InputDisableScope inputScope = migoto::InputDisableScope::ALL,
+		IniFileParseResult *file = nullptr);
 
 	const IniSection *FindSection(const wchar_t *section) const;
 	const std::vector<IniSection> &Sections() const { return mSections; }
@@ -284,12 +305,14 @@ inline bool IniDocument::AppendParse(
 	const wchar_t *text,
 	const std::wstring &sourcePath,
 	const std::wstring &sourceDir,
-	const std::wstring &iniNamespace)
+	const std::wstring &iniNamespace, migoto::InputDisableScope inputScope, IniFileParseResult *file)
 {
 	if (!text)
 		return true;
 
 	IniSection *current = nullptr;
+	IniSection *include = nullptr;
+	bool duplicateKey = false;
 	std::wstring currentNamespace = iniNamespace;
 	std::wistringstream stream(text);
 	std::wstring line;
@@ -314,11 +337,20 @@ inline bool IniDocument::AppendParse(
 			std::wstring sectionName = IniDocumentText::MakeNamespacedSectionName(originalName, currentNamespace);
 			std::wstring sectionKey = IniDocumentText::ToLower(sectionName);
 			auto found = mSectionIndex.find(sectionKey);
+			// A later file with the same explicit namespace cannot append keys
+			// to the first listener or change which disable scope owns it.
+			duplicateKey = sectionKey.starts_with(L"key") && found != mSectionIndex.end();
+			if (duplicateKey) {
+				if (file)
+					file->warnings.push_back(sourcePath + L":" + std::to_wstring(lineNumber) + L": duplicate [" + sectionName + L"]");
+				continue;
+			}
 			if (found == mSectionIndex.end()) {
 				IniSection section;
 				section.name = sectionName;
 				section.originalName = originalName;
 				section.sourcePath = sourcePath;
+				section.inputScope = inputScope;
 				section.sourceDir = sourceDir;
 				section.iniNamespace = sectionName == originalName ? L"" : currentNamespace;
 				mSections.push_back(section);
@@ -327,9 +359,16 @@ inline bool IniDocument::AppendParse(
 			} else {
 				current = &mSections[found->second];
 			}
+			include = nullptr;
+			if (file && sectionKey.starts_with(L"include")) {
+				include = &file->includes.emplace_back();
+				include->name = sectionName;
+			}
 			continue;
 		}
 
+		if (duplicateKey)
+			continue;
 		if (!current) {
 			size_t equals = line.find(L'=');
 			if (equals != std::wstring::npos) {
@@ -362,7 +401,9 @@ inline bool IniDocument::AppendParse(
 			entry.value = IniDocumentText::Trim(line.substr(equals + 1));
 			entry.hasEquals = true;
 		}
-		current->entries.push_back(entry);
+		if (include)
+			include->entries.push_back(entry);
+		current->entries.push_back(std::move(entry));
 	}
 
 	return true;

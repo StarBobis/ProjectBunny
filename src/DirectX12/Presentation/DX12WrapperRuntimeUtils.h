@@ -519,19 +519,15 @@ public:
 
 		DX12_PROF_FRAME_ENTER("PresentWrapper", swapChain);
 		DX12_DIAG_QPC(sliceBegin);
-		const auto controllers = DXGIHookRuntime::ConsumeUiActionsForFrame();
+		// Load even on the skipAll path, before sampling keys under the new input policy.
+		DX12ModMaybeRunDeferredInitialLoad();
+		const auto input = DXGIHookRuntime::ConsumeUiActionsForFrame();
 
 		static volatile LONG firstPresentLog = 0;
 		if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
 			DX12_LOG_FLUSH("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
-
-		// Deferred mod load must run on EVERY present, including the skipAll
-		// fast path. When no mod is loaded skipAll==1, so the call cannot live
-		// in the normal branch below - it would never execute and the mod would
-		// never load (deadlock between skipAll and the deferred load).
-		DX12ModMaybeRunDeferredInitialLoad();
 
 		if (DX12HotPathState::skipAll) {
 			// Nothing needs draw/state/copy hooks this frame, which is also the
@@ -569,7 +565,7 @@ public:
 			DX12RuntimeState::IncrementPresentCount(frameTicks);
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 			if (SUCCEEDED(skipHr))
-				DX12ModProcessIdleFrameKeys(swapChain, controllers);
+				DX12ModProcessIdleFrameKeys(swapChain, input);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_PROF_FRAME_LEAVE("PresentWrapper", swapChain, skipHr);
@@ -621,7 +617,7 @@ public:
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 				DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12ModBeginFrame(swapChain, controllers);
+		DX12ModBeginFrame(swapChain, input);
 		DX12_PROF_ADD_US("Present.mod_begin_frame", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 		DX12_DIAG_QPC_RESET(sliceBegin);
@@ -666,19 +662,15 @@ public:
 
 		DX12_PROF_FRAME_ENTER("Present1Wrapper", swapChain);
 		DX12_DIAG_QPC(sliceBegin);
-		const auto controllers = DXGIHookRuntime::ConsumeUiActionsForFrame();
+		// Load even on the skipAll path, before sampling keys under the new input policy.
+		DX12ModMaybeRunDeferredInitialLoad();
+		const auto input = DXGIHookRuntime::ConsumeUiActionsForFrame();
 
 		static volatile LONG firstPresent1Log = 0;
 		if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
 			DX12_LOG_FLUSH("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
-
-		// Deferred mod load must run on EVERY present, including the skipAll
-		// fast path. When no mod is loaded skipAll==1, so the call cannot live
-		// in the normal branch below - it would never execute and the mod would
-		// never load (deadlock between skipAll and the deferred load).
-		DX12ModMaybeRunDeferredInitialLoad();
 
 		if (DX12HotPathState::skipAll) {
 			// See the Present wrapper above: hunting text and mod overlay stay
@@ -707,7 +699,7 @@ public:
 			DX12RuntimeState::IncrementPresentCount(frameTicks);
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 			if (SUCCEEDED(skipHr))
-				DX12ModProcessIdleFrameKeys(swapChain, controllers);
+				DX12ModProcessIdleFrameKeys(swapChain, input);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_PROF_FRAME_LEAVE("Present1Wrapper", swapChain, skipHr);
@@ -757,7 +749,7 @@ public:
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 				DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12ModBeginFrame(swapChain, controllers);
+		DX12ModBeginFrame(swapChain, input);
 		DX12_PROF_ADD_US("Present.mod_begin_frame", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 		DX12_DIAG_QPC_RESET(sliceBegin);

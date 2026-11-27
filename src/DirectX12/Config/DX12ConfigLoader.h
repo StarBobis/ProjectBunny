@@ -190,11 +190,18 @@ static std::wstring MakeRelativeNamespace(
 	return path;
 }
 
+struct PendingIncludeSection
+{
+	IniSection section;
+	std::vector<std::wstring> excludes;
+};
+
 class LoaderState
 {
 public:
 	std::wstring rootDir;
 	std::set<std::wstring> seenFiles;
+	std::vector<PendingIncludeSection> pending;
 	IniDocument document;
 	bool includesComplete = true;
 	std::vector<std::wstring> loadedFiles;
@@ -203,31 +210,22 @@ public:
 };
 
 
-static void CollectIncludeEntries(
-	const IniDocument &ini, std::vector<std::wstring> *includes,
-	std::vector<std::wstring> *recursiveIncludes,
-	std::vector<std::wstring> *excludeRecursive)
+static void QueueIncludes(std::vector<IniSection> &sections, LoaderState &state)
 {
-	for (const IniSection &section : ini.Sections()) {
-		if (!MigotoIniLoaderPath::StartsWithI(section.name, L"Include"))
-			continue;
-		for (const IniEntry &entry : section.entries) {
-			if (!entry.hasEquals)
-				continue;
-			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
-			if (key == L"include")
-				includes->push_back(IniDocumentText::Trim(entry.value));
-			else if (key == L"include_recursive")
-				recursiveIncludes->push_back(IniDocumentText::Trim(entry.value));
-			else if (key == L"exclude_recursive")
-				excludeRecursive->push_back(IniDocumentText::Trim(entry.value));
+	std::vector<std::wstring> excluded;
+	for (const auto &section : sections) {
+		for (const auto &entry : section.entries) {
+			if (entry.hasEquals && !_wcsicmp(entry.key.c_str(), L"exclude_recursive"))
+				excluded.push_back(entry.value);
 		}
 	}
+	for (auto &section : sections)
+		state.pending.push_back({std::move(section), excluded});
 }
 
 static void LoadDirectoryRecursive(
 	const std::wstring &dir, const std::vector<std::wstring> &excludeRecursive,
-	LoaderState *state)
+	const std::wstring &recursiveRoot, LoaderState *state)
 {
 	if (!state)
 		return;
@@ -285,7 +283,9 @@ static void LoadDirectoryRecursive(
 			state->warnings.push_back(L"include path rejected: path too long: " + file);
 			continue;
 		}
-		MigotoIniLoaderPath::LoadFileRecursive(filePath, MigotoIniLoaderPath::MakeRelativeNamespace(state->rootDir, filePath), state);
+		const auto scope = migoto::IsInputPathWithinDirectory(filePath, recursiveRoot)
+			? migoto::InputDisableScope::MODS : migoto::InputDisableScope::ALL;
+		LoadFile(filePath, MakeRelativeNamespace(state->rootDir, filePath), state, scope);
 	}
 	for (const std::wstring &child : directories) {
 		std::wstring childPath = MigotoIniLoaderPath::JoinPath(dir, child);
@@ -294,12 +294,12 @@ static void LoadDirectoryRecursive(
 			state->warnings.push_back(L"include_recursive path rejected: path too long: " + child);
 			continue;
 		}
-		MigotoIniLoaderPath::LoadDirectoryRecursive(childPath, excludeRecursive, state);
+		MigotoIniLoaderPath::LoadDirectoryRecursive(childPath, excludeRecursive, recursiveRoot, state);
 	}
 }
 
-static void LoadFileRecursive(
-	const std::wstring &path, const std::wstring &iniNamespace, LoaderState *state)
+static void LoadFile(const std::wstring &path, const std::wstring &iniNamespace, LoaderState *state,
+	migoto::InputDisableScope scope = migoto::InputDisableScope::ALL)
 {
 	if (!state)
 		return;
@@ -322,38 +322,44 @@ static void LoadFileRecursive(
 
 	state->loadedFiles.push_back(path);
 	std::wstring sourceDir = MigotoIniLoaderPath::DirectoryOf(path);
-	if (!state->document.AppendParse(text.c_str(), path, sourceDir, iniNamespace)) {
+	IniFileParseResult file;
+	if (!state->document.AppendParse(text.c_str(), path, sourceDir, iniNamespace, scope, &file)) {
 		state->errors.push_back(
 			L"unable to parse ini: " + path + L" (" + state->document.Error() + L")");
 		return;
 	}
 
-	std::vector<std::wstring> includes;
-	std::vector<std::wstring> recursiveIncludes;
-	std::vector<std::wstring> excludeRecursive;
-	IniDocument localIni;
-	localIni.Parse(text.c_str());
-	MigotoIniLoaderPath::CollectIncludeEntries(localIni, &includes, &recursiveIncludes, &excludeRecursive);
+	for (auto &warning : file.warnings)
+		state->warnings.push_back(std::move(warning));
+	QueueIncludes(file.includes, *state);
+}
 
-	std::wstring includeBase = MigotoIniLoaderPath::DirectoryOf(path);
-	for (const std::wstring &include : includes)
-	{
-		std::wstring includePath = MigotoIniLoaderPath::JoinPath(includeBase, include);
-		if (includePath.empty()) {
-			state->includesComplete = false;
-			state->warnings.push_back(L"include path rejected: path too long: " + include);
-			continue;
+static void LoadQueuedIncludes(LoaderState &state)
+{
+	// DX11 completes the current generation before visiting directives found in
+	// its children. This decides which scope a multiply included key receives.
+	while (!state.pending.empty()) {
+		std::vector<PendingIncludeSection> current;
+		current.swap(state.pending);
+		std::stable_sort(current.begin(), current.end(), [](const auto &a, const auto &b) {
+			return _wcsicmp(a.section.name.c_str(), b.section.name.c_str()) < 0;
+		});
+		for (const auto &batch : current) {
+			for (const auto &entry : batch.section.entries) {
+				const bool recursive = !_wcsicmp(entry.key.c_str(), L"include_recursive");
+				if (!entry.hasEquals || (!recursive && _wcsicmp(entry.key.c_str(), L"include")))
+					continue;
+				const auto path = JoinPath(entry.sourceDir, entry.value);
+				if (path.empty() || entry.value.empty()) {
+					state.includesComplete = false;
+					state.warnings.push_back(entry.key + L" path rejected: " + entry.value);
+				} else if (recursive) {
+					LoadDirectoryRecursive(path, batch.excludes, path, &state);
+				} else {
+					LoadFile(path, MakeRelativeNamespace(state.rootDir, path), &state);
+				}
+			}
 		}
-		MigotoIniLoaderPath::LoadFileRecursive(includePath, MigotoIniLoaderPath::MakeRelativeNamespace(state->rootDir, includePath), state);
-	}
-	for (const std::wstring &recursive : recursiveIncludes) {
-		std::wstring recursivePath = MigotoIniLoaderPath::JoinPath(includeBase, recursive);
-		if (recursivePath.empty()) {
-			state->includesComplete = false;
-			state->warnings.push_back(L"include_recursive path rejected: path too long: " + recursive);
-			continue;
-		}
-		MigotoIniLoaderPath::LoadDirectoryRecursive(recursivePath, excludeRecursive, state);
 	}
 }
 
@@ -379,7 +385,8 @@ static bool LoadUserConfigFile(const std::wstring &path, LoaderState *state)
 		return true;
 	}
 	const auto errorsBefore = state->errors.size();
-	MigotoIniLoaderPath::LoadFileRecursive(path, path, state);
+	LoadFile(path, path, state);
+	LoadQueuedIncludes(*state);
 	return state->errors.size() == errorsBefore;
 }
 
@@ -439,7 +446,8 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 	}
 	MigotoIniLoaderPath::LoaderState state;
 	state.rootDir = MigotoIniLoaderPath::DirectoryOf(rootPath);
-	MigotoIniLoaderPath::LoadFileRecursive(rootPath, L"", &state);
+	MigotoIniLoaderPath::LoadFile(rootPath, L"", &state);
+	MigotoIniLoaderPath::LoadQueuedIncludes(state);
 
 	// The user config is loaded very last so the persisted values override the
 	// defaults declared by every other ini file (DX11: ParseIncludedIniFiles()

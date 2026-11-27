@@ -15,6 +15,7 @@
 #include "tests/IniKeyTransitionCases.h"
 #include "tests/IniInputDelayCases.h"
 #include "tests/IniForegroundWindowCases.h"
+#include "tests/IniInputScopeCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -298,6 +299,92 @@ public:
 		return ERROR_SUCCESS;
 	}
 };
+
+void TestConfiguredInputScopes()
+{
+	using Vm = MigotoCommandVmUtils;
+	using Keys = Bunny::MigotoKeyBindingUtils;
+	const auto dir = std::filesystem::current_path() /
+		(L"scope-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create exclusive scope directory");
+	std::filesystem::create_directory(dir / "Mods");
+	std::filesystem::create_directory(dir / "More");
+	for (const auto &file : migoto::tests::scopeFiles)
+		std::ofstream(dir / file.path) << file.body;
+	const auto root = dir / L"main.ini";
+	bool started = false;
+	auto load = [&](const char *initial, const char *mode) {
+		std::ofstream(root) << migoto::tests::ScopeConfig("", initial, mode)
+			<< "[Hunting]\nanalyse_frame=F23\n";
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr,
+			started ? DX12ModLoadReason::UserReload : DX12ModLoadReason::Initial), "load real input scope settings and includes");
+		started = true;
+	};
+	load("off", "mods"); // First configuration published in this process.
+	Bunny::MigotoIniLoadResult sources;
+	Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &sources) &&
+		std::any_of(sources.warnings.begin(), sources.warnings.end(), [](const std::wstring &message) {
+			return message.find(L"duplicate [Key\\DirectAlias\\Direct]") != std::wstring::npos;
+		}), "duplicate namespaced Key is diagnosed at its source");
+	Vm::State vm;
+	LONG actions = 0;
+	auto frame = [&](std::string_view keys, bool hunt = false) {
+		auto read = [&](int vk) {
+			return vk == VK_F23 ? hunt : vk >= 'A' && vk <= 'Z' && keys.find(static_cast<char>(vk)) != keys.npos;
+		};
+		const auto sample = DX12UiActions::PollKeyboard(read, GetTickCount64());
+		Require(sample.has_value(), "foreground check is disabled for scope fixture");
+		actions = InterlockedExchange(&DX12UiActions::PendingActions, 0);
+		Keys::ProcessBindings(gKeyBindings, gKeyFrame, read, sample->controllers,
+			[](const std::wstring &command, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(command, post); },
+			GetTickCount64, sample->blocked);
+	};
+	migoto::tests::CheckScopeFrames(frame, load, [&](int rootValue, int direct, int held, int cycle, int child, int deep, const char *why) {
+		Require(vm.Evaluate(L"$root_value") == rootValue && vm.Evaluate(L"$direct_value") == direct &&
+			vm.Evaluate(L"$held_value") == held && vm.Evaluate(L"$cycle_value") == cycle &&
+			vm.Evaluate(L"$child_value") == child && vm.Evaluate(L"$deep_value") == deep, why);
+	});
+
+	load("off", "all");
+	frame("T", true);
+	Require(actions == static_cast<LONG>(DX12UiActionBits::InputToggled), "same-frame all-mode disable gates Hunting before polling");
+	const auto settings = dir / L"d3dx_user.ini";
+	HANDLE guard = CreateFileW(settings.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+	Require(guard != INVALID_HANDLE_VALUE, "lock settings during input policy replacement");
+	std::ofstream(root) << migoto::tests::ScopeConfig("", "on", "mods");
+	const bool reloaded = DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload);
+	CloseHandle(guard);
+	std::filesystem::remove(settings);
+	Require(!reloaded, "abort reload on locked settings");
+	frame("R", true);
+	Require(!actions && vm.Evaluate(L"$root_value") == 0, "failed reload keeps all mode and its blocked tool keys");
+	frame("T", true);
+	Require(actions == (static_cast<LONG>(DX12UiActionBits::InputToggled) | static_cast<LONG>(DX12UiActionBits::FrameAnalysis)),
+		"toggle re-enables a held Hunting binding in the same frame");
+	// Reload while the toggle remains held. DX11 registers a fresh toggle listener.
+	load("on", "invalid");
+	frame("THR");
+	Require(vm.Evaluate(L"$root_value") == 1 && vm.Evaluate(L"$held_value") == 3 &&
+		actions == static_cast<LONG>(DX12UiActionBits::InputToggled), "invalid mode defaults to mods and reload resets the toggle edge");
+	frame("");
+	frame("T");
+	frame("");
+	bool warnings = true;
+	std::ofstream(root) << "[Input]\ninput=bad\ntoggle_input=T\n";
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, &warnings) && !warnings, "reload skips evaluation of startup-only input");
+	std::ofstream(root) << "[Input]\ninput=bad\ntoggle_input=no_such_key\n";
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, &warnings) && warnings, "malformed toggle diagnosed");
+	frame("T");
+	Require(!actions, "removing a toggle cannot leave its old binding active");
+	std::ofstream(root) << "[Constants]\n";
+	Require(DX12ModRuntimeLoad(root.c_str()), "restore default input configuration");
+	for (const auto &file : migoto::tests::scopeFiles)
+		std::filesystem::remove(dir / file.path);
+	std::filesystem::remove(dir / "Mods");
+	std::filesystem::remove(dir / "More");
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
+}
 
 void TestControllerInputs()
 {
@@ -1503,6 +1590,29 @@ void TestForegroundFrameInput(IDXGISwapChain1 *chain)
 	DXGI_PRESENT_PARAMETERS args{};
 	Check(chain->Present1(0, 0, &args));
 	Require(!Source::reads[1] && gKeyFrame.saves.empty(), "wrapped Present1 respects the native foreground filter");
+	port.state.Gamepad.wButtons = 0;
+	std::ofstream(root) << "[Input]\ninput=off\ninput_disable_mode=all\ntoggle_input=XB2_START\n"
+		"[Constants]\nglobal $held=2\n[KeyHeld]\nkey=XB2_A\ntype=hold\n$held=8\n";
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A;
+	auto stale = DX12UiActions::PollKeyboard([](int) { return false; }, GetTickCount64(), Window::Own());
+	Require(stale.has_value(), "capture a controller press under the old policy");
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload, Source::Read),
+		"publish controller input toggle and hold");
+	DX12ModProcessIdleFrameKeys(nullptr, stale);
+	Require(vm.Evaluate(L"$held") == 2, "an old frame sample cannot activate bindings published by reload");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A;
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$held") == 8, "runtime enable survives config reload requesting initial off");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START;
+	Check(chain->Present1(0, 0, &args));
+	port.state.Gamepad.wButtons = 0;
+	Check(chain->Present(0, 0));
+	Require(vm.Evaluate(L"$held") == 8, "all mode defers hold release across wrapped presentations");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_START;
+	Check(chain->Present1(0, DXGI_PRESENT_TEST, &args));
+	Require(vm.Evaluate(L"$held") == 8, "test presentation does not consume the privileged toggle");
+	Check(chain->Present1(0, 0, &args));
+	Require(vm.Evaluate(L"$held") == 2, "controller toggle resumes delayed hold release on Present1");
 	std::ofstream(root) << "[Constants]\n";
 	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr), "uninstall foreground controller reader");
 	std::filesystem::remove(include);
@@ -2232,6 +2342,7 @@ int main(int argc, char **argv)
 		TestDescriptors(device.Get(), benchmark);
 		if (benchmark)
 			return 0;
+		TestConfiguredInputScopes();
 		TestShaderRegexExclusions();
 		TestLockedVariables();
 		TestInactiveUserSettings();

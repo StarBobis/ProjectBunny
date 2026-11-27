@@ -84,6 +84,7 @@ add_library(DirectX12 SHARED
     Core/ModState/DX12PreSkinPlanUtils.h
     Config/DX12Config.h
     Config/DX12ConfigLoader.h
+    Config/DX12FrameInput.h
     Config/DX12ConstantsVmUtils.h
     Resources/DX12ResourceDump.h
     Resources/Dump/DX12PsoInputLayoutUtils.h

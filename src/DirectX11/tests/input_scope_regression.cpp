@@ -3,6 +3,7 @@
 #include "IniHandler.h"
 #include "HackerContext.h"
 #include "globals.h"
+#include "tests/IniInputScopeCases.h"
 
 #include <wrl/client.h>
 #include <algorithm>
@@ -193,6 +194,27 @@ public:
         G->disable_input_initialized = false;
         G->input_disable_scope = InputDisableScope::INVALID;
         LoadConfigFile();
+    }
+
+    void prepare_dispatch_files()
+    {
+        const auto root = directory / L"ScopeDispatch";
+        make_directory(root);
+        make_directory(root / L"Mods");
+        make_directory(root / L"More");
+        for (const auto &file : migoto::tests::scopeFiles)
+            write_file(root / file.path, file.body);
+    }
+
+    void write_dispatch_config(const char *initial, const char *mode)
+    {
+        std::ofstream out(config, std::ios::binary | std::ios::trunc);
+        out << "[Logging]\nlog_level=disabled\nshow_warnings=0\n[Hunting]\nhunting=0\n"
+            "[System]\nskip_early_includes_load=0\n";
+        out << migoto::tests::ScopeConfig(directory.filename().string() + "\\ScopeDispatch\\", initial, mode, settings.filename().string());
+        out.close();
+        check(out.good(), "write shared scope dispatch config");
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, config.c_str());
     }
 
     void write_polling_config()
@@ -406,6 +428,30 @@ void polling_optimization_tests(ScopeFixture& fixture, ScopeDevice& device)
     keyboard_down[VK_F20] = false;
     check(dispatch() && held == 0, "release still clears an active hold after the mod disappears");
 }
+void configured_scope_dispatch(ScopeFixture &fixture, ScopeDevice &device)
+{
+    fixture.prepare_dispatch_files();
+    fixture.write_dispatch_config("off", "mods");
+    G->disable_input_initialized = false;
+    ReloadConfig(device.device);
+    auto frame = [&](const char *keys) {
+        keyboard_down.fill(false);
+        for (; *keys; ++keys)
+            keyboard_down[static_cast<unsigned char>(*keys)] = true;
+        DispatchRegisteredInputActions(device.device, TestKeyboardState);
+        CurrentTransition.UpdateTransitions(device.device);
+    };
+    auto reload = [&](const char *initial, const char *mode) {
+        fixture.write_dispatch_config(initial, mode);
+        ReloadConfig(device.device);
+    };
+    auto value = [](const wchar_t *name) { return command_list_globals.at(name).fval; };
+    migoto::tests::CheckScopeFrames(frame, reload, [&](int root, int direct, int held, int cycle, int child, int deep, const char *msg) {
+        check(value(L"$root_value") == root && value(L"$direct_value") == direct && value(L"$held_value") == held &&
+            value(L"$cycle_value") == cycle && value(L"$child_value") == child && value(L"$deep_value") == deep, msg);
+    });
+}
+
 } // namespace
 
 void test_dx11_input_scope_regression()
@@ -416,6 +462,7 @@ void test_dx11_input_scope_regression()
         source_and_default_tests(fixture, device);
         dispatch_tests(device);
         polling_optimization_tests(fixture, device);
+        configured_scope_dispatch(fixture, device);
         std::fputs("PASS: real Input/include provenance, shared key polling, visibility and hold cleanup\n", stderr);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: input scope regression: %s\n", error.what());

@@ -80,19 +80,19 @@ public:
 				swapChain, identity);
 	}
 
-	static std::optional<migoto::XInputSnapshot> ConsumeUiActionsForFrame()
+	static std::optional<DX12FrameInput> ConsumeUiActionsForFrame()
 	{
 		DX12_DIAG_QPC(sliceBegin);
-		const auto controllers = DX12UiActions::PollKeyboard();
+		const auto input = DX12UiActions::PollKeyboard();
 		const bool hadActions = DX12UiActions::Consume();
 		DX12_PROF_ADD_US("Present.consume_ui_actions_poll", DX12_DIAG_ELAPSED_US(sliceBegin));
 		if (!hadActions)
-			return controllers;
+			return input;
 		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12HotPathState::Update();
 		DX12CommandListRuntime::BumpTrackingGeneration();
 		DX12_PROF_ADD_US("Present.consume_ui_actions_apply", DX12_DIAG_ELAPSED_US(sliceBegin));
-		return controllers;
+		return input;
 	}
 
 	static void RunPostPresentRuntime(IDXGISwapChain *swapChain)
