@@ -583,6 +583,23 @@ public:
 		return {};
 	}
 
+	// EarlyConfigRegistries in DX11 hides the outgoing Mod variables before
+	// reading early INI settings. Reject unbound names before
+	// evaluating the rest of the expression, including random().
+	static std::optional<bool> ReadEarlyIniBoolean(const std::wstring &text)
+	{
+		if (text.find(L'$') != std::wstring::npos)
+			return {};
+		return ReadStaticIniBoolean(MigotoIniCommandListUtils::ToLower(text));
+	}
+
+	static std::optional<int> ReadEarlyIniInteger(const std::wstring &text)
+	{
+		if (text.find(L'$') != std::wstring::npos)
+			return {};
+		return ReadStaticIniInteger(MigotoIniCommandListUtils::ToLower(text));
+	}
+
 	class BranchFrame
 	{
 	public:

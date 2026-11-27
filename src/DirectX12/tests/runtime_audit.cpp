@@ -17,6 +17,7 @@
 #include "tests/IniForegroundWindowCases.h"
 #include "tests/IniInputScopeCases.h"
 #include "tests/IniLogicalCases.h"
+#include "tests/IniEarlySettingsCases.h"
 #include <bit>
 #include <xmmintrin.h>
 #include <wrl/client.h>
@@ -302,6 +303,87 @@ public:
 		return ERROR_SUCCESS;
 	}
 };
+
+// Run in a fresh process because [Input] input is evaluated only once.
+void TestEarlyConfig()
+{
+	using Window = migoto::tests::InputTestWindow;
+	const auto dir = std::filesystem::current_path() /
+		(L"early-options-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create early settings fixture");
+	const auto root = dir / L"main.ini";
+	const auto saved = dir / L"user.ini";
+	const std::string original = "[Constants]\n$unloaded=13\n";
+	std::ofstream(saved, std::ios::binary) << original;
+	auto bytes = [&] {
+		std::ifstream file(saved, std::ios::binary);
+		Require(file.good(), "read actual persistent settings");
+		return std::string(std::istreambuf_iterator<char>(file), {});
+	};
+	std::ofstream(root) << "[Include]\nuser_config=user.ini\n[System]\n" << migoto::tests::earlySystemInput
+		<< "[Hunting]\nnext_pixelshader=K\n" << migoto::tests::earlyRepeat
+		<< "[Constants]\n" << migoto::tests::earlyDeclaration;
+	const auto samples = GetExpressionRandomSampleCount();
+	auto load = [&](DX12ModLoadReason reason) {
+		bool warnings = false;
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, &warnings, nullptr, reason) && warnings,
+			"load configuration and diagnose invalid early settings");
+		Require(GetExpressionRandomSampleCount() == samples, "early bindings reject Mod variables before random sampling");
+	};
+	load(DX12ModLoadReason::Initial);
+	const auto input = DX12UiActions::PollKeyboard([](int vk) { return vk == 'K'; }, 1000, Window::Absent());
+	Require(input && input->blocked == migoto::InputDisableScope::NONE && DX12UiActions::PendingActions ==
+		static_cast<LONG>(DX12UiActionBits::HuntNextPS), "startup input and foreground defaults allow the real Hunting action");
+	InterlockedExchange(&DX12UiActions::PendingActions, 0);
+	load(DX12ModLoadReason::UserReload);
+	Require(bytes() == original, "first reload with an invalid cleanup option preserves every saved byte");
+	load(DX12ModLoadReason::UserReload);
+	Require(bytes().find("$unloaded") == std::string::npos, "second identical reload applies the DX11 cleanup default");
+
+	// A literal zero is authoritative over a duplicate root key. An included
+	// global can override it. Exercise both against the same real settings file.
+	std::ofstream(saved, std::ios::binary) << original;
+	const auto include = dir / L"options.ini";
+	std::ofstream(include) << "[System]\n";
+	std::ofstream(root) << "[Include]\ninclude=options.ini\nuser_config=user.ini\n[System]\n"
+		"clear_unknown_settings=0\nclear_unknown_settings=1\n[Constants]\n" << migoto::tests::earlyDeclaration;
+	auto reload = [&] { return DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload); };
+	Require(reload(), "load duplicate root cleanup settings");
+	const auto preserved = bytes();
+	Require(preserved.find("$unloaded") != std::string::npos && reload() && bytes() == preserved,
+		"first root value preserves unknown settings across reloads");
+	std::ofstream(include) << "[System]\nclear_unknown_settings=ON\n";
+	Require(reload() && bytes().find("$unloaded") == std::string::npos,
+		"included global enables cleanup of the previously confirmed settings");
+	std::ofstream(saved, std::ios::binary) << original;
+	Require(reload() && bytes() == original, "arm a new unknown-value snapshot");
+	std::ofstream file(root);
+	file << "[Include]\nuser_config=user.ini\n";
+	const float last = migoto::tests::WriteEarlyReloadOptions(file);
+	file.close();
+	const auto before = GetExpressionRandomSampleCount();
+	Require(reload() && GetExpressionRandomSampleCount() == before + 6 &&
+		MigotoCommandVmUtils::State{}.Evaluate(L"$early_sample") == last && bytes().find("$unloaded") == std::string::npos,
+		"reload samples cleanup before Constants and retains startup-only input");
+	const auto allowShortcuts = MigotoCommandVmUtils::runtimeShortcuts.load();
+	Require(allowShortcuts && allowShortcuts(), "both Rendering switches receive their own random sample");
+	Window window;
+	Require(window.Valid(), "create window to check the sampled foreground option");
+	auto poll = [&](unsigned tick, migoto::InputWindowSource windowSource) {
+		InterlockedExchange(&DX12UiActions::PendingActions, 0);
+		DX12UiActions::PollKeyboard([](int key) { return key == VK_F23; }, tick, windowSource);
+		return InterlockedExchange(&DX12UiActions::PendingActions, 0);
+	};
+	const auto next = static_cast<LONG>(DX12UiActionBits::HuntNextPS);
+	Require(!poll(3000, Window::Absent()) && poll(3000, Window::Own()) == next &&
+		!poll(3199, Window::Own()) && poll(3200, Window::Own()) == next,
+		"foreground and Hunting repeat rate use their expected random samples");
+
+	std::filesystem::remove(include);
+	std::filesystem::remove(saved);
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
+}
 
 void TestConfiguredInputScopes()
 {
@@ -1637,7 +1719,10 @@ void TestForegroundFrameInput(IDXGISwapChain1 *chain)
 		return DX12UiActions::PollKeyboard([&](int) { ++keysRead; return false; }, GetTickCount64(), source);
 	};
 	Vm::State vm;
-	load("check_foreground_window=0\n", "check_foreground_window=$allow\nadditional_foreground_window=Bunny Input Audit\n");
+	load("check_foreground_window=$allow\n", "", true);
+	Require(poll(Window::Absent()).has_value(), "early foreground setting rejects a declared Mod variable");
+	keysRead = 0;
+	load("check_foreground_window=0\n", "check_foreground_window=(2 > 1)\nadditional_foreground_window=Bunny Input Audit\n");
 	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_X;
 	Source::reads = {};
 	auto blocked = poll(Window::Absent());
@@ -2444,6 +2529,10 @@ void TestDescriptors(ID3D12Device *device, bool benchmark)
 int main(int argc, char **argv)
 {
 	try {
+		if (argc == 2 && !strcmp(argv[1], "--early-config")) {
+			TestEarlyConfig();
+			return 0;
+		}
 		const bool benchmark = argc == 2 && !strcmp(argv[1], "--descriptors");
 		ComPtr<ID3D12Debug> debug;
 		if (!benchmark && SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))

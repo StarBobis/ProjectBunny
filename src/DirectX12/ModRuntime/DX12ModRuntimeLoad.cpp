@@ -1250,11 +1250,7 @@ static MigotoCommandVmUtils::ShortcutPermission ReadExpressionShortcutPolicy(
 	const auto *rendering = ini.FindSection(L"Rendering");
 	auto enabled = [&](const wchar_t *key) {
 		const auto *entry = rendering ? rendering->FindGlobalSetting(key) : nullptr;
-		// DX11's EarlyConfigRegistries hides old Mod variables while reading
-		// [Rendering]. Any $ operand fails binding before evaluation starts.
-		if (!entry || entry->value.find(L'$') != std::wstring::npos)
-			return true;
-		return MigotoCommandVmUtils::ReadStaticIniBoolean(Bunny::IniDocumentText::ToLower(entry->value)).value_or(true);
+		return !entry || MigotoCommandVmUtils::ReadEarlyIniBoolean(entry->value).value_or(true);
 	};
 	const bool optimizations = enabled(L"mod_runtime_optimizations");
 	const bool shortCircuit = enabled(L"expression_short_circuit");
@@ -1356,7 +1352,13 @@ bool DX12ModRuntimeLoad(
 	// cleanup when the complete include tree was available on this reload.
 	const bool confirmUnknowns = reason == DX12ModLoadReason::UserReload &&
 		iniLoad.errors.empty() && iniLoad.includesComplete;
-	auto huntingKeys = DX12HuntingHotkeys::Parse(iniLoad.document, iniLoad.warnings);
+	// Preserve DX11 load order when multiple valid options sample random().
+	DX12HuntingHotkeys::Bindings huntingKeys;
+	huntingKeys.ReadForegroundSettings(iniLoad.document, iniLoad.warnings);
+	const auto cleanup = Bunny::DX12ConstantsVmUtils::ReadCleanupPolicy(iniLoad.document);
+	huntingKeys.ReadInputSettings(iniLoad.document, iniLoad.warnings, DX12HuntingHotkeys::Instance().NeedsInitialInputSetting());
+	const auto shortcuts = ReadExpressionShortcutPolicy(iniLoad.document, configPath);
+	huntingKeys.ReadHuntingSettings(iniLoad.document, iniLoad.warnings);
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
 	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes, iniLoad.warnings);
@@ -1364,7 +1366,8 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
 	const auto settings = Bunny::DX12ConstantsVmUtils::Initialize(commandLists, iniLoad.userConfigPath,
-		confirmUnknowns ? &iniLoad.document : nullptr, reload, ReadExpressionShortcutPolicy(iniLoad.document, configPath));
+		confirmUnknowns ? &iniLoad.document : nullptr, reload, shortcuts,
+		confirmUnknowns ? cleanup : Vm::UnknownSettingsPolicy::Observe);
 	if (settings.status != Vm::SettingsPublishStatus::Applied) {
 		if (statusMessage) {
 			if (settings.status == Vm::SettingsPublishStatus::WipeFailed)
@@ -1393,8 +1396,6 @@ bool DX12ModRuntimeLoad(
 	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	SetBasePaths(configPath);
 	ReleaseSRWLockExclusive(&gModLock);
-	huntingKeys.ReadInputSettings(iniLoad.document, iniLoad.warnings, DX12HuntingHotkeys::Instance().NeedsInitialInputSetting());
-	huntingKeys.ReadForegroundSettings(iniLoad.document, iniLoad.warnings);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings, &iniLoad.warnings);
 	auto keyCommandLists = BuildKeyCommandLists(iniLoad.document, keyBindings);
 	for (const auto &binding : keyBindings) {

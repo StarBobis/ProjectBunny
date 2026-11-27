@@ -28,6 +28,13 @@ public:
 		Vm::ShortcutPermission shortcuts = Vm::AllowShortcuts)
 	{
 		const auto policy = reloadConfig ? ReadCleanupPolicy(*reloadConfig) : Vm::UnknownSettingsPolicy::Observe;
+		return Initialize(commandLists, userConfigPath, reloadConfig, reload, shortcuts, policy);
+	}
+
+	static Vm::SettingsLoadResult Initialize(const CommandListMap &commandLists, const std::wstring &userConfigPath,
+		const IniDocument *reloadConfig, const Vm::SettingsReloadSnapshot &reload, Vm::ShortcutPermission shortcuts,
+		Vm::UnknownSettingsPolicy policy)
+	{
 		Vm::GlobalVariables globals;
 		globals.shortcuts = shortcuts;
 		globals.savePath = userConfigPath;
@@ -74,18 +81,15 @@ public:
 		return nullptr;
 	}
 
-private:
 	static Vm::UnknownSettingsPolicy ReadCleanupPolicy(const IniDocument &ini)
 	{
-		std::wstring text;
-		bool clear = true;
-		if (ini.GetString(L"System", L"clear_unknown_settings", &text)) {
-			text = IniDocumentText::ToLower(IniDocumentText::Trim(text));
-			clear = Vm::ReadStaticIniBoolean(text).value_or(true);
-		}
+		const auto *system = ini.FindSection(L"System");
+		const auto *entry = system ? system->FindGlobalSetting(L"clear_unknown_settings") : nullptr;
+		const bool clear = !entry || Vm::ReadEarlyIniBoolean(entry->value).value_or(true);
 		return clear ? Vm::UnknownSettingsPolicy::ClearUnchanged : Vm::UnknownSettingsPolicy::Preserve;
 	}
 
+private:
 	static void RegisterDeclaration(Vm::State &state, const CommandListAction &action)
 	{
 		const auto declaration = migoto::VariableDeclaration::Parse(action.key);

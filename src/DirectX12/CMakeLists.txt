@@ -271,5 +271,6 @@ if(BUILD_TESTING AND DX12_AUDIT_TESTS)
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/audit"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/audit")
     add_test(NAME dx12_runtime_audit COMMAND dx12_runtime_audit)
-    set_tests_properties(dx12_runtime_audit PROPERTIES TIMEOUT 60)
+    add_test(NAME dx12_early_configuration COMMAND dx12_runtime_audit --early-config)
+    set_tests_properties(dx12_runtime_audit dx12_early_configuration PROPERTIES TIMEOUT 60)
 endif()

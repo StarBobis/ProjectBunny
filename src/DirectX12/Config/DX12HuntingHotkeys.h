@@ -135,7 +135,7 @@ public:
 			const auto *check = system->FindGlobalSetting(L"check_foreground_window");
 			const auto *title = system->FindGlobalSetting(L"additional_foreground_window");
 			if (check) {
-				const auto value = MigotoCommandVmUtils::ReadStaticIniBoolean(Bunny::IniDocumentText::ToLower(check->value));
+				const auto value = MigotoCommandVmUtils::ReadEarlyIniBoolean(check->value);
 				checkWindow = value.value_or(false);
 				if (!value)
 					warnings.push_back(L"Invalid [System] check_foreground_window: " + check->value);
@@ -153,7 +153,7 @@ public:
 			if (!section)
 				return;
 			if (const auto *setting = readInitial ? section->FindGlobalSetting(L"input") : nullptr) {
-				const auto flag = MigotoCommandVmUtils::ReadStaticIniBoolean(Bunny::IniDocumentText::ToLower(setting->value));
+				const auto flag = MigotoCommandVmUtils::ReadEarlyIniBoolean(setting->value);
 				initiallyEnabled = flag.value_or(true);
 				if (!flag)
 					warnings.push_back(L"Invalid [Input] input: " + setting->value);
@@ -176,27 +176,34 @@ public:
 			ports |= combination.Ports();
 			usesGuide |= combination.UsesGuide();
 		}
+
+		void ReadHuntingSettings(const Bunny::IniDocument &ini, std::vector<std::wstring> &warnings)
+		{
+			std::wstring text;
+			const auto *hunting = ini.FindSection(L"Hunting");
+			const auto *entry = hunting ? hunting->FindGlobalSetting(L"repeat_rate") : nullptr;
+			if (entry) {
+				if (const auto rate = MigotoCommandVmUtils::ReadEarlyIniInteger(entry->value))
+					repeatRate = *rate;
+				else
+					warnings.push_back(L"Invalid [Hunting] repeat_rate: " + entry->value);
+			}
+			for (size_t i = 0; i < std::size(specs); ++i) {
+				const auto &spec = specs[i];
+				if (!spec.name || !ini.GetString(L"Hunting", spec.name, &text))
+					text = spec.fallback;
+				auto &combination = chords[i].combination;
+				if (!combination.Parse(text, spec.action == Action::WipeUserConfig) && spec.name)
+					warnings.push_back(std::wstring(L"Invalid [Hunting] ") + spec.name + L": " + text);
+				IncludeDevices(combination);
+			}
+		}
 	};
 
 	static Bindings Parse(const Bunny::IniDocument &ini, std::vector<std::wstring> &warnings)
 	{
 		Bindings bindings;
-		std::wstring text;
-		if (ini.GetString(L"Hunting", L"repeat_rate", &text)) {
-			if (const auto rate = MigotoCommandVmUtils::ReadStaticIniInteger(text))
-				bindings.repeatRate = *rate;
-			else
-				warnings.push_back(L"Invalid [Hunting] repeat_rate: " + text);
-		}
-		for (size_t i = 0; i < std::size(specs); ++i) {
-			const auto &spec = specs[i];
-			if (!spec.name || !ini.GetString(L"Hunting", spec.name, &text))
-				text = spec.fallback;
-			auto &combination = bindings.chords[i].combination;
-			if (!combination.Parse(text, spec.action == Action::WipeUserConfig) && spec.name)
-				warnings.push_back(std::wstring(L"Invalid [Hunting] ") + spec.name + L": " + text);
-			bindings.IncludeDevices(combination);
-		}
+		bindings.ReadHuntingSettings(ini, warnings);
 		return bindings;
 	}
 

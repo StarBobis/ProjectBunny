@@ -92,6 +92,6 @@ expression_short_circuit = 1
 
 任一开关关闭、正在捕获帧或主 INI 的 `[Logging] log_level = debug` 生效时，逻辑运算对两侧求值。旧式 `calls = 1` 和 `debug = 1` 同时生效时也使用此规则。
 
-这两个开关在 `[Constants]` 之前读取。首次加载和 F10 重载时，引用 Mod 变量（如 `$enabled`）都会回退到默认值 1。需要关闭时可直接填写 `0`。
+这两个开关在 `[Constants]` 之前读取，引用 Mod 变量（如 `$enabled`）时会回退到 1。`[System]` 的 `check_foreground_window`、`clear_unknown_settings`，以及 `[Input] input` 和 `[Hunting] repeat_rate` 也在此阶段读取。请使用字面量或不依赖 Mod 变量的表达式，例如 `repeat_rate = 2 * 2`。`[Input] input` 只在首次加载时生效。
 
 F10 重载 Mod 配置；DLL 与注入方式变更需要重启。
