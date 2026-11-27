@@ -149,6 +149,7 @@ add_library(DirectX12 SHARED
 
     # 3Dmigoto config/runtime model used only by DX12
     ${CMAKE_SOURCE_DIR}/src/common/ini_parser_lite.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ExpressionFunctions.cpp
 
 )
 

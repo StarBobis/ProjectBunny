@@ -3,6 +3,7 @@
 // Global DX12 runtime mode, module handle, and per-frame counter shards.
 // Split out of Core/DX12Diagnostics.h; include that umbrella header from existing code.
 #include "DX12CoreModels.h"
+#include "FrameClock.h"
 
 enum class DX12RuntimeMode : LONG
 {
@@ -40,10 +41,7 @@ public:
 		return module;
 	}
 
-	static LONG IncrementPresentCount()
-	{
-		return presentCount.fetch_add(1, std::memory_order_relaxed) + 1;
-	}
+	static LONG IncrementPresentCount(uint64_t ticks = migoto::GetSystemTicks());
 
 	static LONG GetPresentCount()
 	{

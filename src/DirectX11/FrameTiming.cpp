@@ -1,13 +1,12 @@
 #include "FrameTiming.h"
+#include "FrameClock.h"
 #include "globals.h"
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 
 uint64_t GetSystemTicks() noexcept
 {
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
+    return migoto::GetSystemTicks();
 }
 
 FPSCounter::FPSCounter(float smoothing, float min_fps) noexcept

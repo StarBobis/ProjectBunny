@@ -324,7 +324,8 @@ public:
 		observedDynamicCommandState = true;
 		auto args = std::to_array(action.args);
 		for (const auto &[index, text] : action.drawExpressions) {
-			MigotoCommandVmUtils::ExpressionParser parser(text, mVm.Context());
+			using Parser = MigotoCommandVmUtils::ExpressionParser;
+			Parser parser(text, mVm.Context(), Parser::Mode::Validated);
 			const double value = std::trunc(parser.Parse());
 			const bool baseVertex = action.argCount == 5 && index == 3;
 			if (!parser.ok || !std::isfinite(value) || value < (baseVertex ? INT32_MIN : 0) ||

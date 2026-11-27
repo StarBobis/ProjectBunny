@@ -355,6 +355,7 @@ spec 的默认值是 `fill=solid` / `cull=back` / `topology=triangle_list` / `fr
 | `&&` / `\|\|` | **两侧都求值**，不短路 | `:94`、`:108` |
 | 数字字面量 | `0b` 或 `0B` 后可接 1–64 个二进制位；其他数字由 `wcstod` 解析 | `ParseNumber` |
 | 一元数学函数 | 21 个纯数值函数与 DX11 共享实现和回归用例，函数的参数与结果使用 float32 | `src/common/IniUnaryMath.h` |
+| `random(max)` | 两端共用有界采样器。正上限取 [0, max)，负上限取 (max, 0]。换帧更新种子并保留采样序号。语法错误、零或非有限上限均不消耗样本 | `src/common/ExpressionFunctions.cpp` |
 | 位运算与移位 | `~ & ^ \| << >>` 与 DX11 共用操作数转换、算术右移和 float32 结果舍入规则。移位数取低 5 位 | `src/common/IniBitwise.h` |
 | 标识符 | 首字符 `$` `_` 字母；后续可含 `\` 与数字（支持 `$\命名空间\变量`） | `:237`、`:243` |
 

@@ -20,6 +20,7 @@
 #include "IniExpressionNumbers.h"
 #include "IniBitwise.h"
 #include "IniUnaryMath.h"
+#include "ExpressionFunctions.h"
 
 class MigotoCommandVmUtils
 {
@@ -76,14 +77,23 @@ public:
 	class ExpressionParser
 	{
 	public:
+		enum class Mode { Evaluate, Validate, Validated };
 		const std::wstring *text = nullptr;
 		size_t pos = 0;
 		ExpressionContext context;
 		bool ok = true;
+		Mode mode;
 
-		ExpressionParser(const std::wstring &value, const ExpressionContext &evalContext)
-			: text(&value), context(evalContext)
+		ExpressionParser(const std::wstring &value, const ExpressionContext &evalContext, Mode mode = Mode::Evaluate)
+			: text(&value), context(evalContext), mode(mode)
 		{
+		}
+
+		static bool ValidSyntax(const std::wstring &value)
+		{
+			ExpressionParser syntax(value, {}, Mode::Validate);
+			syntax.Parse();
+			return syntax.ok;
 		}
 
 		double Parse()
@@ -270,17 +280,38 @@ public:
 				return ParseNumber();
 			if (pos < text->size() && IsIdentifierStart((*text)[pos])) {
 				const std::wstring name = ParseIdentifier();
-				if (!Match(L"("))
-					return LookupIdentifier(name);
-				const auto *function = migoto::unary::Find(MigotoIniCommandListUtils::ToLower(name));
-				if (!function) {
+				if (!Match(L"(")) {
+					if (name.size() == 6 && _wcsicmp(name.c_str(), L"random") == 0) {
+						ok = false;
+						return 0.0;
+					}
+					return mode == Mode::Validate ? 0.0 : LookupIdentifier(name);
+				}
+				const auto normalized = MigotoIniCommandListUtils::ToLower(name);
+				const bool random = normalized == L"random";
+				const auto *function = random ? nullptr : migoto::unary::Find(normalized);
+				if (!random && !function) {
 					ok = false;
 					return 0.0;
 				}
 				const double argument = ParseOr();
 				if (!Match(L")"))
 					ok = false;
-				return ok ? function->evaluate(static_cast<float>(argument)) : 0.0;
+				if (!ok || mode == Mode::Validate)
+					return 0.0;
+				if (!random)
+					return function->evaluate(static_cast<float>(argument));
+
+				// A malformed expression must not advance the shared random stream.
+				// Validate the entire expression once, before its first sample.
+				if (mode == Mode::Evaluate) {
+					if (!ValidSyntax(*text)) {
+						ok = false;
+						return 0.0;
+					}
+					mode = Mode::Validated;
+				}
+				return RandomExpressionValue(static_cast<float>(argument));
 			}
 			ok = false;
 			return 0.0;

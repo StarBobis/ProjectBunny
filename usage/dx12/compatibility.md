@@ -16,7 +16,8 @@
 | Pool、Region、动态槽与槽范围 | 不支持 DX11 扩展语法 |
 | `@/#/->`、资源 getter、dHash | 不支持 DX11 表达式接口 |
 | 一元数学函数、二进制字面量、幂、float32 位模式比较、位运算、位移 | 可用，见[表达式](./expressions) |
-| random、locked | 待实现 |
+| `random(上限)` | 可用，支持变量、负上限和嵌套表达式 |
+| `locked` | 待实现 |
 | store、dump、clear、analyse_options | 无同等通用命令，抓取用 F8/F9 |
 | Preset、输入暂停模式、DX11 全局 Device/Rendering/Logging | 不按 DX11 语义执行 |
 | 显式实例绘制 | 替换绘制支持 `drawinstanced` 和 `drawindexedinstanced`。独立 Present 图形元素支持前者 |

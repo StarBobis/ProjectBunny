@@ -1,5 +1,13 @@
 #include "DX12RuntimeState.h"
 #include "Diag/DX12Diag.h"
+#include "ExpressionFunctions.h"
+
+LONG DX12RuntimeState::IncrementPresentCount(uint64_t ticks)
+{
+	const auto frame = static_cast<uint32_t>(presentCount.fetch_add(1, std::memory_order_relaxed)) + 1u;
+	SeedExpressionRandom(frame, static_cast<uint32_t>(ticks));
+	return static_cast<LONG>(frame);
+}
 
 // Runtime mode transitions are logged through the unified diagnostics facade,
 // which cannot be included from DX12RuntimeState.h (the diagnostics header

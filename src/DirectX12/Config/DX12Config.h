@@ -2,6 +2,7 @@
 
 #include "Core/DX12Diagnostics.h"
 #include "MigotoIniCommandListUtils.hpp"
+#include "MigotoCommandVmUtils.hpp"
 #include "ShaderRegexExclusions.h"
 #include "IniDrawArguments.h"
 #include <cerrno>
@@ -785,6 +786,8 @@ inline bool MigotoCommandListParserText::ParseDrawArgs(
 					return false;
 				action->args[index] = static_cast<uint32_t>(literal);
 			} else {
+				if (!MigotoCommandVmUtils::ExpressionParser::ValidSyntax(token))
+					return false;
 				action->drawExpressions.emplace_back(static_cast<uint32_t>(index), std::move(token));
 			}
 			return true;

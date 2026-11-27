@@ -40,8 +40,11 @@ $variant = $next
 | 符号、取整与小数部分 | `abs sign ceil floor trunc round frac` |
 | 平方根、指数与对数 | `sqrt rsqrt exp exp2 log log2` |
 | 限幅与计数 | `saturate` 限制到 0–1，`countbits` 统计转换后的 32 位整数中的置位数 |
+| 随机数 | `random(8)` 返回大于等于 0 且小于 8 的值。`random(-8)` 返回大于 -8 且小于等于 0 的值 |
 
-`sqrt(-1)` 得到 NaN，`rsqrt(0)` 得到正无穷。当前仍缺少 `random`、`@/#/->` 和 Pool 访问。
+`random($bound)` 在每次执行时取样。零边界返回 0，NaN 或无穷边界返回 NaN，这些情况都不会消耗样本。在 `[Constants]` 初始化变量时取一次样，后续命令再次调用会取新样本。两次取样的结果可能相同。
+
+`sqrt(-1)` 得到 NaN，`rsqrt(0)` 得到正无穷。当前仍缺少 `@/#/->` 和 Pool 访问。
 
 例如 `$flags = $flags ^ (1 << 2)` 翻转第 2 位。位运算会先将操作数转为 float32，再向零截断为有符号 32 位整数，运算结果按 float32 舍入。右移保留符号位，移位数取低 5 位。连续存储标志位时请使用第 0–23 位，以免舍入丢失低位。
 

@@ -33,7 +33,6 @@ add_library(DirectX11 SHARED
     DX11Version.h
     DX11ResourceIds.h
     DLLMainHook.cpp
-    ExpressionFunctions.cpp
     FrameAnalysis.cpp
     FrameAnalysisDDS.cpp
     FrameAnalysisTiming.h
@@ -83,6 +82,7 @@ add_library(DirectX11 SHARED
     # 从外部项目编译的源文件 (直接包含编译)
     ${CMAKE_SOURCE_DIR}/src/common/iid.cpp
     ${CMAKE_SOURCE_DIR}/src/common/ini_parser_lite.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ExpressionFunctions.cpp
     ${CMAKE_SOURCE_DIR}/src/common/util.cpp
     ${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp
     ${CMAKE_SOURCE_DIR}/src/D3D_Shaders/SignatureParser.cpp

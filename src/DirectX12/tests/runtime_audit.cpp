@@ -124,6 +124,56 @@ void TestUnaryMath()
 	}
 }
 
+void TestRandomExpression()
+{
+	Bunny::IniDocument ini;
+	Require(ini.Parse(L"[Constants]\nglobal $bound = 8\nglobal $sample = RaNdOm(-$bound)\n"
+		L"[CommandListBadDraw]\ndrawinstanced = 3,random(2),0,1+\n"), "parse random configuration");
+	const uint32_t before = GetExpressionRandomSampleCount();
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
+	Require(lists.at(L"CommandListBadDraw").actions.empty() && GetExpressionRandomSampleCount() == before,
+		"invalid draw arguments do not sample random during load or playback");
+	Bunny::DX12ConstantsVmUtils::Initialize(lists);
+	MigotoCommandVmUtils::State vm;
+	const double sample = vm.Evaluate(L"$sample");
+	Require(GetExpressionRandomSampleCount() == before + 1 && sample <= 0 && sample > -8,
+		"Constants evaluates a variable random bound exactly once");
+	Require(vm.Evaluate(L"random(0)") == 0 && std::isnan(vm.Evaluate(L"random(inf)")) &&
+		std::isnan(vm.Evaluate(L"random(nan)")) && GetExpressionRandomSampleCount() == before + 1,
+		"zero and nonfinite bounds do not consume samples");
+	for (const std::wstring invalid : {L"random()", L"random(2,3)", L"random(2) +",
+		L"random(2) + typo(3)", L"random(random(2)", L"random + 1"}) {
+		MigotoCommandVmUtils::ExpressionParser parser(invalid, vm.Context());
+		Require(parser.Parse() == 0 && !parser.ok, "malformed random expression rejected");
+	}
+	Require(GetExpressionRandomSampleCount() == before + 1, "invalid expressions leave the sample stream untouched");
+
+	// Replay the next two native samples at the same generator inputs through the VM.
+	const auto seedNext = []() {
+		SeedExpressionRandom(73u - 0x9e3779b9u * GetExpressionRandomSampleCount(), 41);
+	};
+	seedNext();
+	const float inner = RandomExpressionValue(8.0f);
+	const float expected = RandomExpressionValue(inner);
+	Require(inner > 0, "nested random fixture has a nonzero bound");
+	seedNext();
+	Require(vm.Evaluate(L"random(random($bound))") == expected && GetExpressionRandomSampleCount() == before + 5,
+		"nested VM calls consume the shared samples in argument order");
+	Require(vm.Evaluate(L"1 || random(1)") == 1 && GetExpressionRandomSampleCount() == before + 6,
+		"observable random on the right of a logical operator runs once");
+	const uint32_t frame = static_cast<uint32_t>(DX12RuntimeState::GetPresentCount()) + 1u;
+	const uint64_t ticks = 0x12345678abcdef01ull;
+	// Offset the reference frame by one call so the following sample has
+	// the same hash input after the real frame boundary advances the seed.
+	SeedExpressionRandom(frame + 0x9e3779b9u, static_cast<uint32_t>(ticks));
+	const float nextFrame = RandomExpressionValue(16);
+	Require(static_cast<uint32_t>(DX12RuntimeState::IncrementPresentCount(ticks)) == frame &&
+		vm.Evaluate(L"random(16)") == nextFrame && GetExpressionRandomSampleCount() == before + 8,
+		"frame and low clock bits seed the next sample without resetting the ordinal");
+	MigotoCommandVmUtils::ClearGlobals();
+}
+
 ComPtr<ID3D12CommandQueue> Queue(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type)
 {
 	D3D12_COMMAND_QUEUE_DESC desc = {};
@@ -534,6 +584,12 @@ void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 	ComPtr<ID3D12CommandQueue> held;
 	held.Attach(DX12SwapChainQueues::Acquire(chain.Get()));
 	Require(held.Get() == first.Get(), "creation queue");
+	const LONG frameBeforePresent = DX12RuntimeState::GetPresentCount();
+	const auto samplesBeforePresent = GetExpressionRandomSampleCount();
+	Check(chain->Present(0, 0));
+	Require(DX12RuntimeState::GetPresentCount() == frameBeforePresent + 1 &&
+		GetExpressionRandomSampleCount() == samplesBeforePresent, "wrapped WARP Present advances the frame without sampling");
+	Drain(device, first.Get());
 	ComPtr<IDXGISwapChain3> chain3;
 	Check(chain.As(&chain3));
 	UINT masks[] = {1, 1};
@@ -809,6 +865,7 @@ int main(int argc, char **argv)
 		TestShaderRegexExclusions();
 		TestExpressionNumbers();
 		TestUnaryMath();
+		TestRandomExpression();
 		TestInstancedDraws(device.Get());
 		TestAutomaticDraws(device.Get());
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
