@@ -19,6 +19,7 @@
 #include "tests/IniLogicalCases.h"
 #include "tests/IniEarlySettingsCases.h"
 #include "tests/IniFileConditionCases.h"
+#include "tests/IniKeyConditionCases.h"
 #include "tests/IniHuntingModeCases.h"
 #include "tests/IniGraphicsConstantCases.h"
 #include <bit>
@@ -1998,6 +1999,49 @@ void TestForegroundFrameInput(IDXGISwapChain1 *chain)
 	std::filesystem::remove(dir);
 }
 
+void TestKeyConditions()
+{
+	using Vm = MigotoCommandVmUtils;
+	using Keys = Bunny::MigotoKeyBindingUtils;
+	Vm::SetGlobal(L"$ini_expression_regression_value", 7);
+	const auto samples = GetExpressionRandomSampleCount();
+	bool usesWindowSnapshot = false;
+	for (const auto &test : migoto::tests::keyConditions)
+		Require(Vm::ValidKeyCondition(test.text, {}, usesWindowSnapshot) == test.valid, "DX12 Key operand scope");
+	Keys::Binding eager;
+	eager.condition = L"1 || $ini_expression_regression_value";
+	Vm::SetGlobal(L"$ini_expression_regression_value", std::bit_cast<double>(UINT64_C(0x7ff0000000000001)));
+	const auto saved = _mm_getcsr();
+	_mm_setcsr((saved | _MM_MASK_INVALID) & ~_MM_EXCEPT_INVALID);
+	const bool active = Keys::ConditionActive(eager);
+	const bool readRight = (_mm_getcsr() & _MM_EXCEPT_INVALID) != 0;
+	_mm_setcsr(saved);
+	Require(active && readRight, "Key guards read both operands outside a command list");
+	Require(!Vm::ReadStaticIniInteger(L"random(2) + frame_time") && GetExpressionRandomSampleCount() == samples,
+		"validating key conditions and rejecting a setting operand leaves random untouched");
+	const auto dir = std::filesystem::current_path() /
+		(L"key-conditions-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create key condition fixture");
+	const auto root = dir / L"main.ini";
+	std::ofstream(root) << "[Constants]\n" << migoto::tests::KeyConditionIni() <<
+		"[KeyUnused]\ncondition=res_width\n[KeyInvalidSize]\nkey=F22\ncondition=res_width + draw_type\n";
+	bool warnings = false, errors = false;
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, &warnings, &errors) && warnings && !errors, "load keys with invalid conditions");
+	Require(!Vm::VariableStore::frameVariableReferenced.load(), "unused and invalid geometry guards skip frame sampling");
+	Vm::State vm;
+	auto poll = [&](int key) {
+		Keys::ProcessBindings(gKeyBindings, gKeyFrame, [=](int vk) { return key == vk; }, {},
+			[](const std::wstring &name, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(name, post); });
+	};
+	migoto::tests::CheckKeyConditionPresses([&](int key) {
+		poll(0);
+		poll(key);
+		return vm.Evaluate(L"$ks_hits");
+	}, Require);
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
+}
+
 void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
 {
 	using Source = RecordedControllers;
@@ -2010,7 +2054,8 @@ void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
 	auto &port = Source::hardware.slots[1];
 	port.connected = true;
 	Vm::State vm;
-	std::ofstream(root) << "[Constants]\nglobal $hits=0\nglobal $blocked=0\n"
+	std::ofstream(root) << "[Constants]\nglobal $hits=0\nglobal $blocked=0\nglobal $first_size=0\n"
+		"[KeyGeometry]\nkey=XB2_A\ncondition=res_width>0 && res_height>0\n$first_size=1\n"
 		"[KeyLogical]\nkey=XB2_A\ncondition=1 || $hits > 0\nrun=CommandListLogical\n"
 		"[CommandListLogical]\n$hits=$hits+1\n"
 		"[KeyBlocked]\nkey=XB2_A\ncondition=0 && random(1)\n$blocked=1\n";
@@ -2021,7 +2066,8 @@ void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
 	Check(chain->Present(0, DXGI_PRESENT_TEST));
 	Require(vm.Evaluate(L"$hits") == 0 && GetExpressionRandomSampleCount() == before, "test Present skips key evaluation");
 	Check(chain->Present(0, 0));
-	Require(vm.Evaluate(L"$hits") == 1 && vm.Evaluate(L"$blocked") == 0 && GetExpressionRandomSampleCount() == before + 1,
+	Require(vm.Evaluate(L"$hits") == 1 && vm.Evaluate(L"$blocked") == 0 && vm.Evaluate(L"$first_size") == 1 &&
+		GetExpressionRandomSampleCount() == before + 1,
 		"Present runs the eligible key and consumes one sample in the false eager guard");
 	port.state.Gamepad.wButtons = 0;
 	std::ofstream(root) << "[Constants]\n" << migoto::tests::inputDelayIni;
@@ -2747,6 +2793,7 @@ int main(int argc, char **argv)
 		TestSettingsHotkeys();
 		TestHuntingKeyBindings();
 		TestHuntingModes();
+		TestKeyConditions();
 		TestControllerInputs();
 		TestSharedModTriggers();
 		TestKeyTransitionClock();

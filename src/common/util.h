@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EnumOptionPrefix.h"
+#include "IniParameterName.h"
 #include <typeinfo>
 #include <ctype.h>
 #include <wchar.h>
@@ -743,42 +744,21 @@ static HRESULT CreateHLSLTextFile(UINT64 hash, string hlslText)
 // Parses the name of one of the IniParam constants: x, y, z, w, x1, y1, ..., z7, w7
 static bool ParseIniParamName(const wchar_t *name, int *idx, float DirectX::XMFLOAT4::**component)
 {
-	if (!name || !idx || !component || !*name)
+	migoto::IniParameterName parsed;
+	if (!idx || !component || !migoto::ParseIniParameterName(name, parsed))
 		return false;
-	float DirectX::XMFLOAT4::*parsed_component;
-	switch (towlower(name[0])) {
-		case L'x':
-			parsed_component = &DirectX::XMFLOAT4::x;
-			break;
-		case L'y':
-			parsed_component = &DirectX::XMFLOAT4::y;
-			break;
-		case L'z':
-			parsed_component = &DirectX::XMFLOAT4::z;
-			break;
-		case L'w':
-			parsed_component = &DirectX::XMFLOAT4::w;
-			break;
-		default:
-			return false;
-	}
-	int parsed_index = 0;
-	if (name[1]) {
-		wchar_t *end = nullptr;
-		errno = 0;
-		const long long value = wcstoll(name + 1, &end, 10);
-		// Every consumer reserves index + 1 in a signed int. Keep the
-		// existing nonnegative scanf forms, without wrapping or truncating.
-		if (end == name + 1 || *end || errno == ERANGE || value < 0 || value >= INT_MAX)
-			return false;
-		parsed_index = static_cast<int>(value);
-	}
+
 #if MIGOTO_DX == 9
-	if (parsed_index >= 225)
+	if (parsed.index >= 225)
 		return false;
 #endif
-	*idx = parsed_index;
-	*component = parsed_component;
+	switch (parsed.component) {
+	case L'x': *component = &DirectX::XMFLOAT4::x; break;
+	case L'y': *component = &DirectX::XMFLOAT4::y; break;
+	case L'z': *component = &DirectX::XMFLOAT4::z; break;
+	case L'w': *component = &DirectX::XMFLOAT4::w; break;
+	}
+	*idx = parsed.index;
 	return true;
 }
 

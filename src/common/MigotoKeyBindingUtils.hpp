@@ -142,7 +142,8 @@ public:
 			if (ini.GetString(section.name.c_str(), L"type", &type))
 				binding.type = ParseBindingType(type);
 
-			bool havePressDelay = false, haveReleaseDelay = false;
+			bool havePressDelay = false, haveReleaseDelay = false, haveCondition = false;
+			bool usesWindowSnapshot = false;
 			for (const IniEntry &entry : section.entries) {
 				if (!entry.hasEquals)
 					continue;
@@ -166,17 +167,29 @@ public:
 					continue;
 				}
 				if (key == L"condition") {
-					binding.condition = IniDocumentText::ToLower(value);
+					if (haveCondition || value.empty())
+						continue;
+					haveCondition = true;
 					binding.conditionNamespace = entry.iniNamespace;
+					binding.condition = IniDocumentText::ToLower(value);
+					auto validate = [&](std::wstring &condition) {
+						if (!condition.empty() && !MigotoCommandVmUtils::ValidKeyCondition(condition, entry.iniNamespace, usesWindowSnapshot)) {
+							if (warnings)
+								warnings->push_back(section.name + L": invalid condition: " + condition);
+							condition.clear();
+						}
+					};
 					if (binding.type == BindingType::Cycle) {
 						binding.cycleConditions = SplitCommaValues(binding.condition);
-						for (auto &condition : binding.cycleConditions) {
-							if (!condition.empty() && !MigotoCommandVmUtils::ExpressionParser::ValidSyntax(condition)) {
-								if (warnings)
-									warnings->push_back(section.name + L": invalid cycle condition: " + condition);
-								condition.clear();
-							}
+						for (auto &condition : binding.cycleConditions)
+							validate(condition);
+					} else {
+						if (binding.condition.size() >= MAX_PATH) {
+							if (warnings)
+								warnings->push_back(section.name + L": condition exceeds MAX_PATH");
+							binding.condition.resize(MAX_PATH - 1);
 						}
+						validate(binding.condition);
 					}
 					continue;
 				}
@@ -231,6 +244,8 @@ public:
 
 			auto &triggers = binding.triggers;
 			if (!triggers.empty()) {
+				if (usesWindowSnapshot)
+					MigotoCommandVmUtils::VariableStore::frameVariableReferenced.store(1, std::memory_order_release);
 				// DX11 registers all cycle-back callbacks before forward callbacks.
 				if (binding.type == BindingType::Cycle)
 					std::stable_partition(triggers.begin(), triggers.end(), [](const Trigger &t) { return t.reverse; });
@@ -325,6 +340,7 @@ public:
 			return true;
 		MigotoCommandVmUtils::ExpressionContext context;
 		context.iniNamespace = binding.conditionNamespace;
+		context.iniEvaluation = MigotoCommandVmUtils::IniEvaluation::KeyCondition;
 		const auto value = MigotoCommandVmUtils::EvaluateExpression(context, condition);
 		return binding.type == BindingType::Cycle ? value != 0 : MigotoCommandVmUtils::Truthy(value);
 	}

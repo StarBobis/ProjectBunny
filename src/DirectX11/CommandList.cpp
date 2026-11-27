@@ -6644,27 +6644,7 @@ bool AssignmentCommand::optimise(HackerDevice *device)
 
 static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope *scope)
 {
-	if (scope)
-		return true;
-
-	// List of operand types allowed outside of a command list, e.g. in a
-	// [Key] / [Preset] section
-	switch (type) {
-		case ParamOverrideType::VALUE:
-		case ParamOverrideType::INI_PARAM:
-		case ParamOverrideType::VARIABLE:
-		case ParamOverrideType::RES_WIDTH:
-		case ParamOverrideType::RES_HEIGHT:
-		case ParamOverrideType::TIME:
-		case ParamOverrideType::FRAME_NUMBER:
-		case ParamOverrideType::HUNTING:
-		case ParamOverrideType::EFFECTIVE_DPI:
-		case ParamOverrideType::SLI:
-		case ParamOverrideType::STEREO_ACTIVE:
-		case ParamOverrideType::STEREO_AVAILABLE:
-			return true;
-	}
-	return false;
+	return scope || migoto::AllowedOutsideCommandList(type);
 }
 
 bool valid_variable_name(const wstring &name)

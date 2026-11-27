@@ -46,7 +46,13 @@ F8–F12 和小键盘已用于内置工具，Mod 按键尽量避开。
 
 DX12 的 Key 参考字段为 `key`、`back`、`type`、`condition`、`run` 和 `$变量` 的值列表。多个变量列表按循环位置配对。
 
-DX11 的 `smart`、`wrap`、`transition`、释放延时和多后端输入配置不能视为同等支持；需要复杂变化时通过命令列表显式实现。
+## 按键条件
+
+`condition` 在按键触发时求值。例如，`condition = $enabled && res_width >= 1920` 只在已声明的 `$enabled` 非零且分辨率宽度至少为 1920 时触发。这里可读取全局变量、`x0` 等 IniParams 分量、`time`、`frame_number`、`res_width`、`res_height`、`effective_dpi` 和 `hunting`。按键条件会读取逻辑运算两侧的值。
+
+按键处于命令列表之外，`frame_time`、`fps`、`frame_analysis` 和 `draw_type` 等操作数只能放在命令列表内。按键条件写错时，加载会告警，该按键随后按无条件执行。即使写成 `0 && draw_type` 也会触发这个回退。同一段有多行 `condition` 时取第一条非空值。
+
+普通按键条件最多读取 259 个 UTF-16 代码单元。对于 `type = cycle`，可写 `condition = $enabled, 0, 1`，每档单独解析，单档条件可以超过上述长度。某一档条件写错，只会使该档按无条件执行。
 
 ## 条件调用
 

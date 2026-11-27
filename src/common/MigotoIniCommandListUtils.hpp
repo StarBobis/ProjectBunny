@@ -1,5 +1,7 @@
 #pragma once
 
+#include "IniParameterName.h"
+
 #include "IniVariableNames.h"
 #include <stdint.h>
 #include <cwctype>
@@ -154,16 +156,8 @@ public:
 
 	static bool IsShaderConstantKey(const std::wstring &value)
 	{
-		std::wstring lower = ToLower(Trim(value));
-		if (lower.size() < 2)
-			return false;
-		if (lower[0] != L'x' && lower[0] != L'y' && lower[0] != L'z' && lower[0] != L'w')
-			return false;
-		for (size_t i = 1; i < lower.size(); ++i) {
-			if (lower[i] < L'0' || lower[i] > L'9')
-				return false;
-		}
-		return true;
+		migoto::IniParameterName parameter;
+		return migoto::ParseIniParameterName(Trim(value).c_str(), parameter);
 	}
 
 	static bool IsRenderStateKey(const std::wstring &value)

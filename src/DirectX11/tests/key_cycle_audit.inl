@@ -48,9 +48,27 @@ public:
     ~CycleAuditIncludeFile() {std::error_code error; std::filesystem::remove(path,error);}
 };
 
+int scopePressedKey;
+SHORT WINAPI ReadScopeKey(int key) { return key == scopePressedKey ? static_cast<SHORT>(0x8000) : 0; }
+
 void test_f193()
 {
     IniParameterStateScope saved; AuditConfigScope config; BatchDevice device;
+    {
+        IniParameterDeviceResources resources(device);
+        config.load(migoto::tests::KeyConditionIni().c_str(), 0, true);
+        require_batch(SUCCEEDED(device.device->CreateIniParamResources()), "F193: allocate parameters referenced by Key guards");
+        device.wrapper->Bind3DMigotoResources();
+        device.wrapper->InitIniParams();
+        migoto::tests::CheckKeyConditionPresses([&](int key) {
+            scopePressedKey = 0;
+            DispatchRegisteredInputActions(device.device, ReadScopeKey);
+            scopePressedKey = key;
+            DispatchRegisteredInputActions(device.device, ReadScopeKey);
+            cycle_audit_flush(device);
+            return cycle_audit_value(L"$ks_hits");
+        }, require_batch);
+    }
     cycle_audit_load(config, device, migoto::tests::keyPhaseIni);
     {
         KeyOverride tap(KeyOverrideType::ACTIVATE), hold(KeyOverrideType::HOLD), toggle(KeyOverrideType::TOGGLE);

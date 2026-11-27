@@ -25,6 +25,7 @@
 #include "IniLogicalPlan.h"
 #include "IniIncludeCondition.h"
 #include "IniGraphicsConstants.h"
+#include "IniExpressionOperands.h"
 #include "IniUnaryMath.h"
 #include "ExpressionFunctions.h"
 #include "DrawCallParameters.h"
@@ -94,7 +95,7 @@ public:
 
 	inline static std::atomic<FrameTiming> frameTiming{FrameTiming{0, 0, 0, 0}};
 
-	enum class IniEvaluation { Runtime, Setting, FileCondition };
+	enum class IniEvaluation { Runtime, Setting, FileCondition, KeyCondition };
 
 	class ExpressionContext
 	{
@@ -116,6 +117,7 @@ public:
 		size_t pos = 0;
 		ExpressionContext context;
 		bool ok = true;
+		bool usesWindowSnapshot = false;
 		Mode mode;
 		std::optional<FrameTiming> timingSample;
 	private:
@@ -213,12 +215,14 @@ public:
 		{
 		}
 
-		static bool ValidSyntax(const std::wstring &value)
+		static bool ValidSyntax(const std::wstring &value, const ExpressionContext &context)
 		{
-			ExpressionParser syntax(value, {}, Mode::Validate);
+			ExpressionParser syntax(value, context, Mode::Validate);
 			syntax.Parse();
 			return syntax.ok;
 		}
+
+		static bool ValidSyntax(const std::wstring &value) { return ValidSyntax(value, {}); }
 
 		float Parse()
 		{
@@ -428,6 +432,9 @@ public:
 						ok = false;
 						return 0.0f;
 					}
+					if (mode == Mode::Validate && context.iniEvaluation != IniEvaluation::Runtime &&
+						!ValidUnscopedIdentifier(name))
+						ok = false;
 					if (analysis)
 						analysis->Identifier(MigotoIniCommandListUtils::ToLower(name));
 					return mode == Mode::Validate ? 0.0f : LookupIdentifier(name);
@@ -552,9 +559,28 @@ public:
 			return text->substr(start, pos - start);
 		}
 
+		bool ValidUnscopedIdentifier(const std::wstring &raw)
+		{
+			const auto name = MigotoIniCommandListUtils::ToLower(raw);
+			if (name.front() == L'$') {
+				std::lock_guard lock(VariableStore::globalsMutex);
+				const auto &globals = VariableStore::current;
+				return FindGlobal(globals, name, context.iniNamespace) != globals.values.end();
+			}
+			if (name == L"inf" || name == L"infinity" || name == L"nan")
+				return true;
+			migoto::IniParameterName parameter;
+			if (migoto::ParseIniParameterName(name.c_str(), parameter))
+				return true;
+			const auto type = lookup_enum_val(ParamOverrideTypeNames, name.c_str(), ParamOverrideType::INVALID);
+			if (type == ParamOverrideType::RES_WIDTH || type == ParamOverrideType::RES_HEIGHT || type == ParamOverrideType::EFFECTIVE_DPI)
+				usesWindowSnapshot = true;
+			return migoto::AllowedOutsideCommandList(type);
+		}
+
 		float LookupIdentifier(const std::wstring &name)
 		{
-			if (context.iniEvaluation != IniEvaluation::Runtime) {
+			if (context.iniEvaluation == IniEvaluation::Setting || context.iniEvaluation == IniEvaluation::FileCondition) {
 				if (name == L"sli" || name == L"stereo_active" || name == L"stereo_available")
 					return 0;
 				// DX11 accepts hunting here; frame_analysis requires command-list scope.
@@ -563,7 +589,7 @@ public:
 						return 0;
 				}
 				const bool snapshot = context.iniEvaluation == IniEvaluation::Setting &&
-					(name.front() == L'$' || name == L"time" || name == L"frame_time" || name == L"frame_number");
+					(name.front() == L'$' || name == L"time" || name == L"frame_number");
 				if (!snapshot && name != L"inf" && name != L"infinity" && name != L"nan") {
 					ok = false;
 					return 0;
@@ -578,16 +604,28 @@ public:
 		}
 	};
 
+	static bool ValidKeyCondition(const std::wstring &text, std::wstring_view iniNamespace, bool &usesWindowSnapshot)
+	{
+		ExpressionContext context;
+		context.iniNamespace = iniNamespace;
+		context.iniEvaluation = IniEvaluation::KeyCondition;
+		ExpressionParser syntax(text, context, ExpressionParser::Mode::Validate);
+		syntax.Parse();
+		if (syntax.ok && syntax.usesWindowSnapshot)
+			usesWindowSnapshot = true;
+		return syntax.ok;
+	}
+
 	static std::optional<float> ReadStaticIniExpression(const std::wstring &text, std::wstring_view iniNamespace = {},
 		std::optional<unsigned> huntingMode = {})
 	{
-		if (!ExpressionParser::ValidSyntax(text))
-			return {};
 		ExpressionContext context;
 		context.requireDeclaredVariables = true;
 		context.iniEvaluation = IniEvaluation::Setting;
 		context.huntingMode = huntingMode;
 		context.iniNamespace = iniNamespace;
+		if (!ExpressionParser::ValidSyntax(text, context))
+			return {};
 		ExpressionParser parser(text, context, ExpressionParser::Mode::Validated);
 		const float value = parser.Parse();
 		return parser.ok ? std::optional<float>{value} : std::nullopt;
@@ -601,7 +639,7 @@ public:
 		context.huntingMode = huntingMode;
 		ExpressionParser parser(normalized, context, ExpressionParser::Mode::Validated);
 		return migoto::EvaluateIncludeCondition(
-			[&] { return ExpressionParser::ValidSyntax(normalized); },
+			[&] { return ExpressionParser::ValidSyntax(normalized, context); },
 			[&](float &value) { value = parser.Parse(); return parser.ok; });
 	}
 
@@ -818,7 +856,20 @@ public:
 
 	static std::wstring NormalizeVariableName(const std::wstring &value)
 	{
-		return MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(value));
+		auto name = MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(value));
+		if (name.empty() || (name[0] != L'x' && name[0] != L'y' && name[0] != L'z' && name[0] != L'w'))
+			return name;
+		if (name.size() == 1) {
+			name.push_back(L'0');
+			return name;
+		}
+		// Only a leading zero, whitespace or sign can spell an index differently.
+		if ((name[1] == L'0' && name.size() > 2) || name[1] == L'+' || name[1] == L'-' || std::iswspace(name[1])) {
+			migoto::IniParameterName parameter;
+			if (migoto::ParseIniParameterName(name.c_str(), parameter))
+				return std::wstring(1, parameter.component) + std::to_wstring(parameter.index);
+		}
+		return name;
 	}
 
 	// Cold path: runs once per referenced variable per command-list execution,

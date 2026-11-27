@@ -2,6 +2,7 @@
 #include "ExpressionFunctions.h"
 #include "tests/IniLogicalCases.h"
 #include "tests/IniFileConditionCases.h"
+#include "tests/IniKeyConditionCases.h"
 #include "IniHandler.h"
 #include "Profiling.h"
 #include "slot_range_test_support.h"
@@ -131,6 +132,16 @@ void test_dx11_ini_expression_regression()
         CommandListVariable(namespaced_name, 3.0f, VariableFlags::GLOBAL)).first;
 
     const auto samples = GetExpressionRandomSampleCount();
+    const auto saved_reserved = G->iniParamsReserved;
+    for (const auto &test : migoto::tests::keyConditions) {
+        CommandListExpression expression;
+        const std::wstring text(test.text);
+        require_ini_expression(expression.parse(&text, &ini_namespace, nullptr) == test.valid, "native Key operand scope");
+    }
+    G->iniParamsReserved = saved_reserved;
+    float ignored = 0;
+    require_ini_expression(!ParseFloatValue(L"Rendering", L"scope_test", L"random(2) + frame_time", ignored, false, &ini_namespace) &&
+        GetExpressionRandomSampleCount() == samples, "invalid setting operand is diagnosed before sampling");
     for (const auto &test : migoto::tests::fileConditions) {
         std::wstring condition(test.expression);
         require_ini_expression(check_include_condition(&condition, &ini_namespace) == test.loads,
