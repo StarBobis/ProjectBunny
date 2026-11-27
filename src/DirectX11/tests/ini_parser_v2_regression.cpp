@@ -47,7 +47,10 @@ public:
         create(config); create(settings);
         const auto direct = directory / L"Mods" / L"direct.ini";
         create(direct); write(direct,
-            "namespace=Ini V2 Direct-Alias\n[System]\nini_v2_probe=2\n[KeyDirect]\nkey=F15\n$ini_v2_result=1\n");
+            "condition=abs(-2) == 2\nnamespace=Ini V2 Direct-Alias\n[System]\nini_v2_probe=2\n[KeyDirect]\nkey=F15\n$ini_v2_result=1\n");
+        const auto gated = directory / L"Mods" / L"guarded.ini";
+        create(gated); write(gated, "namespace=FileGuard\ncondition=1\ncondition=-0\ncondition=random(1)\n"
+            "[System]\nini_v2_condition_skipped=3\n[KeySkipped]\nkey=F14\n$ini_v2_result=8\n");
         const auto mod = directory / L"Mods" / L"mod.ini";
         create(mod); write(mod,
             "namespace=Ini V2 \xe6\xa8\xa1\xe5\x9e\x8b-hyphen\n[PoolVars]\npool_size=3\npool_lazy_initialization=0\n"
@@ -143,6 +146,10 @@ void test_section_and_include(IniV2Files& files, CommandListState& state)
     check(customResources.at(preamble_resource).override_width == 33 &&
         GetIniInt(preamble_resource.c_str(), L"ini_v2_should_not_attach", -1, nullptr) == -1,
         "cross-file preamble does not reuse a prior map entry and duplicate key remains first");
+    IniSectionVector *skipped;
+    GetIniSection(&skipped, L"Key\\FileGuard\\Skipped");
+    check(GetIniInt(L"System", L"ini_v2_condition_skipped", -1, nullptr) == -1 && skipped->empty(),
+        "false file guard omits global settings and key registration");
     check(GetIniInt(L"System", L"ini_v2_probe", -1, nullptr) == 9,
         "included global section override is followed by user-config override last");
     check(GetIniKeyBindingScope(L"Key\\Ini V2 Direct-Alias\\Direct") == InputDisableScope::ALL &&

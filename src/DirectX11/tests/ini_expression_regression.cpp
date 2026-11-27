@@ -1,6 +1,7 @@
 #include "CommandList.h"
 #include "ExpressionFunctions.h"
 #include "tests/IniLogicalCases.h"
+#include "tests/IniFileConditionCases.h"
 #include "IniHandler.h"
 #include "Profiling.h"
 #include "slot_range_test_support.h"
@@ -13,6 +14,7 @@
 
 // Exercise the production parsers without exposing implementation helpers as
 // part of the public INI API solely for the regression executable.
+extern bool check_include_condition(std::wstring *, const std::wstring *);
 extern bool ParseFloatValue(const wchar_t*, const wchar_t*, const std::wstring&, float&, bool, const std::wstring*);
 extern bool ParseIntValue(const wchar_t*, const wchar_t*, const std::wstring&, int&, bool, const std::wstring*);
 extern bool ParseBoolValue(const wchar_t*, const wchar_t*, const std::wstring&, bool&, bool, const std::wstring*);
@@ -117,6 +119,21 @@ void test_dx11_ini_expression_regression()
     auto namespaced = command_list_globals.emplace(namespaced_name,
         CommandListVariable(namespaced_name, 3.0f, VariableFlags::GLOBAL)).first;
 
+    const auto samples = GetExpressionRandomSampleCount();
+    for (const auto &test : migoto::tests::fileConditions) {
+        std::wstring condition(test.expression);
+        require_ini_expression(check_include_condition(&condition, &ini_namespace) == test.loads,
+            "DX11 file guard result");
+    }
+    const auto hunting = G->hunting;
+    std::wstring guard = L"!hunting";
+    for (auto mode : {HUNTING_MODE_DISABLED, HUNTING_MODE_ENABLED, HUNTING_MODE_SOFT_DISABLED}) {
+        G->hunting = mode;
+        require_ini_expression(check_include_condition(&guard, &ini_namespace) == (mode == HUNTING_MODE_DISABLED),
+            "only hard-disabled Hunting gives a static hunting operand");
+    }
+    G->hunting = hunting;
+    require_ini_expression(GetExpressionRandomSampleCount() == samples, "file guards never consume random samples");
     CommandListScope scope;
     CommandListState state;
     const std::wstring expression_text = L"-($ini_expression_regression_value * 2) + 10";

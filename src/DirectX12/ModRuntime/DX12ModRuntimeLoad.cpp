@@ -1334,7 +1334,7 @@ bool DX12ModRuntimeLoad(
 			*hasErrors = true;
 		return false;
 	}
-	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad, reload.wipePath)) {
+	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad, reload.wipePath, DX12HuntIsEnabled())) {
 		const auto &error = iniLoad.errors.empty() ? iniLoad.document.Error() : iniLoad.errors.back();
 		DX12_LOG("DX12ModRuntime",
 			"\"status\":\"config_load_failed\",\"path\":\"%S\",\"error\":\"%S\"",

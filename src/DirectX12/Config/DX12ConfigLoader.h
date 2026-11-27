@@ -4,7 +4,7 @@
 #include "bounded_path_format.h"
 
 #include <filesystem>
-#include <set>
+#include <map>
 #include "IniSavedSettings.h"
 
 // INI include traversal and process-level loader configuration.
@@ -28,7 +28,7 @@ class MigotoIniLoader
 {
 public:
 	static bool LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result,
-		const std::wstring &wipePath = {});
+		const std::wstring &wipePath = {}, bool huntingActive = false);
 };
 
 
@@ -199,8 +199,9 @@ struct PendingIncludeSection
 class LoaderState
 {
 public:
+	bool huntingActive = false;
 	std::wstring rootDir;
-	std::set<std::wstring> seenFiles;
+	std::map<std::wstring, bool> parsedFiles; // Canonical path to successful parse, including a false guard.
 	std::vector<PendingIncludeSection> pending;
 	IniDocument document;
 	bool includesComplete = true;
@@ -299,7 +300,7 @@ static void LoadDirectoryRecursive(
 }
 
 static void LoadFile(const std::wstring &path, const std::wstring &iniNamespace, LoaderState *state,
-	migoto::InputDisableScope scope = migoto::InputDisableScope::ALL)
+	migoto::InputDisableScope scope = migoto::InputDisableScope::ALL, bool userConfig = false)
 {
 	if (!state)
 		return;
@@ -309,7 +310,8 @@ static void LoadFile(const std::wstring &path, const std::wstring &iniNamespace,
 	}
 
 	std::wstring canonical = MigotoIniLoaderPath::CanonicalPath(path);
-	if (!state->seenFiles.insert(canonical).second) {
+	const auto [record, firstVisit] = state->parsedFiles.try_emplace(std::move(canonical), false);
+	if (!firstVisit) {
 		state->warnings.push_back(L"ini included multiple times: " + path);
 		return;
 	}
@@ -323,12 +325,21 @@ static void LoadFile(const std::wstring &path, const std::wstring &iniNamespace,
 	state->loadedFiles.push_back(path);
 	std::wstring sourceDir = MigotoIniLoaderPath::DirectoryOf(path);
 	IniFileParseResult file;
-	if (!state->document.AppendParse(text.c_str(), path, sourceDir, iniNamespace, scope, &file)) {
+	if (!state->document.AppendParse(text.c_str(), path, sourceDir, iniNamespace, scope, &file, state->huntingActive)) {
 		state->errors.push_back(
 			L"unable to parse ini: " + path + L" (" + state->document.Error() + L")");
 		return;
 	}
 
+	if (!file.conditionError.empty()) {
+		// A malformed guard can hide declarations. Preserve unknown settings
+		// until a complete reload, and reject an unreadable persistence source.
+		state->includesComplete = false;
+		auto &diagnostics = userConfig ? state->errors : state->warnings;
+		diagnostics.push_back(std::move(file.conditionError));
+		return;
+	}
+	record->second = true;
 	for (auto &warning : file.warnings)
 		state->warnings.push_back(std::move(warning));
 	QueueIncludes(file.includes, *state);
@@ -379,13 +390,18 @@ static bool LoadUserConfigFile(const std::wstring &path, LoaderState *state)
 		state->errors.push_back(L"unable to access user_config: " + path);
 		return false;
 	}
-	if (state->seenFiles.count(MigotoIniLoaderPath::CanonicalPath(path))) {
+	const auto prior = state->parsedFiles.find(CanonicalPath(path));
+	if (prior != state->parsedFiles.end()) {
 		state->includesComplete = false;
+		if (!prior->second) {
+			state->errors.push_back(L"user_config failed to load as an include: " + path);
+			return false;
+		}
 		state->warnings.push_back(L"user_config already loaded by an include: " + path);
 		return true;
 	}
 	const auto errorsBefore = state->errors.size();
-	LoadFile(path, path, state);
+	LoadFile(path, path, state, migoto::InputDisableScope::ALL, true);
 	LoadQueuedIncludes(*state);
 	return state->errors.size() == errorsBefore;
 }
@@ -431,7 +447,7 @@ namespace MigotoUserConfigPath
 };
 
 inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result,
-	const std::wstring &wipePath)
+	const std::wstring &wipePath, bool huntingActive)
 {
 	if (!rootPath || !result)
 		return false;
@@ -445,6 +461,7 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 		return wipePath.empty();
 	}
 	MigotoIniLoaderPath::LoaderState state;
+	state.huntingActive = huntingActive;
 	state.rootDir = MigotoIniLoaderPath::DirectoryOf(rootPath);
 	MigotoIniLoaderPath::LoadFile(rootPath, L"", &state);
 	MigotoIniLoaderPath::LoadQueuedIncludes(state);

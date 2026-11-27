@@ -62,6 +62,7 @@ public:
 };
 
 struct IniFileParseResult {
+	std::wstring conditionError;
 	std::vector<IniSection> includes;
 	std::vector<std::wstring> warnings;
 };
@@ -75,7 +76,7 @@ public:
 		const std::wstring &sourcePath,
 		const std::wstring &sourceDir,
 		const std::wstring &iniNamespace, migoto::InputDisableScope inputScope = migoto::InputDisableScope::ALL,
-		IniFileParseResult *file = nullptr);
+		IniFileParseResult *file = nullptr, bool huntingActive = false);
 
 	const IniSection *FindSection(const wchar_t *section) const;
 	const std::vector<IniSection> &Sections() const { return mSections; }
@@ -305,7 +306,7 @@ inline bool IniDocument::AppendParse(
 	const wchar_t *text,
 	const std::wstring &sourcePath,
 	const std::wstring &sourceDir,
-	const std::wstring &iniNamespace, migoto::InputDisableScope inputScope, IniFileParseResult *file)
+	const std::wstring &iniNamespace, migoto::InputDisableScope inputScope, IniFileParseResult *file, bool huntingActive)
 {
 	if (!text)
 		return true;
@@ -378,8 +379,22 @@ inline bool IniDocument::AppendParse(
 					currentNamespace = value;
 					continue;
 				}
-				if (key == L"condition")
-					continue;
+				if (key == L"condition") {
+					const auto decision = MigotoCommandVmUtils::ReadIncludeCondition(value, huntingActive);
+					if (decision == migoto::IncludeDecision::Load)
+						continue;
+					if (decision == migoto::IncludeDecision::Skip)
+						return true;
+					const auto reason = decision == migoto::IncludeDecision::InvalidExpression ?
+						L": invalid include condition: " : L": include condition is not static: ";
+					auto message = sourcePath + L":" + std::to_wstring(lineNumber) + reason + value;
+					if (file) {
+						file->conditionError = std::move(message);
+						return true;
+					}
+					mError = std::move(message);
+					return false;
+				}
 			}
 			mError = L"Ini entry found before first section";
 			return false;

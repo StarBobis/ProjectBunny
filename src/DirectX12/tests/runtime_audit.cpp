@@ -18,6 +18,7 @@
 #include "tests/IniInputScopeCases.h"
 #include "tests/IniLogicalCases.h"
 #include "tests/IniEarlySettingsCases.h"
+#include "tests/IniFileConditionCases.h"
 #include <bit>
 #include <xmmintrin.h>
 #include <wrl/client.h>
@@ -39,6 +40,99 @@ void Require(bool condition, const char *message)
 		fflush(stderr);
 		throw std::runtime_error(message);
 	}
+}
+
+void TestFileConditions()
+{
+	using Vm = MigotoCommandVmUtils;
+	Vm::SetGlobal(L"$ini_expression_regression_value", 1);
+	const auto samples = GetExpressionRandomSampleCount();
+	for (const auto &test : migoto::tests::fileConditions) {
+		Bunny::IniDocument doc;
+		const std::wstring text = std::wstring(L"ConDiTion = ") + test.expression + L"\n[Constants]\nglobal $loaded = 3\n";
+		Require(doc.Parse(text.c_str()) == test.validConstant && (doc.FindSection(L"Constants") != nullptr) == test.loads,
+			"DX12 file guard determines both file contents and validation status");
+	}
+	for (bool hunting : {false, true}) {
+		Bunny::IniDocument doc;
+		Bunny::IniFileParseResult parsed;
+		Require(doc.AppendParse(L"condition=!hunting\n[Constants]\n", L"hunt.ini", L"", L"",
+			migoto::InputDisableScope::ALL, &parsed, hunting) && parsed.conditionError.empty() == !hunting &&
+			(doc.FindSection(L"Constants") != nullptr) == !hunting, "Hunting operands use the load-time runtime state");
+	}
+	const auto dir = std::filesystem::current_path() /
+		(L"file-conditions-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	const auto mods = dir / L"Mods";
+	Require(std::filesystem::create_directories(mods), "create file condition fixture");
+	const auto root = dir / L"main.ini";
+	const auto gated = dir / L"gated.ini";
+	const auto child = dir / L"child.ini";
+	const auto sibling = mods / L"sibling.ini";
+	const auto saved = dir / L"user.ini";
+	std::ofstream(root) << "[Include]\ninclude=gated.ini\ninclude_recursive=Mods\nuser_config=user.ini\n"
+		"[Constants]\nglobal $loaded=0\nglobal $child=0\nglobal $sibling=0\n";
+	std::ofstream(child) << "[Constants]\n$child=8\n";
+	std::ofstream(sibling) << "condition=abs(-2) == 2\n[Constants]\n$sibling=3\n";
+	std::ofstream(saved) << "[Constants]\n$unknown=12\n";
+	auto gate = [&](const char *conditions) {
+		std::ofstream(gated) << "namespace=Guarded\n" << conditions <<
+			"[Include]\ninclude=child.ini\n[Constants]\n$loaded=5\n[KeyOnly]\nkey=F23\n$loaded=7\n";
+	};
+	auto load = [&](bool warn, bool active) {
+		Bunny::MigotoIniLoadResult tree;
+		Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &tree, {}, DX12HuntIsEnabled()) &&
+			tree.errors.empty() && tree.includesComplete == !warn && tree.warnings.size() == static_cast<size_t>(warn),
+			"file guard diagnostic and include completeness");
+		if (warn)
+			Require(tree.warnings.front().find(L"gated.ini:2:") != std::wstring::npos, "diagnostic identifies the condition source line");
+		bool errors = false;
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, &errors, DX12ModLoadReason::UserReload) && !errors,
+			"load siblings after checking the file's condition");
+		Vm::State vm;
+		Require(vm.Evaluate(L"$loaded") == (active ? 5 : 0) && vm.Evaluate(L"$child") == (active ? 8 : 0) &&
+			vm.Evaluate(L"$sibling") == 3 && gKeyBindings.size() == (active ? 1u : 0u),
+			"variables, nested includes, keys and independent sibling follow the file guard on reload");
+	};
+	gate("condition=1\ncondition=-0\ncondition=random(1)\n");
+	load(false, false); // A decisive earlier line skips the rest of the file.
+	gate("condition=0 || -1\n");
+	load(false, true);
+	std::ofstream(saved) << "[Constants]\n$unknown=12\n";
+	gate("condition=random(1)\n");
+	load(true, false);
+	load(true, false);
+	{
+		std::ifstream input(saved);
+		std::string bytes{std::istreambuf_iterator<char>(input), {}};
+		Require(bytes.find("$unknown=12") != bytes.npos, "invalid guard cannot confirm cleanup for a missing declaration");
+	}
+	const bool initiallyHunting = DX12HuntIsEnabled();
+	gate("condition=!hunting\n");
+	load(initiallyHunting, !initiallyHunting);
+	DX12HuntToggle();
+	load(!initiallyHunting, initiallyHunting);
+	DX12HuntToggle();
+	gate("condition=nan\n");
+	load(false, true);
+	const std::string invalidUser = "condition=1 +\n[Constants]\n$unknown=12\n";
+	std::ofstream(saved, std::ios::binary) << invalidUser;
+	bool errors = false;
+	Require(!DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, &errors, DX12ModLoadReason::UserReload) && errors &&
+		Vm::State{}.Evaluate(L"$loaded") == 5, "invalid persist-file guard retains the live configuration");
+	std::ofstream(root, std::ios::app) << "[IncludeAlias]\ninclude=user.ini\n";
+	errors = false;
+	Require(!DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, &errors, DX12ModLoadReason::UserReload) && errors &&
+		Vm::State{}.Evaluate(L"$loaded") == 5, "an earlier include cannot hide an invalid persist-file guard");
+	{
+		std::ifstream input(saved, std::ios::binary);
+		std::string bytes{std::istreambuf_iterator<char>(input), {}};
+		Require(bytes == invalidUser, "failed guarded reload preserves the user settings file byte for byte");
+	}
+	Require(GetExpressionRandomSampleCount() == samples, "file guard parsing, reload and recovery never sample random");
+	for (const auto &path : {saved, sibling, child, gated, root})
+		std::filesystem::remove(path);
+	std::filesystem::remove(mods);
+	std::filesystem::remove(dir);
 }
 
 void TestShaderRegexExclusions()
@@ -2547,6 +2641,7 @@ int main(int argc, char **argv)
 		if (benchmark)
 			return 0;
 		TestConfiguredInputScopes();
+		TestFileConditions();
 		TestShaderRegexExclusions();
 		TestLockedVariables();
 		TestInactiveUserSettings();

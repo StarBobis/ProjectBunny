@@ -1,3 +1,4 @@
+#include "IniIncludeCondition.h"
 #include "IniSavedSettings.h"
 #include "IniHandler.h"
 #include "IniExpressionNumbers.h"
@@ -500,25 +501,27 @@ bool check_include_condition(wstring *val, const wstring *ini_namespace)
 {
 	CommandListExpression condition;
 	wstring sbuf(*val);
-	float ret;
 
 	// Expressions are case insensitive:
 	std::transform(sbuf.begin(), sbuf.end(), sbuf.begin(), ::towlower);
 
-	if (!condition.parse(&sbuf, ini_namespace, NULL)) {
+	const auto decision = migoto::EvaluateIncludeCondition(
+		[&] { return condition.parse(&sbuf, ini_namespace, NULL); },
+		[&](float &value) { return condition.static_evaluate(&value, NULL); });
+	switch (decision) {
+	case migoto::IncludeDecision::InvalidExpression:
 		IniWarningW(L"Unable to parse include condition: %ls\n - [%ls]\n", val->c_str(), ini_namespace->c_str());
-		return false;
-	}
-
-	if (!condition.static_evaluate(&ret, NULL)) {
+		break;
+	case migoto::IncludeDecision::NotStatic:
 		IniWarningW(L"Include condition could not be statically evaluated: %ls\n - [%ls]\n", val->c_str(), ini_namespace->c_str());
-		return false;
-	}
-
-	if (!ret)
+		break;
+	case migoto::IncludeDecision::Skip:
 		LogInfo("        condition = false, skipping \"%S\"\n", ini_namespace->c_str());
-
-	return !!ret;
+		break;
+	case migoto::IncludeDecision::Load:
+		return true;
+	}
+	return false;
 }
 
 static bool ParseIniPreamble(wstring *wline, wstring *ini_namespace)

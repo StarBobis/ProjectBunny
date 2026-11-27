@@ -23,6 +23,7 @@
 #include "IniSavedSettings.h"
 #include "IniBitwise.h"
 #include "IniLogicalPlan.h"
+#include "IniIncludeCondition.h"
 #include "IniUnaryMath.h"
 #include "ExpressionFunctions.h"
 #include "DrawCallParameters.h"
@@ -87,6 +88,8 @@ public:
 
 	inline static std::atomic<FrameTiming> frameTiming{FrameTiming{0, 0, 0, 0}};
 
+	enum class IniEvaluation { Runtime, Setting, FileCondition };
+
 	class ExpressionContext
 	{
 	public:
@@ -95,7 +98,8 @@ public:
 		std::wstring_view iniNamespace;
 		GlobalVariables *initializing = nullptr;
 		bool requireDeclaredVariables = false;
-		bool staticIniSetting = false;
+		IniEvaluation iniEvaluation = IniEvaluation::Runtime;
+		bool huntingActive = false;
 	};
 
 	class ExpressionParser
@@ -220,7 +224,7 @@ public:
 					return 0;
 				}
 				const auto allow = context.initializing ? context.initializing->shortcuts : runtimeShortcuts.load(std::memory_order_acquire);
-				maySkip = !context.staticIniSetting && !context.requireDeclaredVariables && allow && allow();
+				maySkip = context.iniEvaluation == IniEvaluation::Runtime && !context.requireDeclaredVariables && allow && allow();
 				mode = Mode::Validated;
 			}
 			float value = ParseOr();
@@ -427,6 +431,11 @@ public:
 				if (!random)
 					return function->evaluate(argument);
 
+				if (context.iniEvaluation == IniEvaluation::FileCondition) {
+					ok = false;
+					return 0.0f;
+				}
+
 				// A malformed expression must not advance the shared random stream.
 				// Validate the entire expression once, before its first sample.
 				if (mode == Mode::Evaluate) {
@@ -527,13 +536,19 @@ public:
 
 		float LookupIdentifier(const std::wstring &name)
 		{
-			if (context.staticIniSetting && name.front() != L'$') {
+			if (context.iniEvaluation != IniEvaluation::Runtime) {
 				if (name == L"sli" || name == L"stereo_active" || name == L"stereo_available")
 					return 0;
-				if ((name == L"hunting" || name == L"frame_analysis") && !LookupVariable(context, L"hunting"))
-					return 0;
-				if (name != L"time" && name != L"frame_time" && name != L"frame_number" &&
-					name != L"inf" && name != L"infinity" && name != L"nan") {
+				// DX11 accepts hunting in a file preamble; frame_analysis requires command-list scope.
+				if (name == L"hunting" || (context.iniEvaluation == IniEvaluation::Setting && name == L"frame_analysis")) {
+					const bool active = context.iniEvaluation == IniEvaluation::FileCondition ?
+						context.huntingActive : LookupVariable(context, L"hunting") != 0;
+					if (!active)
+						return 0;
+				}
+				const bool snapshot = context.iniEvaluation == IniEvaluation::Setting &&
+					(name.front() == L'$' || name == L"time" || name == L"frame_time" || name == L"frame_number");
+				if (!snapshot && name != L"inf" && name != L"infinity" && name != L"nan") {
 					ok = false;
 					return 0;
 				}
@@ -553,11 +568,23 @@ public:
 			return {};
 		ExpressionContext context;
 		context.requireDeclaredVariables = true;
-		context.staticIniSetting = true;
+		context.iniEvaluation = IniEvaluation::Setting;
 		context.iniNamespace = iniNamespace;
 		ExpressionParser parser(text, context, ExpressionParser::Mode::Validated);
 		const float value = parser.Parse();
 		return parser.ok ? std::optional<float>{value} : std::nullopt;
+	}
+
+	static migoto::IncludeDecision ReadIncludeCondition(const std::wstring &text, bool huntingActive)
+	{
+		const auto normalized = MigotoIniCommandListUtils::ToLower(text);
+		ExpressionContext context;
+		context.iniEvaluation = IniEvaluation::FileCondition;
+		context.huntingActive = huntingActive;
+		ExpressionParser parser(normalized, context, ExpressionParser::Mode::Validated);
+		return migoto::EvaluateIncludeCondition(
+			[&] { return ExpressionParser::ValidSyntax(normalized); },
+			[&](float &value) { value = parser.Parse(); return parser.ok; });
 	}
 
 	static std::optional<int> ReadStaticIniInteger(const std::wstring &text, std::wstring_view iniNamespace = {})
