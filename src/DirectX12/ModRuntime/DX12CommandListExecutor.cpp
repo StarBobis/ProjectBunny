@@ -143,7 +143,7 @@ bool IaTriggeredCandidatesDependOnActivePreSkin(
 }
 
 
-void DX12ModBeginFrame(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers)
+void DX12ModBeginFrame(IDXGISwapChain *swapChain, const std::optional<migoto::XInputSnapshot> &controllers)
 {
 #if DX12_TIMING_BUILD
 	// Arm the freeze watchdog with the first frame boundary; cheap no-op
@@ -1496,7 +1496,7 @@ static void DX12TraceFrameKeyVariables()
 #endif
 
 
-void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers)
+void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const std::optional<migoto::XInputSnapshot> &controllers)
 {
 	if (gHasKeyBindings.load(std::memory_order_acquire))
 		DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
@@ -1505,7 +1505,7 @@ void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const migoto::XInput
 	ProcessDx12KeyBindingsForFrame(controllers);
 }
 
-void ProcessDx12KeyBindingsForFrame(const migoto::XInputSnapshot &controllers)
+void ProcessDx12KeyBindingsForFrame(const std::optional<migoto::XInputSnapshot> &controllers)
 {
 #if DX12_TIMING_BUILD
 	// Register the key diagnostics sink lazily on the first frame so it is
@@ -1522,8 +1522,13 @@ void ProcessDx12KeyBindingsForFrame(const migoto::XInputSnapshot &controllers)
 		std::unique_lock lock(gKeyFrameMutex, std::try_to_lock);
 		if (lock && gLoaded) {
 			MarkFrameBoundaryStage("key_bindings_locked");
-			Bunny::MigotoKeyBindingUtils::ProcessBindings(gKeyBindings, gKeyFrame, DX12HuntingHotkeys::KeyDown, controllers,
-				[](const std::wstring &name, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(name, post); });
+			if (controllers) {
+				Bunny::MigotoKeyBindingUtils::ProcessBindings(gKeyBindings, gKeyFrame, DX12HuntingHotkeys::KeyDown, *controllers,
+					[](const std::wstring &name, bool post) { DX12CommandListExecutor::RunKeyCommandPhase(name, post); });
+			} else if (!gKeyFrame.pending.empty()) {
+				// Losing focus suspends input dispatch. Already scheduled transitions keep running.
+				gKeyFrame.Update(GetTickCount64());
+			}
 			MarkFrameBoundaryStage("key_bindings_done");
 		}
 	}

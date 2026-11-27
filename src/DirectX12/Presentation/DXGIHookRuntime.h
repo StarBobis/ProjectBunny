@@ -80,7 +80,7 @@ public:
 				swapChain, identity);
 	}
 
-	static migoto::XInputSnapshot ConsumeUiActionsForFrame()
+	static std::optional<migoto::XInputSnapshot> ConsumeUiActionsForFrame()
 	{
 		DX12_DIAG_QPC(sliceBegin);
 		const auto controllers = DX12UiActions::PollKeyboard();

@@ -1373,6 +1373,7 @@ bool DX12ModRuntimeLoad(
 	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	SetBasePaths(configPath);
 	ReleaseSRWLockExclusive(&gModLock);
+	huntingKeys.ReadForegroundSettings(iniLoad.document, iniLoad.warnings);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings, &iniLoad.warnings);
 	auto keyCommandLists = BuildKeyCommandLists(iniLoad.document, keyBindings);
 	for (const auto &binding : keyBindings) {

@@ -2,6 +2,7 @@
 
 #include "DX12Config.h"
 #include "MigotoInputCombination.h"
+#include "IniForegroundWindow.h"
 #include <algorithm>
 #include <mutex>
 #include <vector>
@@ -118,7 +119,39 @@ public:
 		std::optional<int> repeatRate;
 		unsigned ports = 0;
 		bool usesGuide = false;
+		bool checkWindow = false;
+		std::wstring additionalTitle;
 	public:
+		void ReadForegroundSettings(const Bunny::IniDocument &ini, std::vector<std::wstring> &warnings)
+		{
+			const auto *system = ini.FindSection(L"System");
+			if (!system)
+				return;
+			const Bunny::IniEntry *check = nullptr, *title = nullptr;
+			for (const auto &entry : system->entries) {
+				if (!entry.hasEquals || entry.value.empty())
+					continue;
+				// Within the root file DX11 keeps the first setting. Included
+				// files may override global [System] settings in load order.
+				const bool included = !entry.iniNamespace.empty();
+				if ((!check || included) && !_wcsicmp(entry.key.c_str(), L"check_foreground_window"))
+					check = &entry;
+				if ((!title || included) && !_wcsicmp(entry.key.c_str(), L"additional_foreground_window"))
+					title = &entry;
+			}
+			if (check) {
+				const auto value = MigotoCommandVmUtils::ReadStaticIniBoolean(Bunny::IniDocumentText::ToLower(check->value));
+				checkWindow = value.value_or(false);
+				if (!value)
+					warnings.push_back(L"Invalid [System] check_foreground_window: " + check->value);
+			}
+			if (title) {
+				additionalTitle = title->value.substr(0, MAX_PATH - 1);
+				if (title->value.size() >= MAX_PATH)
+					warnings.push_back(L"[System] additional_foreground_window exceeds MAX_PATH");
+			}
+		}
+
 		void IncludeDevices(const migoto::InputCombination &combination)
 		{
 			ports |= combination.Ports();
@@ -172,13 +205,22 @@ public:
 			else
 				updated.waitForRelease = updated.combination.Active(down, controllers.snapshot);
 		}
+		// DX11 reload retains the last nonempty additional window title.
+		if (bindings.additionalTitle.empty())
+			bindings.additionalTitle = std::move(current.additionalTitle);
 		current = std::move(bindings);
 	}
 
 	template <class ReadKey>
-	LONG Poll(ReadKey read, ULONGLONG now, migoto::XInputSnapshot *sample = nullptr)
+	LONG Poll(ReadKey read, ULONGLONG now, std::optional<migoto::XInputSnapshot> *sample = nullptr,
+		migoto::InputWindowSource windows = {})
 	{
 		std::lock_guard lock(mutex);
+		if (!migoto::ForegroundAllowsInput(current.checkWindow, current.additionalTitle, windows)) {
+			if (sample)
+				sample->reset();
+			return 0;
+		}
 		if (current.ports)
 			controllers.Update(now / 1000, current.ports, controllerReader);
 		if (sample)

@@ -2,6 +2,7 @@
 
 #include "DX12CommandFlow.h"
 #include "IniXInput.h"
+#include <optional>
 
 // Mod replacement interfaces, pre-skin state, and resource-runtime APIs.
 // Umbrella header: class definitions were split into per-responsibility
@@ -211,8 +212,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList);
 void DX12ModNotifyCommandListsSubmitted(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists);
-void DX12ModBeginFrame(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers);
-void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const migoto::XInputSnapshot &controllers);
+void DX12ModBeginFrame(IDXGISwapChain *swapChain, const std::optional<migoto::XInputSnapshot> &controllers);
+void DX12ModProcessIdleFrameKeys(IDXGISwapChain *swapChain, const std::optional<migoto::XInputSnapshot> &controllers);
 bool DX12ModPresentReplacementPendingForCurrentPresent();
 bool DX12ModPreparePresentReplacement(
 	ID3D12GraphicsCommandList *commandList, DX12ModIaReplacement *replacement);

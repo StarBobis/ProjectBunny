@@ -428,40 +428,10 @@ void ClearKeyBindings()
 	named_bindings.clear();
 }
 
-static bool IsAdditionalForegroundWindow(HWND hwnd)
-{
-	if (G->additionalForegroundWindowTitle.empty())
-		return false;
-
-	wchar_t title[512] = {};
-	GetWindowTextW(hwnd, title, _countof(title));
-	return wcscmp(title, G->additionalForegroundWindowTitle.c_str()) == 0;
-}
-
-static bool CheckForegroundWindow()
-{
-	DWORD pid;
-
-	if (!G->check_foreground_window)
-		return true;
-
-	HWND hwnd = GetForegroundWindow();
-	if (!hwnd)
-		return false;
-
-	GetWindowThreadProcessId(hwnd, &pid);
-
-	if (pid == GetCurrentProcessId())
-		return true;
-
-	// Allow additional foreground window matched by title
-	return IsAdditionalForegroundWindow(hwnd);
-}
-
-bool DispatchInputEvents(HackerDevice *device)
+bool DispatchInputEvents(HackerDevice *device, migoto::InputWindowSource windows)
 {
 	const auto now = time(nullptr);
-	if (!CheckForegroundWindow())
+	if (!migoto::ForegroundAllowsInput(G->check_foreground_window, G->additionalForegroundWindowTitle, windows))
 		return false;
 	controllerPoll.Update(now, migoto::XInputButtonBinding::allPorts, xinput.read);
 	return DispatchRegisteredInputActions(device);

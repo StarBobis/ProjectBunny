@@ -47,6 +47,16 @@ $enabled = 1
 
 ## Loader 与系统设置
 
+在 `[System]` 中设置 `check_foreground_window = 1` 后，只有游戏进程的窗口在前台时才处理 Mod 和 Hunting 快捷键。默认值为 0。若需要在另一个控制窗口中使用快捷键，可以填写它的完整标题，大小写必须一致。
+
+```ini
+[System]
+check_foreground_window = 1
+additional_foreground_window = My Controller
+```
+
+切到其他窗口时，正在进行的变量过渡会继续。已按下的 `hold` 会保持，回到允许的窗口后才检查按键是否已经松开。窗口标题最多可配置 259 个 UTF-16 代码单元。更换标题后按 F10 即可生效。删除标题再按 F10 会沿用上次的标题，重启游戏后才会清除该例外。
+
 模板中的 `[Loader] target/module/loader` 描述外部加载方式；`module` 为 `d3d12.dll`。`launch`、`require_admin`、`delay` 等是否生效由所用加载器决定。
 
 DX11 的 Device、Rendering、Hunting 和 Logging 参数不用于配置 DX12 的对应工具。不要把两个版本的主配置直接互换。

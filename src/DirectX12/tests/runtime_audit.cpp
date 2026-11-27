@@ -14,6 +14,7 @@
 #include "tests/IniKeyCycleCases.h"
 #include "tests/IniKeyTransitionCases.h"
 #include "tests/IniInputDelayCases.h"
+#include "tests/IniForegroundWindowCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -1419,6 +1420,96 @@ void TestControllerFrameDispatch(IDXGISwapChain1 *chain)
 	Vm::ClearGlobals();
 }
 
+void TestForegroundFrameInput(IDXGISwapChain1 *chain)
+{
+	using Window = migoto::tests::InputTestWindow;
+	using Source = RecordedControllers;
+	using Vm = MigotoCommandVmUtils;
+	Window window;
+	Require(window.Valid(), "create native hidden foreground window");
+	const auto dir = std::filesystem::current_path() / (L"focus-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create foreground config directory");
+	const auto root = dir / L"main.ini";
+	const auto include = dir / L"settings.ini";
+	Source::hardware = {};
+	auto &port = Source::hardware.slots[1];
+	port.connected = true;
+	auto load = [&](const char *system, const char *included, bool expectWarning = false) {
+		std::ofstream(include) << "[System]\n" << included;
+		std::ofstream(root) << "[Include]\ninclude=settings.ini\n[System]\n" << system
+			<< "[Constants]\nglobal $focus=2\nglobal $allow=1\n"
+			"[Hunting]\nanalyse_frame=XB2_X\n[KeyFocus]\nkey=XB2_A\ntype=hold\n$focus=8\ntransition=1000000\n";
+		bool warnings = false;
+		Require(DX12ModRuntimeLoad(root.c_str(), nullptr, &warnings, nullptr, DX12ModLoadReason::UserReload, Source::Read),
+			"publish foreground policy with bindings");
+		Require(warnings == expectWarning, "diagnose invalid foreground check at load");
+	};
+	unsigned keysRead = 0;
+	auto poll = [&](migoto::InputWindowSource source) {
+		return DX12UiActions::PollKeyboard([&](int) { ++keysRead; return false; }, GetTickCount64(), source);
+	};
+	Vm::State vm;
+	load("check_foreground_window=0\n", "check_foreground_window=$allow\nadditional_foreground_window=Bunny Input Audit\n");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_X;
+	Source::reads = {};
+	auto blocked = poll(Window::Absent());
+	DX12ModProcessIdleFrameKeys(nullptr, blocked);
+	Require(!blocked && !keysRead && !Source::reads[1] && !DX12UiActions::PendingActions && gKeyFrame.pending.empty(),
+		"blocked foreground skips keyboard, XInput, UI and idle Mod dispatch");
+	auto accepted = poll(Window::Own());
+	DX12ModProcessIdleFrameKeys(nullptr, accepted);
+	Require(accepted && Source::reads[1] == 1 && keysRead && gKeyFrame.pending.at(L"$focus").target == 8 &&
+		InterlockedExchange(&DX12UiActions::PendingActions, 0) == static_cast<LONG>(DX12UiActionBits::FrameAnalysis),
+		"own process accepts both UI and Mod press on one sample");
+	gKeyFrame.pending.at(L"$focus").activation_time = GetTickCount64() - 1000001;
+	port.state.Gamepad.wButtons = 0;
+	Require(window.Rename(L"bunny input audit"), "set mismatched title case");
+	const auto before = keysRead;
+	const auto settings = dir / L"d3dx_user.ini";
+	HANDLE exclusive = CreateFileW(settings.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+	Require(exclusive != INVALID_HANDLE_VALUE, "hold user settings exclusively for a failed reload");
+	const bool reloaded = DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload, Source::Read);
+	CloseHandle(exclusive);
+	std::filesystem::remove(settings);
+	Require(!reloaded, "locked settings abort foreground policy reload");
+	DX12ModBeginFrame(nullptr, poll(Window::Foreign()));
+	Require(Source::reads[1] == 1 && keysRead == before && vm.Evaluate(L"$focus") == 8 &&
+		gKeyFrame.saves.size() == 1 && gKeyFrame.pending.empty(),
+		"normal background frame completes transition without manufacturing a release");
+	Require(window.Rename(L"Bunny Input Audit"), "restore title case");
+	DX12ModProcessIdleFrameKeys(nullptr, poll(Window::Foreign()));
+	Require(Source::reads[1] == 2 && vm.Evaluate(L"$focus") == 2 && gKeyFrame.saves.empty(),
+		"matching additional window resumes and observes physical release");
+	load("check_foreground_window=true\n", "");
+	Require(poll(Window::Foreign()).has_value(), "reloading without a title retains the configured additional window");
+	const std::wstring longTitle(MAX_PATH, L'T');
+	const std::string titleConfig = "check_foreground_window=1\nadditional_foreground_window=" + std::string(MAX_PATH, 'T') + "\n";
+	load(titleConfig.c_str(), "", true);
+	Require(window.Rename(longTitle.c_str()) && !poll(Window::Foreign()), "long title is not a prefix match");
+	Require(window.Rename(longTitle.substr(1).c_str()) && poll(Window::Foreign()).has_value(),
+		"configured title uses DX11's MAX_PATH minus one bound");
+	load("check_foreground_window=invalid\n", "", true);
+	const auto queries = Window::queries;
+	Require(poll(Window::Absent()).has_value() && Window::queries == queries,
+		"invalid foreground check defaults to off without querying Win32");
+	port.state.Gamepad.wButtons = XINPUT_GAMEPAD_A;
+	Check(chain->Present(0, 0));
+	Require(gKeyFrame.saves.size() == 1, "wrapped Present dispatches with foreground check disabled");
+	load("check_foreground_window=true\nadditional_foreground_window=Bunny Unused Audit Window\n", "");
+	DWORD foregroundOwner = 0;
+	GetWindowThreadProcessId(GetForegroundWindow(), &foregroundOwner);
+	Require(foregroundOwner != GetCurrentProcessId(), "hidden WARP test runs outside the foreground process");
+	Source::reads = {};
+	DXGI_PRESENT_PARAMETERS args{};
+	Check(chain->Present1(0, 0, &args));
+	Require(!Source::reads[1] && gKeyFrame.saves.empty(), "wrapped Present1 respects the native foreground filter");
+	std::ofstream(root) << "[Constants]\n";
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr), "uninstall foreground controller reader");
+	std::filesystem::remove(include);
+	std::filesystem::remove(root);
+	std::filesystem::remove(dir);
+}
+
 void TestKeyCyclesOnPresent(IDXGISwapChain1 *chain)
 {
 	using Source = RecordedControllers;
@@ -1593,6 +1684,7 @@ void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 	try {
 		TestControllerFrameDispatch(chain.Get());
 		TestKeyCyclesOnPresent(chain.Get());
+		TestForegroundFrameInput(chain.Get());
 	} catch (...) {
 		Drain(device, first.Get()); // The debug layer also requires completion on a failed assertion.
 		throw;

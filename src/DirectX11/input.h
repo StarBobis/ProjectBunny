@@ -5,6 +5,7 @@
 #include "HackerDevice.h"
 #include "IniXInput.h"
 #include "IniInputDelay.h"
+#include "IniForegroundWindow.h"
 
 // The "input" files are a set of objects to handle user input for both gaming 
 // purposes and for tool purposes, like hunting for shaders.
@@ -199,4 +200,4 @@ struct InputBindingInfo {
 std::vector<InputBindingInfo> ListInputBindings();
 bool InvokeInputBinding(HackerDevice* device, const std::wstring& id, bool release);
 
-bool DispatchInputEvents(HackerDevice *device);
+bool DispatchInputEvents(HackerDevice *device, migoto::InputWindowSource windows = {});

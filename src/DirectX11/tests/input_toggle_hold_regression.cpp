@@ -4,6 +4,7 @@
 #include "HackerContext.h"
 #include "globals.h"
 #include "tests/IniInputDelayCases.h"
+#include "tests/IniForegroundWindowCases.h"
 
 #include <wrl/client.h>
 #include <cstdio>
@@ -116,6 +117,8 @@ public:
     InputDisableScope saved_scope = G->input_disable_scope;
     bool saved_disabled = G->disable_input;
     bool saved_initialized = G->disable_input_initialized;
+    bool saved_focus = G->check_foreground_window;
+    std::wstring saved_title = G->additionalForegroundWindowTitle;
     bool owns_config = false;
 
     InputFixture()
@@ -152,6 +155,8 @@ public:
         customResources.clear();
         persistent_variables.clear();
         command_list_globals.clear();
+        G->check_foreground_window = saved_focus;
+        G->additionalForegroundWindowTitle = saved_title;
         migoto_handle = saved_module;
         G->user_config = saved_user_config;
         G->user_config_dirty = saved_dirty;
@@ -161,11 +166,11 @@ public:
         if (owns_config) { DeleteFileW(config.c_str()); DeleteFileW(settings.c_str()); }
     }
 
-    void write(const char* toggle, bool disabled = true, const char* extra = "")
+    void write(const char* toggle, bool disabled = true, const char* extra = "", const char* system = "")
     {
         std::ofstream out(config, std::ios::binary | std::ios::trunc);
         out << "[Logging]\ncalls=0\nshow_warnings=0\n"
-            "[Hunting]\nhunting=0\n[System]\nskip_early_includes_load=0\n[Input]\ninput_disable_mode=all\ninput=" << (disabled ? "off" : "on") << "\n";
+            "[Hunting]\nhunting=0\n[System]\nskip_early_includes_load=0\n" << system << "[Input]\ninput_disable_mode=all\ninput=" << (disabled ? "off" : "on") << "\n";
         if (toggle) out << "toggle_input=" << toggle << "\n";
         out << "[Include]\nuser_config=" << settings.filename().string() << "\n"
             "[Constants]\nglobal $input_hold_value=5\nglobal $input_hold_hits=0\n"
@@ -318,6 +323,45 @@ void delay_tests(InputFixture& fixture, InputDevice& device)
     frame(130, "", true);
 }
 
+void foreground_tests(InputFixture& fixture, InputDevice& device)
+{
+    using Window = migoto::tests::InputTestWindow;
+    Window window;
+    check(window.Valid(), "create hidden foreground input fixture");
+    bool down = false;
+    unsigned polls = 0, destroyed = 0;
+    InputCounts counts;
+    RegistryCleanup cleanup;
+    auto listener = std::make_shared<InputCallbacks>(count_down, count_up, &counts);
+    auto load = [&](const char* system) {
+        fixture.write(nullptr, false, "", system);
+        ReloadConfig(device.device);
+        ClearKeyBindings();
+        register_memory(down, polls, destroyed, listener);
+    };
+    load("check_foreground_window=true\nadditional_foreground_window=Bunny Input Audit\n");
+    down = true;
+    DispatchInputEvents(device.device, Window::Absent());
+    check(!polls && !counts.down, "no foreground skips the registered button");
+    DispatchInputEvents(device.device, Window::Own());
+    check(counts.down == 1, "process owning the foreground receives press");
+    down = false;
+    check(window.Rename(L"bunny input audit"), "rename native fixture");
+    DispatchInputEvents(device.device, Window::Foreign());
+    check(polls == 1 && !counts.up, "title case mismatch leaves hold active");
+    check(window.Rename(L"Bunny Input Audit"), "restore native title");
+    DispatchInputEvents(device.device, Window::Foreign());
+    check(counts.up == 1, "exact additional title resumes registered release");
+    load("check_foreground_window=true\n");
+    down = true;
+    DispatchInputEvents(device.device, Window::Foreign());
+    check(counts.down == 2, "reload retains the last configured additional title");
+    load("check_foreground_window=not_a_bool\n");
+    const unsigned queries = Window::queries;
+    DispatchInputEvents(device.device, Window::Absent());
+    check(counts.down == 3 && Window::queries == queries, "invalid check falls back to disabled without querying Win32");
+}
+
 void hold_tests(InputDevice& device)
 {
     G->disable_input = false;
@@ -441,6 +485,7 @@ void test_dx11_input_toggle_hold_regression()
         registry_tests(device);
         hold_tests(device);
         delay_tests(fixture, device);
+        foreground_tests(fixture, device);
         std::fputs("PASS: real input registry/gate, config reload and HOLD/TOGGLE/preset/cycle behavior (memory button sampling)\n", stderr);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: input-toggle/HOLD regression: %s\n", error.what());
