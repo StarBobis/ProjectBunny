@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "MigotoIniCommandListUtils.hpp"
+#include "IniExpressionNumbers.h"
 
 class MigotoCommandVmUtils
 {
@@ -119,7 +120,11 @@ public:
 		{
 			double lhs = ParseRelational();
 			for (;;) {
-				if (Match(L"==")) {
+				if (Match(L"===")) {
+					lhs = migoto::EqualFloatBits(static_cast<float>(lhs), static_cast<float>(ParseRelational()));
+				} else if (Match(L"!==")) {
+					lhs = !migoto::EqualFloatBits(static_cast<float>(lhs), static_cast<float>(ParseRelational()));
+				} else if (Match(L"==")) {
 					lhs = fabs(lhs - ParseRelational()) < 0.000001 ? 1.0 : 0.0;
 				} else if (Match(L"!=")) {
 					lhs = fabs(lhs - ParseRelational()) >= 0.000001 ? 1.0 : 0.0;
@@ -163,23 +168,40 @@ public:
 
 		double ParseMultiplicative()
 		{
-			double lhs = ParseUnary();
+			double lhs = ParsePower();
 			for (;;) {
 				if (Match(L"//")) {
-					double rhs = ParseUnary();
+					double rhs = ParsePower();
 					lhs = fabs(rhs) < 0.000001 ? 0.0 : floor(lhs / rhs);
 				} else if (Match(L"*")) {
-					lhs *= ParseUnary();
+					lhs *= ParsePower();
 				} else if (Match(L"/")) {
-					double rhs = ParseUnary();
+					double rhs = ParsePower();
 					lhs = fabs(rhs) < 0.000001 ? 0.0 : lhs / rhs;
 				} else if (Match(L"%")) {
-					double rhs = ParseUnary();
+					double rhs = ParsePower();
 					lhs = fabs(rhs) < 0.000001 ? 0.0 : fmod(lhs, rhs);
 				} else {
 					return lhs;
 				}
 			}
+		}
+
+		// Unary signs bind more tightly than ** in the DX11 grammar.
+		// Fold from the right without recursing once per exponent.
+		double ParsePower()
+		{
+			double value = ParseUnary();
+			if (!Match(L"**"))
+				return value;
+			std::vector<double> bases;
+			do {
+				bases.push_back(value);
+				value = ParseUnary();
+			} while (Match(L"**"));
+			for (auto it = bases.rbegin(); it != bases.rend(); ++it)
+				value = pow(*it, value);
+			return value;
 		}
 
 		double ParseUnary()
@@ -251,6 +273,16 @@ public:
 
 		double ParseNumber()
 		{
+			if (text->compare(pos, 2, L"0b") == 0 || text->compare(pos, 2, L"0B") == 0) {
+				uint64_t value;
+				size_t length;
+				if (!migoto::ReadBinaryDigits(*text, pos + 2, value, length)) {
+					ok = false;
+					return 0.0;
+				}
+				pos += length + 2;
+				return static_cast<double>(value);
+			}
 			const wchar_t *start = text->c_str() + pos;
 			wchar_t *end = nullptr;
 			double value = wcstod(start, &end);

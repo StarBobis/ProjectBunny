@@ -1,6 +1,7 @@
 #include "ComScope.h"
 #include "PngColorSpace.h"
 #include "ExpressionFunctions.h"
+#include "IniExpressionNumbers.h"
 // Include before util.h (or any header that includes util.h) to get pretty
 // version of LockResourceCreationMode:
 #include "lock.h"
@@ -5247,13 +5248,7 @@ inline bool ParseFloatToken(std::wstring_view input, float& out, size_t& length)
 	{
 		std::uint64_t value;
 
-		// ParseBinaryLiterals() takes an owning string. It reads at most 67
-		// characters (the "0b" prefix plus the 65 digits that trigger its
-		// overflow check), so a bounded copy keeps this path O(1).
-		const size_t binary_scan_limit = 67;
-		const size_t binary_scan_size = input.size() < binary_scan_limit ? input.size() : binary_scan_limit;
-
-		if (!ParseBinaryLiterals(wstring(input.data(), binary_scan_size), 2, value, length))
+		if (!migoto::ReadBinaryDigits(input, 2, value, length))
 			return false;
 
 		out = static_cast<float>(value);
@@ -6172,8 +6167,8 @@ DEFINE_OPERATOR(greater_equal_operator, ">=", (lhs >= rhs));
 // vs2015 toolchain "nan" won't parse as such).
 DEFINE_OPERATOR(equality_operator,      "==", (lhs == rhs));
 DEFINE_OPERATOR(inequality_operator,    "!=", (lhs != rhs));
-DEFINE_OPERATOR(identical_operator,     "===",(*(uint32_t*)&lhs == *(uint32_t*)&rhs));
-DEFINE_OPERATOR(not_identical_operator, "!==",(*(uint32_t*)&lhs != *(uint32_t*)&rhs));
+DEFINE_OPERATOR(identical_operator,     "===", migoto::EqualFloatBits(lhs, rhs));
+DEFINE_OPERATOR(not_identical_operator, "!==", !migoto::EqualFloatBits(lhs, rhs));
 
 DEFINE_OPERATOR(bitwise_and_operator,   "&",  ((int32_t)lhs& (int32_t)rhs));
 DEFINE_OPERATOR(bitwise_xor_operator,   "^",  ((int32_t)lhs ^ (int32_t)rhs));

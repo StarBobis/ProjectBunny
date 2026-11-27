@@ -56,6 +56,33 @@ void TestShaderRegexExclusions()
 	gShaderRegexes.clear();
 }
 
+void TestExpressionNumbers()
+{
+	Bunny::IniDocument ini;
+	Require(ini.Parse(L"[Constants]\nglobal $mask = 0b101 + 0B11 * 2\n"
+		L"global $power = 2**3**2\nglobal $neg = -2**2 + 4**-1\n"
+		L"global $signed = 0 !== -0\nglobal $equal = $mask === 11\n"),
+		"parse numeric expressions");
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
+	Bunny::DX12ConstantsVmUtils::Initialize(lists);
+	MigotoCommandVmUtils::State vm;
+	Require(vm.Evaluate(L"$mask") == 11 && vm.Evaluate(L"$power") == 512 &&
+		vm.Evaluate(L"$neg") == 4.25, "binary literals and DX11 exponent precedence");
+	Require(vm.Evaluate(L"$signed") == 1 && vm.Evaluate(L"$equal") == 1 &&
+		vm.Evaluate(L"1 === 1.000000001") == 1, "bit comparison uses float32");
+	Require(vm.Evaluate(L"0 == -0") == 1 && vm.Evaluate(L"1 == 1.0000001") == 1,
+		"ordinary DX12 equality retains its tolerance");
+	const std::wstring maximum = L"0b" + std::wstring(64, L'1');
+	Require(vm.Evaluate(maximum) == static_cast<double>(UINT64_MAX), "maximum binary literal");
+	for (const std::wstring &invalid : {maximum + L"1", std::wstring(L"0b"),
+		std::wstring(L"0b102"), std::wstring(L"2**")}) {
+		MigotoCommandVmUtils::ExpressionParser parser(invalid, vm.Context());
+		Require(parser.Parse() == 0 && !parser.ok, "malformed expression rejected");
+	}
+	MigotoCommandVmUtils::ClearGlobals();
+}
+
 void Check(HRESULT hr)
 {
 	if (FAILED(hr)) {
@@ -577,6 +604,7 @@ int main(int argc, char **argv)
 		if (benchmark)
 			return 0;
 		TestShaderRegexExclusions();
+		TestExpressionNumbers();
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
 		TestQueueHandoff(device.Get());
