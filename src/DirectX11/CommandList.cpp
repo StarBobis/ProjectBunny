@@ -2,6 +2,7 @@
 #include "PngColorSpace.h"
 #include "ExpressionFunctions.h"
 #include "IniExpressionNumbers.h"
+#include "IniBitwise.h"
 #include "IniDrawArguments.h"
 #include "IaBufferElementCount.h"
 #include "IniUnaryMath.h"
@@ -6037,7 +6038,7 @@ static CommandListOperatorFactory<name##T> name;
 
 // Highest level of precedence, allows for negative numbers
 DEFINE_OPERATOR(unary_not_operator,     "!",  (!rhs));
-DEFINE_OPERATOR(bitwise_not_operator,   "~",  (~(int32_t)rhs));
+DEFINE_OPERATOR(bitwise_not_operator,   "~",  migoto::bitwise::Not(rhs));
 DEFINE_OPERATOR(unary_plus_operator,    "+",  (+rhs));
 DEFINE_OPERATOR(unary_negate_operator,  "-",  (-rhs));
 
@@ -6085,8 +6086,8 @@ DEFINE_OPERATOR(modulus_operator,       "%",  (fmod(lhs, rhs)));
 DEFINE_OPERATOR(addition_operator,      "+",  (lhs + rhs));
 DEFINE_OPERATOR(subtraction_operator,   "-",  (lhs - rhs));
 
-DEFINE_OPERATOR(left_shift_operator,    "<<", ((int32_t)lhs << (int32_t)rhs));
-DEFINE_OPERATOR(right_shift_operator,   ">>", ((int32_t)lhs >> (int32_t)rhs));
+DEFINE_OPERATOR(left_shift_operator,    "<<", migoto::bitwise::ShiftLeft(lhs, rhs));
+DEFINE_OPERATOR(right_shift_operator,   ">>", migoto::bitwise::ShiftRight(lhs, rhs));
 
 DEFINE_OPERATOR(less_operator,          "<",  (lhs < rhs));
 DEFINE_OPERATOR(less_equal_operator,    "<=", (lhs <= rhs));
@@ -6104,9 +6105,9 @@ DEFINE_OPERATOR(inequality_operator,    "!=", (lhs != rhs));
 DEFINE_OPERATOR(identical_operator,     "===", migoto::EqualFloatBits(lhs, rhs));
 DEFINE_OPERATOR(not_identical_operator, "!==", !migoto::EqualFloatBits(lhs, rhs));
 
-DEFINE_OPERATOR(bitwise_and_operator,   "&",  ((int32_t)lhs& (int32_t)rhs));
-DEFINE_OPERATOR(bitwise_xor_operator,   "^",  ((int32_t)lhs ^ (int32_t)rhs));
-DEFINE_OPERATOR(bitwise_or_operator,    "|",  ((int32_t)lhs | (int32_t)rhs));
+DEFINE_OPERATOR(bitwise_and_operator,   "&",  migoto::bitwise::And(lhs, rhs));
+DEFINE_OPERATOR(bitwise_xor_operator,   "^",  migoto::bitwise::Xor(lhs, rhs));
+DEFINE_OPERATOR(bitwise_or_operator,    "|",  migoto::bitwise::Or(lhs, rhs));
 
 template<bool IsAnd>
 class LogicalOperator : public CommandListOperator {

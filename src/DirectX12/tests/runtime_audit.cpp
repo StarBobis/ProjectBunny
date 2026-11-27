@@ -8,6 +8,7 @@
 #include "ModRuntime/DX12ModRuntimeInternal.h"
 #include "Presentation/DX12SwapChainQueues.h"
 #include "tests/IniUnaryMathCases.h"
+#include "tests/IniBitwiseCases.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
 #include <thread>
@@ -62,7 +63,8 @@ void TestExpressionNumbers()
 	Bunny::IniDocument ini;
 	Require(ini.Parse(L"[Constants]\nglobal $mask = 0b101 + 0B11 * 2\n"
 		L"global $power = 2**3**2\nglobal $neg = -2**2 + 4**-1\n"
-		L"global $signed = 0 !== -0\nglobal $equal = $mask === 11\n"),
+		L"global $signed = 0 !== -0\nglobal $equal = $mask === 11\n"
+		L"global $shift = 1 << 2\nglobal $flagged = ($mask ^ $shift) & 15\n"),
 		"parse numeric expressions");
 	Bunny::CommandListMap lists;
 	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
@@ -72,12 +74,22 @@ void TestExpressionNumbers()
 		vm.Evaluate(L"$neg") == 4.25, "binary literals and DX11 exponent precedence");
 	Require(vm.Evaluate(L"$signed") == 1 && vm.Evaluate(L"$equal") == 1 &&
 		vm.Evaluate(L"1 === 1.000000001") == 1, "bit comparison uses float32");
+	Require(vm.Evaluate(L"$flagged") == 15, "bitwise operators execute through Constants with variable operands");
+	for (const auto &test : migoto::test::BitwiseCases) {
+		const std::wstring expression(test.expression);
+		MigotoCommandVmUtils::ExpressionParser parser(expression, vm.Context());
+		const auto actual = parser.Parse();
+		if (!parser.ok || actual != test.expected)
+			std::fprintf(stderr, "DX12 bitwise %ls produced %.9g, expected %.9g\n", test.expression, actual, test.expected);
+		Require(parser.ok && actual == test.expected, "bitwise precedence, chaining, rounding and boundaries");
+	}
 	Require(vm.Evaluate(L"0 == -0") == 1 && vm.Evaluate(L"1 == 1.0000001") == 1,
 		"ordinary DX12 equality retains its tolerance");
 	const std::wstring maximum = L"0b" + std::wstring(64, L'1');
 	Require(vm.Evaluate(maximum) == static_cast<double>(UINT64_MAX), "maximum binary literal");
 	for (const std::wstring &invalid : {maximum + L"1", std::wstring(L"0b"),
-		std::wstring(L"0b102"), std::wstring(L"2**")}) {
+		std::wstring(L"0b102"), std::wstring(L"2**"), std::wstring(L"1 & & 2"),
+		std::wstring(L"1 ||| 2"), std::wstring(L"1 <<"), std::wstring(L"~")}) {
 		MigotoCommandVmUtils::ExpressionParser parser(invalid, vm.Context());
 		Require(parser.Parse() == 0 && !parser.ok, "malformed expression rejected");
 	}

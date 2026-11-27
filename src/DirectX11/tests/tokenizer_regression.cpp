@@ -1,4 +1,5 @@
 #include "CommandList.h"
+#include "tests/IniBitwiseCases.h"
 #include "IniHandler.h"
 #include "globals.h"
 
@@ -258,6 +259,12 @@ void run_tokenizer_regression()
     fixture.initialize();
     const std::wstring empty_namespace;
     test_binary_scanner();
+    for (const auto& test : migoto::test::BitwiseCases) {
+        const float actual = evaluate(test.expression, empty_namespace);
+        if (actual != test.expected)
+            std::fprintf(stderr, "DX11 bitwise %ls produced %.9g, expected %.9g\n", test.expression, actual, test.expected);
+        check(actual == test.expected, "DX11 bitwise operators and conversion boundaries");
+    }
     test_binary_expressions_and_config(empty_namespace);
     test_resource_and_namespace_tokens(fixture);
     test_tokenizer_view_lifetime();

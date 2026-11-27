@@ -18,6 +18,7 @@
 
 #include "MigotoIniCommandListUtils.hpp"
 #include "IniExpressionNumbers.h"
+#include "IniBitwise.h"
 #include "IniUnaryMath.h"
 
 class MigotoCommandVmUtils
@@ -110,11 +111,35 @@ public:
 
 		double ParseAnd()
 		{
-			double lhs = ParseEquality();
+			double lhs = ParseBitwiseOr();
 			while (Match(L"&&")) {
-				const double rhs = ParseEquality();
+				const double rhs = ParseBitwiseOr();
 				lhs = (Truthy(lhs) && Truthy(rhs)) ? 1.0 : 0.0;
 			}
+			return lhs;
+		}
+
+		double ParseBitwiseOr()
+		{
+			double lhs = ParseBitwiseXor();
+			while (MatchSingleBitOperator(L'|'))
+				lhs = migoto::bitwise::Or(lhs, ParseBitwiseXor());
+			return lhs;
+		}
+
+		double ParseBitwiseXor()
+		{
+			double lhs = ParseBitwiseAnd();
+			while (Match(L"^"))
+				lhs = migoto::bitwise::Xor(lhs, ParseBitwiseAnd());
+			return lhs;
+		}
+
+		double ParseBitwiseAnd()
+		{
+			double lhs = ParseEquality();
+			while (MatchSingleBitOperator(L'&'))
+				lhs = migoto::bitwise::And(lhs, ParseEquality());
 			return lhs;
 		}
 
@@ -138,19 +163,32 @@ public:
 
 		double ParseRelational()
 		{
-			double lhs = ParseAdditive();
+			double lhs = ParseShift();
 			for (;;) {
 				if (Match(L">=")) {
-					lhs = lhs >= ParseAdditive() ? 1.0 : 0.0;
+					lhs = lhs >= ParseShift() ? 1.0 : 0.0;
 				} else if (Match(L"<=")) {
-					lhs = lhs <= ParseAdditive() ? 1.0 : 0.0;
+					lhs = lhs <= ParseShift() ? 1.0 : 0.0;
 				} else if (Match(L">")) {
-					lhs = lhs > ParseAdditive() ? 1.0 : 0.0;
+					lhs = lhs > ParseShift() ? 1.0 : 0.0;
 				} else if (Match(L"<")) {
-					lhs = lhs < ParseAdditive() ? 1.0 : 0.0;
+					lhs = lhs < ParseShift() ? 1.0 : 0.0;
 				} else {
 					return lhs;
 				}
+			}
+		}
+
+		double ParseShift()
+		{
+			double lhs = ParseAdditive();
+			for (;;) {
+				if (Match(L"<<"))
+					lhs = migoto::bitwise::ShiftLeft(lhs, ParseAdditive());
+				else if (Match(L">>"))
+					lhs = migoto::bitwise::ShiftRight(lhs, ParseAdditive());
+				else
+					return lhs;
 			}
 		}
 
@@ -208,6 +246,8 @@ public:
 
 		double ParseUnary()
 		{
+			if (Match(L"~"))
+				return migoto::bitwise::Not(ParseUnary());
 			if (Match(L"!"))
 				return Truthy(ParseUnary()) ? 0.0 : 1.0;
 			if (Match(L"-"))
@@ -244,6 +284,16 @@ public:
 			}
 			ok = false;
 			return 0.0;
+		}
+
+		bool MatchSingleBitOperator(wchar_t op)
+		{
+			SkipSpaces();
+			if (pos >= text->size() || (*text)[pos] != op ||
+				(pos + 1 < text->size() && (*text)[pos + 1] == op))
+				return false;
+			++pos;
+			return true;
 		}
 
 		template <size_t N>
