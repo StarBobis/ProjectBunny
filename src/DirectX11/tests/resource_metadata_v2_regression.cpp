@@ -2,6 +2,7 @@
 #include "HackerContext.h"
 #include "HackerDevice.h"
 #include "IniHandler.h"
+#include "tests/IniGraphicsConstantCases.h"
 #include "Input.h"
 #include "Override.h"
 #include "globals.h"
@@ -179,7 +180,7 @@ ULONG references(IUnknown* object)
     return count;
 }
 
-void literal_tests()
+void literal_tests(MetadataDevice &device)
 {
     const std::wstring ini_namespace;
     for (const auto& entry : CustomResourceBindFlagNames) {
@@ -190,13 +191,17 @@ void literal_tests()
         float value = -1;
         check(expression.static_evaluate(&value) && value == static_cast<float>(entry.val), "D3D11_BIND enum literal numeric/static value");
     }
-    for (const auto& literal : {L"DXGI_FORMAT_UNKNOWN", L"DXGI_FORMAT_R8G8B8A8_UNORM", L"DXGI_FORMAT_R32G32B32A32_FLOAT"}) {
-        const std::wstring text = normalize_expression(literal);
+    migoto::tests::CheckGraphicsConstants([&](const std::wstring &raw) -> std::optional<float> {
+        const auto text = normalize_expression(raw);
         CommandListExpression expression;
+        if (!expression.parse(&text, &ini_namespace, nullptr))
+            return {};
         float value = -1;
-        check(expression.parse(&text, &ini_namespace, nullptr) && expression.static_evaluate(&value) &&
-            value == static_cast<float>(ParseFormatString(literal, false)), "complete DXGI_FORMAT prefix and static value");
-    }
+        check(expression.static_evaluate(&value), "graphics constant expression accepts static evaluation");
+        expression.optimise(device.device);
+        check(expression.evaluate(&device.state) == value, "optimized graphics constant keeps its runtime value");
+        return value;
+    }, check);
     for (const wchar_t* invalid : {L"D3D11_BIND_", L"D3D11_BIND_NONE", L"D3D11_BIND_decoderjunk",
         L"D3D11_BINC_decoder", L"D3D11_BIND_not_a_flag", L"DXGI_FORMAT_", L"DXGI_FORMAT_not_a_format",
         L"DXGI_FURMAT_R8G8B8A8_UNORM", L"DXGI_FORMAT_R8G8B8A8_UNORMjunk"}) {
@@ -360,7 +365,7 @@ void test_dx11_resource_metadata_v2_regression()
         MetadataDevice device;
         MetadataConfig fixture;
         fixture.load();
-        literal_tests();
+        literal_tests(device);
         resource_tests(device);
         std::fputs("PASS: real Array/Mips/BindFlags allocation queries, overrides/literals/failures and COM balance\n", stderr);
     } catch (const std::exception& error) {

@@ -6802,22 +6802,14 @@ bool CommandListOperand::parse_scissor(const wstring* operand, const wstring* in
 
 bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
 {
-	if (operand->size() > 12 && !_wcsnicmp(operand->c_str(), L"dxgi_format_", 12)) {
-		const DXGI_FORMAT format = ParseFormatString(operand->c_str(), false);
-		if (format == static_cast<DXGI_FORMAT>(-1))
-			return false;
-		val = static_cast<float>(format);
+	switch (migoto::ReadGraphicsConstant(*operand, val)) {
+	case migoto::GraphicsConstant::Value:
 		type = ParamOverrideType::VALUE;
 		return operand_allowed_in_context(type, scope);
-	}
-	if (operand->size() > 11 && !_wcsnicmp(operand->c_str(), L"d3d11_bind_", 11)) {
-		const auto flags = lookup_enum_val<const wchar_t*, CustomResourceBindFlags>(
-			CustomResourceBindFlagNames, operand->c_str() + 11, CustomResourceBindFlags::INVALID);
-		if (flags == CustomResourceBindFlags::INVALID)
-			return false;
-		val = static_cast<float>(flags);
-		type = ParamOverrideType::VALUE;
-		return operand_allowed_in_context(type, scope);
+	case migoto::GraphicsConstant::Invalid:
+		return false;
+	case migoto::GraphicsConstant::Unmatched:
+		break;
 	}
 	type = lookup_enum_val<const wchar_t*, ParamOverrideType>
 		(ParamOverrideTypeNames, operand->c_str(), ParamOverrideType::INVALID);

@@ -19,6 +19,7 @@
 #include "tests/IniLogicalCases.h"
 #include "tests/IniEarlySettingsCases.h"
 #include "tests/IniFileConditionCases.h"
+#include "tests/IniGraphicsConstantCases.h"
 #include <bit>
 #include <xmmintrin.h>
 #include <wrl/client.h>
@@ -1091,6 +1092,9 @@ void TestLogicalExpressions()
 		Require(LogicalReadRaisesInvalid(vm, migoto::tests::GuardedOperand(test), 0) == !test.safe,
 			"DX12 skips exactly the eligible DX11 subtrees");
 	migoto::tests::CheckLogicalRandomOrder([&](const std::wstring &text) { return vm.Evaluate(text); }, Require);
+	Require(!LogicalReadRaisesInvalid(vm, L"0 && (" + marker + L" == DXGI_FORMAT_R8_UNORM)", 0) &&
+		!LogicalReadRaisesInvalid(vm, L"0 && (" + marker + L" == (draw_type % D3D11_BIND_vertex_buffer))", 0),
+		"named graphics constants can be skipped like numeric literals, including as a nonzero divisor");
 	const auto guard = L"1 || " + marker;
 	Require(!LogicalReadRaisesInvalid(vm, guard, 1), "true OR skips scalar read");
 	load(migoto::tests::logicalPolicyKey);
@@ -1148,6 +1152,35 @@ void TestLogicalExpressions()
 		"separate logical groups within arithmetic consume their exact operands");
 	std::filesystem::remove(root);
 	std::filesystem::remove(dir);
+}
+
+void TestGraphicsConstants()
+{
+	using Vm = MigotoCommandVmUtils;
+	Vm::State vm;
+	migoto::tests::CheckGraphicsConstants([&](const std::wstring &text) -> std::optional<float> {
+		Vm::ExpressionParser parser(text, vm.Context());
+		const float result = parser.Parse();
+		const auto setting = Vm::ReadStaticIniExpression(text);
+		Require(parser.ok == setting.has_value() && (!setting || *setting == result),
+			"runtime and static INI option agree on graphic constants and invalid names");
+		return setting;
+	}, Require);
+	Bunny::IniDocument ini;
+	Require(ini.Parse(L"condition = DXGI_FORMAT_R16_UINT == 57\n"
+		L"[Constants]\nglobal $mask = d3d11_bind_render_target | D3D11_BIND_SHADER_RESOURCE\n"
+		L"if $mask & d3d11_bind_shader_resource\nx7 = dxgi_format_r32_float\nendif\n"),
+		"parse a file guarded by a named format");
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
+	Bunny::DX12ConstantsVmUtils::Initialize(lists);
+	Require(vm.Evaluate(L"$mask") == 40 && vm.Evaluate(L"x7") == 41,
+		"named binding bits and format reach a Constants branch and assignment");
+	const auto samples = GetExpressionRandomSampleCount();
+	Require(!Vm::ExpressionParser::ValidSyntax(L"random(2) + DXGI_FORMAT_bad") &&
+		vm.Evaluate(L"random(2) + DXGI_FORMAT_bad") == 0 && samples == GetExpressionRandomSampleCount(),
+		"a malformed symbolic name rejects an expression before any random sample");
+	Vm::ClearGlobals();
 }
 
 void TestExpressionNumbers()
@@ -2653,6 +2686,7 @@ int main(int argc, char **argv)
 		TestKeyTransitionClock();
 		TestWipeUserConfig();
 		TestLogicalExpressions();
+		TestGraphicsConstants();
 		TestExpressionNumbers();
 		TestUnaryMath();
 		TestFrameTiming();

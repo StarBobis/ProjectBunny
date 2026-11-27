@@ -24,6 +24,7 @@
 #include "IniBitwise.h"
 #include "IniLogicalPlan.h"
 #include "IniIncludeCondition.h"
+#include "IniGraphicsConstants.h"
 #include "IniUnaryMath.h"
 #include "ExpressionFunctions.h"
 #include "DrawCallParameters.h"
@@ -406,6 +407,18 @@ public:
 			if (pos < text->size() && IsIdentifierStart((*text)[pos])) {
 				const std::wstring name = ParseIdentifier();
 				if (!Match(L"(")) {
+					float constant;
+					switch (migoto::ReadGraphicsConstant(name, constant)) {
+					case migoto::GraphicsConstant::Value:
+						if (analysis)
+							analysis->Literal(constant);
+						return constant;
+					case migoto::GraphicsConstant::Invalid:
+						ok = false;
+						return 0;
+					case migoto::GraphicsConstant::Unmatched:
+						break;
+					}
 					if (name.size() == 6 && _wcsicmp(name.c_str(), L"random") == 0) {
 						ok = false;
 						return 0.0f;
