@@ -514,6 +514,7 @@ public:
 			return swapChain->Present(syncInterval, flags);
 		}
 		DX12MarkStage("present_enter");
+		const uint64_t frameTicks = DX12RuntimeState::BeginPresent();
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12_PROF_FRAME_ENTER("PresentWrapper", swapChain);
@@ -565,7 +566,7 @@ public:
 				}
 			}
 			DX12_DIAG_QPC_RESET(sliceBegin);
-			DX12RuntimeState::IncrementPresentCount();
+			DX12RuntimeState::IncrementPresentCount(frameTicks);
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
@@ -613,7 +614,7 @@ public:
 			return hr;
 		}
 		DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12RuntimeState::IncrementPresentCount();
+		DX12RuntimeState::IncrementPresentCount(frameTicks);
 		DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
@@ -658,6 +659,7 @@ public:
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
 		DX12MarkStage("present_enter");
+		const uint64_t frameTicks = DX12RuntimeState::BeginPresent();
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12_PROF_FRAME_ENTER("Present1Wrapper", swapChain);
@@ -700,7 +702,7 @@ public:
 				}
 			}
 			DX12_DIAG_QPC_RESET(sliceBegin);
-			DX12RuntimeState::IncrementPresentCount();
+			DX12RuntimeState::IncrementPresentCount(frameTicks);
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
@@ -746,7 +748,7 @@ public:
 			return hr;
 		}
 		DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12RuntimeState::IncrementPresentCount();
+		DX12RuntimeState::IncrementPresentCount(frameTicks);
 		DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 

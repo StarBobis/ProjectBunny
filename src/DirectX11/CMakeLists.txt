@@ -83,6 +83,7 @@ add_library(DirectX11 SHARED
     ${CMAKE_SOURCE_DIR}/src/common/iid.cpp
     ${CMAKE_SOURCE_DIR}/src/common/ini_parser_lite.cpp
     ${CMAKE_SOURCE_DIR}/src/common/ExpressionFunctions.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/FrameRate.cpp
     ${CMAKE_SOURCE_DIR}/src/common/util.cpp
     ${CMAKE_SOURCE_DIR}/src/D3D_Shaders/Assembler.cpp
     ${CMAKE_SOURCE_DIR}/src/D3D_Shaders/SignatureParser.cpp

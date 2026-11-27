@@ -12,4 +12,10 @@ inline std::uint64_t GetSystemTicks() noexcept
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+inline float SecondsBetween(std::uint64_t start, std::uint64_t end) noexcept
+{
+    const auto microseconds = end >= start ? end - start : 0;
+    return static_cast<float>(static_cast<double>(microseconds) / 1000000.0);
+}
+
 } // namespace migoto

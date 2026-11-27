@@ -365,7 +365,7 @@ spec 的默认值是 `fill=solid` / `cull=back` / `topology=triangle_list` / `fr
 
 - 表达式无法完整解析时，**整个表达式返回 0**（`ok=false` → `Parse()` 返回 `0.0`，`:91`），不会报错。
 - 未定义的标识符读取为 **0**（`LookupVariable` 找不到即返回 `0.0`，`:551`）。这不是"功能探测"手段。
-- **不带 `$` 的裸标识符不会命中变量**。local 表的键由 `ExtractVariableName` 保留 `$` 前缀，全局表的变量键同样带 `$`（`SetGlobal` → `WriteGlobalLocked` → `NormalizeVariableName`），因此 `foo` 查不到 `$foo`，读取结果为 0。裸标识符只能命中**着色器常量**（`x87` 等，由 `AssignSymbol` 写入同一张全局表）与**内置名**（`time`、`draw_type`）。引用变量必须写 `$变量名`。
+- **不带 `$` 的裸标识符不会命中变量**。local 表的键由 `ExtractVariableName` 保留 `$` 前缀，全局表的变量键同样带 `$`（`SetGlobal` → `WriteGlobalLocked` → `NormalizeVariableName`），因此 `foo` 查不到 `$foo`，读取结果为 0。裸标识符只能命中**着色器常量**（`x87` 等，由 `AssignSymbol` 写入同一张全局表）与**内置名**（如 `frame_time`、`fps`、`draw_type`）。引用变量必须写 `$变量名`。
 - 除数为 0（或接近 0）时结果为 0，不会抛异常；脚本应自行检查除数。
 
 ---
@@ -393,11 +393,14 @@ spec 的默认值是 `fill=solid` / `cull=back` / `topology=triangle_list` / `fr
 
 因此**帧变量反映的是上一次帧边界采集到的值**，不是表达式求值瞬间的系统状态。
 
-### 5.2 固定值与兼容名
+### 5.2 帧时间与兼容名
 
 | 名称 | 返回 | 说明 |
 | --- | --- | --- |
-| `time` | 单调时钟秒数 | 从**首次求值**起算的 `steady_clock` 差值（`src/common/MigotoCommandVmUtils.hpp:539`）。进程内不归零。 |
+| `time` | 运行秒数 | 从 DLL 启动到最近一次主交换链进入正式 Present，以单调时钟计。 |
+| `frame_time` | 帧间隔秒数 | 与上一次正式 Present 入口比较，第一次从 DLL 启动起算。回退的时钟间隔记为 0。 |
+| `fps` | 平滑帧率 | 使用共享的 DX11 FPSCounter，以 0.1 为平滑系数；零间隔和长于一秒的间隔保持上次帧率。 |
+| `frame_number` | 帧号 | 正式 Present 返回后递增。四个帧参数都按 float32 发布，同一条表达式读到同一份帧数据。 |
 | `draw_type` | 恒为 `1` | 硬编码常量（`:544`）。 |
 
 以下名称有兼容写入但**恒为 0**，不能用于判断实际状态（`DX12VmFrameVariablesUtils.h:115`）：
@@ -408,7 +411,7 @@ spec 的默认值是 `fill=solid` / `cull=back` / `topology=triangle_list` / `fr
 
 ### 5.3 不存在实时计数的名称
 
-DX11 的 `FRAME_NUMBER`、`DRAW_NUMBER`、`DISPATCH_NUMBER`、`FRAME_TIME`、`FPS` 在 DX12 中**没有实现**：它们既不在帧变量列表里，也不在特判名单里，因此按 §4.3 的规则读取为 **0**。不要用它们做帧计数。
+`draw_number` 和 `dispatch_number` 的逐调用计数仍待实现。
 
 ---
 
@@ -588,7 +591,7 @@ DDS 纹理的像素上传走一条**私有队列 + 围栏**通道（`src/DirectX
 | `global` 前缀 | 显式写全局变量 | 与 `$x` 同路径；作用域链上有同名 local 时写 local |
 | 递归深度 | 256 层 | `depth > 16` 即停止（`DX12CommandListExecutor.h:1417`） |
 | 自递归 | — | 同名列表已在调用栈上时跳过该次调用（`:1744`，`EnterCommandList`） |
-| 帧计数器 | `FRAME_NUMBER` 等实时计数 | 不存在，读为 0 |
+| 帧计数器 | `frame_number`、`draw_number`、`dispatch_number` | 主交换链帧号已接入，逐绘制与逐派发计数待实现 |
 | `store` / Region / 动态槽 / 池 | 支持 | 未实现 |
 | CubeMap / 3D DDS | 支持 | 不支持（`unsupported_dimension`） |
 | 资源 `array` | 数组纹理 | 只被解析，不参与资源创建 |

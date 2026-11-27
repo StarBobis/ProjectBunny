@@ -6,7 +6,7 @@
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
+#include <optional>
 #include <cwchar>
 #include <initializer_list>
 #include <limits>
@@ -68,6 +68,27 @@ public:
 		inline static std::atomic<int> frameVariableReferenced = 0;
 	};
 
+	class FrameTiming
+	{
+	public:
+		float time = 0;
+		float frameTime = 0;
+		float fps = 0;
+		float frameNumber = 0;
+
+		using Field = float FrameTiming::*;
+		static Field Find(const std::wstring &name)
+		{
+			if (name == L"time") return &FrameTiming::time;
+			if (name == L"frame_time") return &FrameTiming::frameTime;
+			if (name == L"fps") return &FrameTiming::fps;
+			if (name == L"frame_number") return &FrameTiming::frameNumber;
+			return nullptr;
+		}
+	};
+
+	inline static std::atomic<FrameTiming> frameTiming{FrameTiming{0, 0, 0, 0}};
+
 	class ExpressionContext
 	{
 	public:
@@ -83,6 +104,7 @@ public:
 		ExpressionContext context;
 		bool ok = true;
 		Mode mode;
+		std::optional<FrameTiming> timingSample;
 
 		ExpressionParser(const std::wstring &value, const ExpressionContext &evalContext, Mode mode = Mode::Evaluate)
 			: text(&value), context(evalContext), mode(mode)
@@ -399,7 +421,7 @@ public:
 
 		double LookupIdentifier(const std::wstring &name)
 		{
-			return MigotoCommandVmUtils::LookupVariable(context, name);
+			return MigotoCommandVmUtils::LookupVariable(context, name, &timingSample);
 		}
 	};
 
@@ -652,7 +674,8 @@ public:
 		return text.empty() || text[0] != L'$' ? L"" : text;
 	}
 
-	static double LookupVariable(ExpressionContext context, const std::wstring &name)
+	static double LookupVariable(ExpressionContext context, const std::wstring &name,
+		std::optional<FrameTiming> *timingSample = nullptr)
 	{
 		std::wstring normalized = NormalizeVariableName(name);
 		if (context.localScopes) {
@@ -663,10 +686,14 @@ public:
 			}
 		}
 
-		if (normalized == L"time") {
-			using clock = std::chrono::steady_clock;
-			static const auto start = clock::now();
-			return std::chrono::duration<double>(clock::now() - start).count();
+		if (!normalized.empty() && (normalized.front() == L't' || normalized.front() == L'f')) {
+			if (const auto field = FrameTiming::Find(normalized)) {
+				if (!timingSample)
+					return frameTiming.load(std::memory_order_acquire).*field;
+				if (!*timingSample)
+					timingSample->emplace(frameTiming.load(std::memory_order_acquire));
+				return (**timingSample).*field;
+			}
 		}
 		if (normalized == L"draw_type")
 			return 1.0;

@@ -124,6 +124,47 @@ void TestUnaryMath()
 	}
 }
 
+void TestFrameTiming()
+{
+	MigotoCommandVmUtils::State vm;
+	Require(vm.Evaluate(L"time + frame_time + frame_number + fps") == 0,
+		"timing operands start at zero before the first Present");
+	const uint64_t start = migoto::GetSystemTicks();
+	DX12RuntimeState::BeginPresent(start);
+	const double firstTime = vm.Evaluate(L"time");
+	Require(firstTime >= 0 && vm.Evaluate(L"frame_time") == firstTime && vm.Evaluate(L"fps") == 0,
+		"first Present measures time since launch and initializes the FPS counter");
+	DX12RuntimeState::IncrementPresentCount(start);
+	DX12RuntimeState::BeginPresent(start + 10000);
+	Require(vm.Evaluate(L"frame_number") == 1 && vm.Evaluate(L"frame_time") == 0.01f &&
+		std::abs(vm.Evaluate(L"fps") - 100) < 0.001, "second Present publishes delta in seconds and FPS");
+	const std::wstring operand = L"frame_number";
+	MigotoCommandVmUtils::ExpressionParser ongoing(operand, vm.Context());
+	Require(ongoing.LookupIdentifier(L"FRAME_TIME") == 0.01f, "capture this expression's timing sample");
+	DX12RuntimeState::IncrementPresentCount(start + 10000);
+	Require(ongoing.Parse() == 1 && vm.Evaluate(operand) == 2, "a running expression sees one complete frame");
+	DX12RuntimeState::BeginPresent(start + 30000);
+	const double smoothedFps = vm.Evaluate(L"fps");
+	Require(vm.Evaluate(L"frame_time") == 0.02f && std::abs(smoothedFps - 1 / 0.011) < 0.001 &&
+		std::abs(vm.Evaluate(L"time") - firstTime - 0.03) < 1e-5, "elapsed time and DX11 EMA smoothing");
+	DX12RuntimeState::BeginPresent(start + 30000);
+	Require(vm.Evaluate(L"frame_time") == 0 && vm.Evaluate(L"fps") == smoothedFps, "duplicate tick preserves FPS");
+	DX12RuntimeState::BeginPresent(start + 2030000);
+	Require(vm.Evaluate(L"frame_time") == 2 && vm.Evaluate(L"fps") == smoothedFps, "long frame preserves FPS");
+
+	Bunny::IniDocument ini;
+	Require(ini.Parse(L"[Constants]\nglobal $observed = frame_number + frame_time\n"), "parse frame operands");
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(ini, &lists);
+	Bunny::DX12ConstantsVmUtils::Initialize(lists);
+	Require(vm.Evaluate(L"$observed") == 4 && vm.Evaluate(L"fps") == smoothedFps,
+		"reloading Constants preserves the frame sample");
+	DX12RuntimeState::BeginPresent(0);
+	Require(vm.Evaluate(L"time + frame_time") == 0 && vm.Evaluate(L"fps") == smoothedFps,
+		"backwards timestamp clamps time at zero");
+	MigotoCommandVmUtils::ClearGlobals();
+}
+
 void TestRandomExpression()
 {
 	Bunny::IniDocument ini;
@@ -589,6 +630,16 @@ void TestSwapChain(IDXGIFactory4 *factory, ID3D12Device *device)
 	Check(chain->Present(0, 0));
 	Require(DX12RuntimeState::GetPresentCount() == frameBeforePresent + 1 &&
 		GetExpressionRandomSampleCount() == samplesBeforePresent, "wrapped WARP Present advances the frame without sampling");
+	MigotoCommandVmUtils::State vm;
+	Require(vm.Evaluate(L"frame_number") == frameBeforePresent + 1, "Present updates the INI frame number");
+	const double presentTime = vm.Evaluate(L"time");
+	DXGI_PRESENT_PARAMETERS parameters{};
+	Check(chain->Present1(0, DXGI_PRESENT_TEST, &parameters));
+	Require(vm.Evaluate(L"frame_number") == frameBeforePresent + 1 && vm.Evaluate(L"time") == presentTime,
+		"test presentation leaves the frame snapshot untouched");
+	Check(chain->Present1(0, 0, &parameters));
+	Require(vm.Evaluate(L"frame_number") == frameBeforePresent + 2 && vm.Evaluate(L"time") >= presentTime,
+		"wrapped Present1 publishes its clock and frame number");
 	Drain(device, first.Get());
 	ComPtr<IDXGISwapChain3> chain3;
 	Check(chain.As(&chain3));
@@ -865,6 +916,7 @@ int main(int argc, char **argv)
 		TestShaderRegexExclusions();
 		TestExpressionNumbers();
 		TestUnaryMath();
+		TestFrameTiming();
 		TestRandomExpression();
 		TestInstancedDraws(device.Get());
 		TestAutomaticDraws(device.Get());

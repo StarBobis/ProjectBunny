@@ -2,7 +2,10 @@
 
 | 参数 | DX12 含义 |
 | --- | --- |
-| `time` | 单调时钟秒数 |
+| `time` | 从 DLL 启动到最近一次主交换链进入 Present 的秒数 |
+| `frame_number` | 帧号从 0 开始，每次主交换链正式 Present 返回后加 1 |
+| `frame_time` | 相邻两次正式 Present 入口之间的秒数，第一次从 DLL 启动起算 |
+| `fps` | 按 DX11 算法平滑后的帧率，收到两个有效时间点后开始有值 |
 | `window_width/window_height` | 窗口尺寸 |
 | `res_width/res_height` | 后备缓冲尺寸，必要时回退窗口尺寸 |
 | `rt_width/rt_height` | 帧快照中的后备缓冲/窗口尺寸，并非每次 draw 的真实目标 |
@@ -23,7 +26,9 @@
 | `hunting/frame_analysis` | 固定为 0 |
 | `sli/stereo_active/stereo_available` | 固定为 0 |
 
-DX11 的 `FRAME_NUMBER`、`DRAW_NUMBER`、`DISPATCH_NUMBER`、`FRAME_TIME`、`FPS` 不属于这里可依赖的实时计数。未定义名称可能读取为零，不是功能检测方式。
+四个帧参数在第一次正式 Present 前均为 0。读同一条表达式时使用同一份帧数据，重载 INI 后继续计数。`time` 已改为按帧采样，同一帧内反复读取会得到相同结果。`fps` 忽略零间隔和超过一秒的间隔，`frame_time` 仍反映长帧。
+
+`draw_number` 和 `dispatch_number` 的逐绘制计数仍待实现。
 
 ```ini
 [Constants]

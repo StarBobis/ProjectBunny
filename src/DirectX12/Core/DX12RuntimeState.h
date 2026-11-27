@@ -41,11 +41,12 @@ public:
 		return module;
 	}
 
-	static LONG IncrementPresentCount(uint64_t ticks = migoto::GetSystemTicks());
+	static uint64_t BeginPresent(uint64_t ticks = migoto::GetSystemTicks());
+	static LONG IncrementPresentCount(uint64_t ticks);
 
 	static LONG GetPresentCount()
 	{
-		return presentCount.load(std::memory_order_relaxed);
+		return presentCount.load(std::memory_order_acquire);
 	}
 
 	static DX12RuntimeMode GetRuntimeMode()
