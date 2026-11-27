@@ -2,6 +2,7 @@
 
 #include "Core/DX12Diagnostics.h"
 #include "MigotoIniCommandListUtils.hpp"
+#include "ShaderRegexExclusions.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -1936,6 +1937,7 @@ public:
 	std::wstring sourceDir;
 	std::wstring iniNamespace;
 	std::vector<std::string> shaderModels;
+	std::set<uint64_t> excludedHashes;
 	CommandListLinks commandLists;
 	std::vector<CommandListAction> actions;
 	bool handlingSkip = false;
@@ -1948,7 +1950,7 @@ class MigotoShaderRegexParser
 {
 public:
 	static void ParseSections(
-		const IniDocument &ini, ShaderRegexMap *shaderRegexes);
+		const IniDocument &ini, ShaderRegexMap *shaderRegexes, std::vector<std::wstring> &warnings);
 };
 
 
@@ -2017,7 +2019,7 @@ static void AppendShaderModels(
 };
 
 inline void MigotoShaderRegexParser::ParseSections(
-	const IniDocument &ini, ShaderRegexMap *shaderRegexes)
+	const IniDocument &ini, ShaderRegexMap *shaderRegexes, std::vector<std::wstring> &warnings)
 {
 	if (!shaderRegexes)
 		return;
@@ -2064,8 +2066,18 @@ inline void MigotoShaderRegexParser::ParseSections(
 			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
 			std::wstring value = IniDocumentText::Trim(entry.value);
 			if (key == L"shader_model") {
-				size_t before = config.shaderModels.size();
 				MigotoShaderRegexParserText::AppendShaderModels(value, &config.shaderModels);
+				continue;
+			}
+			if (key == L"exclude_hash") {
+				if (!migoto::AddShaderRegexExcludedHash(config.excludedHashes, value)) {
+					warnings.push_back(entry.sourcePath + L":" + std::to_wstring(entry.lineNumber) +
+						L" [" + groupName + L"] invalid exclude_hash=" + value + L"; group disabled");
+					// Each main section is merged by IniDocument before this pass.
+					// Empty models remove the whole group in the final cleanup.
+					config.shaderModels.clear();
+					break;
+				}
 				continue;
 			}
 			if (key == L"temps" || key == L"filter_index")

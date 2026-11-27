@@ -23,6 +23,39 @@ void Require(bool condition, const char *message)
 		throw std::runtime_error(message);
 }
 
+void TestShaderRegexExclusions()
+{
+	Bunny::IniDocument ini;
+	Require(ini.Parse(
+		L"[ShaderRegexExcept]\nshader_model=ps_5_0\nexclude_hash=0XAbCd\n"
+		L"exclude_hash=abcd\nexclude_hash=ffffffffffffffff\nhandling=skip\n"
+		L"[ShaderRegexOther]\nshader_model=ps_5_0\n"
+		L"[ShaderRegexInvalid]\nexclude_hash=1234567890abcdef0\nshader_model=ps_5_0\n"),
+		"parse shader regex groups");
+	std::vector<std::wstring> warnings;
+	Bunny::MigotoShaderRegexParser::ParseSections(ini, &gShaderRegexes, warnings);
+	Require(warnings.size() == 1 && gShaderRegexes.size() == 2, "discard invalid group only");
+	const auto &excluded = gShaderRegexes.at(L"ShaderRegexExcept").excludedHashes;
+	Require(excluded.size() == 2 && excluded.contains(UINT64_MAX), "full width and duplicate exclusions");
+
+	std::unordered_set<std::wstring> seen;
+	std::vector<Bunny::ShaderOverrideConfig> matches;
+	AppendShaderRegexForShaderLocked(0xabcd, "ps_5_0", &matches, &seen);
+	Require(matches.size() == 1 && matches.front().section == L"ShaderRegexOther",
+		"exclusion is local to one regex group");
+	AppendShaderRegexForShaderLocked(0xfedc, "ps_5_0", &matches, &seen);
+	Require(matches.size() == 2 && matches.back().handlingSkip,
+		"excluded shader cannot suppress a later eligible shader in the same PSO");
+
+	Require(ini.Parse(L"[ShaderRegexExcept]\nshader_model=ps_5_0\n"), "reload regex");
+	Bunny::MigotoShaderRegexParser::ParseSections(ini, &gShaderRegexes, warnings);
+	seen.clear();
+	matches.clear();
+	AppendShaderRegexForShaderLocked(0xabcd, "ps_5_0", &matches, &seen);
+	Require(matches.size() == 1, "reload drops obsolete exclusions");
+	gShaderRegexes.clear();
+}
+
 void Check(HRESULT hr)
 {
 	if (FAILED(hr)) {
@@ -543,6 +576,7 @@ int main(int argc, char **argv)
 		TestDescriptors(device.Get(), benchmark);
 		if (benchmark)
 			return 0;
+		TestShaderRegexExclusions();
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
 		TestReadback(device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
 		TestQueueHandoff(device.Get());

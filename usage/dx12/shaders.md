@@ -19,13 +19,14 @@ DX12 当前只运行**没有 Pattern 子节**的 shader-model 筛选路径：
 ```ini
 [ShaderRegexPixel]
 shader_model = ps_5_0
+exclude_hash = 0123456789abcdef
 run = CommandListPixel
 
 [CommandListPixel]
 x0 = 1
 ```
 
-它对匹配模型的候选着色器执行命令。不要在未经限定时使用 `handling = skip`，否则可能隐藏大量内容。
+它对匹配模型的候选着色器执行命令。`exclude_hash` 每行排除一个着色器，可重复填写，只影响当前组。值为 1–16 位十六进制数，可带 `0x` 前缀。无效值会产生配置警告并禁用整组。不要在未经限定时使用 `handling = skip`，否则可能隐藏大量内容。
 
 以下 DX11 语义不适用：
 

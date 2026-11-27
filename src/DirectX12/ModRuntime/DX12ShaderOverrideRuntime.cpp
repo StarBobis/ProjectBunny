@@ -257,6 +257,8 @@ void AppendShaderRegexForShaderLocked(
 
 	for (const auto &item : gShaderRegexes) {
 		const Bunny::ShaderRegexConfig &regex = item.second;
+		if (regex.excludedHashes.contains(hash))
+			continue;
 		if (!ShaderModelMatchesRegex(regex, shaderModel))
 			continue;
 		if (!seen->insert(regex.section).second)

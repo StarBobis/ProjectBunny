@@ -475,9 +475,11 @@ DX12 只实现了 **shader-model 筛选**，且只对**没有 `.Pattern` 子节*
 ```ini
 [ShaderRegexPixel]
 shader_model = ps_6_0
+exclude_hash = 0123456789abcdef
 run = CommandListPixel
 ```
 
+- `exclude_hash` 每行填写一个 1–16 位十六进制着色器 Hash，可带 `0x`。同组重复项合并。匹配时先排除当前 Hash，再链接命令。无效值会产生配置警告并禁用该组。
 - `shader_model` 的值按空白切分成多个 token，统一转小写（`AppendShaderModels`，`DX12Config.h:1985`）。
 - 运行时用 PSO 里的实际着色器模型字符串比较，模型格式为 `ps_6_0` / `vs_6_0` / `cs_5_1` 这种 `前缀_主版本_次版本`（`FormatShaderModel`，`src/DirectX12/ShaderTools/DX12ShaderModelParse.h:53`；DXIL 优先于 DXBC，`DX12ShaderModelParse.h:141`）。
 - 匹配到后，组的 `pre` / `run` / `post` 与动作按与 `[ShaderOverride]` 相同的顺序执行（`MakeShaderOverrideFromRegex`，`DX12ShaderOverrideRuntime.cpp:232`）。

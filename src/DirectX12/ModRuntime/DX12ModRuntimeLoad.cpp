@@ -1263,7 +1263,7 @@ bool DX12ModRuntimeLoad(
 
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
-	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes);
+	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes, iniLoad.warnings);
 	Bunny::MigotoTextureOverrideParser::ParseSections(iniLoad.document, &textureOverrides);
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);

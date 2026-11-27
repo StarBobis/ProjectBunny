@@ -1,4 +1,5 @@
 #include "ShaderRegex.h"
+#include "ShaderRegexExclusions.h"
 #include "CommandList.h"
 #include "globals.h" // For ShaderOverride FIXME: This should be in a separate header
 #include "log.h"
@@ -436,22 +437,7 @@ void ShaderRegexGroup::apply_regex_patterns(std::string *asm_text, bool *match, 
 
 bool ShaderRegexGroup::add_excluded_hash(const std::wstring& value)
 {
-    size_t start = value.size() >= 2 && value[0] == L'0' &&
-        (value[1] == L'x' || value[1] == L'X') ? 2 : 0;
-    if (value.size() == start || value.size() - start > 16)
-        return false;
-    UINT64 hash = 0;
-    for (size_t i = start; i < value.size(); ++i) {
-        const wchar_t c = value[i];
-        unsigned digit;
-        if (c >= L'0' && c <= L'9') digit = c - L'0';
-        else if (c >= L'a' && c <= L'f') digit = c - L'a' + 10;
-        else if (c >= L'A' && c <= L'F') digit = c - L'A' + 10;
-        else return false;
-        hash = (hash << 4) | digit;
-    }
-    excluded_hashes.insert(hash);
-    return true;
+    return migoto::AddShaderRegexExcludedHash(excluded_hashes, value);
 }
 
 void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
