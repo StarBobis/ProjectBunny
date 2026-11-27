@@ -12,12 +12,15 @@ namespace Bunny {
 class TextureOverrideConfig;
 }
 
+enum class DX12ModLoadReason { Initial, UserReload };
+
 bool DX12ModRuntimeLoad(
 	const wchar_t *configPath,
 	std::wstring *statusMessage = nullptr,
 	bool *hasWarnings = nullptr,
-	bool *hasErrors = nullptr);
-bool DX12ModRuntimeReload();
+	bool *hasErrors = nullptr,
+	DX12ModLoadReason reason = DX12ModLoadReason::Initial);
+bool DX12ModRuntimeReload(DX12ModLoadReason reason = DX12ModLoadReason::UserReload);
 // Flushes hotkey/command-list changes to the persist file (d3dx_user.ini) on
 // the way out, mirroring DX11's DestroyDLL() -> SavePersistentSettings(). Safe
 // to call when no mod config was ever loaded or nothing changed; it only reads

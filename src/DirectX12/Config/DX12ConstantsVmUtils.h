@@ -23,8 +23,10 @@ class DX12ConstantsVmUtils
 public:
 	using Vm = MigotoCommandVmUtils;
 
-	static void Initialize(const CommandListMap &commandLists, const std::wstring &userConfigPath = {})
+	static Vm::SettingsLoadResult Initialize(const CommandListMap &commandLists, const std::wstring &userConfigPath = {},
+		const IniDocument *reloadConfig = nullptr, std::optional<uint64_t> expectedRevision = {})
 	{
+		const auto policy = reloadConfig ? ReadCleanupPolicy(*reloadConfig) : Vm::UnknownSettingsPolicy::Observe;
 		Vm::GlobalVariables globals;
 		globals.savePath = userConfigPath;
 		globals.saveOwner = migoto::NormalizePersistentConfigPath(userConfigPath);
@@ -48,7 +50,17 @@ public:
 			}
 			state.FlushPostAssignments();
 		}
-		Vm::PublishGlobals(std::move(globals));
+		if (reloadConfig) {
+			for (const auto &[name, value] : globals.savedUnknowns) {
+				const auto bracket = name.find(L'[');
+				// DX12 has no pool registry yet. A declared pool might own this
+				// slot even when its variable has not been instantiated.
+				if (bracket != std::wstring::npos && reloadConfig->FindSection(name.substr(1, bracket - 1).c_str()))
+					continue;
+				migoto::RecordUnknownSetting(globals.confirmedUnknowns, name, value);
+			}
+		}
+		return Vm::PublishGlobals(std::move(globals), policy, expectedRevision);
 	}
 
 	static const CommandListConfig *FindConstants(const CommandListMap &commandLists)
@@ -61,6 +73,25 @@ public:
 	}
 
 private:
+	static Vm::UnknownSettingsPolicy ReadCleanupPolicy(const IniDocument &ini)
+	{
+		std::wstring text;
+		bool clear = true;
+		if (ini.GetString(L"System", L"clear_unknown_settings", &text)) {
+			text = IniDocumentText::ToLower(IniDocumentText::Trim(text));
+			if (!migoto::ReadIniBooleanAlias(text, clear) && Vm::ExpressionParser::ValidSyntax(text)) {
+				Vm::ExpressionContext context;
+				context.requireDeclaredVariables = true;
+				context.staticIniSetting = true;
+				Vm::ExpressionParser parser(text, context, Vm::ExpressionParser::Mode::Validated);
+				const float value = parser.Parse();
+				if (parser.ok)
+					clear = migoto::IniBooleanValue(value);
+			}
+		}
+		return clear ? Vm::UnknownSettingsPolicy::ClearUnchanged : Vm::UnknownSettingsPolicy::Preserve;
+	}
+
 	static void RegisterDeclaration(Vm::State &state, const CommandListAction &action)
 	{
 		const auto declaration = migoto::VariableDeclaration::Parse(action.key);

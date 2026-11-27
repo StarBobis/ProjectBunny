@@ -4,12 +4,38 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <map>
 #include <vector>
 
 #include "IniVariableNames.h"
 #include "IniExpressionNumbers.h"
 
 namespace migoto {
+
+// Compare saved float bits so signed zero and NaNs survive reload confirmation.
+using UnknownSettingsSnapshot = std::map<std::wstring, uint32_t>;
+
+inline void RecordUnknownSetting(UnknownSettingsSnapshot &snapshot, const std::wstring &name, float value)
+{
+	uint32_t bits;
+	std::memcpy(&bits, &value, sizeof(bits));
+	snapshot.emplace(name, bits);
+}
+
+enum class UnknownSettingsAction { Keep, Rewrite, Remove };
+
+inline UnknownSettingsAction CompareUnknownSettings(bool clearUnknown, const UnknownSettingsSnapshot &current,
+	const UnknownSettingsSnapshot *previous)
+{
+	if (current.empty())
+		return UnknownSettingsAction::Keep;
+	const bool unchanged = previous && current == *previous;
+	if (clearUnknown && unchanged)
+		return UnknownSettingsAction::Remove;
+	if (!clearUnknown && !unchanged)
+		return UnknownSettingsAction::Rewrite;
+	return UnknownSettingsAction::Keep;
+}
 
 inline std::wstring NormalizePersistentConfigPath(std::wstring path)
 {

@@ -35,6 +35,7 @@ public:
 		std::vector<std::wstring> persistentNames;
 		std::unordered_set<std::wstring> persistentKeys;
 		std::unordered_map<std::wstring, float> savedUnknowns;
+		migoto::UnknownSettingsSnapshot confirmedUnknowns;
 		std::wstring savePath;
 		std::wstring saveOwner;
 		bool referencedFrameVariable = false;
@@ -46,6 +47,7 @@ public:
 		inline static std::mutex globalsMutex;
 		inline static GlobalVariables current;
 		inline static std::atomic<int> persistDirty = 0;
+		inline static uint64_t settingsRevision = 0; // guarded by globalsMutex
 		// Set once a command-list expression references any per-frame variable
 		// (window size, cursor, DPI, hunting/analysis flags). DX11 evaluates
 		// these lazily at match time; DX12 pre-collects them at Present, so
@@ -85,6 +87,7 @@ public:
 		std::wstring_view iniNamespace;
 		GlobalVariables *initializing = nullptr;
 		bool requireDeclaredVariables = false;
+		bool staticIniSetting = false;
 	};
 
 	class ExpressionParser
@@ -411,6 +414,17 @@ public:
 
 		float LookupIdentifier(const std::wstring &name)
 		{
+			if (context.staticIniSetting && name.front() != L'$') {
+				if (name == L"sli" || name == L"stereo_active" || name == L"stereo_available")
+					return 0;
+				if ((name == L"hunting" || name == L"frame_analysis") && !LookupVariable(context, L"hunting"))
+					return 0;
+				if (name != L"time" && name != L"frame_time" && name != L"frame_number" &&
+					name != L"inf" && name != L"infinity" && name != L"nan") {
+					ok = false;
+					return 0;
+				}
+			}
 			bool missing = false;
 			const auto value = LookupVariable(context, name, &timingSample,
 				context.requireDeclaredVariables && name.front() == L'$' ? &missing : nullptr);
@@ -743,7 +757,7 @@ public:
 				return;
 			if (!context.initializing && (found == globals.values.end() || found->second != value) &&
 				globals.persistentKeys.count(key))
-				VariableStore::persistDirty.store(1, std::memory_order_release);
+				MarkPersistChangedLocked();
 			globals.values[key] = value;
 		};
 		if (context.initializing) {
@@ -767,13 +781,68 @@ public:
 		}
 	}
 
-	static void PublishGlobals(GlobalVariables globals)
+	enum class UnknownSettingsPolicy { Observe, Preserve, ClearUnchanged };
+
+	enum class SettingsPublishStatus { Applied, SaveFailed, ChangedDuringLoad };
+
+	static uint64_t SettingsRevision()
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		std::swap(VariableStore::current, globals);
-		VariableStore::frameVariableReferenced.store(VariableStore::current.referencedFrameVariable, std::memory_order_release);
-		hasLockedGlobals.store(!VariableStore::current.locked.empty(), std::memory_order_release);
+		return VariableStore::settingsRevision;
+	}
+
+	static void MarkPersistChangedLocked()
+	{
+		++VariableStore::settingsRevision;
+		VariableStore::persistDirty.store(1, std::memory_order_release);
+	}
+
+	class SettingsLoadResult
+	{
+	public:
+		SettingsPublishStatus status = SettingsPublishStatus::Applied;
+		bool cleanupArmed = false;
+		size_t unknown = 0;
+		size_t removed = 0;
+	};
+
+	static SettingsLoadResult PublishGlobals(GlobalVariables globals,
+		UnknownSettingsPolicy policy = UnknownSettingsPolicy::Observe,
+		std::optional<uint64_t> expectedRevision = {})
+	{
+		SettingsLoadResult result;
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		auto &live = VariableStore::current;
+		if (expectedRevision && (*expectedRevision != VariableStore::settingsRevision ||
+			(!live.savePath.empty() && PersistDirty()))) {
+			result.status = SettingsPublishStatus::ChangedDuringLoad;
+			return result;
+		}
+		if (policy != UnknownSettingsPolicy::Observe) {
+			auto &snapshot = globals.confirmedUnknowns;
+			result.unknown = snapshot.size();
+			const auto action = migoto::CompareUnknownSettings(policy == UnknownSettingsPolicy::ClearUnchanged,
+				snapshot, globals.saveOwner == live.saveOwner ? &live.confirmedUnknowns : nullptr);
+			if (action == migoto::UnknownSettingsAction::Remove) {
+				for (const auto &[name, bits] : snapshot)
+					globals.savedUnknowns.erase(name);
+				result.removed = snapshot.size();
+				snapshot.clear();
+			}
+			result.cleanupArmed = policy == UnknownSettingsPolicy::ClearUnchanged && !snapshot.empty();
+			if (action != migoto::UnknownSettingsAction::Keep &&
+				!WriteSettingsFile(globals, globals.savePath, true)) {
+				result.status = SettingsPublishStatus::SaveFailed;
+				result.removed = 0;
+				return result;
+			}
+		}
+		std::swap(live, globals);
+		++VariableStore::settingsRevision;
+		VariableStore::frameVariableReferenced.store(live.referencedFrameVariable, std::memory_order_release);
+		hasLockedGlobals.store(!live.locked.empty(), std::memory_order_release);
 		ClearPersistDirty();
+		return result;
 	}
 
 	inline static std::atomic<bool> hasLockedGlobals{false};
@@ -878,6 +947,15 @@ public:
 			ClearPersistDirty();
 			return false;
 		}
+		if (!WriteSettingsFile(globals, path, hasUnknowns))
+			return false;
+		++VariableStore::settingsRevision;
+		ClearPersistDirty();
+		return true;
+	}
+
+	static bool WriteSettingsFile(const GlobalVariables &globals, const std::wstring &path, bool includeUnknowns)
+	{
 		migoto::StagedSettingsFile staged;
 		FILE *file = nullptr;
 		const int opened = staged.Open(&file, path, [](FILE **out, const wchar_t *candidate, const wchar_t *) {
@@ -924,7 +1002,7 @@ public:
 				break;
 			ok = writeValue(name, globals.values.at(name));
 		}
-		if (hasUnknowns) {
+		if (includeUnknowns) {
 			for (const auto &[name, value] : globals.savedUnknowns) {
 				if (!ok)
 					break;
@@ -956,7 +1034,6 @@ public:
 			ReportPersistFailure("replace", path, static_cast<int>(error));
 			return false;
 		}
-		ClearPersistDirty();
 		return true;
 	}
 
@@ -996,6 +1073,6 @@ public:
 		const bool changed = inserted || it->second != value;
 		it->second = value;
 		if (changed && globals.persistentKeys.count(name))
-			VariableStore::persistDirty.store(1, std::memory_order_release);
+			MarkPersistChangedLocked();
 	}
 };

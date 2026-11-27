@@ -9,6 +9,24 @@
 
 namespace migoto {
 
+inline bool ReadIniBooleanAlias(std::wstring_view text, bool &value)
+{
+	if (text == L"1" || text == L"true" || text == L"yes" || text == L"on") {
+		value = true;
+		return true;
+	}
+	if (text == L"0" || text == L"false" || text == L"no" || text == L"off") {
+		value = false;
+		return true;
+	}
+	return false;
+}
+
+inline bool IniBooleanValue(float value) noexcept
+{
+	return !std::isnan(value) && value != 0.0f;
+}
+
 inline bool ReadBinaryDigits(std::wstring_view input, size_t start, std::uint64_t& out, size_t& length)
 {
     std::uint64_t value = 0;

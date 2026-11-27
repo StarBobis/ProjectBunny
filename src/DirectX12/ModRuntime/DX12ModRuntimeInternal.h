@@ -2559,17 +2559,6 @@ private:
 };
 
 
-bool DX12ModRuntimeLoad(
-	const wchar_t *configPath,
-	std::wstring *statusMessage,
-	bool *hasWarnings,
-	bool *hasErrors);
-
-
-bool DX12ModRuntimeReload();
-
-
-
 std::wstring ResolveResourcePath(
 	const Bunny::ResourceConfig &config, const std::wstring &baseDir,
 	bool rootFallback);

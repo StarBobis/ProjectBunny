@@ -16,6 +16,7 @@ class MigotoIniLoadResult
 public:
 	IniDocument document;
 	std::wstring userConfigPath;
+	bool includesComplete = true;
 	std::vector<std::wstring> loadedFiles;
 	std::vector<std::wstring> errors;
 	std::vector<std::wstring> warnings;
@@ -192,6 +193,7 @@ public:
 	std::wstring rootDir;
 	std::set<std::wstring> seenFiles;
 	IniDocument document;
+	bool includesComplete = true;
 	std::vector<std::wstring> loadedFiles;
 	std::vector<std::wstring> errors;
 	std::vector<std::wstring> warnings;
@@ -227,18 +229,23 @@ static void LoadDirectoryRecursive(
 	if (!state)
 		return;
 	if (dir.empty()) {
+		state->includesComplete = false;
 		state->warnings.push_back(L"include_recursive path rejected: path too long");
 		return;
 	}
 
 	std::wstring search = MigotoIniLoaderPath::JoinPath(dir, L"*");
 	if (search.empty()) {
+		state->includesComplete = false;
 		state->warnings.push_back(L"include_recursive path rejected: path too long: " + dir);
 		return;
 	}
 	WIN32_FIND_DATAW findData = {};
 	HANDLE find = FindFirstFileW(search.c_str(), &findData);
 	if (find == INVALID_HANDLE_VALUE) {
+		const DWORD error = GetLastError();
+		if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+			state->includesComplete = false;
 		state->warnings.push_back(L"include_recursive path not found: " + dir);
 		return;
 	}
@@ -256,6 +263,10 @@ static void LoadDirectoryRecursive(
 		else if (MigotoIniLoaderPath::EndsWithI(name, L".ini"))
 			iniFiles.push_back(name);
 	} while (FindNextFileW(find, &findData));
+	if (GetLastError() != ERROR_NO_MORE_FILES) {
+		state->includesComplete = false;
+		state->warnings.push_back(L"unable to finish enumerating include_recursive directory: " + dir);
+	}
 	FindClose(find);
 
 	std::sort(iniFiles.begin(), iniFiles.end(),
@@ -267,6 +278,7 @@ static void LoadDirectoryRecursive(
 	{
 		std::wstring filePath = MigotoIniLoaderPath::JoinPath(dir, file);
 		if (filePath.empty()) {
+			state->includesComplete = false;
 			state->warnings.push_back(L"include path rejected: path too long: " + file);
 			continue;
 		}
@@ -275,6 +287,7 @@ static void LoadDirectoryRecursive(
 	for (const std::wstring &child : directories) {
 		std::wstring childPath = MigotoIniLoaderPath::JoinPath(dir, child);
 		if (childPath.empty()) {
+			state->includesComplete = false;
 			state->warnings.push_back(L"include_recursive path rejected: path too long: " + child);
 			continue;
 		}
@@ -324,6 +337,7 @@ static void LoadFileRecursive(
 	{
 		std::wstring includePath = MigotoIniLoaderPath::JoinPath(includeBase, include);
 		if (includePath.empty()) {
+			state->includesComplete = false;
 			state->warnings.push_back(L"include path rejected: path too long: " + include);
 			continue;
 		}
@@ -332,6 +346,7 @@ static void LoadFileRecursive(
 	for (const std::wstring &recursive : recursiveIncludes) {
 		std::wstring recursivePath = MigotoIniLoaderPath::JoinPath(includeBase, recursive);
 		if (recursivePath.empty()) {
+			state->includesComplete = false;
 			state->warnings.push_back(L"include_recursive path rejected: path too long: " + recursive);
 			continue;
 		}
@@ -356,6 +371,7 @@ static bool LoadUserConfigFile(const std::wstring &path, LoaderState *state)
 		return false;
 	}
 	if (state->seenFiles.count(MigotoIniLoaderPath::CanonicalPath(path))) {
+		state->includesComplete = false;
 		state->warnings.push_back(L"user_config already loaded by an include: " + path);
 		return true;
 	}
@@ -438,6 +454,7 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 	if (loadedUserConfig)
 		result->userConfigPath = std::move(userConfig);
 
+	result->includesComplete = state.includesComplete;
 	result->loadedFiles = std::move(state.loadedFiles);
 	result->errors = std::move(state.errors);
 	result->warnings = std::move(state.warnings);

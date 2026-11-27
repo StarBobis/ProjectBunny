@@ -537,7 +537,7 @@ DX11 的 `mips`、`color_space`、`bind_flags`、`original_dhash` 等字段在 D
 
 F10 触发 `DX12ModRuntimeReload`（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad.cpp:1625`）：
 
-1. **先保存**持久变量（`DX12UserConfigSave::Save("reload")`），使重载读到的文件里已经包含最新值（DX11 的 `ReloadConfig` 同序）。
+1. **先保存**持久变量（`DX12UserConfigSave::SavePending("reload")`），使重载读到的文件里已经包含最新值（DX11 的 `ReloadConfig` 同序）。
 2. 重新解析配置、重建命令列表 / 覆盖 / 资源映射。
 3. 重置自动保存计时器（`ResetAutosaveTimer`）。
 4. 结果通过 overlay 状态提示：成功 / 有警告 / 有错误（`"F10 DX12 mod config reloaded with N error(s)"` 等）。
@@ -563,7 +563,7 @@ F10 触发 `DX12ModRuntimeReload`（`src/DirectX12/ModRuntime/DX12ModRuntimeLoad
 
 属于某个命名空间的持久变量用完整名称写入 UTF-8 文件，例如 `$\testmod\panel_x`。旧 DX12 存档里的 `$panel_x` 优先恢复根变量。没有根变量时，恢复同名的可写持久变量。带 `locked` 标志的声明跳过保存和恢复。
 
-保存时保留当前用户文件中来自未加载 Mod 的数值字面量。重新启用对应的持久变量后会恢复旧值。切换 `user_config` 时，各文件分别保留自己的条目。
+保存时保留当前用户文件中来自未加载 Mod 的数值字面量。`[System] clear_unknown_settings` 省略时按 1 处理，随包配置显式设为 0，与 DX11 模板一致。一次显式重载记录未知项，下一次完整重载见到同一文件、同一组名称和完全相同的 float32 位模式时，才写盘清理。设置为 0 时仍记录本次重载看到的未知项并保留它们。随后切换到 1 时，若集合及数值都没变化，可在该次重载立即清理。在清理前重新启用持久变量会恢复旧值。已声明资源池的槽值会继续保留，池模板及槽位范围校验仍待接入。
 
 用户配置文件最后加载，因此其中的持久值**覆盖** Mod INI 里的默认值（`src/DirectX12/Config/DX12ConstantsVmUtils.h:25`）。
 

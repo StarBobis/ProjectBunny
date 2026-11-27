@@ -240,6 +240,122 @@ void TestInactiveUserSettings()
 	Vm::ClearGlobals();
 }
 
+void TestUnknownSettingsCleanup()
+{
+	const auto dir = std::filesystem::current_path() /
+		(L"settings-cleanup-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	Require(std::filesystem::create_directory(dir), "create cleanup fixture");
+	const auto root = dir / L"main.ini";
+	const auto first = dir / L"first.ini";
+	const auto second = dir / L"second.ini";
+	auto configure = [&](const char *owner, int generation, const char *option = "", const char *include = "") {
+		std::ofstream file(root);
+		file << "[Include]\nuser_config=" << owner << "\n" << include << "[System]\n" << option <<
+			"[Constants]\nglobal $generation=" << generation << "\n[PoolKeep]\n";
+	};
+	auto settings = [](const std::filesystem::path &path, const char *zero) {
+		std::ofstream file(path);
+		file << "[Constants]\n$missing=" << zero << "\n$old_nan=nan\n$poolabsent[3]=7\n$poolkeep[3]=4\n";
+	};
+	auto bytes = [](const std::filesystem::path &path) {
+		std::ifstream file(path, std::ios::binary);
+		Require(file.good(), "read cleanup fixture");
+		return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+	};
+	auto notice = [](const wchar_t *expected) {
+		wchar_t status[512]{};
+		Require(DX12OverlayStatusState::GetTransientStatus(status, std::size(status), nullptr) &&
+			wcsstr(status, expected), "reload overlay explains pending or completed cleanup");
+	};
+
+	configure("first.ini", 1);
+	settings(first, "-0");
+	const auto original = bytes(first);
+	Require(DX12ModRuntimeLoad(root.c_str()) && DX12ModRuntimeReload(DX12ModLoadReason::Initial),
+		"load startup config without arming cleanup");
+	DX12Input::CompleteReload();
+	notice(L"Kept 3 unknown");
+	Require(bytes(first) == original, "first explicit reload preserves exact bytes");
+	settings(first, "+0");
+	Require(DX12ModRuntimeReload() && bytes(first).find("$missing=+0") != std::string::npos,
+		"changing only the sign bit starts another grace period");
+	notice(L"Another reload");
+	const auto lastGood = bytes(first);
+	configure("FIRST.ini", 2);
+	HANDLE locked = CreateFileW(first.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	Require(locked != INVALID_HANDLE_VALUE, "deny replacement of cleanup target");
+	const bool failed = !DX12ModRuntimeReload();
+	CloseHandle(locked);
+	MigotoCommandVmUtils::State vm;
+	Require(failed && bytes(first) == lastGood && vm.Evaluate(L"$generation") == 1,
+		"failed cleanup keeps previous file, confirmation and active generation");
+	Require(DX12ModRuntimeReload() && vm.Evaluate(L"$generation") == 2, "retry confirmed cleanup");
+	notice(L"Cleared 3 unknown");
+	const auto cleaned = bytes(first);
+	Require(cleaned.find("$missing") == cleaned.npos && cleaned.find("$old_nan") == cleaned.npos &&
+		cleaned.find("$poolabsent") == cleaned.npos && cleaned.find("$poolkeep[3] = 4") != cleaned.npos,
+		"bit-identical NaNs confirm, absent pool slots clear, declared pool slots survive");
+
+	// An identical set in another owner needs its own confirmation.
+	settings(first, "0");
+	Require(DX12ModRuntimeReload(), "arm new set in first owner");
+	settings(second, "0");
+	const auto secondInitial = bytes(second);
+	configure("second.ini", 3);
+	Require(DX12ModRuntimeReload() && bytes(second) == secondInitial, "confirmation stays with its owner");
+	configure("second.ini", 4, "", "include=missing.ini\n");
+	Require(DX12ModRuntimeReload() && bytes(second) == secondInitial, "failed include cannot confirm deletion");
+	configure("second.ini", 5);
+	Require(DX12ModRuntimeReload() && bytes(second) == secondInitial, "first complete reload confirms again");
+	// Re-enabling one declaration changes the unknown set before cleanup.
+	std::ofstream(root, std::ios::app) << "[Constants]\nglobal persist $missing=9\n";
+	Require(DX12ModRuntimeReload() && vm.Evaluate(L"$missing") == 0 && bytes(second) == secondInitial,
+		"re-enabled mod claims its saved value before comparing snapshots");
+	Require(DX12ModRuntimeReload() && bytes(second).find("$missing = 0") != std::string::npos &&
+		bytes(second).find("$old_nan") == std::string::npos, "only the still-unknown values are removed");
+
+	configure("second.ini", 6, "clear_unknown_settings = (3 - 3)\n");
+	settings(second, "0");
+	Require(DX12ModRuntimeReload() && DX12ModRuntimeReload() &&
+		bytes(second).find("$old_nan") != std::string::npos, "false static expression preserves unknowns");
+	notice(L"Kept 3 unknown");
+	configure("second.ini", 7, "clear_unknown_settings = yes\n");
+	Require(DX12ModRuntimeReload() && bytes(second).find("$old_nan") == std::string::npos,
+		"enabling cleanup uses the last identical explicit snapshot");
+	configure("second.ini", 8);
+	std::ofstream(second) << "[Constants]\n$last=1\n";
+	Require(DX12ModRuntimeReload() && DX12ModRuntimeReload() &&
+		bytes(second).find("[Constants]") != std::string::npos && bytes(second).find("$last") == std::string::npos,
+		"unknown-only save can commit an empty Constants section");
+	// Deterministically interleave a normal autosave between a reload's file
+	// read and publication. The dirty bit alone no longer records that edit.
+	std::ofstream(root, std::ios::app) << "[Constants]\nglobal persist $active=1\n";
+	Require(DX12ModRuntimeReload(), "load mutable variable for interleaved save");
+	const auto revision = MigotoCommandVmUtils::SettingsRevision();
+	Bunny::MigotoIniLoadResult config;
+	Require(Bunny::MigotoIniLoader::LoadWithIncludes(root.c_str(), &config), "read candidate configuration");
+	Bunny::CommandListMap lists;
+	Bunny::MigotoCommandListParser::ParseSections(config.document, &lists);
+	vm.Assign(L"$active", L"42");
+	const auto dirtyRevision = MigotoCommandVmUtils::SettingsRevision();
+	DX12ModSavePersistStateOnExit();
+	const auto latest = bytes(second);
+	const auto stale = Bunny::DX12ConstantsVmUtils::Initialize(lists, config.userConfigPath,
+		&config.document, revision);
+	Require(stale.status == MigotoCommandVmUtils::SettingsPublishStatus::ChangedDuringLoad &&
+		vm.Evaluate(L"$active") == 42 && latest.find("$active = 42") != latest.npos &&
+		bytes(second) == latest, "stale reload cannot replace either live state or an intervening save");
+	const auto unsavedAtRead = Bunny::DX12ConstantsVmUtils::Initialize(lists, config.userConfigPath,
+		&config.document, dirtyRevision);
+	Require(unsavedAtRead.status == MigotoCommandVmUtils::SettingsPublishStatus::ChangedDuringLoad &&
+		vm.Evaluate(L"$active") == 42, "a save during the read also invalidates a previously dirty snapshot");
+	for (const auto &file : {root, first, second})
+		std::filesystem::remove(file);
+	std::filesystem::remove(dir);
+	MigotoCommandVmUtils::ClearGlobals();
+}
+
 void TestExpressionNumbers()
 {
 	Bunny::IniDocument ini;
@@ -1382,6 +1498,7 @@ int main(int argc, char **argv)
 		TestShaderRegexExclusions();
 		TestLockedVariables();
 		TestInactiveUserSettings();
+		TestUnknownSettingsCleanup();
 		TestExpressionNumbers();
 		TestUnaryMath();
 		TestFrameTiming();

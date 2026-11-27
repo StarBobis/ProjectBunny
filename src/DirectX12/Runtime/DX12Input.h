@@ -15,12 +15,6 @@ public:
 		DX12_LOG("DX12ModRuntimeReload", "\"status\":\"begin_sync\"");
 		const bool ok = DX12ModRuntimeReload();
 		const DWORD elapsed = GetTickCount() - start;
-		if (ok) {
-			wchar_t status[128];
-			swprintf_s(status, L"Reload Success TimeConsume: %.3f S",
-				static_cast<double>(elapsed) / 1000.0);
-			DX12OverlayStatusState::SetTemporary(status, 3000);
-		}
 		DX12_LOG("DX12ModRuntimeReload",
 			"\"status\":\"done_sync\",\"result\":\"%s\",\"elapsedMs\":%lu",
 			ok ? "ok" : "failed", elapsed);

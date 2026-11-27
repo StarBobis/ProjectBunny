@@ -403,8 +403,8 @@ inline bool IniDocument::GetBool(const wchar_t *section, const wchar_t *key, boo
 	if (!GetString(section, key, &text))
 		return false;
 	text = IniDocumentText::ToLower(IniDocumentText::Trim(text));
-	bool parsed = text == L"1" || text == L"true" || text == L"yes" || text == L"on";
-	if (!parsed && !(text == L"0" || text == L"false" || text == L"no" || text == L"off"))
+	bool parsed;
+	if (!migoto::ReadIniBooleanAlias(text, parsed))
 		return false;
 	if (value)
 		*value = parsed;

@@ -284,7 +284,7 @@ void DX12ModMaybeRunDeferredInitialLoad()
 		configPath.c_str(), present, elapsedMs);
 
 	DX12OverlayStatusState::SetStatus(L"DX12 startup reload running");
-	const bool ok = DX12ModRuntimeReload();
+	const bool ok = DX12ModRuntimeReload(DX12ModLoadReason::Initial);
 	if (ok)
 		DX12ModRefreshRuntimeStateAfterReload();
 
@@ -1247,7 +1247,8 @@ bool DX12ModRuntimeLoad(
 	const wchar_t *configPath,
 	std::wstring *statusMessage,
 	bool *hasWarnings,
-	bool *hasErrors)
+	bool *hasErrors,
+	DX12ModLoadReason reason)
 {
 	Bunny::MigotoIniLoadResult iniLoad;
 	Bunny::ShaderOverrideMap shaderOverrides;
@@ -1302,6 +1303,9 @@ bool DX12ModRuntimeLoad(
 	std::vector<DX12VertexLimitRaiseConfig> loadedVertexLimitRaiseConfigs;
 	UINT64 loadedGeneration = 0;
 	
+	using Vm = MigotoCommandVmUtils;
+	const auto expectedRevision = reason == DX12ModLoadReason::UserReload ?
+		std::optional<uint64_t>{Vm::SettingsRevision()} : std::nullopt;
 	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad)) {
 		const auto &error = iniLoad.errors.empty() ? iniLoad.document.Error() : iniLoad.errors.back();
 		DX12_LOG("DX12ModRuntime",
@@ -1316,14 +1320,39 @@ bool DX12ModRuntimeLoad(
 		return false;
 	}
 
-	SetBasePaths(configPath);
+	// A failed include may contain the missing declarations. Only advance
+	// cleanup when the complete include tree was available on this reload.
+	const bool confirmUnknowns = reason == DX12ModLoadReason::UserReload &&
+		iniLoad.errors.empty() && iniLoad.includesComplete;
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
 	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes, iniLoad.warnings);
 	Bunny::MigotoTextureOverrideParser::ParseSections(iniLoad.document, &textureOverrides);
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
-	Bunny::DX12ConstantsVmUtils::Initialize(commandLists, iniLoad.userConfigPath);
+	const auto settings = Bunny::DX12ConstantsVmUtils::Initialize(commandLists, iniLoad.userConfigPath,
+		confirmUnknowns ? &iniLoad.document : nullptr, expectedRevision);
+	if (settings.status != Vm::SettingsPublishStatus::Applied) {
+		if (statusMessage)
+			*statusMessage = settings.status == Vm::SettingsPublishStatus::ChangedDuringLoad ?
+				L"User settings changed while loading. Reload again to use the latest settings." :
+				L"Unable to update user settings. Reload again to retry.";
+		if (hasErrors)
+			*hasErrors = true;
+		return false;
+	}
+	std::wstring settingsNotice;
+	if (settings.removed)
+		settingsNotice = L"Cleared " + std::to_wstring(settings.removed) + L" unknown user settings.";
+	else if (settings.unknown) {
+		settingsNotice = L"Kept " + std::to_wstring(settings.unknown) + L" unknown user settings.";
+		if (settings.cleanupArmed)
+			settingsNotice += L" Another reload clears them if unchanged. Set clear_unknown_settings=0 to keep them.";
+	}
+	if (!settingsNotice.empty()) {
+		DX12_LOG("DX12UserConfig", "path=%S message=%S", iniLoad.userConfigPath.c_str(), settingsNotice.c_str());
+	}
+	SetBasePaths(configPath);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
 	// Custom shader elements are rebuilt from the parsed command lists (the
 	// same action stream the draw executor consumes) so the registry and the
@@ -1668,17 +1697,20 @@ bool DX12ModRuntimeLoad(
 				iniLoad.warnings.size());
 		}
 		*statusMessage = text;
+		if (!settingsNotice.empty())
+			*statusMessage += L". " + settingsNotice;
 	}
 	if (hasWarnings)
-		*hasWarnings = hasIniErrors || !iniLoad.warnings.empty();
+		*hasWarnings = hasIniErrors || !iniLoad.warnings.empty() || !settingsNotice.empty();
 	if (hasErrors)
 		*hasErrors = hasIniErrors;
 	return true;
 }
 
 
-bool DX12ModRuntimeReload()
+bool DX12ModRuntimeReload(DX12ModLoadReason reason)
 {
+	const DWORD start = GetTickCount();
 	std::wstring configPath;
 	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
 	configPath = gConfigPath;
@@ -1700,7 +1732,7 @@ bool DX12ModRuntimeReload()
 	std::wstring status;
 	bool hasWarnings = false;
 	bool hasErrors = false;
-	if (!DX12ModRuntimeLoad(configPath.c_str(), &status, &hasWarnings, &hasErrors)) {
+	if (!DX12ModRuntimeLoad(configPath.c_str(), &status, &hasWarnings, &hasErrors, reason)) {
 		DX12OverlayStatusState::SetError(status.c_str());
 		return false;
 	}
@@ -1711,8 +1743,13 @@ bool DX12ModRuntimeReload()
 		DX12OverlayStatusState::SetError(status.c_str());
 	else if (hasWarnings)
 		DX12OverlayStatusState::SetWarning(status.c_str());
-	else
+	else if (reason == DX12ModLoadReason::UserReload) {
+		wchar_t timing[128];
+		swprintf_s(timing, L"Reload Success TimeConsume: %.3f S", (GetTickCount() - start) / 1000.0);
+		DX12OverlayStatusState::SetTemporary(timing, 3000);
+	} else {
 		DX12OverlayStatusState::SetStatus(status.c_str());
+	}
 	return true;
 }
 

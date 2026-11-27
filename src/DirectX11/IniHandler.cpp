@@ -41,7 +41,7 @@ struct PersistentVariablePreservation {
 	std::unordered_map<std::wstring, float> values;
 	std::wstring owner_path;
 	bool capture_user_values = false;
-	std::map<std::wstring, uint32_t> previous_unknown_values;
+	migoto::UnknownSettingsSnapshot previous_unknown_values;
 };
 
 static PersistentVariablePreservation persistent_preservation;
@@ -1449,7 +1449,7 @@ int GetIniInt(const wchar_t* section, const wchar_t* key, int def, bool* found, 
 inline bool ConvertExpressionToBool(float expr, bool& out) noexcept
 {
 	// NaN is false; all other non-zero values (including 卤infinity) are true.
-	out = !std::isnan(expr) && expr != 0.0f;
+	out = migoto::IniBooleanValue(expr);
 	return true;
 }
 
@@ -1457,17 +1457,8 @@ bool ParseBoolValue(const wchar_t* section, const wchar_t* key, const wstring& v
 {
 	wstring normalized = NormalizeString(val);
 
-	if (normalized == L"1" || normalized == L"true" || normalized == L"yes" || normalized == L"on")
-	{
-		out = true;
+	if (migoto::ReadIniBooleanAlias(normalized, out))
 		return true;
-	}
-
-	if (normalized == L"0" || normalized == L"false" || normalized == L"no" || normalized == L"off")
-	{
-		out = false;
-		return true;
-	}
 
 	return ParseIniExpression(ini_namespace_override, section, key, normalized, out, warn, ConvertExpressionToBool, false);
 }
@@ -5492,21 +5483,18 @@ static std::unordered_set<std::wstring> CollectUnknownPersistentKeys(
 static bool DetectUnknownPersistentSettings(bool handle_cleanup)
 {
 	const auto unknown = CollectUnknownPersistentKeys(persistent_preservation.values);
-	std::map<std::wstring, uint32_t> current;
-	for (const auto& name : unknown) {
-		uint32_t bits;
-		const float value = persistent_preservation.values.at(name);
-		std::memcpy(&bits, &value, sizeof(bits));
-		current.emplace(name, bits);
-	}
+	migoto::UnknownSettingsSnapshot current;
+	for (const auto& name : unknown)
+		migoto::RecordUnknownSetting(current, name, persistent_preservation.values.at(name));
 	G->unknown_persist_vars_count = static_cast<uint32_t>(unknown.size());
 	if (!handle_cleanup)
 		return true;
-	const bool unchanged = current == persistent_preservation.previous_unknown_values;
-	const bool remove = G->clear_unknown_settings && !current.empty() && unchanged;
+	const auto action = migoto::CompareUnknownSettings(G->clear_unknown_settings, current,
+		&persistent_preservation.previous_unknown_values);
+	const bool remove = action == migoto::UnknownSettingsAction::Remove;
 	// Upstream writes known settings then appends unknowns. One replacement
 	// transaction gives the same final file without a destructive half-save.
-	if (remove || (!G->clear_unknown_settings && !current.empty() && !unchanged)) {
+	if (action != migoto::UnknownSettingsAction::Keep) {
 		if (!SavePersistentSettingsInternal(true, remove ? &unknown : nullptr)) {
 			G->user_config_dirty |= 2;
 			G->gReloadConfigPending = true;
