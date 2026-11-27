@@ -1324,6 +1324,7 @@ bool DX12ModRuntimeLoad(
 	UINT64 loadedGeneration = 0;
 	
 	using Vm = MigotoCommandVmUtils;
+	Vm::readFrameAnalysis.store(DX12FrameAnalysisState::IsActive, std::memory_order_release);
 	const bool wipe = reason == DX12ModLoadReason::WipeUserConfig;
 	const auto reload = reason == DX12ModLoadReason::Initial ?
 		Vm::SettingsReloadSnapshot{} : Vm::BeginSettingsReload(wipe);

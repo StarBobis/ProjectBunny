@@ -35,6 +35,8 @@ public:
 	using ShortcutPermission = bool (*)();
 	static bool AllowShortcuts() { return true; }
 	inline static std::atomic<ShortcutPermission> runtimeShortcuts{AllowShortcuts};
+	using FrameAnalysisReader = bool (*)();
+	inline static std::atomic<FrameAnalysisReader> readFrameAnalysis{nullptr};
 
 	class GlobalVariables
 	{
@@ -59,7 +61,7 @@ public:
 		inline static std::atomic<int> persistDirty = 0;
 		inline static uint64_t settingsRevision = 0; // guarded by globalsMutex
 		// Set once a command-list expression references any per-frame variable
-		// (window size, cursor, DPI, hunting/analysis flags). DX11 evaluates
+		// (window size, cursor or DPI, for example). DX11 evaluates
 		// these lazily at match time; DX12 pre-collects them at Present, so
 		// without this gate a game with command lists that never reference
 		// frame variables still pays swap-chain desc queries, cursor polls and
@@ -552,8 +554,8 @@ public:
 			if (context.iniEvaluation != IniEvaluation::Runtime) {
 				if (name == L"sli" || name == L"stereo_active" || name == L"stereo_available")
 					return 0;
-				// DX11 accepts hunting in a file preamble; frame_analysis requires command-list scope.
-				if (name == L"hunting" || (context.iniEvaluation == IniEvaluation::Setting && name == L"frame_analysis")) {
+				// DX11 accepts hunting here; frame_analysis requires command-list scope.
+				if (name == L"hunting") {
 					const bool active = context.iniEvaluation == IniEvaluation::FileCondition ?
 						context.huntingActive : LookupVariable(context, L"hunting") != 0;
 					if (!active)
@@ -830,7 +832,7 @@ public:
 			L"cursor_x", L"cursor_y",
 			L"cursor_showing", L"cursor_visible",
 			L"cursor_hotspot_x", L"cursor_hotspot_y",
-			L"effective_dpi", L"hunting", L"frame_analysis", L"sli",
+			L"effective_dpi", L"hunting", L"sli",
 			L"stereo_active", L"stereo_available",
 		};
 		for (const wchar_t *candidate : kFrameVariables) {
@@ -882,6 +884,10 @@ public:
 		if (auto *local = FindLocal(context, normalized))
 			return *local;
 
+		if (normalized == L"frame_analysis") {
+			const auto read = readFrameAnalysis.load(std::memory_order_acquire);
+			return read && read();
+		}
 		if (!normalized.empty() && (normalized.front() == L't' || normalized.front() == L'f')) {
 			if (const auto field = FrameTiming::Find(normalized)) {
 				if (!timingSample)

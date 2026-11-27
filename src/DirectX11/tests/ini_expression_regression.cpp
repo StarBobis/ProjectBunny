@@ -91,10 +91,21 @@ static void test_logical_short_circuit(const std::wstring &ini_namespace, Comman
         draw.override_candidate != DrawOverrideCandidate::Unqueried, "eager path still populates the draw gate cache");
 
     gate.fval = 0.0f;
+    const auto old_hunting = G->hunting;
+    G->hunting = HUNTING_MODE_ENABLED;
+    const std::wstring analysis_text = L"frame_analysis";
+    CommandListExpression live_analysis;
+    require_ini_expression(live_analysis.parse(&analysis_text, &ini_namespace, &scope), "frame analysis command-list scope");
+    live_analysis.optimise(gpu.device);
+    bool option;
+    require_ini_expression(!ParseBoolValue(L"Rendering", L"probe", analysis_text, option, false, &ini_namespace) &&
+        live_analysis.evaluate(&gpu.state) == 0, "frame analysis is a live command operand");
     G->analyse_frame = true;
-    require_ini_expression(evaluate(condition) == 0 &&
+    require_ini_expression(live_analysis.evaluate(&gpu.state) == 1 && evaluate(condition) == 0 &&
         Profiling::expression_om_query_overhead.count == initial_om + 9, "frame analysis keeps eager reads");
     G->analyse_frame = false;
+    require_ini_expression(live_analysis.evaluate(&gpu.state) == 0, "frame analysis observes the end of capture");
+    G->hunting = old_hunting;
     G->mod_runtime_optimizations = false;
     require_ini_expression(evaluate(condition) == 0 &&
         Profiling::expression_om_query_overhead.count == initial_om + 12, "global optimization opt-out keeps eager reads");

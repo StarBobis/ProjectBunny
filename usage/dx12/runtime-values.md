@@ -20,14 +20,17 @@
 | `cursor_showing/cursor_visible` | 光标显示状态 |
 | `cursor_hotspot_x/cursor_hotspot_y` | 光标热点 |
 | `effective_dpi` | 有效 DPI |
+| `frame_analysis` | 帧分析会话开启时为 1，关闭时为 0 |
 
 窗口、光标和分辨率值在帧边界更新，不是每次表达式都查询系统。
 
-以下名称虽有兼容值，不能用于判断实际状态：
+`frame_analysis` 在命令列表求值时读取当前状态。例如，帧分析期间重载 INI，`[Constants]` 中的 `global $capture_on_load = frame_analysis` 会记下 1。后续命令直接读取 `frame_analysis` 时会随会话结束变为 0。文件头 `condition` 和普通数值配置只接受各自作用域内的操作数，使用此名称会报无效表达式或回退到默认值。
+
+以下名称返回固定兼容值。
 
 | 名称 | 当前返回 |
 | --- | --- |
-| `hunting/frame_analysis` | 固定为 0 |
+| `hunting` | 固定为 0 |
 | `sli/stereo_active/stereo_available` | 固定为 0 |
 
 四个帧参数在第一次正式 Present 前均为 0。读同一条表达式时使用同一份帧数据，重载 INI 后继续计数。`time` 已改为按帧采样，同一帧内反复读取会得到相同结果。`fps` 忽略零间隔和超过一秒的间隔，`frame_time` 仍反映长帧。

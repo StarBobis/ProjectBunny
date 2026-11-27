@@ -1127,9 +1127,23 @@ void TestLogicalExpressions()
 	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload) &&
 		LogicalReadRaisesInvalid(vm, guard, 1), "retry publishes the eager policy for the same cached expression");
 	load("");
+	Require(vm.Evaluate(L"frame_analysis") == 0 && !Vm::ReadEarlyIniBoolean(L"frame_analysis"),
+		"frame analysis starts inactive and requires command-list scope");
 	Require(DX12FrameAnalysisState::Begin(), "begin real frame analysis for expression diagnostics");
 	const bool analysisRead = LogicalReadRaisesInvalid(vm, guard, 1);
+	Require(vm.Evaluate(L"frame_analysis") == 1 && !Vm::ReadStaticIniExpression(L"frame_analysis"),
+		"already-loaded commands observe Begin before another Present");
+	std::ofstream(root) << "[Constants]\nglobal $capture_on_load = frame_analysis\n";
+	Require(DX12ModRuntimeLoad(root.c_str(), nullptr, nullptr, nullptr, DX12ModLoadReason::UserReload) &&
+		vm.Evaluate(L"$capture_on_load") == 1 && !Vm::VariableStore::frameVariableReferenced.load(),
+		"Constants see live analysis on reload without requesting window and cursor snapshots");
+	DX12FrameAnalysisState::RequestCapture();
+	DX12FrameAnalysisState::BeginCapture();
+	Require(vm.Evaluate(L"frame_analysis") == 1 && DX12FrameAnalysisState::EndCapture() &&
+		vm.Evaluate(L"frame_analysis") == 1, "finishing a captured frame keeps the session active until End");
 	DX12FrameAnalysisState::End();
+	Require(vm.Evaluate(L"FRAME_ANALYSIS") == 0 && vm.Evaluate(L"$capture_on_load") == 1,
+		"End is visible immediately while a prior Constants assignment keeps its value");
 	Require(analysisRead && !LogicalReadRaisesInvalid(vm, guard, 1), "capture start and end affect already cached expressions");
 	Require(!Vm::ReadStaticIniExpression(L"1 || $undeclared"), "static settings validate and evaluate every variable");
 	auto context = vm.Context();
