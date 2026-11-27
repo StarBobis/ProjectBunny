@@ -1,4 +1,5 @@
 #include "McpAgent.h"
+#include "McpProvenance.h"
 
 #include "HackerDevice.h"
 #include "HackerContext.h"
@@ -31,7 +32,6 @@ constexpr UINT BlobLimit = 64 * 1024 * 1024;
 constexpr UINT ChunkLimit = 60 * 1024;
 constexpr uint64_t Any = UINT64_MAX;
 const GUID ShaderRecordGuid = {0x13ac641d, 0x6def, 0x4a3d, {0x82, 0xcc, 0x83, 0x32, 0x56, 0x13, 0xbb, 0xf8}};
-const GUID BufferRecordGuid = {0xeaec831c, 0xbb21, 0x4d21, {0x89, 0x4f, 0xff, 0xa1, 0x48, 0xb9, 0x30, 0x66}};
 std::atomic<uint64_t> next_id{1};
 
 std::string Utf8(std::wstring_view value)
@@ -250,16 +250,6 @@ HRESULT ReadBuffer(HackerContext* wrapper, ID3D11Buffer* buffer, UINT begin, UIN
 	memcpy(bytes.data(), mapping.pData, length);
 	context->Unmap(staging.Get(), 0);
 	return S_OK;
-}
-
-uint64_t BufferId(ID3D11Buffer* buffer)
-{
-	uint64_t id = 0;
-	UINT length = sizeof(id);
-	if (SUCCEEDED(buffer->GetPrivateData(BufferRecordGuid, &length, &id)) && length == sizeof(id))
-		return id;
-	id = next_id.fetch_add(1, std::memory_order_relaxed);
-	return SUCCEEDED(buffer->SetPrivateData(BufferRecordGuid, sizeof(id), &id)) ? id : 0;
 }
 
 struct BufferBinding {
@@ -578,12 +568,14 @@ std::string Process(HackerDevice* device, HackerContext* wrapper, std::string_vi
 		request.remove_prefix(tab + 1);
 	}
 	const auto operation = fields.front();
+	if (operation.substr(0, 6) == "TRACE_")
+		return Provenance::Request(device, wrapper, fields);
 	uint64_t id = 0, offset = 0, length = 0;
 	if (operation == "STATUS" && fields.size() == 1)
 		return "{\"pid\":" + std::to_string(GetCurrentProcessId()) + ",\"protocol\":1,\"version\":\"" VER_FILE_VERSION_STR
 			"\",\"frame\":" + std::to_string(G->frame_no) + ",\"hunting\":" + std::to_string(G->hunting) +
 			",\"region_enabled\":" + (G->track_region_hashes ? "true" : "false") +
-			",\"features\":[\"profiling_chunks\",\"indexed_range\",\"custom_resource_errors\",\"texture_dhash\"]" +
+			",\"features\":[\"profiling_chunks\",\"indexed_range\",\"custom_resource_errors\",\"texture_dhash\",\"resource_provenance\",\"resource_caller_frames\",\"resource_trace_ib_groups\",\"apmi_palette_producer\"]" +
 			",\"capture_coverage\":{\"context\":\"present_immediate\",\"deferred\":\"native_f8\",\"textures\":\"native_f8\"}" +
 			",\"capture_active\":" + (G->analyse_frame ? "true" : "false") +
 			",\"frame_analysis_dir\":" + Quote(Utf8(G->ANALYSIS_PATH)) + ",\"log_path\":" +
@@ -783,10 +775,12 @@ void OnPresent(HackerDevice* device, HackerContext* context)
 		texture_dhash_armed.store(false, std::memory_order_release);
 		capture = {};
 		profile = {};
+		Provenance::OnDisable();
 		service_active.store(false, std::memory_order_release);
 		return;
 	}
 	if (!context) return;
+	Provenance::OnPresent(device, context, G->frame_no);
 	service_active.store(true, std::memory_order_relaxed);
 	if (capture_armed.load(std::memory_order_relaxed)) {
 		const auto owner = capture_context.load(std::memory_order_acquire);
@@ -844,6 +838,7 @@ void OnPresent(HackerDevice* device, HackerContext* context)
 
 void OnContextDestroyed(HackerContext* context) noexcept
 {
+	Provenance::OnContextDestroyed(context);
 	// Retire the borrowed pointer without waiting on a rendering thread.
 	// The next Present cancels any pending capture before serving the pipe.
 	capture_context.compare_exchange_strong(context, nullptr, std::memory_order_acq_rel);
@@ -983,7 +978,7 @@ void OnDraw(HackerContext* context, const DrawCallInfo& call, bool injected, boo
 		std::string buffers = "[";
 		for (const auto& binding : Bindings(native, call, compute)) {
 			if (!capture.WantsSlot(binding.slot) || !capture.WantsStage(binding.stage)) continue;
-			const auto id = BufferId(binding.buffer.Get());
+			const auto id = Provenance::BufferId(binding.buffer.Get());
 			if (capture.resource != Any && capture.resource != id) continue;
 			uint32_t full_hash;
 			{

@@ -653,9 +653,143 @@ def alternating_main(harness, dll):
     print("PASS: capture stays on its originating context while two live WARP devices alternate Present")
 
 
+def verify_provenance(mcp, pid):
+    deadline = time.monotonic() + 8
+    while pid not in mcp.tool("discover")["pids"]:
+        assert time.monotonic() < deadline, "provenance fixture never published its endpoint"
+        time.sleep(0.1)
+    assert {"resource_provenance", "resource_caller_frames", "resource_trace_ib_groups", "apmi_palette_producer"} <= \
+        set(mcp.tool("status")["features"])
+
+    def trace(frames=2, **kwargs):
+        job = mcp.tool("resource_trace", frames=frames, **kwargs)
+        trace_id = job["trace_id"]
+        for _ in range(150):
+            status = mcp.tool("resource_trace_status", trace_id=trace_id)
+            if status["state"] != "pending":
+                matches = mcp.tool("resource_trace_list", trace_id=trace_id)
+                return trace_id, status, matches["matches"]
+        raise AssertionError("resource trace did not finish")
+
+    def event(trace_id, submission):
+        return mcp.tool("resource_trace_event", trace_id=trace_id, submission=submission)
+
+    ib_capture = mcp.tool("capture", kind="ib", indexed_range=True)
+    ib = mcp.wait_capture(ib_capture["id"])["capture"]["buffer"]
+    _, grouped, anchors = trace(ib_hashes=[ib["resource_hash"], "ffffffff"])
+    assert grouped["state"] == "ready" and anchors and all(row["ib_hash"] == ib["resource_hash"] for row in anchors)
+    rejected = mcp.request("tools/call", name="dx11_resource_trace",
+                           arguments={"ib_hashes": [ib["resource_hash"]], "producer_frames": 8})
+    assert rejected.get("isError") and rejected["structuredContent"]["code"] == "TRACE_APMI_WRONG_EXECUTABLE", rejected
+    trace_id, status, matches = trace(ib_hash=ib["resource_hash"], first_index=0, index_count=3)
+    assert status["state"] == "ready" and status["dropped"] == status["sample_bytes"] == 0, status
+    draw = matches[-1]
+    draw_event = event(trace_id, draw["submission"])
+    assert draw_event["bindings"][0]["buffer"]["resource_id"] == ib["resource_id"], draw_event
+    chain = mcp.tool("resource_trace_chain", trace_id=trace_id, submission=draw["submission"])
+    assert not chain["truncated"], chain
+    writers = {node["submission"]: event(trace_id, node["submission"])
+               for node in chain["nodes"] if node["submission"] is not None}
+    dispatch = next(e for e in writers.values() if e["api"] == "Dispatch")
+    upload = next(e for e in writers.values() if e["api"] == "UpdateSubresource1")
+    mapped = next(e for e in writers.values() if e["api"] == "Unmap" and e["flags"] == 2)
+    copy = next(e for e in writers.values() if e["api"] == "CopySubresourceRegion1")
+    assert mapped["map_record"] < mapped["record"] and mapped["destination_range"] is None, mapped
+    assert mapped["cpu_source_bytes"] == 32 and mapped["cpu_crc32c"], mapped
+    assert upload["cpu_crc32c"] and upload["destination_range"] == {"offset": 4, "bytes": 8}, upload
+    assert upload["caller_module"].lower() == "dx11_proxy_smoke.exe" and upload["caller_offset"], upload
+    assert upload["caller_frames_state"] == "disabled" and upload["caller_frames"] == [], upload
+    assert dispatch["binding_source"] == "deferred_setters" and dispatch["cs_hash"], dispatch
+    assert dispatch["bindings"][2]["range"] == {"offset": 16, "bytes": 8}, dispatch
+    assert upload["submission"] < copy["submission"] < dispatch["submission"] < draw["submission"]
+    assert upload["execute_id"] < dispatch["execute_id"] and dispatch["list_order"] == 2, dispatch
+    assert upload["record_qpc"] < upload["submit_qpc"] <= dispatch["submit_qpc"]
+    source = upload["destination"]
+    same_hash = dispatch["bindings"][0]["buffer"]
+    assert source["resource_hash"] == same_hash["resource_hash"] and source["resource_id"] != same_hash["resource_id"]
+    assert source["creation"]["initial_crc32c"] == same_hash["creation"]["initial_crc32c"]
+
+    trace_id, status, matches = trace(resource_id=source["resource_id"], sample_resource_id=source["resource_id"],
+                                      sample_bytes=4)
+    patches = [event(trace_id, row["submission"]) for row in matches if row["api"] == "UpdateSubresource1"]
+    full = [event(trace_id, row["submission"]) for row in matches if row["api"] == "UpdateSubresource"]
+    a, replay = patches[-2:]
+    b = full[-1]
+    assert a["record"] == replay["record"] < b["record"], (a, replay, b)
+    assert b["submission"] < a["submission"] < replay["submission"]
+    assert a["command_list_id"] == replay["command_list_id"] and a["execute_id"] < replay["execute_id"]
+    assert a["sample_state"] == "sample_truncated" and a["cpu_crc32c"] == upload["cpu_crc32c"], a
+    sample = mcp.tool("resource_trace_bytes", trace_id=trace_id, submission=a["submission"])
+    assert base64.b64decode(sample["bytes_base64"]) == struct.pack("<I", 71), sample
+    assert status["command_list_gaps"] >= 1 and status["dropped"] == 0, status
+
+    trace_id, status, matches = trace(ib_hash=ib["resource_hash"], first_index=0, index_count=3,
+                                      caller_resource_id=source["resource_id"], caller_frames=16)
+    chain = mcp.tool("resource_trace_chain", trace_id=trace_id, submission=matches[-1]["submission"])
+    writers = {node["submission"]: event(trace_id, node["submission"])
+               for node in chain["nodes"] if node["submission"] is not None}
+    targeted = next(e for e in writers.values() if e["api"] == "UpdateSubresource1")
+    other = next(e for e in writers.values() if e["api"] == "Unmap" and e["flags"] == 2)
+    stack = targeted["caller_frames"]
+    assert targeted["caller_frames_state"] in ("captured", "partial") and stack, targeted
+    first_known = next(frame for frame in stack if frame["module"])
+    assert (first_known["module"], first_known["rva"]) == (targeted["caller_module"], targeted["caller_offset"])
+    assert sorted({frame["stack_index"] for frame in stack}) == [frame["stack_index"] for frame in stack], stack
+    assert other["caller_frames_state"] == "resource_not_selected" and other["caller_unwind"] is None, other
+    assert targeted["sample_bytes"] == status["sample_bytes"] == 0 and status["caller_capture_attempts"] == 4, status
+
+    trace_id, status, matches = trace(frames=66, resource_id=source["resource_id"], caller_frames=1)
+    assert status["caller_resource_id"] == source["resource_id"], status
+    assert status["caller_capture_attempts"] == 128 and status["caller_capture_limited"] == 4, status
+    first_patch = next(row for row in matches if row["api"] == "UpdateSubresource1")
+    limited_depth = event(trace_id, first_patch["submission"])
+    assert len(limited_depth["caller_frames"]) == 1
+    assert limited_depth["caller_frames_state"] == "partial" and limited_depth["caller_unwind"]["frame_limit_reached"]
+    tail = mcp.tool("resource_trace_list", trace_id=trace_id, offset=status["matches"] - 32)["matches"]
+    last_patch = next(row for row in reversed(tail) if row["api"] == "UpdateSubresource1")
+    limited = event(trace_id, last_patch["submission"])
+    assert limited["caller_frames_state"] == "event_limit" and limited["caller_frames"] == [], limited
+
+    trace_id, status, matches = trace(cs_hash=dispatch["cs_hash"], uav_hash=dispatch["bindings"][3]["buffer"]["resource_hash"])
+    chain = mcp.tool("resource_trace_chain", trace_id=trace_id, submission=matches[-1]["submission"])
+    assert chain["consumer_state"] == "observed" and any(x["index_count"] == 2 for x in chain["consumers"]), chain
+    immediate = event(trace_id, matches[-1]["submission"])
+    assert immediate["binding_source"] == "immediate_state" and immediate["execute_id"] == 0, immediate
+    assert immediate["bindings"][2]["range"] == {"offset": 16, "bytes": 8}, immediate
+    _, status, matches = trace(ib_hash="ffffffff")
+    assert status["state"] == "no_match" and not matches, status
+
+
+def provenance_main(harness, dll):
+    with tempfile.TemporaryDirectory(prefix="mcp-provenance-", dir=harness.parent) as directory:
+        folder = Path(directory)
+        copy = folder / "d3d11.dll"
+        shutil.copyfile(dll, copy)
+        (folder / "d3dx.ini").write_text(
+            "[Logging]\nlog_level=disabled\n[System]\nallow_platform_update=1\nmcp_enabled=1\n", encoding="ascii")
+        with subprocess.Popen([str(harness), "--mcp-provenance", str(copy)], cwd=folder) as game:
+            try:
+                with subprocess.Popen([sys.executable, str(BRIDGE), "--pid", str(game.pid)],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding="utf-8") as server:
+                    try:
+                        verify_provenance(Mcp(server), game.pid)
+                    finally:
+                        server.stdin.close()
+                        server.wait(timeout=5)
+            finally:
+                (folder / "stop").touch()
+                try:
+                    game.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    game.kill()
+                    game.wait()
+            assert game.returncode == 0
+    print("PASS: DX11 write provenance, copy ranges, deferred replay, instance IDs and bounded samples")
+
+
 if __name__ == "__main__":
     modes = {"--monitor": monitor_main, "--map-reload": map_reload_main,
-             "--multi-target": multi_target_main, "--alternating": alternating_main}
+             "--multi-target": multi_target_main, "--alternating": alternating_main, "--provenance": provenance_main}
     runner = modes.get(sys.argv[1], main)
     args = sys.argv[2:] if sys.argv[1] in modes else sys.argv[1:]
     runner(*(Path(arg).resolve() for arg in args))
