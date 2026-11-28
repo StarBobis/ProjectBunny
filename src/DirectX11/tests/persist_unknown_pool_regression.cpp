@@ -281,9 +281,9 @@ void cold_pool_and_cleanup(UnknownFiles& files, UnknownDevice& device, UnknownLo
 {
     UnknownFiles::write(files.mod, "[PoolPersistUnknown]\npool_size=2\npool_persist_variables=1\n"
         "pool_variable_default_value=3\n");
-    files.configure(files.first, false, false);
+    files.configure(files.first, false, false, false, "$undeclared_in_main=7\n");
     UnknownFiles::write(files.first, "[Constants]\n$preservation_active=5\n" + files.pool_assignment("23.75") +
-        "$unknown_scalar=7\n$\\namespace with spaces\\value=9\n"
+        "$unknown_scalar=7\n$\\namespace with spaces\\value=9\n$invalid_saved_scalar=5junk\n"
         "$poolbad[0]=5junk\n$poolbad[-1]=5\n$poolbad[1 + 2]=5\n$poolbad[0][1]=5\n"
         "$poolbad[184467440737095516160]=5\n$poolbad[0]=2 + 3\n$notpool[0]=5\n"
         "$preservation_locked=100\n");
@@ -303,6 +303,13 @@ void cold_pool_and_cleanup(UnknownFiles& files, UnknownDevice& device, UnknownLo
     check(G->unknown_persist_vars_count == 3 && !G->clear_saved_persist_vars,
         "disabled cleanup reports actual unknown count without arming removal");
     const auto warning = log.contents();
+    check(!contains_log_text(warning, "Unknown variable: $unknown_scalar") &&
+        !contains_log_text(warning, "Unknown variable: $\\namespace with spaces\\value"),
+        "valid stale scalar settings do not emit per-assignment syntax errors");
+    check(contains_log_text(warning, "Unknown variable: $undeclared_in_main") &&
+        contains_log_text(warning, "Unknown variable: $invalid_saved_scalar") &&
+        contains_log_text(warning, "Unable to assign to locked variable: $preservation_locked"),
+        "undeclared mod targets, malformed saved values and locked assignments still report errors");
     check(contains_log_text(warning, "Detected 3 unknown user settings") &&
         contains_log_text(warning, "Automatic clean-up is disabled") &&
         contains_log_text(warning, "Unrecognised persistent variable: $pool"),

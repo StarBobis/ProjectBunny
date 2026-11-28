@@ -6874,8 +6874,8 @@ bool ParseCommandListVariableAssignment(const wchar_t* section,
     CommandArgumentReader target(L"variable_assignment", name, section, ini_namespace, pre_command_list->scope);
     CommandListVariable* variable = nullptr;
     if (!target.GetVariable(variable, false, CommandArgumentReader::PeekMode::Argument) || !target.Finished()) {
-        if (!local && !variable)
-            PreserveUserConfigVariable(section, name, *val, ini_namespace);
+        if (!local && !variable && PreserveUserConfigVariable(section, name, *val, ini_namespace))
+            return true; // Retained for a disabled mod. No assignment to execute.
         rollback_local();
         return target.Fail();
     }
